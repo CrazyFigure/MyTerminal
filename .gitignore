@@ -1,0 +1,33 @@
+# 依赖目录由 npm ci / npm install 还原，避免上传大量第三方包。
+node_modules/
+
+# 前端构建产物和 Vite 缓存由流水线重新生成。
+dist/
+dist-ssr/
+.vite/
+.vite-verify.*.log
+
+# 本地运行数据包含连接、历史、密钥和编辑缓存，不能进入仓库。
+.myterminal-data/
+
+# Rust/Tauri 编译产物体积大且平台相关，全部交给本地或 CI 构建。
+src-tauri/target/
+src-tauri/target-*/
+
+# Tauri 自动生成的 schema 只用于本地 IDE 提示，CI 可按需重新生成。
+src-tauri/gen/schemas/
+
+# 本地环境和编辑器文件。
+.env
+.env.*
+!.env.example
+*.local
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# 日志与临时文件。
+*.log
+*.tmp
+*.temp
