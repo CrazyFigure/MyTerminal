@@ -29,8 +29,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # 使用 tauri-action 当前公开主版本 v0；上游没有 v1 tag，错误版本会在任务初始化阶段直接失败。
       - name: Build and publish Tauri release
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -39,4 +40,5 @@ jobs:
           releaseBody: Windows EXE installer is attached below.
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
-          releaseAssetNamePattern: MyShell_[version]_[platform]_[arch][setup][ext]
+          # 使用 action.yml 支持的资产命名参数，让 Release 附件名称稳定可识别。
+          assetNamePattern: MyShell_[version]_[platform]_[arch][setup][ext]
