@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react';
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 
 import { backend } from './backend';
+import { readClipboardText, writeClipboardText } from './clipboard';
 import { translate } from './i18n';
 import type { AppSettings, TerminalOutputChunk, TerminalSession } from './types';
 
@@ -31,16 +32,21 @@ const quoteFontFamily = (fontFamily: string) => {
   return /\s/.test(cleaned) && cleaned !== 'monospace' ? `"${cleaned.replace(/"/g, '\\"')}"` : cleaned;
 };
 
-const buildTerminalFontFamily = (fontFamily: string) => {
-  const primaryFont = quoteFontFamily(fontFamily) ?? '"Cascadia Mono"';
+const buildTerminalFontFamily = (latinFontFamily: string, cjkFontFamily: string) => {
+  const primaryFont = quoteFontFamily(latinFontFamily) ?? '"Cascadia Mono"';
+  const cjkFont = quoteFontFamily(cjkFontFamily);
   const normalizedPrimary = primaryFont.replace(/^["']|["']$/g, '').toLowerCase();
+  const normalizedCjk = cjkFont?.replace(/^["']|["']$/g, '').toLowerCase();
   const fallbackFonts = terminalFontFallbacks
-    .filter((fallback) => fallback.toLowerCase() !== normalizedPrimary)
+    .filter((fallback) => fallback.toLowerCase() !== normalizedPrimary && fallback.toLowerCase() !== normalizedCjk)
     .map((fallback) => quoteFontFamily(fallback))
     .filter((fallback): fallback is string => Boolean(fallback));
 
-  // 设置项只保存用户选择的主字体；渲染时补齐等宽 fallback，避免 xterm 测量或系统字体回退时出现异常字距。
-  return [primaryFont, ...fallbackFonts].join(', ');
+  // 终端字体按英文、中文、等宽兜底排列，保证 ASCII 和 CJK 分别命中用户指定字体。
+  return [primaryFont, cjkFont, ...fallbackFonts]
+    .filter((fontFamily): fontFamily is string => Boolean(fontFamily))
+    .filter((fontFamily, index, array) => array.indexOf(fontFamily) === index)
+    .join(', ');
 };
 
 const directImageUrlPattern = /^(https?:|data:|blob:|asset:|http:\/\/asset\.localhost)/i;
@@ -142,6 +148,7 @@ const buildTerminalTheme = (settings: AppSettings) => {
 };
 
 export function TerminalWorkspace({ session, settings, onTerminalData }: Props) {
+  const [terminalContextMenu, setTerminalContextMenu] = useState<{ x: number; y: number; selectedText: string } | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -168,7 +175,13 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       settings.terminalBackgroundImageOpacity,
     ],
   );
-  const terminalFontFamily = useMemo(() => buildTerminalFontFamily(settings.shellFontFamily), [settings.shellFontFamily]);
+  const terminalFontFamily = useMemo(
+    () => buildTerminalFontFamily(
+      settings.shellLatinFontFamily ?? settings.shellFontFamily,
+      settings.shellCjkFontFamily ?? settings.shellFontFamily,
+    ),
+    [settings.shellCjkFontFamily, settings.shellFontFamily, settings.shellLatinFontFamily],
+  );
 
   useEffect(() => {
     onTerminalDataRef.current = onTerminalData;
@@ -177,6 +190,48 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  useEffect(() => {
+    const closeTerminalContextMenu = () => setTerminalContextMenu(null);
+    window.addEventListener('click', closeTerminalContextMenu);
+    window.addEventListener('keydown', closeTerminalContextMenu);
+    return () => {
+      window.removeEventListener('click', closeTerminalContextMenu);
+      window.removeEventListener('keydown', closeTerminalContextMenu);
+    };
+  }, []);
+
+  const pasteClipboardToTerminal = async () => {
+    if (!canAcceptTerminalInput(sessionRef.current)) {
+      return;
+    }
+
+    // 右键粘贴直接走终端输入通道，保持和键盘粘贴完全一致的后端写入路径。
+    const text = await readClipboardText().catch(() => '');
+    if (text) {
+      onTerminalDataRef.current(text);
+    }
+  };
+
+  const handleTerminalContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+
+    if (settings.terminalRightClickBehavior !== 'menu') {
+      void pasteClipboardToTerminal();
+      return;
+    }
+
+    setTerminalContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      selectedText: terminal.getSelection(),
+    });
+  };
 
   useEffect(() => {
     if (!containerRef.current || terminalRef.current) {
@@ -322,7 +377,41 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   return (
     <section className="terminal-workspace card" style={{ background: settings.terminalBackground }}>
       {backgroundImageStyle ? <div className="terminal-background-image" style={backgroundImageStyle} /> : null}
-      <div className="terminal-surface" ref={containerRef} />
+      <div className="terminal-surface" ref={containerRef} onContextMenu={handleTerminalContextMenu} />
+
+      {terminalContextMenu ? (
+        <div
+          className="context-menu terminal-context-menu"
+          style={{ left: terminalContextMenu.x, top: terminalContextMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            className="context-menu-item"
+            disabled={!terminalContextMenu.selectedText}
+            onClick={() => {
+              const selectedText = terminalContextMenu.selectedText;
+              setTerminalContextMenu(null);
+              if (selectedText) {
+                void writeClipboardText(selectedText).catch(() => undefined);
+              }
+            }}
+            type="button"
+          >
+            {translate(settings.uiLanguage, 'terminalMenuCopy')}
+          </button>
+          <button
+            className="context-menu-item"
+            disabled={!canAcceptTerminalInput(session)}
+            onClick={() => {
+              setTerminalContextMenu(null);
+              void pasteClipboardToTerminal();
+            }}
+            type="button"
+          >
+            {translate(settings.uiLanguage, 'terminalMenuPaste')}
+          </button>
+        </div>
+      ) : null}
 
       {!session ? (
         <div className="terminal-empty-state">

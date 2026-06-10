@@ -24,8 +24,9 @@ use crate::{
     error::AppError,
     models::{
         AppSettings, BootstrapState, ConnectionProfile, EditorDocument, HistoryEntry,
-        HistoryEntryInput, LocalConfigBundle, RemoteFileEntry, RuntimeOverview,
+        HistoryEntryInput, LocalConfigBundle, RemoteFileEntry, RuntimeCpuCore, RuntimeOverview,
         TerminalOutputChunk, TerminalSession, TunnelOpenRequest, TunnelRecord, UpdateCheckResult,
+        WebDavSettings,
     },
     state::{AppState, RuntimeSession, SessionControl, TunnelRuntime},
 };
@@ -1073,12 +1074,17 @@ fn parse_cpu_sample(line: &str) -> Option<(u64, u64)> {
     Some((idle, total))
 }
 
-fn parse_cpu_percent(contents: &str) -> Option<f64> {
-    let mut samples = contents.lines().filter_map(parse_cpu_sample);
-    let (idle_before, total_before) = samples.next()?;
-    let (idle_after, total_after) = samples.next()?;
-    let idle_delta = idle_after.saturating_sub(idle_before);
-    let total_delta = total_after.saturating_sub(total_before);
+// 解析 /proc/stat 中 cpu/cpuN 行，保留名称方便同时计算总 CPU 和各核心占用。
+fn parse_named_cpu_sample(line: &str) -> Option<(String, u64, u64)> {
+    let name = line.split_whitespace().next()?.to_string();
+    let (idle, total) = parse_cpu_sample(line)?;
+    Some((name, idle, total))
+}
+
+// 根据前后两次采样计算占用率，使用 saturating_sub 避免远端计数异常回退导致 panic。
+fn calculate_cpu_percent(before: (u64, u64), after: (u64, u64)) -> Option<f64> {
+    let idle_delta = after.0.saturating_sub(before.0);
+    let total_delta = after.1.saturating_sub(before.1);
     if total_delta == 0 {
         return None;
     }
@@ -1086,12 +1092,45 @@ fn parse_cpu_percent(contents: &str) -> Option<f64> {
     Some(((total_delta.saturating_sub(idle_delta)) as f64 / total_delta as f64) * 100.0)
 }
 
+// 总 CPU 只读取 cpu 聚合行，输出给运行状态主行展示。
+fn parse_cpu_percent(contents: &str) -> Option<f64> {
+    let mut samples = contents
+        .lines()
+        .filter_map(parse_named_cpu_sample)
+        .filter_map(|(name, idle, total)| (name == "cpu").then_some((idle, total)));
+    calculate_cpu_percent(samples.next()?, samples.next()?)
+}
+
+// 各核心 CPU 使用同一段采样文本配对计算，前端点击 CPU 主行时再展开显示。
+fn parse_cpu_core_percents(contents: &str) -> Vec<RuntimeCpuCore> {
+    let mut before = HashMap::<String, (u64, u64)>::new();
+    let mut cores = Vec::<RuntimeCpuCore>::new();
+
+    for (name, idle, total) in contents.lines().filter_map(parse_named_cpu_sample) {
+        if name == "cpu" {
+            continue;
+        }
+        if let Some(previous) = before.remove(&name) {
+            if let Some(percent) = calculate_cpu_percent(previous, (idle, total)) {
+                cores.push(RuntimeCpuCore {
+                    name: name.replacen("cpu", "CPU ", 1),
+                    percent,
+                });
+            }
+        } else {
+            before.insert(name, (idle, total));
+        }
+    }
+
+    cores
+}
+
 fn query_runtime_overview(connection: &ConnectionProfile) -> Result<RuntimeOverview, AppError> {
     let session = connect_ssh(connection)?;
     // 运行状态一次性读取所有需要的远端文本，避免 CPU/内存/磁盘等指标各自开 channel 导致刷新发慢。
     let sections = exec_remote_command(
         &session,
-        "sh -lc 'printf \"__MYTERMINAL_OS__\\n\"; (uname -srmo 2>/dev/null || uname -a 2>/dev/null || true); printf \"\\n__MYTERMINAL_CPUSTAT__\\n\"; (grep \"^cpu \" /proc/stat 2>/dev/null; sleep 0.2; grep \"^cpu \" /proc/stat 2>/dev/null) || true; printf \"\\n__MYTERMINAL_MEMINFO__\\n\"; cat /proc/meminfo 2>/dev/null || true; printf \"\\n__MYTERMINAL_DF__\\n\"; df -Pk / 2>/dev/null || true; printf \"\\n__MYTERMINAL_HOSTIP__\\n\"; hostname -I 2>/dev/null || true; printf \"\\n__MYTERMINAL_UPTIME__\\n\"; cat /proc/uptime 2>/dev/null || true'",
+        "sh -lc 'printf \"__MYTERMINAL_OS__\\n\"; (uname -srmo 2>/dev/null || uname -a 2>/dev/null || true); printf \"\\n__MYTERMINAL_CPUSTAT__\\n\"; (grep -E \"^cpu[0-9 ]\" /proc/stat 2>/dev/null; sleep 0.2; grep -E \"^cpu[0-9 ]\" /proc/stat 2>/dev/null) || true; printf \"\\n__MYTERMINAL_MEMINFO__\\n\"; cat /proc/meminfo 2>/dev/null || true; printf \"\\n__MYTERMINAL_DF__\\n\"; df -Pk / 2>/dev/null || true; printf \"\\n__MYTERMINAL_HOSTIP__\\n\"; hostname -I 2>/dev/null || true; printf \"\\n__MYTERMINAL_UPTIME__\\n\"; cat /proc/uptime 2>/dev/null || true'",
     )
     .map(|contents| parse_marked_sections(&contents))
     .unwrap_or_default();
@@ -1106,6 +1145,10 @@ fn query_runtime_overview(connection: &ConnectionProfile) -> Result<RuntimeOverv
         .get("CPUSTAT")
         .and_then(|contents| parse_cpu_percent(contents).map(|percent| format!("{percent:.0}%")))
         .unwrap_or_else(|| String::from("--"));
+    let cpu_cores = sections
+        .get("CPUSTAT")
+        .map(|contents| parse_cpu_core_percents(contents))
+        .unwrap_or_default();
 
     let memory = sections
         .get("MEMINFO")
@@ -1167,6 +1210,7 @@ fn query_runtime_overview(connection: &ConnectionProfile) -> Result<RuntimeOverv
         host: connection.host.clone(),
         os,
         cpu,
+        cpu_cores,
         memory,
         storage,
         network,
@@ -1655,12 +1699,35 @@ pub fn delete_remote_path(
     let connection = ensure_connection_exists(&state, &connection_id)?;
     let session = connect_ssh(&connection)?;
     let sftp = session.sftp().map_err(ssh_error)?;
-    let remote_path = normalize_remote_path(&path);
+    delete_remote_path_with_sftp(&sftp, &path)?;
+    Ok(true)
+}
+
+// 单路径删除复用传入的 SFTP 句柄，供单删和批量删除共用同一套目录/文件判断规则。
+fn delete_remote_path_with_sftp(sftp: &Sftp, path: &str) -> Result<(), AppError> {
+    let remote_path = normalize_remote_path(path);
     let stat = sftp.stat(Path::new(&remote_path)).map_err(ssh_error)?;
     if stat_is_dir(&stat) {
         sftp.rmdir(Path::new(&remote_path)).map_err(ssh_error)?;
     } else {
         sftp.unlink(Path::new(&remote_path)).map_err(ssh_error)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+// 批量删除只建立一次 SSH/SFTP 会话，逐项删除后由前端统一刷新目录。
+pub fn delete_remote_paths(
+    state: State<'_, AppState>,
+    connection_id: String,
+    paths: Vec<String>,
+) -> Result<bool, String> {
+    let connection = ensure_connection_exists(&state, &connection_id)?;
+    let session = connect_ssh(&connection)?;
+    let sftp = session.sftp().map_err(ssh_error)?;
+    // 批量删除复用同一个 SFTP 会话，避免多选删除时为每个文件重复握手导致界面卡顿。
+    for path in paths.iter().filter(|path| !path.trim().is_empty()) {
+        delete_remote_path_with_sftp(&sftp, path)?;
     }
     Ok(true)
 }
@@ -2005,7 +2072,11 @@ pub fn open_external_url(url: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn export_local_config(state: State<'_, AppState>) -> Result<String, String> {
+// 本地配置导出写入用户选择的位置；空路径用于兼容旧调用，回落到默认导出目录。
+pub fn export_local_config(
+    state: State<'_, AppState>,
+    target_path: String,
+) -> Result<String, String> {
     let bundle = LocalConfigBundle {
         schema_version: 1,
         exported_at: Utc::now().to_rfc3339(),
@@ -2015,10 +2086,18 @@ pub fn export_local_config(state: State<'_, AppState>) -> Result<String, String>
         tunnels: state.storage.load_tunnels()?,
     };
 
-    let export_dir = state.storage.exports_dir_path();
-    fs::create_dir_all(&export_dir).map_err(|error| AppError::from(error).to_string())?;
-    let timestamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
-    let path = export_dir.join(format!("myterminal-config-{timestamp}.json"));
+    let normalized_path = target_path.trim();
+    // 导出路径优先来自系统保存对话框；兼容旧调用时才回落到默认导出目录。
+    let path = if normalized_path.is_empty() {
+        let export_dir = state.storage.exports_dir_path();
+        let timestamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
+        export_dir.join(format!("myterminal-config-{timestamp}.json"))
+    } else {
+        PathBuf::from(normalized_path)
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| AppError::from(error).to_string())?;
+    }
     let payload = serde_json::to_string_pretty(&bundle).map_err(AppError::from)?;
     fs::write(&path, payload).map_err(|error| AppError::from(error).to_string())?;
     Ok(path.to_string_lossy().to_string())
@@ -2080,6 +2159,16 @@ pub async fn upload_settings_to_webdav(state: State<'_, AppState>) -> Result<boo
         .webdav
         .upload_settings(&settings, &state.crypto)
         .await?;
+    Ok(true)
+}
+
+#[tauri::command]
+// WebDAV 测试只校验当前草稿配置的连通性，不会把草稿写入本地设置。
+pub async fn test_webdav_connection(
+    state: State<'_, AppState>,
+    webdav: WebDavSettings,
+) -> Result<bool, String> {
+    state.webdav.test_connection(&webdav).await?;
     Ok(true)
 }
 

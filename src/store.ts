@@ -24,6 +24,8 @@ const defaultSettings: AppSettings = {
   uiLanguage: 'zh-CN',
   themeMode: 'light',
   runtimeRefreshIntervalSec: 1,
+  shellLatinFontFamily: 'JetBrains Mono',
+  shellCjkFontFamily: 'Microsoft YaHei UI',
   shellFontFamily: 'JetBrains Mono',
   shellFontSize: 15,
   terminalBackground: '#f7f7f7',
@@ -32,6 +34,7 @@ const defaultSettings: AppSettings = {
   backgroundImage: '',
   terminalBackgroundImageOpacity: 0.18,
   terminalBackgroundImageFit: 'cover',
+  terminalRightClickBehavior: 'paste',
   compactSidebar: false,
   showCommandGhost: true,
   connectionGroups: [],
@@ -370,6 +373,7 @@ type StoreState = {
   uploadLocalFile: (file: File) => Promise<void>;
   downloadRemoteFile: (path: string) => Promise<void>;
   deleteRemotePath: (path: string) => Promise<void>;
+  deleteRemotePaths: (paths: string[]) => Promise<void>;
   renameRemotePath: (path: string, newName: string) => Promise<void>;
   refreshRuntimeOverview: () => Promise<void>;
   openRemoteFile: (path: string) => Promise<void>;
@@ -377,12 +381,13 @@ type StoreState = {
   setEditorContent: (content: string) => void;
   saveEditorDocument: () => Promise<void>;
   updateSettings: (updater: (settings: AppSettings) => AppSettings) => void;
-  persistSettings: () => Promise<void>;
+  persistSettings: (settings?: AppSettings) => Promise<AppSettings>;
+  testWebdavConnection: (settings?: AppSettings) => Promise<void>;
   uploadSettings: () => Promise<void>;
   downloadSettings: () => Promise<void>;
   uploadConnections: () => Promise<void>;
   downloadConnections: () => Promise<void>;
-  exportLocalConfig: () => Promise<void>;
+  exportLocalConfig: (targetPath: string) => Promise<void>;
   importLocalConfig: (file: File) => Promise<void>;
   checkForUpdates: () => Promise<UpdateCheckResult>;
   installUpdate: (result: UpdateCheckResult) => Promise<void>;
@@ -1333,6 +1338,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
           reason: error instanceof Error ? error.message : String(error),
         }),
       }));
+      throw error;
     }
   },
 
@@ -1351,6 +1357,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
           reason: error instanceof Error ? error.message : String(error),
         }),
       }));
+      throw error;
     }
   },
 
@@ -1370,6 +1377,33 @@ export const useAppStore = create<StoreState>((set, get) => ({
           reason: error instanceof Error ? error.message : String(error),
         }),
       }));
+      throw error;
+    }
+  },
+
+  deleteRemotePaths: async (paths) => {
+    const { activeConnectionId, currentRemotePath } = get();
+    const normalizedPaths = Array.from(new Set(paths.filter(Boolean)));
+    if (!activeConnectionId || !normalizedPaths.length) {
+      return;
+    }
+
+    try {
+      // 多选删除使用后端批量 SFTP 命令，删除完再刷新一次目录，避免连续刷新拖慢 UI。
+      await backend.deleteRemotePaths(activeConnectionId, normalizedPaths);
+      await get().refreshFiles(currentRemotePath);
+      set({
+        statusMessage: normalizedPaths.length === 1
+          ? statusText(get().settings, 'statusDeletedPath', { path: normalizedPaths[0] })
+          : statusText(get().settings, 'statusDeletedPaths', { count: normalizedPaths.length }),
+      });
+    } catch (error) {
+      set((state) => ({
+        statusMessage: statusText(state.settings, 'statusFileOperationFailed', {
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      }));
+      throw error;
     }
   },
 
@@ -1390,6 +1424,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
           reason: error instanceof Error ? error.message : String(error),
         }),
       }));
+      throw error;
     }
   },
 
@@ -1436,6 +1471,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
           reason: error instanceof Error ? error.message : String(error),
         }),
       }));
+      throw error;
     }
   },
 
@@ -1479,9 +1515,17 @@ export const useAppStore = create<StoreState>((set, get) => ({
 
   updateSettings: (updater) => set((state) => ({ settings: updater(state.settings) })),
 
-  persistSettings: async () => {
-    const settings = await backend.saveSettings(get().settings);
+  persistSettings: async (settingsDraft) => {
+    // 设置页使用草稿编辑，只有用户点击保存时才把草稿写入全局状态和本地文件。
+    const settings = await backend.saveSettings(settingsDraft ?? get().settings);
     set({ settings, statusMessage: statusText(settings, 'statusSettingsSaved') });
+    return settings;
+  },
+
+  testWebdavConnection: async (settingsDraft) => {
+    const settings = settingsDraft ?? get().settings;
+    await backend.testWebdavConnection(settings);
+    set({ statusMessage: statusText(settings, 'statusWebdavTestPassed') });
   },
 
   uploadSettings: async () => {
@@ -1505,8 +1549,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
     set({ connections, statusMessage: statusText(get().settings, 'statusDownloadedConnections') });
   },
 
-  exportLocalConfig: async () => {
-    const path = await backend.exportLocalConfig();
+  exportLocalConfig: async (targetPath) => {
+    const path = await backend.exportLocalConfig(targetPath);
     set({ statusMessage: statusText(get().settings, 'statusExportedLocalConfig', { path }) });
   },
 

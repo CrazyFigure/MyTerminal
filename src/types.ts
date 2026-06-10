@@ -3,6 +3,7 @@ export type UiLanguage = 'zh-CN' | 'en-US';
 export type SshAuthMethod = 'password' | 'privateKey';
 export type WorkspacePanel = 'files' | 'editor' | 'tunnels' | 'sync' | 'settings' | 'history';
 export type SessionStatus = 'idle' | 'connecting' | 'connected' | 'stub' | 'error' | 'closed';
+export type TerminalRightClickBehavior = 'paste' | 'menu';
 
 export interface ConnectionProfile {
   id: string;
@@ -33,6 +34,11 @@ export interface AppSettings {
   uiLanguage: UiLanguage;
   themeMode: ThemeMode;
   runtimeRefreshIntervalSec: number;
+  /** 终端英文字体优先用于 ASCII、数字和常见符号。 */
+  shellLatinFontFamily: string;
+  /** 终端中文字体优先用于 CJK 字符，避免中英文宽度互相影响。 */
+  shellCjkFontFamily: string;
+  /** 旧配置兼容字段；保存时会同步为中英文字体组合。 */
   shellFontFamily: string;
   shellFontSize: number;
   terminalBackground: string;
@@ -43,6 +49,8 @@ export interface AppSettings {
   terminalBackgroundImageOpacity?: number;
   /** 终端背景图填充方式，仅作用于终端区域。 */
   terminalBackgroundImageFit?: 'cover' | 'contain' | 'stretch' | 'tile' | 'center';
+  /** 终端区域右键行为：直接粘贴，或弹出复制/粘贴菜单。 */
+  terminalRightClickBehavior: TerminalRightClickBehavior;
   compactSidebar: boolean;
   showCommandGhost: boolean;
   /** 连接管理中显式维护的分组路径；即使分组下暂无连接，也需要持久保留。 */
@@ -89,6 +97,11 @@ export interface RuntimeOverview {
   host: string;
   os: string;
   cpu: string;
+  /** 每个 CPU 核心的占用率，点击 CPU 行展开展示。 */
+  cpuCores: Array<{
+    name: string;
+    percent: number;
+  }>;
   memory: string;
   storage: string;
   network: string;

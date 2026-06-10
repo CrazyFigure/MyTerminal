@@ -1,7 +1,7 @@
 {
   "name": "myterminal",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A modern Rust + Tauri 2 remote terminal manager inspired by FinalShell.",
   "type": "module",
   "scripts": {
@@ -32,6 +32,7 @@
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.16.0",

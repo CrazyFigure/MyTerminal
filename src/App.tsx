@@ -10,12 +10,17 @@ import {
   type CSSProperties,
   type DependencyList,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
-import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
+import { open as openFileDialog, save as saveFileDialog } from '@tauri-apps/plugin-dialog';
 import {
   Activity,
   Cable,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
   Copy,
   Download,
   Eye,
@@ -49,6 +54,7 @@ import {
 import { translate, translateStatus, type TranslationKey } from './i18n';
 import { TerminalWorkspace } from './TerminalWorkspace';
 import { backend } from './backend';
+import { writeClipboardText } from './clipboard';
 import { useAppStore } from './store';
 import type { AppSettings, ConnectionDraft, ConnectionProfile, RemoteFileEntry, SessionStatus, TerminalSession, UiLanguage, UpdateCheckResult } from './types';
 
@@ -76,6 +82,14 @@ type SessionTabDragState = {
   currentY: number;
 } | null;
 type SessionTabDropTarget = { sessionId: string; placement: InsertPlacement } | { type: 'end' } | null;
+// 传输进度用于给上传、下载、编辑读取和批量删除提供轻量阶段反馈；真实字节级进度需要后端分块事件再扩展。
+type TransferProgressItem = {
+  id: string;
+  title: string;
+  percent: number;
+  status: 'running' | 'success' | 'error';
+  message?: string;
+};
 type ConnectionGroupNode = {
   name: string;
   path: string;
@@ -108,19 +122,21 @@ const explorerColumnLimits = [
   { min: 90, max: 220 },
 ];
 
-// 连接列表默认列宽比之前更紧凑，动作列保留弹性空间；用户可以临时拉宽名称、主机和用户名。
-const connectionTableDefaultColumnWidths = [24, 160, 190, 64, 104];
+// 连接列表默认列宽继续收窄，优先保证操作按钮完整露出，避免管理弹窗出现横向滚动条。
+const connectionTableDefaultColumnWidths = [24, 136, 168, 54, 86];
 const connectionTableColumnLimits = [
   { min: 24, max: 24 },
-  { min: 110, max: 420 },
-  { min: 130, max: 460 },
-  { min: 58, max: 110 },
-  { min: 82, max: 260 },
+  { min: 96, max: 360 },
+  { min: 120, max: 400 },
+  { min: 48, max: 96 },
+  { min: 72, max: 220 },
 ];
-const connectionTableActionMinWidth = 270;
+const connectionTableActionMinWidth = 220;
 
-const shellFontOptions = [
+const latinFontOptions = [
   'JetBrains Mono',
+  'Maple Mono Normal NF CN Regular',
+  'Maple Mono Normal NF CN Light',
   'Cascadia Mono',
   'Consolas',
   'Fira Code',
@@ -129,6 +145,44 @@ const shellFontOptions = [
   'Monaco',
   'Courier New',
 ];
+
+const cjkFontOptions = [
+  'Microsoft YaHei UI',
+  'Microsoft YaHei',
+  'Maple Mono Normal NF CN Regular',
+  'Maple Mono Normal NF CN Light',
+  'SimSun',
+  'SimHei',
+  'Microsoft JhengHei UI',
+  'Noto Sans CJK SC',
+  'Sarasa Mono SC',
+  'PingFang SC',
+];
+
+const ensureFontOption = (options: string[], current: string) => {
+  const normalized = current.trim().replace(/^['"]|['"]$/g, '');
+  return normalized && !options.includes(normalized) ? [normalized, ...options] : options;
+};
+
+const quoteCssFontFamily = (fontFamily: string) => {
+  const cleaned = fontFamily.trim().replace(/^['"]|['"]$/g, '');
+  if (!cleaned) {
+    return undefined;
+  }
+  return /\s/.test(cleaned) ? `"${cleaned.replace(/"/g, '\\"')}"` : cleaned;
+};
+
+const buildPreviewFontFamily = (settings: AppSettings) =>
+  [
+    quoteCssFontFamily(settings.shellLatinFontFamily ?? settings.shellFontFamily),
+    quoteCssFontFamily(settings.shellCjkFontFamily ?? settings.shellFontFamily),
+    '"Cascadia Mono"',
+    'Consolas',
+    'monospace',
+  ]
+    .filter((fontFamily): fontFamily is string => Boolean(fontFamily))
+    .filter((fontFamily, index, array) => array.indexOf(fontFamily) === index)
+    .join(', ');
 
 const terminalBackgroundFitOptions: Array<{
   value: NonNullable<AppSettings['terminalBackgroundImageFit']>;
@@ -1429,7 +1483,11 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
   );
 }
 
-function EditorModal() {
+function EditorModal({
+  onSaveWithProgress,
+}: {
+  onSaveWithProgress?: (path: string, saveTask: () => Promise<void>) => void;
+}) {
   const {
     closeEditorDocument,
     editorDocument,
@@ -1446,6 +1504,15 @@ function EditorModal() {
     return null;
   }
 
+  const handleSaveEditorDocument = () => {
+    if (onSaveWithProgress) {
+      // 远程编辑保存同样是一次 SFTP 写入，复用全局传输提示，避免用户误以为按钮没有响应。
+      onSaveWithProgress(editorDocument.path, saveEditorDocument);
+      return;
+    }
+    void saveEditorDocument();
+  };
+
   return (
     <div className="modal-backdrop">
       <div className="modal modal-editor card">
@@ -1458,7 +1525,7 @@ function EditorModal() {
             <button className="secondary-button" onClick={closeEditorDocument} type="button">
               {t('close')}
             </button>
-            <button className="primary-button" onClick={() => void saveEditorDocument()} type="button">
+            <button className="primary-button" onClick={handleSaveEditorDocument} type="button">
               <Save size={16} />
               {editorDocument.dirty ? t('saveToRemote') : t('saved')}
             </button>
@@ -1468,7 +1535,7 @@ function EditorModal() {
         <div className="editor-shell modal-editor-shell">
           <Suspense fallback={<div className="empty-state">{t('working')}</div>}>
             <MonacoEditor
-              fontFamily={settings.shellFontFamily}
+              fontFamily={buildPreviewFontFamily(settings)}
               fontSize={settings.shellFontSize}
               language={editorDocument.language}
               onChange={(value) => setEditorContent(value ?? '')}
@@ -1493,18 +1560,11 @@ function SettingsModal({
   onClose: () => void;
   onTabChange: (tab: SettingsTab) => void;
 }) {
-  const [revealWebdavPassword, setRevealWebdavPassword] = useState(false);
-  const [settingsSaveMessage, setSettingsSaveMessage] = useState('');
-  const [updateChecking, setUpdateChecking] = useState(false);
-  const [updateInstalling, setUpdateInstalling] = useState(false);
-  const [updateCheckResult, setUpdateCheckResult] = useState<UpdateCheckResult | null>(null);
-  const [updateCheckError, setUpdateCheckError] = useState('');
-  const settingsSaveTimerRef = useRef<number | null>(null);
   const {
     checkForUpdates,
     installUpdate,
     settings,
-    updateSettings,
+    testWebdavConnection,
     uploadSettings,
     downloadSettings,
     uploadConnections,
@@ -1513,26 +1573,64 @@ function SettingsModal({
     importLocalConfig,
     persistSettings,
   } = useAppStore();
+  const [revealWebdavPassword, setRevealWebdavPassword] = useState(false);
+  const [settingsSaveMessage, setSettingsSaveMessage] = useState('');
+  const [settingsActionRunning, setSettingsActionRunning] = useState('');
+  const [draftSettings, setDraftSettings] = useState<AppSettings>(settings);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
+  const [updateCheckResult, setUpdateCheckResult] = useState<UpdateCheckResult | null>(null);
+  const [updateCheckError, setUpdateCheckError] = useState('');
+  const settingsSaveTimerRef = useRef<number | null>(null);
 
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
-    translate(settings.uiLanguage, key, replacements);
-  const appVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.2';
+    translate(draftSettings.uiLanguage ?? settings.uiLanguage, key, replacements);
+  const appVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.3';
   const webdavPasswordToggleLabel = revealWebdavPassword ? t('hideSecret') : t('showSecret');
-  const selectedFontFamily = settings.shellFontFamily.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '') || 'JetBrains Mono';
-  const fontOptions = shellFontOptions.includes(selectedFontFamily)
-    ? shellFontOptions
-    : [selectedFontFamily, ...shellFontOptions];
-  const persistSettingsWithFeedback = async () => {
-    await persistSettings();
-    setSettingsSaveMessage(t('statusSettingsSaved'));
+  const selectedLatinFontFamily = draftSettings.shellLatinFontFamily || draftSettings.shellFontFamily.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '') || 'JetBrains Mono';
+  const selectedCjkFontFamily = draftSettings.shellCjkFontFamily || selectedLatinFontFamily;
+  const latinOptions = ensureFontOption(latinFontOptions, selectedLatinFontFamily);
+  const cjkOptions = ensureFontOption(cjkFontOptions, selectedCjkFontFamily);
+  const terminalPreviewStyle = useMemo<CSSProperties>(
+    () => ({
+      fontFamily: buildPreviewFontFamily(draftSettings),
+      fontSize: draftSettings.shellFontSize,
+      background: draftSettings.terminalBackground,
+      color: draftSettings.terminalForeground,
+    }),
+    [draftSettings],
+  );
+  const updateDraftSettings = (updater: (settings: AppSettings) => AppSettings) => {
+    setDraftSettings((current) => updater(current));
+  };
+  const showSettingsFeedback = (message: string) => {
+    setSettingsSaveMessage(message);
     if (settingsSaveTimerRef.current !== null) {
       window.clearTimeout(settingsSaveTimerRef.current);
     }
-    // 保存反馈只短暂停留，避免设置面板常驻状态文字占用操作区。
+    // 设置反馈只短暂停留，避免把工具面板变成常驻通知区。
     settingsSaveTimerRef.current = window.setTimeout(() => {
       setSettingsSaveMessage('');
       settingsSaveTimerRef.current = null;
     }, 1800);
+  };
+  const persistSettingsWithFeedback = async () => {
+    const saved = await persistSettings(draftSettings);
+    setDraftSettings(saved);
+    showSettingsFeedback(t('statusSettingsSaved'));
+  };
+  const runSettingsAction = async (actionKey: string, action: () => Promise<void>, successMessage?: string) => {
+    setSettingsActionRunning(actionKey);
+    setSettingsSaveMessage(t('working'));
+    try {
+      await action();
+      showSettingsFeedback(successMessage ?? useAppStore.getState().statusMessage);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      showSettingsFeedback(t('statusWebdavActionFailed', { reason }));
+    } finally {
+      setSettingsActionRunning('');
+    }
   };
   const openExternalLink = (url: string) => {
     const isDesktopRuntime = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -1552,7 +1650,7 @@ function SettingsModal({
     }
 
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? value : date.toLocaleString(settings.uiLanguage);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString(draftSettings.uiLanguage);
   };
   const handleCheckForUpdates = async () => {
     setUpdateChecking(true);
@@ -1601,8 +1699,38 @@ function SettingsModal({
     }
 
     // 背景图需要持久保存真实本地路径，系统文件对话框会把所选文件加入 asset 协议作用域。
-    updateSettings((current) => ({ ...current, backgroundImage: selectedPath }));
+    updateDraftSettings((current) => ({ ...current, backgroundImage: selectedPath }));
   };
+  const handleExportLocalConfig = async () => {
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/[-:]/g, '')
+      .replace(/\..+$/, '')
+      .replace('T', '-');
+    const selectedPath = await saveFileDialog({
+      defaultPath: `myterminal-config-${timestamp}.json`,
+      filters: [
+        {
+          name: 'JSON',
+          extensions: ['json'],
+        },
+      ],
+    });
+    if (!selectedPath) {
+      return;
+    }
+
+    // 本地导出由用户明确选择保存位置，避免按钮点击后只在默认目录静默生成文件。
+    await runSettingsAction('export-local', () => exportLocalConfig(selectedPath));
+  };
+
+  useEffect(() => {
+    if (open) {
+      setDraftSettings(settings);
+      setSettingsSaveMessage('');
+      setSettingsActionRunning('');
+    }
+  }, [open, settings]);
 
   useEffect(() => {
     return () => {
@@ -1666,22 +1794,32 @@ function SettingsModal({
                 <div className="form-grid">
                   <label>
                     <span>{t('fieldTheme')}</span>
-                    <select value={settings.themeMode} onChange={(event) => updateSettings((current) => ({ ...current, themeMode: event.target.value as 'light' | 'dark' }))}>
+                    <select value={draftSettings.themeMode} onChange={(event) => updateDraftSettings((current) => ({ ...current, themeMode: event.target.value as 'light' | 'dark' }))}>
                       <option value="light">{t('light')}</option>
                       <option value="dark">{t('dark')}</option>
                     </select>
                   </label>
                   <label>
                     <span>{t('fieldLanguage')}</span>
-                    <select value={settings.uiLanguage} onChange={(event) => updateSettings((current) => ({ ...current, uiLanguage: event.target.value as UiLanguage }))}>
+                    <select value={draftSettings.uiLanguage} onChange={(event) => updateDraftSettings((current) => ({ ...current, uiLanguage: event.target.value as UiLanguage }))}>
                       <option value="zh-CN">{t('languageZhCn')}</option>
                       <option value="en-US">{t('languageEnUs')}</option>
                     </select>
                   </label>
                   <label>
-                    <span>{t('fieldFontFamily')}</span>
-                    <select value={selectedFontFamily} onChange={(event) => updateSettings((current) => ({ ...current, shellFontFamily: event.target.value }))}>
-                      {fontOptions.map((fontFamily) => (
+                    <span>{t('fieldLatinFontFamily')}</span>
+                    <select value={selectedLatinFontFamily} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellLatinFontFamily: event.target.value }))}>
+                      {latinOptions.map((fontFamily) => (
+                        <option key={fontFamily} value={fontFamily}>
+                          {fontFamily}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>{t('fieldCjkFontFamily')}</span>
+                    <select value={selectedCjkFontFamily} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellCjkFontFamily: event.target.value }))}>
+                      {cjkOptions.map((fontFamily) => (
                         <option key={fontFamily} value={fontFamily}>
                           {fontFamily}
                         </option>
@@ -1690,17 +1828,21 @@ function SettingsModal({
                   </label>
                   <label>
                     <span>{t('fieldFontSize')}</span>
-                    <input type="number" value={settings.shellFontSize} onChange={(event) => updateSettings((current) => ({ ...current, shellFontSize: Number(event.target.value) || 15 }))} />
+                    <input type="number" value={draftSettings.shellFontSize} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellFontSize: Number(event.target.value) || 15 }))} />
                   </label>
+                  <div className="font-preview-panel span-2" style={terminalPreviewStyle}>
+                    <span>0123456789 abcdefghABCDEFGH</span>
+                    <strong>终端中文字体预览</strong>
+                  </div>
                   <label>
                     <span>{t('fieldRuntimeRefreshInterval')}</span>
                     <input
                       type="number"
                       min={1}
                       max={60}
-                      value={settings.runtimeRefreshIntervalSec}
+                      value={draftSettings.runtimeRefreshIntervalSec}
                       onChange={(event) =>
-                        updateSettings((current) => ({
+                        updateDraftSettings((current) => ({
                           ...current,
                           runtimeRefreshIntervalSec: Number(event.target.value) || 1,
                         }))
@@ -1712,8 +1854,8 @@ function SettingsModal({
                     <div className="background-image-field">
                       <input
                         placeholder="C:\\Pictures\\terminal.png 或 https://example.com/bg.png"
-                        value={settings.backgroundImage ?? ''}
-                        onChange={(event) => updateSettings((current) => ({ ...current, backgroundImage: event.target.value }))}
+                        value={draftSettings.backgroundImage ?? ''}
+                        onChange={(event) => updateDraftSettings((current) => ({ ...current, backgroundImage: event.target.value }))}
                       />
                       <button
                         className="secondary-button slim"
@@ -1725,22 +1867,33 @@ function SettingsModal({
                     </div>
                   </label>
                   <label>
-                    <span>{t('fieldTerminalBackgroundImageOpacity')} {Math.round((settings.terminalBackgroundImageOpacity ?? 0.18) * 100)}%</span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={1}
-                      step={0.05}
-                      value={settings.terminalBackgroundImageOpacity ?? 0.18}
-                      onChange={(event) => updateSettings((current) => ({ ...current, terminalBackgroundImageOpacity: Number(event.target.value) }))}
-                    />
+                    <span>{t('fieldTerminalBackgroundImageOpacity')}</span>
+                    <div className="opacity-control">
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={draftSettings.terminalBackgroundImageOpacity ?? 0.18}
+                        onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalBackgroundImageOpacity: Number(event.target.value) }))}
+                      />
+                      <input
+                        aria-label={t('fieldTerminalBackgroundImageOpacity')}
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={Math.round((draftSettings.terminalBackgroundImageOpacity ?? 0.18) * 100)}
+                        onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalBackgroundImageOpacity: clamp(Number(event.target.value) || 0, 0, 100) / 100 }))}
+                      />
+                    </div>
                   </label>
                   <label>
                     <span>{t('fieldTerminalBackgroundImageFit')}</span>
                     <select
-                      value={settings.terminalBackgroundImageFit ?? 'cover'}
+                      value={draftSettings.terminalBackgroundImageFit ?? 'cover'}
                       onChange={(event) =>
-                        updateSettings((current) => ({
+                        updateDraftSettings((current) => ({
                           ...current,
                           terminalBackgroundImageFit: event.target.value as NonNullable<AppSettings['terminalBackgroundImageFit']>,
                         }))
@@ -1751,6 +1904,16 @@ function SettingsModal({
                           {t(option.labelKey)}
                         </option>
                       ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>{t('fieldTerminalRightClickBehavior')}</span>
+                    <select
+                      value={draftSettings.terminalRightClickBehavior}
+                      onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalRightClickBehavior: event.target.value as AppSettings['terminalRightClickBehavior'] }))}
+                    >
+                      <option value="paste">{t('rightClickPaste')}</option>
+                      <option value="menu">{t('rightClickMenu')}</option>
                     </select>
                   </label>
                 </div>
@@ -1773,8 +1936,11 @@ function SettingsModal({
                     </div>
                     <div className="section-row compact">
                       {settingsSaveMessage ? <span className="inline-save-feedback">{settingsSaveMessage}</span> : null}
-                      <button className="primary-button" onClick={() => void persistSettingsWithFeedback()} type="button">
-                      <Save size={16} /> {t('saveWebdavSettings')}
+                      <button className="secondary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void runSettingsAction('test-webdav', () => testWebdavConnection(draftSettings), t('statusWebdavTestPassed'))} type="button">
+                        <RefreshCw size={16} /> {settingsActionRunning === 'test-webdav' ? t('working') : t('testWebdavConnection')}
+                      </button>
+                      <button className="primary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void persistSettingsWithFeedback()} type="button">
+                        <Save size={16} /> {t('saveWebdavSettings')}
                       </button>
                     </div>
                   </div>
@@ -1782,19 +1948,19 @@ function SettingsModal({
                   <div className="form-grid">
                     <label className="span-2">
                       <span>{t('webdavBaseUrl')}</span>
-                      <input value={settings.webdav.baseUrl} onChange={(event) => updateSettings((current) => ({ ...current, webdav: { ...current.webdav, baseUrl: event.target.value } }))} />
+                      <input value={draftSettings.webdav.baseUrl} onChange={(event) => updateDraftSettings((current) => ({ ...current, webdav: { ...current.webdav, baseUrl: event.target.value } }))} />
                     </label>
                     <label>
                       <span>{t('fieldUsername')}</span>
-                      <input value={settings.webdav.username} onChange={(event) => updateSettings((current) => ({ ...current, webdav: { ...current.webdav, username: event.target.value } }))} />
+                      <input value={draftSettings.webdav.username} onChange={(event) => updateDraftSettings((current) => ({ ...current, webdav: { ...current.webdav, username: event.target.value } }))} />
                     </label>
                     <label>
                       <span>{t('fieldPassword')}</span>
                       <div className="password-field">
                         <input
                           type={revealWebdavPassword ? 'text' : 'password'}
-                          value={settings.webdav.password}
-                          onChange={(event) => updateSettings((current) => ({ ...current, webdav: { ...current.webdav, password: event.target.value } }))}
+                          value={draftSettings.webdav.password}
+                          onChange={(event) => updateDraftSettings((current) => ({ ...current, webdav: { ...current.webdav, password: event.target.value } }))}
                         />
                         <button
                           aria-label={webdavPasswordToggleLabel}
@@ -1810,11 +1976,11 @@ function SettingsModal({
                     </label>
                     <label>
                       <span>{t('webdavSettingsPath')}</span>
-                      <input value={settings.webdav.remoteSettingsPath} onChange={(event) => updateSettings((current) => ({ ...current, webdav: { ...current.webdav, remoteSettingsPath: event.target.value } }))} />
+                      <input value={draftSettings.webdav.remoteSettingsPath} onChange={(event) => updateDraftSettings((current) => ({ ...current, webdav: { ...current.webdav, remoteSettingsPath: event.target.value } }))} />
                     </label>
                     <label>
                       <span>{t('webdavConnectionsPath')}</span>
-                      <input value={settings.webdav.remoteConnectionsPath} onChange={(event) => updateSettings((current) => ({ ...current, webdav: { ...current.webdav, remoteConnectionsPath: event.target.value } }))} />
+                      <input value={draftSettings.webdav.remoteConnectionsPath} onChange={(event) => updateDraftSettings((current) => ({ ...current, webdav: { ...current.webdav, remoteConnectionsPath: event.target.value } }))} />
                     </label>
                   </div>
                 </section>
@@ -1828,22 +1994,31 @@ function SettingsModal({
                     <div className="sync-transfer-card">
                       <strong>{t('webdavTransferSettings')}</strong>
                       <div className="sync-transfer-actions">
-                        <button className="primary-button" onClick={() => void uploadSettings()} type="button">
-                          <Upload size={16} /> {t('uploadSettings')}
+                        <button className="primary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void runSettingsAction('upload-settings', async () => {
+                          await persistSettings(draftSettings);
+                          await uploadSettings();
+                        }, t('statusUploadedSettings'))} type="button">
+                          <Upload size={16} /> {settingsActionRunning === 'upload-settings' ? t('working') : t('uploadSettings')}
                         </button>
-                        <button className="secondary-button" onClick={() => void downloadSettings()} type="button">
-                          <Download size={16} /> {t('downloadSettings')}
+                        <button className="secondary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void runSettingsAction('download-settings', async () => {
+                          await downloadSettings();
+                          setDraftSettings(useAppStore.getState().settings);
+                        }, t('statusDownloadedSettings'))} type="button">
+                          <Download size={16} /> {settingsActionRunning === 'download-settings' ? t('working') : t('downloadSettings')}
                         </button>
                       </div>
                     </div>
                     <div className="sync-transfer-card">
                       <strong>{t('webdavTransferConnections')}</strong>
                       <div className="sync-transfer-actions">
-                        <button className="primary-button" onClick={() => void uploadConnections()} type="button">
-                          <Upload size={16} /> {t('uploadConnections')}
+                        <button className="primary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void runSettingsAction('upload-connections', async () => {
+                          await persistSettings(draftSettings);
+                          await uploadConnections();
+                        }, t('statusUploadedConnections'))} type="button">
+                          <Upload size={16} /> {settingsActionRunning === 'upload-connections' ? t('working') : t('uploadConnections')}
                         </button>
-                        <button className="secondary-button" onClick={() => void downloadConnections()} type="button">
-                          <Download size={16} /> {t('downloadConnections')}
+                        <button className="secondary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void runSettingsAction('download-connections', downloadConnections, t('statusDownloadedConnections'))} type="button">
+                          <Download size={16} /> {settingsActionRunning === 'download-connections' ? t('working') : t('downloadConnections')}
                         </button>
                       </div>
                     </div>
@@ -1856,25 +2031,30 @@ function SettingsModal({
                   </div>
 
                   <div className="action-grid">
-                    <button className="primary-button" onClick={() => void exportLocalConfig()} type="button">
-                      <Download size={16} /> {t('exportLocalConfig')}
+                    <button className="primary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void handleExportLocalConfig()} type="button">
+                      <Download size={16} /> {settingsActionRunning === 'export-local' ? t('working') : t('exportLocalConfig')}
                     </button>
-                    <label className="secondary-button file-upload-button">
-                      <Upload size={16} /> {t('importLocalConfig')}
+                    <label className={`secondary-button file-upload-button ${settingsActionRunning ? 'is-disabled' : ''}`}>
+                      <Upload size={16} /> {settingsActionRunning === 'import-local' ? t('working') : t('importLocalConfig')}
                       <input
                         accept="application/json,.json"
                         className="hidden-file-input"
+                        disabled={Boolean(settingsActionRunning)}
                         type="file"
                         onChange={(event) => {
                           const file = event.target.files?.[0];
                           if (file && window.confirm(t('importLocalConfigConfirm'))) {
-                            void importLocalConfig(file);
+                            void runSettingsAction('import-local', async () => {
+                              await importLocalConfig(file);
+                              setDraftSettings(useAppStore.getState().settings);
+                            });
                           }
                           event.currentTarget.value = '';
                         }}
                       />
                     </label>
                   </div>
+                  {settingsSaveMessage ? <div className="settings-action-feedback">{settingsSaveMessage}</div> : null}
                 </section>
               </div>
             ) : null}
@@ -1943,8 +2123,15 @@ function SettingsModal({
 
 export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(330);
-  const [runtimePanelHeight, setRuntimePanelHeight] = useState(128);
+  const [runtimePanelHeight, setRuntimePanelHeight] = useState(() => {
+    if (typeof window === 'undefined') {
+      return 220;
+    }
+    // 左侧默认给运行状态约 1/3 高度，文件管理保持约 2/3，CPU 展开时不至于被文件区挤掉。
+    return clamp(Math.round(window.innerHeight * 0.3), 190, 300);
+  });
   const [bottomHeight, setBottomHeight] = useState(180);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('appearance');
   const [connectionsOpen, setConnectionsOpen] = useState(false);
@@ -1955,6 +2142,10 @@ export default function App() {
   const [sessionTabDragState, setSessionTabDragState] = useState<SessionTabDragState>(null);
   const [sessionTabDropTarget, setSessionTabDropTarget] = useState<SessionTabDropTarget>(null);
   const [selectedFilePath, setSelectedFilePath] = useState('');
+  const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
+  const [cpuCoresExpanded, setCpuCoresExpanded] = useState(false);
+  const [bottomDockCollapsed, setBottomDockCollapsed] = useState(false);
+  const [transferProgressItems, setTransferProgressItems] = useState<TransferProgressItem[]>([]);
   const [explorerColumnWidths, setExplorerColumnWidths] = useState(explorerDefaultColumnWidths);
   const pathByConnectionRef = useRef<Record<string, string>>({});
   const runtimeRefreshInFlightRef = useRef(false);
@@ -1972,7 +2163,7 @@ export default function App() {
     commandBuffers,
     connections,
     currentRemotePath,
-    deleteRemotePath,
+    deleteRemotePaths,
     downloadRemoteFile,
     files,
     history,
@@ -2002,6 +2193,39 @@ export default function App() {
 
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements);
+
+  const dismissTransferProgress = useCallback((id: string) => {
+    setTransferProgressItems((current) => current.filter((item) => item.id !== id));
+  }, []);
+  const runTransferProgress = useCallback(async (title: string, task: (setPercent: (percent: number) => void) => Promise<void>) => {
+    const id = crypto.randomUUID();
+    const setPercent = (percent: number) => {
+      setTransferProgressItems((current) =>
+        current.map((item) => (item.id === id ? { ...item, percent: clamp(percent, 0, 100) } : item)),
+      );
+    };
+
+    setTransferProgressItems((current) => [
+      { id, title, percent: 8, status: 'running' },
+      ...current.slice(0, 3),
+    ]);
+    try {
+      // 当前任务只在关键阶段更新百分比，避免传输过程中高频 setState 影响终端输入流畅度。
+      await task(setPercent);
+      setTransferProgressItems((current) =>
+        current.map((item) => (item.id === id ? { ...item, percent: 100, status: 'success', message: t('saved') } : item)),
+      );
+      window.setTimeout(() => dismissTransferProgress(id), 3000);
+    } catch (error) {
+      setTransferProgressItems((current) =>
+        current.map((item) => (
+          item.id === id
+            ? { ...item, percent: 100, status: 'error', message: error instanceof Error ? error.message : String(error) }
+            : item
+        )),
+      );
+    }
+  }, [dismissTransferProgress, t]);
 
   const refreshRuntimeOverviewOnce = useCallback(() => {
     if (!runtimeRefreshInFlightRef.current) {
@@ -2118,7 +2342,7 @@ export default function App() {
       : session.title;
     setSessionContextMenu(null);
     // 复制连接信息只包含定位字段，不复制密码、私钥等敏感内容。
-    void navigator.clipboard?.writeText(text).catch(() => undefined);
+    void writeClipboardText(text).catch(() => undefined);
     setStatusMessage(t('statusConnectionInfoCopied'));
   }, [connections, setStatusMessage, t]);
   const connectionTunnels = useMemo(
@@ -2133,6 +2357,7 @@ export default function App() {
     'app-shell',
     `theme-${settings.themeMode}`,
     settings.compactSidebar ? 'compact-sidebar' : '',
+    sidebarCollapsed ? 'sidebar-collapsed' : '',
   ]
     .filter(Boolean)
     .join(' ');
@@ -2221,6 +2446,10 @@ export default function App() {
       setSessionTabDragState(null);
       setSessionTabDropTarget(null);
       if (movedDistance < 6 || !finalDropTarget) {
+        // 点击标签时也会先进入 pointer 拖拽流程；移动距离不足时按普通点击处理，避免拖拽监听吞掉 tab 切换。
+        if (movedDistance < 6) {
+          selectSession(currentDrag.id);
+        }
         return;
       }
 
@@ -2240,7 +2469,7 @@ export default function App() {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
     };
-  }, [Boolean(sessionTabDragState), reorderSessions, resolveSessionTabDropTarget, sessions]);
+  }, [Boolean(sessionTabDragState), reorderSessions, resolveSessionTabDropTarget, selectSession, sessions]);
   const explorerGridTemplate = useMemo(() => explorerColumnWidths.map((width) => `${width}px`).join(' '), [explorerColumnWidths]);
   const explorerGridMinWidth = useMemo(
     () => explorerColumnWidths.reduce((total, width) => total + width, 0) + 46,
@@ -2304,24 +2533,95 @@ export default function App() {
   }, [activeRemoteConnectionId, refreshRuntimeOverviewOnce, settings.runtimeRefreshIntervalSec]);
 
   const runtimeItems = [
-    { icon: Activity, label: t('metricCpu'), value: runtimeOverview?.cpu ?? t('metricUnavailable'), percent: parseMetricPercent(runtimeOverview?.cpu ?? '') },
-    { icon: MemoryStick, label: t('metricMemory'), value: runtimeOverview?.memory ?? t('metricUnavailable'), percent: parseMetricPercent(runtimeOverview?.memory ?? '') },
-    { icon: HardDrive, label: t('metricStorage'), value: runtimeOverview?.storage ?? t('metricUnavailable'), percent: parseMetricPercent(runtimeOverview?.storage ?? '') },
-    { icon: RefreshCw, label: t('metricUptime'), value: runtimeOverview?.uptime ?? t('metricUnavailable'), percent: undefined },
+    { id: 'cpu', icon: Activity, label: t('metricCpu'), value: runtimeOverview?.cpu ?? t('metricUnavailable'), percent: parseMetricPercent(runtimeOverview?.cpu ?? '') },
+    { id: 'memory', icon: MemoryStick, label: t('metricMemory'), value: runtimeOverview?.memory ?? t('metricUnavailable'), percent: parseMetricPercent(runtimeOverview?.memory ?? '') },
+    { id: 'storage', icon: HardDrive, label: t('metricStorage'), value: runtimeOverview?.storage ?? t('metricUnavailable'), percent: parseMetricPercent(runtimeOverview?.storage ?? '') },
+    { id: 'uptime', icon: RefreshCw, label: t('metricUptime'), value: runtimeOverview?.uptime ?? t('metricUnavailable'), percent: undefined },
   ];
+  const selectExplorerFile = useCallback((file: RemoteFileEntry, event?: ReactMouseEvent<HTMLElement>) => {
+    const filePath = file.path;
+    if (event?.shiftKey && selectedFilePath) {
+      const anchorIndex = files.findIndex((item) => item.path === selectedFilePath);
+      const targetIndex = files.findIndex((item) => item.path === filePath);
+      if (anchorIndex >= 0 && targetIndex >= 0) {
+        const [startIndex, endIndex] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
+        // Shift 范围选择遵循当前列表顺序，方便批量删除连续文件，同时保留最后点击项作为键盘锚点。
+        setSelectedFilePath(filePath);
+        setSelectedFilePaths(files.slice(startIndex, endIndex + 1).map((item) => item.path));
+        return;
+      }
+    }
+
+    setSelectedFilePath(filePath);
+    setSelectedFilePaths([filePath]);
+  }, [files, selectedFilePath]);
+  const uploadFileWithProgress = useCallback((file: File) => {
+    void runTransferProgress(`${t('upload')} ${file.name}`, async (setPercent) => {
+      setPercent(24);
+      await uploadLocalFile(file);
+      setPercent(92);
+    });
+  }, [runTransferProgress, t, uploadLocalFile]);
+  const downloadFileWithProgress = useCallback((path: string) => {
+    const fileName = path.split('/').filter(Boolean).at(-1) ?? path;
+    void runTransferProgress(`${t('download')} ${fileName}`, async (setPercent) => {
+      setPercent(22);
+      await downloadRemoteFile(path);
+      setPercent(92);
+    });
+  }, [downloadRemoteFile, runTransferProgress, t]);
+  const openRemoteFileWithProgress = useCallback((path: string) => {
+    const fileName = path.split('/').filter(Boolean).at(-1) ?? path;
+    void runTransferProgress(`SFTP ${fileName}`, async (setPercent) => {
+      setPercent(26);
+      await openRemoteFile(path);
+      setPercent(92);
+    });
+  }, [openRemoteFile, runTransferProgress]);
+  const saveRemoteFileWithProgress = useCallback((path: string, saveTask: () => Promise<void>) => {
+    const fileName = path.split('/').filter(Boolean).at(-1) ?? path;
+    void runTransferProgress(`${t('saveToRemote')} ${fileName}`, async (setPercent) => {
+      setPercent(28);
+      await saveTask();
+      setPercent(92);
+    });
+  }, [runTransferProgress, t]);
+  const deleteSelectedRemotePaths = useCallback((paths: string[]) => {
+    const normalizedPaths = Array.from(new Set(paths.filter(Boolean)));
+    if (!normalizedPaths.length) {
+      return;
+    }
+
+    const confirmText = normalizedPaths.length === 1
+      ? t('deleteConfirm', { path: normalizedPaths[0] })
+      : t('deleteMultipleConfirm', { count: normalizedPaths.length });
+    if (!window.confirm(confirmText)) {
+      return;
+    }
+
+    setFileContextMenu(null);
+    void runTransferProgress(`${t('delete')} ${normalizedPaths.length}`, async (setPercent) => {
+      setPercent(20);
+      await deleteRemotePaths(normalizedPaths);
+      setPercent(92);
+      setSelectedFilePath('');
+      setSelectedFilePaths([]);
+    });
+  }, [deleteRemotePaths, runTransferProgress, t]);
   const openRemoteFileEntry = useCallback((file: RemoteFileEntry) => {
     // 打开动作统一从文件条目入口走，保证单击选中、双击打开和回车打开使用同一套规则。
     setSelectedFilePath(file.path);
+    setSelectedFilePaths([file.path]);
     if (file.isDir) {
       void refreshFiles(file.path);
       return;
     }
     if (isEditableFile(file.path)) {
-      void openRemoteFile(file.path);
+      openRemoteFileWithProgress(file.path);
       return;
     }
-    void downloadRemoteFile(file.path);
-  }, [downloadRemoteFile, openRemoteFile, refreshFiles]);
+    downloadFileWithProgress(file.path);
+  }, [downloadFileWithProgress, openRemoteFileWithProgress, refreshFiles]);
   const handleExplorerKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!hasActiveRemoteSession || !files.length) {
       return;
@@ -2330,10 +2630,17 @@ export default function App() {
     const selectedIndex = files.findIndex((file) => file.path === selectedFilePath);
     const moveSelection = (nextIndex: number) => {
       event.preventDefault();
-      setSelectedFilePath(files[clamp(nextIndex, 0, files.length - 1)].path);
+      const nextPath = files[clamp(nextIndex, 0, files.length - 1)].path;
+      setSelectedFilePath(nextPath);
+      setSelectedFilePaths([nextPath]);
     };
 
     // 文件列表只接管导航键和回车键，不影响终端本体的输入体验。
+    if (event.key === 'Delete' && selectedFilePaths.length) {
+      event.preventDefault();
+      deleteSelectedRemotePaths(selectedFilePaths);
+      return;
+    }
     if (event.key === 'ArrowDown') {
       moveSelection(selectedIndex < 0 ? 0 : selectedIndex + 1);
       return;
@@ -2354,17 +2661,22 @@ export default function App() {
       event.preventDefault();
       openRemoteFileEntry(files[selectedIndex]);
     }
-  }, [files, hasActiveRemoteSession, openRemoteFileEntry, selectedFilePath]);
+  }, [deleteSelectedRemotePaths, files, hasActiveRemoteSession, openRemoteFileEntry, selectedFilePath, selectedFilePaths]);
 
   useEffect(() => {
     // 目录刷新或断开连接后清理悬空选择，避免键盘上下键落到上一个目录的旧文件。
-    if (!hasActiveRemoteSession || (selectedFilePath && !files.some((file) => file.path === selectedFilePath))) {
+    const existingPaths = new Set(files.map((file) => file.path));
+    if (!hasActiveRemoteSession || (selectedFilePath && !existingPaths.has(selectedFilePath))) {
       setSelectedFilePath('');
+      setSelectedFilePaths([]);
+      return;
     }
+    setSelectedFilePaths((current) => current.filter((path) => existingPaths.has(path)));
   }, [files, hasActiveRemoteSession, selectedFilePath]);
 
   return (
     <div className={shellClassName}>
+      {!sidebarCollapsed ? (
       <aside className="sidebar card" style={{ width: sidebarWidth }}>
         <section className="sidebar-panel runtime-panel" style={{ height: runtimePanelHeight }}>
           <div className="section-row runtime-header">
@@ -2375,20 +2687,49 @@ export default function App() {
           </div>
 
           <div className="runtime-list">
-            {runtimeItems.map(({ icon: Icon, label, percent, value }) => (
-              <div key={label} className={`runtime-row metric-tone-${metricTone(percent)}`}>
-                <div className="metric-label">
-                  <Icon size={14} />
-                  <span>{label}</span>
-                </div>
-                <div className="metric-bar-cell">
-                  {percent !== undefined ? (
-                    <div className="metric-progress-track" aria-label={`${label} ${percent.toFixed(0)}%`}>
-                      <span className="metric-progress-fill" style={{ width: `${percent}%` }} />
-                    </div>
-                  ) : null}
-                  <span className="metric-value">{value}</span>
-                </div>
+            {runtimeItems.map(({ id, icon: Icon, label, percent, value }) => (
+              <div key={id} className="runtime-row-group">
+                <button
+                  className={`runtime-row metric-tone-${metricTone(percent)} ${id === 'cpu' && runtimeOverview?.cpuCores?.length ? 'is-clickable' : ''}`}
+                  disabled={id !== 'cpu' || !runtimeOverview?.cpuCores?.length}
+                  onClick={() => {
+                    if (id === 'cpu' && runtimeOverview?.cpuCores?.length) {
+                      setCpuCoresExpanded((current) => !current);
+                    }
+                  }}
+                  type="button"
+                >
+                  <div className="metric-label">
+                    <Icon size={14} />
+                    <span>{label}</span>
+                  </div>
+                  <div className="metric-bar-cell">
+                    {percent !== undefined ? (
+                      <div className="metric-progress-track" aria-label={`${label} ${percent.toFixed(0)}%`}>
+                        <span className="metric-progress-fill" style={{ width: `${percent}%` }} />
+                      </div>
+                    ) : null}
+                    <span className="metric-value">{value}</span>
+                  </div>
+                </button>
+                {id === 'cpu' && cpuCoresExpanded && runtimeOverview?.cpuCores?.length ? (
+                  <div className="runtime-core-list">
+                    {runtimeOverview.cpuCores.map((core) => {
+                      const percentValue = clamp(core.percent, 0, 100);
+                      return (
+                        <div key={core.name} className={`runtime-core-row metric-tone-${metricTone(percentValue)}`}>
+                          <span>{core.name}</span>
+                          <div className="metric-bar-cell">
+                            <div className="metric-progress-track" aria-label={`${core.name} ${percentValue.toFixed(0)}%`}>
+                              <span className="metric-progress-fill" style={{ width: `${percentValue}%` }} />
+                            </div>
+                            <span className="metric-value">{percentValue.toFixed(0)}%</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>
@@ -2403,7 +2744,7 @@ export default function App() {
           onPointerDown={(event) => {
             const startHeight = runtimePanelHeight;
             beginResize(event, (moveEvent, _startX, startY) => {
-              setRuntimePanelHeight(clamp(startHeight + (moveEvent.clientY - startY), 92, 240));
+              setRuntimePanelHeight(clamp(startHeight + (moveEvent.clientY - startY), 120, Math.min(window.innerHeight * 0.48, 380)));
             });
           }}
         />
@@ -2411,10 +2752,6 @@ export default function App() {
         <section className="sidebar-panel explorer-panel">
           <div className="explorer-toolbar">
             <div className="explorer-toolbar-actions">
-              <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles(parentPath(currentRemotePath))} type="button">
-                {t('up')}
-              </button>
-              <span className="explorer-toolbar-spacer" />
               <label className="secondary-button slim file-upload-button" title={t('upload')}>
                 <Upload size={14} />
                 <input
@@ -2424,12 +2761,16 @@ export default function App() {
                   onChange={(event) => {
                     const file = event.target.files?.[0];
                     if (file) {
-                      void uploadLocalFile(file);
+                      uploadFileWithProgress(file);
                     }
                     event.currentTarget.value = '';
                   }}
                 />
               </label>
+              <span className="explorer-toolbar-spacer" />
+              <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles(parentPath(currentRemotePath))} type="button">
+                {t('up')}
+              </button>
               <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles()} title={t('refresh')} type="button">
                 <RefreshCw size={14} />
               </button>
@@ -2483,10 +2824,13 @@ export default function App() {
                   return (
                     <div
                       key={file.path}
-                      className={`explorer-row ${selectedFilePath === file.path ? 'is-selected' : ''}`}
+                      className={`explorer-row ${selectedFilePaths.includes(file.path) ? 'is-selected' : ''}`}
                       onContextMenu={(event) => {
                         event.preventDefault();
-                        setSelectedFilePath(file.path);
+                        if (!selectedFilePaths.includes(file.path)) {
+                          setSelectedFilePath(file.path);
+                          setSelectedFilePaths([file.path]);
+                        }
                         setFileContextMenu({ file, x: event.clientX, y: event.clientY });
                       }}
                       onDoubleClick={() => openRemoteFileEntry(file)}
@@ -2494,7 +2838,7 @@ export default function App() {
                       <button
                         className="explorer-row-main"
                         disabled={!hasActiveRemoteSession}
-                        onClick={() => setSelectedFilePath(file.path)}
+                        onClick={(event) => selectExplorerFile(file, event)}
                         style={explorerGridStyle}
                         type="button"
                       >
@@ -2517,9 +2861,16 @@ export default function App() {
             </div>
           </div>
         </section>
+      </aside>
+      ) : null}
 
-        {fileContextMenu ? (
-          <div className="context-menu" style={{ left: fileContextMenu.x, top: fileContextMenu.y }} onClick={(event) => event.stopPropagation()}>
+      {fileContextMenu ? (
+          <div className="context-menu file-context-menu" style={{ left: fileContextMenu.x, top: fileContextMenu.y }} onClick={(event) => event.stopPropagation()}>
+            {selectedFilePaths.includes(fileContextMenu.file.path) && selectedFilePaths.length > 1 ? (
+              <button className="context-menu-item danger" onClick={() => deleteSelectedRemotePaths(selectedFilePaths)} type="button">
+                {t('fileMenuDeleteSelected')} ({selectedFilePaths.length})
+              </button>
+            ) : null}
             {fileContextMenu.file.isDir ? (
               <button className="context-menu-item" onClick={() => {
                 void refreshFiles(fileContextMenu.file.path);
@@ -2528,13 +2879,13 @@ export default function App() {
             ) : null}
             {!fileContextMenu.file.isDir && isEditableFile(fileContextMenu.file.path) ? (
               <button className="context-menu-item" onClick={() => {
-                void openRemoteFile(fileContextMenu.file.path);
+                openRemoteFileWithProgress(fileContextMenu.file.path);
                 setFileContextMenu(null);
               }} type="button">{t('fileMenuEdit')}</button>
             ) : null}
             {!fileContextMenu.file.isDir ? (
               <button className="context-menu-item" onClick={() => {
-                void downloadRemoteFile(fileContextMenu.file.path);
+                downloadFileWithProgress(fileContextMenu.file.path);
                 setFileContextMenu(null);
               }} type="button">{t('fileMenuDownload')}</button>
             ) : null}
@@ -2546,14 +2897,11 @@ export default function App() {
               setFileContextMenu(null);
             }} type="button">{t('fileMenuRename')}</button>
             <button className="context-menu-item danger" onClick={() => {
-              if (window.confirm(t('deleteConfirm', { path: fileContextMenu.file.path }))) {
-                void deleteRemotePath(fileContextMenu.file.path);
-              }
-              setFileContextMenu(null);
+              const paths = selectedFilePaths.includes(fileContextMenu.file.path) ? selectedFilePaths : [fileContextMenu.file.path];
+              deleteSelectedRemotePaths(paths);
             }} type="button">{t('fileMenuDelete')}</button>
           </div>
         ) : null}
-      </aside>
 
       {sessionContextMenu && sessionContextSession ? (
         <div
@@ -2592,18 +2940,29 @@ export default function App() {
         </div>
       ) : null}
 
-      <div
-        className="resize-handle resize-handle-main"
-        onPointerDown={(event) => {
-          const startWidth = sidebarWidth;
-          beginResize(event, (moveEvent, startX) => {
-            setSidebarWidth(clamp(startWidth + (moveEvent.clientX - startX), 320, Math.min(window.innerWidth * 0.58, 560)));
-          });
-        }}
-      />
+      {!sidebarCollapsed ? (
+        <div
+          className="resize-handle resize-handle-main"
+          onPointerDown={(event) => {
+            const startWidth = sidebarWidth;
+            beginResize(event, (moveEvent, startX) => {
+              setSidebarWidth(clamp(startWidth + (moveEvent.clientX - startX), 320, Math.min(window.innerWidth * 0.58, 560)));
+            });
+          }}
+        />
+      ) : null}
 
       <main className="workspace">
         <section className="workspace-toolbar card">
+          {/* 侧栏入口固定在终端工具栏首位，收起时不再保留残缺侧栏，给终端让出完整横向空间。 */}
+          <button
+            className="toolbar-sidebar-toggle icon-button"
+            onClick={() => setSidebarCollapsed((current) => !current)}
+            title={sidebarCollapsed ? t('expandSidebar') : t('collapseSidebar')}
+            type="button"
+          >
+            {sidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+          </button>
           <div className="session-strip">
             <div
               className={`tab-list session-tab-list ${
@@ -2673,7 +3032,7 @@ export default function App() {
           </div>
         </section>
 
-        <div className="terminal-area">
+        <div className={`terminal-area ${bottomDockCollapsed ? 'is-bottom-collapsed' : ''}`}>
           <TerminalWorkspace
             session={activeSession}
             settings={settings}
@@ -2688,6 +3047,9 @@ export default function App() {
           <div
             className="resize-handle resize-handle-horizontal"
             onPointerDown={(event) => {
+              if (bottomDockCollapsed) {
+                return;
+              }
               const startHeight = bottomHeight;
               beginResize(event, (moveEvent, _startX, startY) => {
                 setBottomHeight(clamp(startHeight + (startY - moveEvent.clientY), 180, Math.min(window.innerHeight * 0.58, 460)));
@@ -2695,7 +3057,7 @@ export default function App() {
             }}
           />
 
-          <section className="bottom-dock card" style={{ height: bottomHeight }}>
+          <section className={`bottom-dock card ${bottomDockCollapsed ? 'is-collapsed' : ''}`} style={bottomDockCollapsed ? undefined : { height: bottomHeight }}>
             <header className="panel-tab-row">
               <div className="tab-list">
                 {bottomTabs.map((tab) => {
@@ -2718,6 +3080,15 @@ export default function App() {
                 })}
               </div>
               <div className="panel-tab-actions">
+                <button
+                  className="secondary-button slim"
+                  onClick={() => setBottomDockCollapsed((current) => !current)}
+                  title={bottomDockCollapsed ? t('expandBottomDock') : t('collapseBottomDock')}
+                  type="button"
+                >
+                  {bottomDockCollapsed ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                  <span>{bottomDockCollapsed ? t('expandBottomDock') : t('collapseBottomDock')}</span>
+                </button>
                 {activeBottomTab === 'commands' ? (
                   <button
                     className="primary-button"
@@ -2872,9 +3243,27 @@ export default function App() {
 
       <ConnectionManagerModal open={connectionsOpen} onClose={() => setConnectionsOpen(false)} />
       <SettingsModal open={settingsOpen} activeTab={settingsTab} onClose={() => setSettingsOpen(false)} onTabChange={setSettingsTab} />
-      <EditorModal />
+      <EditorModal onSaveWithProgress={saveRemoteFileWithProgress} />
       <ConnectionFormModal />
       <TunnelFormModal />
+      {transferProgressItems.length ? (
+        <div className="transfer-progress-stack">
+          {transferProgressItems.map((item) => (
+            <div key={item.id} className={`transfer-progress-card is-${item.status}`}>
+              <div className="section-row compact">
+                <strong>{item.title}</strong>
+                <button className="icon-button transfer-progress-close" onClick={() => dismissTransferProgress(item.id)} type="button">
+                  <X size={12} />
+                </button>
+              </div>
+              <div className="transfer-progress-track">
+                <span className="transfer-progress-fill" style={{ width: `${item.percent}%` }} />
+              </div>
+              <span>{item.message ?? `${item.percent.toFixed(0)}%`}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
       {sessionTabDragState ? (
         <div
           className="drag-preview"
