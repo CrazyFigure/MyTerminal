@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 
@@ -20,12 +21,104 @@ const maxCachedTerminalOutputLength = 1_000_000;
 // 只有可交互会话才接收键盘输入，关闭或异常状态由标签栏图标提示，不在终端正文里叠加状态层。
 const canAcceptTerminalInput = (session?: TerminalSession) => Boolean(session && !['closed', 'error'].includes(session.status));
 
+const terminalFontFallbacks = ['Cascadia Mono', 'Consolas', 'Courier New', 'monospace'];
+
+const quoteFontFamily = (fontFamily: string) => {
+  const cleaned = fontFamily.trim().replace(/^['"]|['"]$/g, '');
+  if (!cleaned) {
+    return undefined;
+  }
+  return /\s/.test(cleaned) && cleaned !== 'monospace' ? `"${cleaned.replace(/"/g, '\\"')}"` : cleaned;
+};
+
+const buildTerminalFontFamily = (fontFamily: string) => {
+  const primaryFont = quoteFontFamily(fontFamily) ?? '"Cascadia Mono"';
+  const normalizedPrimary = primaryFont.replace(/^["']|["']$/g, '').toLowerCase();
+  const fallbackFonts = terminalFontFallbacks
+    .filter((fallback) => fallback.toLowerCase() !== normalizedPrimary)
+    .map((fallback) => quoteFontFamily(fallback))
+    .filter((fallback): fallback is string => Boolean(fallback));
+
+  // 设置项只保存用户选择的主字体；渲染时补齐等宽 fallback，避免 xterm 测量或系统字体回退时出现异常字距。
+  return [primaryFont, ...fallbackFonts].join(', ');
+};
+
+const directImageUrlPattern = /^(https?:|data:|blob:|asset:|http:\/\/asset\.localhost)/i;
+const windowsAbsolutePathPattern = /^[a-z]:[\\/]/i;
+
+const isLocalImagePath = (value: string) => {
+  const trimmed = value.trim();
+  return Boolean(
+    trimmed.startsWith('file://') ||
+      trimmed.startsWith('/') ||
+      trimmed.startsWith('~') ||
+      windowsAbsolutePathPattern.test(trimmed),
+  );
+};
+
+const normalizeLocalFilePath = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed.toLowerCase().startsWith('file://')) {
+    return trimmed;
+  }
+
+  try {
+    return decodeURIComponent(new URL(trimmed).pathname).replace(/^\/([a-z]:[\\/])/i, '$1');
+  } catch {
+    return trimmed.replace(/^file:\/+/i, '');
+  }
+};
+
+const resolveTerminalBackgroundImage = (value?: string) => {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (directImageUrlPattern.test(trimmed)) {
+    return trimmed;
+  }
+  if (isLocalImagePath(trimmed) && isTauri()) {
+    return convertFileSrc(normalizeLocalFilePath(trimmed));
+  }
+  return trimmed;
+};
+
+const buildTerminalBackgroundImageStyle = (settings: AppSettings): CSSProperties | undefined => {
+  const resolvedImage = resolveTerminalBackgroundImage(settings.backgroundImage);
+  if (!resolvedImage) {
+    return undefined;
+  }
+
+  const opacity = Math.min(1, Math.max(0, settings.terminalBackgroundImageOpacity ?? 0.18));
+  const fit = settings.terminalBackgroundImageFit ?? 'cover';
+  const baseStyle: CSSProperties = {
+    backgroundImage: `url("${resolvedImage.replace(/"/g, '\\"')}")`,
+    opacity,
+  };
+
+  // 背景适配只作用于终端区域，不影响应用外壳；不同图片比例由用户选择填充策略。
+  if (fit === 'contain') {
+    return { ...baseStyle, backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundSize: 'contain' };
+  }
+  if (fit === 'stretch') {
+    return { ...baseStyle, backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundSize: '100% 100%' };
+  }
+  if (fit === 'tile') {
+    return { ...baseStyle, backgroundPosition: 'top left', backgroundRepeat: 'repeat', backgroundSize: 'auto' };
+  }
+  if (fit === 'center') {
+    return { ...baseStyle, backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundSize: 'auto' };
+  }
+  return { ...baseStyle, backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundSize: 'cover' };
+};
+
 // 终端彩色文本使用清晰的 ANSI 调色板；浅色终端里 ANSI white 也要落到深灰，避免 ls 高亮发白发虚。
 const buildTerminalTheme = (settings: AppSettings) => {
   const isDarkTheme = settings.themeMode === 'dark';
+  const hasBackgroundImage = Boolean(settings.backgroundImage?.trim());
 
   return {
-    background: settings.terminalBackground,
+    background: hasBackgroundImage ? 'rgba(0, 0, 0, 0)' : settings.terminalBackground,
     foreground: settings.terminalForeground,
     cursor: settings.accentColor,
     selectionBackground: isDarkTheme ? '#334155' : '#bfdbfe',
@@ -57,6 +150,25 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   const sessionRef = useRef<TerminalSession | undefined>(session);
   const resizeFrameRef = useRef<number | null>(null);
   const terminalSizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  const terminalTheme = useMemo(
+    () => buildTerminalTheme(settings),
+    [
+      settings.accentColor,
+      settings.backgroundImage,
+      settings.terminalBackground,
+      settings.terminalForeground,
+      settings.themeMode,
+    ],
+  );
+  const backgroundImageStyle = useMemo(
+    () => buildTerminalBackgroundImageStyle(settings),
+    [
+      settings.backgroundImage,
+      settings.terminalBackgroundImageFit,
+      settings.terminalBackgroundImageOpacity,
+    ],
+  );
+  const terminalFontFamily = useMemo(() => buildTerminalFontFamily(settings.shellFontFamily), [settings.shellFontFamily]);
 
   useEffect(() => {
     onTerminalDataRef.current = onTerminalData;
@@ -71,14 +183,17 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       return;
     }
 
+    // 终端实例只初始化一次；主题、字体和背景图后续通过 options 更新，避免设置视觉项时清空当前会话画面。
     const terminal = new Terminal({
+      allowTransparency: true,
       convertEol: true,
       cursorBlink: true,
       disableStdin: !canAcceptTerminalInput(sessionRef.current),
-      fontFamily: settings.shellFontFamily,
+      fontFamily: terminalFontFamily,
       fontSize: settings.shellFontSize,
+      letterSpacing: 0,
       lineHeight: 1.18,
-      theme: buildTerminalTheme(settings),
+      theme: terminalTheme,
     });
 
     const fitAddon = new FitAddon();
@@ -134,7 +249,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       terminalRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [settings.accentColor, settings.shellFontFamily, settings.shellFontSize, settings.terminalBackground, settings.terminalForeground]);
+  }, []);
 
   useEffect(() => {
     const handleTerminalOutput = (event: Event) => {
@@ -164,20 +279,32 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     }
 
     terminal.options.disableStdin = !canAcceptTerminalInput(session);
-    terminal.options.fontFamily = settings.shellFontFamily;
+  }, [session?.id, session?.status]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+
+    // 字体和终端主题变化才重新测量 xterm；背景图适配/透明度只更新底层图片，不能牵动字符画布缩放。
+    terminal.options.fontFamily = terminalFontFamily;
     terminal.options.fontSize = settings.shellFontSize;
-    terminal.options.theme = buildTerminalTheme(settings);
+    terminal.options.letterSpacing = 0;
+    terminal.options.theme = terminalTheme;
+    terminal.clearTextureAtlas();
 
     window.requestAnimationFrame(() => {
       fitAddonRef.current?.fit();
+      const currentSession = sessionRef.current;
       const nextSize = { cols: terminal.cols, rows: terminal.rows };
       const previousSize = terminalSizeRef.current;
       terminalSizeRef.current = nextSize;
-      if (session && (!previousSize || previousSize.cols !== nextSize.cols || previousSize.rows !== nextSize.rows)) {
-        void backend.resizeTerminal(session.id, terminal.cols, terminal.rows);
+      if (currentSession && (!previousSize || previousSize.cols !== nextSize.cols || previousSize.rows !== nextSize.rows)) {
+        void backend.resizeTerminal(currentSession.id, terminal.cols, terminal.rows);
       }
     });
-  }, [session, settings]);
+  }, [settings.shellFontSize, terminalFontFamily, terminalTheme]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -193,8 +320,9 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   }, [session?.id]);
 
   return (
-    <section className="terminal-workspace card">
-      <div className="terminal-surface" ref={containerRef} style={{ background: settings.terminalBackground }} />
+    <section className="terminal-workspace card" style={{ background: settings.terminalBackground }}>
+      {backgroundImageStyle ? <div className="terminal-background-image" style={backgroundImageStyle} /> : null}
+      <div className="terminal-surface" ref={containerRef} />
 
       {!session ? (
         <div className="terminal-empty-state">

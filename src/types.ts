@@ -39,6 +39,10 @@ export interface AppSettings {
   terminalForeground: string;
   accentColor: string;
   backgroundImage?: string;
+  /** 终端背景图透明度，0 表示不可见，1 表示原图完全显示。 */
+  terminalBackgroundImageOpacity?: number;
+  /** 终端背景图填充方式，仅作用于终端区域。 */
+  terminalBackgroundImageFit?: 'cover' | 'contain' | 'stretch' | 'tile' | 'center';
   compactSidebar: boolean;
   showCommandGhost: boolean;
   /** 连接管理中显式维护的分组路径；即使分组下暂无连接，也需要持久保留。 */
@@ -132,6 +136,18 @@ export interface HistoryEntry {
   connectionId?: string;
   command: string;
   executedAt: string;
+}
+
+export interface UpdateCheckResult {
+  currentVersion: string;
+  latestVersion: string;
+  releaseName?: string;
+  releaseUrl: string;
+  publishedAt?: string;
+  updateAvailable: boolean;
+  installerAssetName?: string;
+  installerDownloadUrl?: string;
+  installerSize?: number;
 }
 
 export interface BootstrapState {

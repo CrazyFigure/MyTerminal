@@ -12,6 +12,7 @@ import type {
   TerminalSession,
   TunnelOpenRequest,
   TunnelRecord,
+  UpdateCheckResult,
 } from './types';
 
 const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -29,6 +30,23 @@ const clampU16 = (value: number, fallback: number) => clampInteger(value, 0, 655
 const clampPort = (value: number, fallback = 22) => clampInteger(value, 1, 65535, fallback);
 const clampFontSize = (value: number, fallback = 15) => clampInteger(value, 8, 48, fallback);
 const clampRefreshInterval = (value: number, fallback = 1) => clampInteger(value, 1, 60, fallback);
+const clampRatio = (value: number | undefined, fallback: number) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(1, Math.max(0, value));
+};
+
+const terminalBackgroundImageFits = new Set<AppSettings['terminalBackgroundImageFit']>(['cover', 'contain', 'stretch', 'tile', 'center']);
+
+const normalizeSingleFontFamily = (value: string) => {
+  // 旧配置可能保存过一整串 fallback 字体；设置页只展示和保存用户明确选择的单个字体。
+  const firstFont = value
+    .split(',')
+    .map((item) => item.trim().replace(/^['"]|['"]$/g, ''))
+    .find(Boolean);
+  return firstFont ?? 'JetBrains Mono';
+};
 
 const trimToUndefined = (value?: string) => {
   if (typeof value !== 'string') {
@@ -49,8 +67,13 @@ const keepTextIfPresent = (value?: string) => {
 
 const normalizeSettings = (settings: AppSettings): AppSettings => ({
   ...settings,
+  shellFontFamily: normalizeSingleFontFamily(settings.shellFontFamily),
   shellFontSize: clampFontSize(settings.shellFontSize),
   runtimeRefreshIntervalSec: clampRefreshInterval(settings.runtimeRefreshIntervalSec),
+  terminalBackgroundImageOpacity: clampRatio(settings.terminalBackgroundImageOpacity, 0.18),
+  terminalBackgroundImageFit: terminalBackgroundImageFits.has(settings.terminalBackgroundImageFit)
+    ? settings.terminalBackgroundImageFit
+    : 'cover',
   // 分组和连接排序来自用户拖拽结果，规范化时只去重清洗，不再按字母重新排序。
   connectionGroups: Array.from(
     new Set(
@@ -88,12 +111,14 @@ const mockSettings: AppSettings = {
   uiLanguage: 'zh-CN',
   themeMode: 'light',
   runtimeRefreshIntervalSec: 1,
-  shellFontFamily: 'JetBrains Mono, Cascadia Mono, Consolas, monospace',
+  shellFontFamily: 'JetBrains Mono',
   shellFontSize: 15,
   terminalBackground: '#f7f7f7',
   terminalForeground: '#111111',
   accentColor: '#4f46e5',
   backgroundImage: '',
+  terminalBackgroundImageOpacity: 0.18,
+  terminalBackgroundImageFit: 'cover',
   compactSidebar: false,
   showCommandGhost: true,
   connectionGroups: ['ology', 'ology/ology-old'],
@@ -167,6 +192,16 @@ const mockState: BootstrapState = {
   history: mockHistory,
   sessions: [],
   tunnels: mockTunnels,
+};
+
+const mockAppVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.2';
+
+const mockUpdateCheckResult: UpdateCheckResult = {
+  currentVersion: mockAppVersion,
+  latestVersion: mockAppVersion,
+  releaseName: 'MyTerminal local preview',
+  releaseUrl: 'https://github.com/CrazyFigure/MyShell/releases/latest',
+  updateAvailable: false,
 };
 
 const call = async <T>(command: string, args?: Record<string, unknown>, fallback?: T): Promise<T> => {
@@ -281,4 +316,15 @@ export const backend = {
   downloadConnections: () => call<ConnectionProfile[]>('download_connections_from_webdav', undefined, mockConnections),
   exportLocalConfig: () => call<string>('export_local_config', undefined, 'C:/Software/WorkSpace/MyTerminal/.myterminal-data/exports/myterminal-config-demo.json'),
   importLocalConfig: (content: string) => call<BootstrapState>('import_local_config', { content }, mockState),
+  // 更新检测读取 GitHub Release 元数据；Web 预览环境下返回当前版本，避免误提示本地预览需要更新。
+  checkForUpdates: () => call<UpdateCheckResult>('check_for_updates', undefined, mockUpdateCheckResult),
+  // 更新安装只接收后端检测出的 Release 安装包，桌面端下载到临时目录后启动安装器。
+  installUpdate: (result: UpdateCheckResult) =>
+    call<string>(
+      'download_and_install_update',
+      { downloadUrl: result.installerDownloadUrl, assetName: result.installerAssetName },
+      'C:/Software/WorkSpace/MyTerminal/.myterminal-data/updates/MyShell-update.exe',
+    ),
+  // 外链打开在桌面端交给后端调用系统浏览器；Web 预览下保持成功返回，方便本地界面调试。
+  openExternalUrl: (url: string) => call<boolean>('open_external_url', { url }, true),
 };

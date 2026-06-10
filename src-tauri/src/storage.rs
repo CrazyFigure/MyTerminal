@@ -130,7 +130,8 @@ impl StorageService {
     }
 
     pub fn load_settings(&self, crypto: &CryptoService) -> Result<AppSettings, AppError> {
-        let stored = self.read_json_or_default::<Option<StoredAppSettings>>(&self.settings_path())?;
+        let stored =
+            self.read_json_or_default::<Option<StoredAppSettings>>(&self.settings_path())?;
         let Some(stored) = stored else {
             return Ok(AppSettings::default());
         };
@@ -145,6 +146,8 @@ impl StorageService {
             terminal_foreground: stored.terminal_foreground,
             accent_color: stored.accent_color,
             background_image: stored.background_image,
+            terminal_background_image_opacity: stored.terminal_background_image_opacity,
+            terminal_background_image_fit: stored.terminal_background_image_fit,
             compact_sidebar: stored.compact_sidebar,
             show_command_ghost: stored.show_command_ghost,
             connection_groups: stored.connection_groups,
@@ -160,7 +163,11 @@ impl StorageService {
         })
     }
 
-    pub fn save_settings(&self, settings: &AppSettings, crypto: &CryptoService) -> Result<(), AppError> {
+    pub fn save_settings(
+        &self,
+        settings: &AppSettings,
+        crypto: &CryptoService,
+    ) -> Result<(), AppError> {
         let stored = StoredAppSettings {
             ui_language: settings.ui_language.clone(),
             theme_mode: settings.theme_mode.clone(),
@@ -171,6 +178,8 @@ impl StorageService {
             terminal_foreground: settings.terminal_foreground.clone(),
             accent_color: settings.accent_color.clone(),
             background_image: settings.background_image.clone(),
+            terminal_background_image_opacity: settings.terminal_background_image_opacity,
+            terminal_background_image_fit: settings.terminal_background_image_fit.clone(),
             compact_sidebar: settings.compact_sidebar,
             show_command_ghost: settings.show_command_ghost,
             connection_groups: settings.connection_groups.clone(),
@@ -185,8 +194,12 @@ impl StorageService {
         self.write_json(&self.settings_path(), &stored)
     }
 
-    pub fn load_connections(&self, crypto: &CryptoService) -> Result<Vec<ConnectionProfile>, AppError> {
-        let stored = self.read_json_or_default::<Vec<StoredConnectionProfile>>(&self.connections_path())?;
+    pub fn load_connections(
+        &self,
+        crypto: &CryptoService,
+    ) -> Result<Vec<ConnectionProfile>, AppError> {
+        let stored =
+            self.read_json_or_default::<Vec<StoredConnectionProfile>>(&self.connections_path())?;
         stored
             .into_iter()
             .map(|item| {
@@ -211,7 +224,11 @@ impl StorageService {
             .collect()
     }
 
-    pub fn save_connections(&self, connections: &[ConnectionProfile], crypto: &CryptoService) -> Result<(), AppError> {
+    pub fn save_connections(
+        &self,
+        connections: &[ConnectionProfile],
+        crypto: &CryptoService,
+    ) -> Result<(), AppError> {
         let stored: Result<Vec<_>, AppError> = connections
             .iter()
             .map(|item| {
@@ -225,8 +242,10 @@ impl StorageService {
                     auth_method: item.auth_method.clone(),
                     password_encrypted: crypto.encrypt_local(&item.password)?,
                     private_key_path: item.private_key_path.clone(),
-                    private_key_text_encrypted: crypto.encrypt_local(item.private_key_text.as_deref().unwrap_or(""))?,
-                    passphrase_encrypted: crypto.encrypt_local(item.passphrase.as_deref().unwrap_or(""))?,
+                    private_key_text_encrypted: crypto
+                        .encrypt_local(item.private_key_text.as_deref().unwrap_or(""))?,
+                    passphrase_encrypted: crypto
+                        .encrypt_local(item.passphrase.as_deref().unwrap_or(""))?,
                     note: item.note.clone(),
                     tags: item.tags.clone(),
                 })
@@ -253,11 +272,18 @@ impl StorageService {
 
     fn editor_cache_path(&self, connection_id: &str, remote_path: &str) -> PathBuf {
         let digest = Sha256::digest(format!("{connection_id}:{remote_path}").as_bytes());
-        let hex = digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let hex = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
         self.editor_cache_dir().join(format!("{hex}.json"))
     }
 
-    pub fn load_editor_cache(&self, connection_id: &str, remote_path: &str) -> Result<Option<EditorDocument>, AppError> {
+    pub fn load_editor_cache(
+        &self,
+        connection_id: &str,
+        remote_path: &str,
+    ) -> Result<Option<EditorDocument>, AppError> {
         let path = self.editor_cache_path(connection_id, remote_path);
         if !path.exists() {
             return Ok(None);

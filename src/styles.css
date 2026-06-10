@@ -267,10 +267,10 @@ select:disabled {
 
 .workspace-toolbar {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
-  min-height: 48px;
+  min-height: 38px;
   padding: 6px 8px;
 }
 
@@ -357,34 +357,44 @@ select:disabled {
   overflow: hidden;
 }
 
+.terminal-background-image {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
 .terminal-surface {
+  position: relative;
+  z-index: 1;
   width: 100%;
   height: 100%;
   min-height: 0;
   overflow: hidden;
   border-radius: 6px;
+  background: transparent;
   padding: 4px;
 }
 
 .terminal-surface .xterm,
-.terminal-surface .xterm-viewport,
-.terminal-surface .xterm-screen {
+.terminal-surface .xterm-viewport {
   height: 100%;
+  background: transparent !important;
+}
+
+.terminal-surface .xterm-screen {
+  background: transparent !important;
 }
 
 .terminal-surface .xterm {
   max-height: 100%;
 }
 
-.terminal-surface .xterm-helper-textarea {
-  width: 0 !important;
-  height: 0 !important;
-  min-width: 0 !important;
-  min-height: 0 !important;
-  padding: 0 !important;
-  border: 0 !important;
-  opacity: 0 !important;
-  overflow: hidden !important;
+/* xterm 6 的 DOM renderer 会基于测量结果写入 letter-spacing；测量偶发偏差时会把每个字符横向拉开。 */
+.terminal-surface .xterm-rows,
+.terminal-surface .xterm-rows span {
+  letter-spacing: 0 !important;
+  font-kerning: none;
 }
 
 .terminal-surface .xterm-scroll-area {
@@ -393,6 +403,7 @@ select:disabled {
 
 .terminal-empty-state {
   position: absolute;
+  z-index: 2;
   left: 24px;
   right: 24px;
   pointer-events: none;
@@ -422,6 +433,21 @@ select:disabled {
   gap: 6px;
   padding: 4px 6px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.panel-tab-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 8px;
+  border-left: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.panel-tab-actions .primary-button,
+.panel-tab-actions .secondary-button {
+  white-space: nowrap;
 }
 
 .dock-body,
@@ -498,6 +524,58 @@ select:disabled {
 
 .session-tab {
   gap: 4px;
+  position: relative;
+  cursor: grab;
+  transition: background-color 140ms ease, border-color 140ms ease, opacity 140ms ease, transform 140ms ease;
+  user-select: none;
+}
+
+.session-tab:active {
+  cursor: grabbing;
+}
+
+.session-tab.is-dragging {
+  opacity: 0.58;
+}
+
+.session-tab.is-drop-before::before,
+.session-tab.is-drop-after::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  z-index: 2;
+  width: 2px;
+  border-radius: 999px;
+  background: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.session-tab.is-drop-before::before {
+  left: -5px;
+}
+
+.session-tab.is-drop-after::after {
+  right: -5px;
+}
+
+.session-tab-list {
+  position: relative;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.session-tab-list.is-drop-end::after {
+  content: "";
+  align-self: stretch;
+  width: 2px;
+  min-height: 24px;
+  margin: 3px 4px;
+  border-radius: 999px;
+  background: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
 .session-tab-trigger {
@@ -991,7 +1069,6 @@ select:disabled {
 .connection-table-header,
 .connection-table-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) 1fr 72px 96px minmax(0, 1fr) 180px;
   gap: 8px;
   align-items: center;
 }
@@ -1022,6 +1099,50 @@ select:disabled {
   white-space: nowrap;
 }
 
+/* 连接列表列宽调整沿用文件管理的窄分隔线风格，默认保持低干扰，悬停时给出明确拖拽反馈。 */
+.connection-column-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding-right: 8px;
+}
+
+.connection-column-header > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-column-resizer {
+  position: absolute;
+  top: -4px;
+  right: -5px;
+  bottom: -4px;
+  width: 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.connection-column-resizer::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: rgba(148, 163, 184, 0.32);
+}
+
+.connection-column-resizer:hover::after,
+.connection-column-resizer:active::after {
+  width: 2px;
+  background: var(--app-active-border);
+}
+
 .connection-table-actions {
   display: flex;
   gap: 6px;
@@ -1040,7 +1161,9 @@ select:disabled {
 }
 
 .context-menu-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 7px;
   width: 100%;
   text-align: left;
   border: 0;
@@ -1048,6 +1171,11 @@ select:disabled {
   border-radius: 8px;
   padding: 8px 10px;
   color: var(--app-text);
+}
+
+.context-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .context-menu-item:hover {
@@ -1227,10 +1355,8 @@ select:disabled {
 .connection-table-header,
 .connection-table-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.4fr) minmax(180px, 1.2fr) 72px 120px minmax(180px, 1fr) 220px;
   gap: 8px;
   align-items: center;
-  min-width: 960px;
 }
 
 .connection-table-header {
@@ -1448,6 +1574,24 @@ select:disabled {
   padding-right: 2px;
 }
 
+.background-image-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.background-image-field .file-upload-button {
+  height: 34px;
+  white-space: nowrap;
+}
+
+.form-grid input[type="range"] {
+  min-height: 34px;
+  padding: 0;
+  accent-color: var(--app-active-border);
+}
+
 .modal-settings .settings-section-block,
 .modal-settings .sync-transfer-card {
   border: 1px solid rgba(148, 163, 184, 0.2);
@@ -1468,12 +1612,6 @@ select:disabled {
 .connection-group-row:active,
 .connection-table-row:active {
   cursor: grabbing;
-}
-
-.connection-table-header,
-.connection-table-row {
-  grid-template-columns: 24px minmax(200px, 1.45fr) minmax(220px, 1.4fr) 78px minmax(130px, 0.8fr) 220px;
-  min-width: 900px;
 }
 
 .connection-table-row {
@@ -1560,7 +1698,7 @@ select:disabled {
   color: #e0e7ff;
 }
 
-/* xterm 的底部黑条来自内部滚动条，隐藏滚动条但保留终端表面尺寸，避免压住底部输入行。 */
+/* xterm 的底部黑条来自内部滚动条；只隐藏滚动条，不覆盖 screen/canvas 的自测尺寸，避免字体被拉伸。 */
 .terminal-surface {
   scrollbar-width: none;
 }
@@ -1582,14 +1720,12 @@ select:disabled {
   display: none;
 }
 
-.terminal-surface .xterm-screen {
-  overflow: hidden !important;
-}
-
 /* 连接管理拖拽只从抓手启动，避免点击连接、编辑分组时误触拖动或被按钮区域吞掉 dragstart。 */
 .connection-group-row,
 .connection-table-row {
   cursor: default;
+  position: relative;
+  transition: background-color 140ms ease, border-color 140ms ease, opacity 140ms ease;
 }
 
 .connection-group-row {
@@ -1606,12 +1742,6 @@ select:disabled {
 
 .connection-group-node > .connection-group-children {
   margin-left: 16px;
-}
-
-.connection-table-header,
-.connection-table-row {
-  grid-template-columns: 24px minmax(200px, 1.45fr) minmax(220px, 1.4fr) 78px minmax(130px, 0.8fr) 220px;
-  min-width: 900px;
 }
 
 .drag-handle {
@@ -1643,6 +1773,109 @@ select:disabled {
 .connection-group-row.is-dragging,
 .connection-table-row.is-dragging {
   opacity: 0.58;
+}
+
+/* 拖拽过程中明确展示落点：分组高亮表示“移入此分组”，横线表示“插入到此项之前”。 */
+.connection-group-row.is-drop-target {
+  border-color: rgba(37, 99, 235, 0.55);
+  background: rgba(219, 234, 254, 0.82);
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.18);
+}
+
+.connection-group-row.is-drop-before::before,
+.connection-table-row.is-drop-before::before,
+.connection-group-row.is-drop-after::after,
+.connection-table-row.is-drop-after::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  border-radius: 999px;
+  background: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.connection-group-row.is-drop-before::before,
+.connection-table-row.is-drop-before::before {
+  top: -4px;
+}
+
+.connection-group-row.is-drop-after::after,
+.connection-table-row.is-drop-after::after {
+  bottom: -4px;
+}
+
+/* 空白区域作为“放到最后”的目标时展示底部落点线，拖到列表最下方也有清晰反馈。 */
+.connection-groups-sidebar,
+.connection-table-body {
+  position: relative;
+}
+
+.connection-table-body.is-drop-end::after {
+  content: "";
+  display: block;
+  height: 2px;
+  margin: 4px 8px 0;
+  border-radius: 999px;
+  background: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+/* 关于页只保留版本和更新入口，按工具型设置面板的密度排列。 */
+.settings-about-section {
+  gap: 14px;
+}
+
+.settings-about-grid {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 8px 14px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: var(--app-input-bg);
+  font-size: 0.86rem;
+}
+
+.settings-about-grid span {
+  color: var(--app-muted);
+}
+
+.settings-about-grid strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.settings-update-actions {
+  justify-content: flex-start;
+}
+
+.update-check-result {
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  font-size: 0.84rem;
+}
+
+.update-check-result.is-update-available {
+  color: #075985;
+  background: rgba(224, 242, 254, 0.74);
+}
+
+.update-check-result.is-up-to-date {
+  color: #166534;
+  background: rgba(220, 252, 231, 0.68);
+}
+
+.update-check-result.is-error {
+  color: #991b1b;
+  background: rgba(254, 226, 226, 0.72);
 }
 
 /* 分组路径下拉保留全部候选，仅把匹配项排前，避免浏览器 datalist 过滤掉父级分组。 */
@@ -1812,6 +2045,11 @@ select:disabled {
   color: #e0e7ff;
 }
 
+.app-shell.theme-dark .connection-group-row.is-drop-target {
+  border-color: rgba(96, 165, 250, 0.62);
+  background: rgba(30, 64, 175, 0.38);
+}
+
 @media (max-width: 1200px) {
   .workspace-toolbar {
     grid-template-columns: minmax(0, 1fr) auto;
@@ -1872,4 +2110,42 @@ select:disabled {
     grid-template-columns: minmax(0, 1fr);
     min-width: 0;
   }
+}
+
+/* 末尾兜底覆盖前面旧样式：右键菜单需要图标与文字稳定横排，底部功能按钮与 Tab 保持同一行。 */
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.context-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.session-context-menu {
+  z-index: 120;
+  min-width: 190px;
+}
+
+.panel-tab-row .tab-list {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.panel-tab-row .tab-list::-webkit-scrollbar {
+  display: none;
+}
+
+.panel-tab-actions {
+  flex: 0 0 auto;
+  max-width: 48%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.panel-tab-actions::-webkit-scrollbar {
+  display: none;
 }

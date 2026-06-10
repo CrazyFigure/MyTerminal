@@ -1,22 +1,23 @@
 use std::{
     collections::HashMap,
-    env,
-    fs,
+    env, fs,
     io::{ErrorKind, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
+    process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, TryRecvError},
         Arc, MutexGuard,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{TimeZone, Utc};
-use ssh2::{Channel, ExtendedData, Session, Sftp};
+use serde::Deserialize;
+use ssh2::{Channel, ExtendedData, MethodType, Session, Sftp};
 use tauri::State;
 
 use crate::{
@@ -24,10 +25,27 @@ use crate::{
     models::{
         AppSettings, BootstrapState, ConnectionProfile, EditorDocument, HistoryEntry,
         HistoryEntryInput, LocalConfigBundle, RemoteFileEntry, RuntimeOverview,
-        TerminalOutputChunk, TerminalSession, TunnelOpenRequest, TunnelRecord,
+        TerminalOutputChunk, TerminalSession, TunnelOpenRequest, TunnelRecord, UpdateCheckResult,
     },
     state::{AppState, RuntimeSession, SessionControl, TunnelRuntime},
 };
+
+#[derive(Debug, Deserialize)]
+struct GitHubReleaseResponse {
+    tag_name: String,
+    name: Option<String>,
+    html_url: String,
+    published_at: Option<String>,
+    #[serde(default)]
+    assets: Vec<GitHubReleaseAsset>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GitHubReleaseAsset {
+    name: String,
+    browser_download_url: String,
+    size: Option<u64>,
+}
 
 fn lock_sessions<'a>(
     state: &'a AppState,
@@ -59,7 +77,185 @@ fn ensure_connection_exists(
         .ok_or_else(|| AppError::NotFound(format!("connection {connection_id} not found")))
 }
 
-fn queue_output(queue: &Arc<std::sync::Mutex<Vec<TerminalOutputChunk>>>, session_id: &str, content: impl Into<String>) {
+fn parse_version_parts(version: &str) -> Option<Vec<u64>> {
+    let normalized = version
+        .trim()
+        .trim_start_matches('v')
+        .trim_start_matches('V');
+    let core = normalized.split(['-', '+']).next().unwrap_or(normalized);
+    let mut parts = Vec::new();
+    for segment in core.split('.') {
+        if segment.is_empty() {
+            return None;
+        }
+        parts.push(segment.parse::<u64>().ok()?);
+    }
+    Some(parts)
+}
+
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    // GitHub tag 只做保守语义版本比较；遇到非数字标签不提示更新，避免误报。
+    let Some(mut latest_parts) = parse_version_parts(latest) else {
+        return false;
+    };
+    let Some(mut current_parts) = parse_version_parts(current) else {
+        return false;
+    };
+
+    let len = latest_parts.len().max(current_parts.len());
+    latest_parts.resize(len, 0);
+    current_parts.resize(len, 0);
+    latest_parts > current_parts
+}
+
+fn installer_asset_score(asset_name: &str) -> i32 {
+    let normalized = asset_name.to_ascii_lowercase();
+    if !(normalized.ends_with(".exe") || normalized.ends_with(".msi")) {
+        return -1;
+    }
+
+    let mut score = 10;
+    if normalized.ends_with(".exe") {
+        score += 8;
+    }
+    if normalized.contains("setup") || normalized.contains("installer") {
+        score += 6;
+    }
+    if normalized.contains("windows")
+        || normalized.contains("win")
+        || normalized.contains("pc-windows")
+    {
+        score += 5;
+    }
+    if normalized.contains("x64") || normalized.contains("amd64") {
+        score += 3;
+    }
+    if normalized.contains("nsis") {
+        score += 2;
+    }
+    if normalized.ends_with(".msi") {
+        score += 1;
+    }
+    score
+}
+
+fn select_update_installer_asset(assets: &[GitHubReleaseAsset]) -> Option<GitHubReleaseAsset> {
+    // Release 里可能同时包含校验文件、压缩包和安装器，这里优先选择 Windows 可直接启动的安装包。
+    assets
+        .iter()
+        .filter_map(|asset| {
+            let score = installer_asset_score(&asset.name);
+            (score >= 0).then_some((score, asset))
+        })
+        .max_by_key(|(score, _)| *score)
+        .map(|(_, asset)| asset.clone())
+}
+
+fn sanitize_asset_file_name(asset_name: &str) -> String {
+    let sanitized: String = asset_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.trim_matches('_').is_empty() {
+        "MyShell-update.exe".into()
+    } else {
+        sanitized
+    }
+}
+
+fn is_valid_update_download_url(url: &str) -> bool {
+    let normalized = url.trim().to_ascii_lowercase();
+    (normalized.starts_with("https://") || normalized.starts_with("http://"))
+        && (normalized.ends_with(".exe") || normalized.ends_with(".msi"))
+        && !normalized.chars().any(|character| character.is_control())
+}
+
+fn spawn_update_installer(path: &Path) -> std::io::Result<()> {
+    // Windows MSI 需要交给 msiexec 启动；EXE 安装包则直接执行，避免检测到更新后按钮无响应。
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if extension == "msi" {
+        Command::new("msiexec.exe")
+            .arg("/i")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+    } else {
+        Command::new(path).spawn().map(|_| ())
+    }
+}
+
+fn write_channel_input(channel: &mut Channel, data: &[u8]) -> Result<(), AppError> {
+    let started_at = Instant::now();
+    let mut written = 0;
+    while written < data.len() {
+        match channel.write(&data[written..]) {
+            Ok(0) => {
+                if started_at.elapsed() > Duration::from_secs(12) {
+                    return Err(AppError::Validation(
+                        "terminal input write timed out".into(),
+                    ));
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            Ok(size) => {
+                written += size;
+            }
+            Err(error) if is_transient_channel_write_error(&error) => {
+                if started_at.elapsed() > Duration::from_secs(12) {
+                    return Err(AppError::from(error));
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => return Err(AppError::from(error)),
+        }
+    }
+
+    loop {
+        match channel.flush() {
+            Ok(()) => return Ok(()),
+            Err(error) if is_transient_channel_write_error(&error) => {
+                if started_at.elapsed() > Duration::from_secs(12) {
+                    return Err(AppError::from(error));
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => return Err(AppError::from(error)),
+        }
+    }
+}
+
+fn is_transient_channel_write_error(error: &std::io::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    // libssh2 的非阻塞写入经常把 EAGAIN/WouldBlock 包成 Other 或 Session(-37)，连续退格时要按瞬时错误重试。
+    matches!(
+        error.kind(),
+        ErrorKind::WouldBlock | ErrorKind::Interrupted | ErrorKind::TimedOut
+    ) || message.contains("would block")
+        || message.contains("eagain")
+        || message.contains("session(-37)")
+        || message.contains("temporarily unavailable")
+        || message.contains("try again")
+        || message.contains("transport read")
+        || message.contains("transport write")
+        || message.contains("socket send")
+        || message.contains("socket write")
+}
+
+fn queue_output(
+    queue: &Arc<std::sync::Mutex<Vec<TerminalOutputChunk>>>,
+    session_id: &str,
+    content: impl Into<String>,
+) {
     if let Ok(mut output) = queue.lock() {
         output.push(TerminalOutputChunk {
             session_id: session_id.to_string(),
@@ -97,7 +293,11 @@ const CWD_SYNC_MARKER_PREFIX: &str = "\x1b]6973;MyTerminalCwd=";
 const CWD_SYNC_MARKER_SUFFIX: char = '\x07';
 const CWD_SYNC_SETUP_NAME: &str = "__myterminal_sync_cwd";
 
-fn queue_cwd(queue: &Arc<std::sync::Mutex<Vec<TerminalOutputChunk>>>, session_id: &str, cwd: impl Into<String>) {
+fn queue_cwd(
+    queue: &Arc<std::sync::Mutex<Vec<TerminalOutputChunk>>>,
+    session_id: &str,
+    cwd: impl Into<String>,
+) {
     if let Ok(mut output) = queue.lock() {
         output.push(TerminalOutputChunk {
             session_id: session_id.to_string(),
@@ -146,11 +346,14 @@ impl ShellOutputFilter {
                 let value_start = marker_start + CWD_SYNC_MARKER_PREFIX.len();
 
                 if let Some(value_end) = self.pending[value_start..].find(CWD_SYNC_MARKER_SUFFIX) {
-                    let cwd = self.pending[value_start..value_start + value_end].trim().to_string();
+                    let cwd = self.pending[value_start..value_start + value_end]
+                        .trim()
+                        .to_string();
                     if !cwd.is_empty() {
                         cwd_updates.push(cwd);
                     }
-                    let remainder_start = value_start + value_end + CWD_SYNC_MARKER_SUFFIX.len_utf8();
+                    let remainder_start =
+                        value_start + value_end + CWD_SYNC_MARKER_SUFFIX.len_utf8();
                     self.pending = self.pending[remainder_start..].to_string();
                     continue;
                 }
@@ -243,8 +446,7 @@ fn authenticate_ssh_session(
         let private_key_path = non_empty_trimmed(connection.private_key_path.as_deref())
             .ok_or_else(|| {
                 AppError::Validation(
-                    "private key authentication requires a key path or pasted key content"
-                        .into(),
+                    "private key authentication requires a key path or pasted key content".into(),
                 )
             })?;
 
@@ -274,7 +476,55 @@ fn authenticate_ssh_session(
     Ok(())
 }
 
-fn connect_ssh(connection: &ConnectionProfile) -> Result<Session, AppError> {
+fn is_key_exchange_error(error: &AppError) -> bool {
+    let AppError::Ssh(message) = error else {
+        return false;
+    };
+
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("unable to exchange encryption keys") || normalized.contains("session(-8)")
+}
+
+fn configure_ssh_compatibility_preferences(session: &Session) -> Result<(), AppError> {
+    // 兼容模式只在默认密钥交换失败后启用：优先走稳定的 group14，再保留曲线、GEX 和旧算法兜底。
+    let preferences = [
+        (
+            MethodType::Kex,
+            "diffie-hellman-group14-sha256,diffie-hellman-group14-sha1,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group-exchange-sha256,diffie-hellman-group-exchange-sha1,diffie-hellman-group1-sha1",
+        ),
+        (
+            MethodType::HostKey,
+            "ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256,ssh-rsa,ssh-dss",
+        ),
+        (
+            MethodType::CryptCs,
+            "aes256-ctr,aes192-ctr,aes128-ctr,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-cbc,aes192-cbc,aes128-cbc,3des-cbc",
+        ),
+        (
+            MethodType::CryptSc,
+            "aes256-ctr,aes192-ctr,aes128-ctr,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-cbc,aes192-cbc,aes128-cbc,3des-cbc",
+        ),
+        (
+            MethodType::MacCs,
+            "hmac-sha2-512,hmac-sha2-256,hmac-sha1,hmac-sha1-96,hmac-md5,hmac-md5-96",
+        ),
+        (
+            MethodType::MacSc,
+            "hmac-sha2-512,hmac-sha2-256,hmac-sha1,hmac-sha1-96,hmac-md5,hmac-md5-96",
+        ),
+    ];
+
+    for (method_type, prefs) in preferences {
+        session.method_pref(method_type, prefs).map_err(ssh_error)?;
+    }
+
+    Ok(())
+}
+
+fn connect_ssh_once(
+    connection: &ConnectionProfile,
+    compatibility_mode: bool,
+) -> Result<Session, AppError> {
     let address = format!("{}:{}", connection.host, connection.port);
     let tcp = TcpStream::connect(address)?;
     tcp.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -282,6 +532,9 @@ fn connect_ssh(connection: &ConnectionProfile) -> Result<Session, AppError> {
 
     let mut session = Session::new().map_err(ssh_error)?;
     session.set_tcp_stream(tcp);
+    if compatibility_mode {
+        configure_ssh_compatibility_preferences(&session)?;
+    }
     session.handshake().map_err(ssh_error)?;
     authenticate_ssh_session(&session, connection)?;
 
@@ -292,17 +545,25 @@ fn connect_ssh(connection: &ConnectionProfile) -> Result<Session, AppError> {
         )));
     }
 
+    // 认证完成后再启用底层 keepalive，避免影响部分 SSH 服务端的密钥交换阶段兼容性。
+    session.set_keepalive(false, 20);
+
     Ok(session)
 }
 
-fn handle_shell_control(
-    channel: &mut Channel,
-    control: SessionControl,
-) -> Result<bool, AppError> {
+fn connect_ssh(connection: &ConnectionProfile) -> Result<Session, AppError> {
+    match connect_ssh_once(connection, false) {
+        Ok(session) => Ok(session),
+        Err(error) if is_key_exchange_error(&error) => connect_ssh_once(connection, true),
+        Err(error) => Err(error),
+    }
+}
+
+fn handle_shell_control(channel: &mut Channel, control: SessionControl) -> Result<bool, AppError> {
     match control {
         SessionControl::Input(data) => {
-            channel.write_all(data.as_bytes())?;
-            channel.flush()?;
+            // libssh2 非阻塞 channel 在粘贴或连续 Backspace 时可能短暂 WouldBlock；这里分片重试，避免误判为会话断开。
+            write_channel_input(channel, data.as_bytes())?;
             Ok(false)
         }
         SessionControl::Resize { cols, rows } => {
@@ -316,6 +577,19 @@ fn handle_shell_control(
             Ok(true)
         }
     }
+}
+
+fn flush_pending_shell_input(
+    channel: &mut Channel,
+    pending_input: &mut String,
+) -> Result<(), AppError> {
+    if pending_input.is_empty() {
+        return Ok(());
+    }
+
+    // 同一轮事件循环内的按键合并成一个 channel 写入，降低连续 Backspace/粘贴时的 SSH 写入压力。
+    let data = std::mem::take(pending_input);
+    write_channel_input(channel, data.as_bytes())
 }
 
 fn spawn_shell_thread(
@@ -362,20 +636,47 @@ fn spawn_shell_thread(
         let mut output_filter = ShellOutputFilter::default();
         // transport read 可能是短暂底层读抖动；连续超过阈值才认为会话异常，避免终端误断开。
         let mut transient_read_errors = 0_usize;
+        let mut transient_error_started_at: Option<Instant> = None;
+        let mut pending_input = String::new();
+        let mut last_keepalive_at = Instant::now();
         loop {
             loop {
                 match control_rx.try_recv() {
-                    Ok(control) => match handle_shell_control(&mut channel, control) {
-                        Ok(true) => return,
-                        Ok(false) => {}
-                        Err(_) => {
+                    Ok(SessionControl::Input(data)) => {
+                        pending_input.push_str(&data);
+                        if pending_input.len() >= 4096
+                            && flush_pending_shell_input(&mut channel, &mut pending_input).is_err()
+                        {
                             queue_session_status(&output_queue, &session_id, "error");
                             return;
                         }
-                    },
+                    }
+                    Ok(SessionControl::Close) => {
+                        let _ = channel.close();
+                        return;
+                    }
+                    Ok(control) => {
+                        if flush_pending_shell_input(&mut channel, &mut pending_input).is_err() {
+                            queue_session_status(&output_queue, &session_id, "error");
+                            return;
+                        }
+                        match handle_shell_control(&mut channel, control) {
+                            Ok(true) => return,
+                            Ok(false) => {}
+                            Err(_) => {
+                                queue_session_status(&output_queue, &session_id, "error");
+                                return;
+                            }
+                        }
+                    }
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => return,
                 }
+            }
+
+            if flush_pending_shell_input(&mut channel, &mut pending_input).is_err() {
+                queue_session_status(&output_queue, &session_id, "error");
+                return;
             }
 
             match channel.read(&mut buffer) {
@@ -388,6 +689,7 @@ fn spawn_shell_thread(
                 }
                 Ok(size) => {
                     transient_read_errors = 0;
+                    transient_error_started_at = None;
                     let content = String::from_utf8_lossy(&buffer[..size]).into_owned();
                     let (visible_content, cwd_updates) = output_filter.consume(&content);
                     if !visible_content.is_empty() {
@@ -397,9 +699,21 @@ fn spawn_shell_thread(
                         queue_cwd(&output_queue, &session_id, cwd);
                     }
                 }
-                Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted) => {}
-                Err(error) if is_transient_transport_read_error(&error) && !channel.eof() && transient_read_errors < 8 => {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                    ) => {}
+                Err(error) if is_transient_transport_read_error(&error) && !channel.eof() => {
                     transient_read_errors += 1;
+                    let started_at = transient_error_started_at.get_or_insert_with(Instant::now);
+                    // transport read 在网络抖动或远端短暂无输出时可能连续出现；这里按时间窗口容忍，避免 400ms 内误判掉线。
+                    if transient_read_errors > 160 || started_at.elapsed() > Duration::from_secs(8)
+                    {
+                        queue_session_status(&output_queue, &session_id, "error");
+                        let _ = channel.close();
+                        return;
+                    }
                     thread::sleep(Duration::from_millis(50));
                 }
                 Err(_) => {
@@ -407,6 +721,12 @@ fn spawn_shell_thread(
                     let _ = channel.close();
                     return;
                 }
+            }
+
+            if last_keepalive_at.elapsed() >= Duration::from_secs(20) {
+                // 交互会话长时间无输出时主动发送 SSH keepalive，不向终端写入可见内容。
+                let _ = ssh_session.keepalive_send();
+                last_keepalive_at = Instant::now();
             }
 
             thread::sleep(Duration::from_millis(16));
@@ -434,7 +754,9 @@ fn remote_file_name(path: &str) -> Option<String> {
 
 fn join_remote_path(remote_dir: &str, file_name: &str) -> String {
     let base = normalize_remote_path(remote_dir);
-    let name = normalize_remote_path(file_name).trim_matches('/').to_string();
+    let name = normalize_remote_path(file_name)
+        .trim_matches('/')
+        .to_string();
     if base == "." || base.is_empty() {
         name
     } else if base == "/" {
@@ -491,7 +813,9 @@ fn format_permissions(stat: &ssh2::FileStat) -> Option<String> {
     value.push(kind);
 
     // 三组权限位按 owner/group/other 顺序转换，特殊位暂不展示，保持表格稳定可读。
-    for bit in [0o400, 0o200, 0o100, 0o040, 0o020, 0o010, 0o004, 0o002, 0o001] {
+    for bit in [
+        0o400, 0o200, 0o100, 0o040, 0o020, 0o010, 0o004, 0o002, 0o001,
+    ] {
         let symbol = match bit {
             0o400 | 0o040 | 0o004 => 'r',
             0o200 | 0o020 | 0o002 => 'w',
@@ -532,10 +856,18 @@ fn stat_owner_group(
     group_names: &HashMap<u32, String>,
 ) -> (Option<String>, Option<String>) {
     (
-        stat.uid
-            .map(|value| user_names.get(&value).cloned().unwrap_or_else(|| value.to_string())),
-        stat.gid
-            .map(|value| group_names.get(&value).cloned().unwrap_or_else(|| value.to_string())),
+        stat.uid.map(|value| {
+            user_names
+                .get(&value)
+                .cloned()
+                .unwrap_or_else(|| value.to_string())
+        }),
+        stat.gid.map(|value| {
+            group_names
+                .get(&value)
+                .cloned()
+                .unwrap_or_else(|| value.to_string())
+        }),
     )
 }
 
@@ -685,7 +1017,11 @@ fn read_remote_shell_history_entries(
         "sh -lc 'limit={remote_limit}; seen=\"\"; for file in \"${{HISTFILE:-}}\" \"$HOME/.zsh_history\" \"$HOME/.bash_history\"; do [ -n \"$file\" ] || continue; case \":$seen:\" in *:\"$file\":*) continue;; esac; seen=\"$seen:$file\"; [ -r \"$file\" ] || continue; tail -n \"$limit\" \"$file\" 2>/dev/null; done'"
     );
     let contents = exec_remote_command(&session, &command)?;
-    Ok(parse_remote_history(&connection.id, &contents, remote_limit))
+    Ok(parse_remote_history(
+        &connection.id,
+        &contents,
+        remote_limit,
+    ))
 }
 
 fn parse_meminfo_value(contents: &str, key: &str) -> Option<u64> {
@@ -783,7 +1119,11 @@ fn query_runtime_overview(connection: &ConnectionProfile) -> Result<RuntimeOverv
             } else {
                 0.0
             };
-            Some(format!("{} / {} ({percent:.0}%)", format_kib(used), format_kib(total)))
+            Some(format!(
+                "{} / {} ({percent:.0}%)",
+                format_kib(used),
+                format_kib(total)
+            ))
         })
         .unwrap_or_else(|| String::from("--"));
 
@@ -797,7 +1137,12 @@ fn query_runtime_overview(connection: &ConnectionProfile) -> Result<RuntimeOverv
             }
             let total = parts[1].parse::<u64>().ok()?;
             let used = parts[2].parse::<u64>().ok()?;
-            Some(format!("{} / {} ({})", format_kib(used), format_kib(total), parts[4]))
+            Some(format!(
+                "{} / {} ({})",
+                format_kib(used),
+                format_kib(total),
+                parts[4]
+            ))
         })
         .unwrap_or_else(|| String::from("--"));
 
@@ -857,7 +1202,10 @@ fn list_remote_entries(
             } else {
                 None
             };
-            let is_dir = target_stat.as_ref().map(stat_is_dir).unwrap_or_else(|| stat_is_dir(&stat));
+            let is_dir = target_stat
+                .as_ref()
+                .map(stat_is_dir)
+                .unwrap_or_else(|| stat_is_dir(&stat));
             let (owner, group) = stat_owner_group(&stat, user_names, group_names);
             Some(RemoteFileEntry {
                 name,
@@ -964,7 +1312,11 @@ fn forward_single_connection(
     let _ = channel.close();
 }
 
-fn spawn_tunnel_listener(connection: ConnectionProfile, tunnel: TunnelRecord, stop_flag: Arc<AtomicBool>) -> Result<(), AppError> {
+fn spawn_tunnel_listener(
+    connection: ConnectionProfile,
+    tunnel: TunnelRecord,
+    stop_flag: Arc<AtomicBool>,
+) -> Result<(), AppError> {
     let listener = TcpListener::bind((tunnel.bind_address.as_str(), tunnel.local_port))?;
     listener.set_nonblocking(true)?;
 
@@ -977,7 +1329,13 @@ fn spawn_tunnel_listener(connection: ConnectionProfile, tunnel: TunnelRecord, st
                     let remote_port = tunnel.remote_port;
                     let stop = Arc::clone(&stop_flag);
                     thread::spawn(move || {
-                        forward_single_connection(connection, remote_host, remote_port, stream, stop);
+                        forward_single_connection(
+                            connection,
+                            remote_host,
+                            remote_port,
+                            stream,
+                            stop,
+                        );
                     });
                 }
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
@@ -1066,7 +1424,9 @@ pub fn create_connection(
     let mut connections = state.storage.load_connections(&state.crypto)?;
     connections.retain(|item| item.id != connection.id);
     connections.insert(0, connection.clone());
-    state.storage.save_connections(&connections, &state.crypto)?;
+    state
+        .storage
+        .save_connections(&connections, &state.crypto)?;
     Ok(connection)
 }
 
@@ -1085,7 +1445,9 @@ pub fn delete_connection(
 ) -> Result<bool, String> {
     let mut connections = state.storage.load_connections(&state.crypto)?;
     connections.retain(|item| item.id != connection_id);
-    state.storage.save_connections(&connections, &state.crypto)?;
+    state
+        .storage
+        .save_connections(&connections, &state.crypto)?;
 
     let mut sessions = lock_sessions(&state)?;
     let session_ids = sessions
@@ -1164,10 +1526,7 @@ pub fn open_ssh_session(
 }
 
 #[tauri::command]
-pub fn close_ssh_session(
-    state: State<'_, AppState>,
-    session_id: String,
-) -> Result<bool, String> {
+pub fn close_ssh_session(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
     if let Some(runtime) = lock_sessions(&state)?.remove(&session_id) {
         let _ = runtime.control_tx.send(SessionControl::Close);
     }
@@ -1261,7 +1620,10 @@ pub fn upload_remote_file(
     let bytes = STANDARD
         .decode(content_base64)
         .map_err(|error| AppError::Validation(format!("invalid upload payload: {error}")))?;
-    write_remote_file_bytes(&connection, &remote_path, &bytes)?;
+    // 上传已持有当前 SFTP 连接，直接在该连接上写入，避免一次上传重复建立 SSH/SFTP 导致远端连接抖动。
+    let mut remote_file = sftp.create(Path::new(&remote_path)).map_err(ssh_error)?;
+    remote_file.write_all(&bytes).map_err(AppError::from)?;
+    remote_file.flush().map_err(AppError::from)?;
     Ok(true)
 }
 
@@ -1426,10 +1788,7 @@ pub fn open_tunnel(
 }
 
 #[tauri::command]
-pub fn start_tunnel(
-    state: State<'_, AppState>,
-    tunnel_id: String,
-) -> Result<TunnelRecord, String> {
+pub fn start_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<TunnelRecord, String> {
     let mut tunnels = state.storage.load_tunnels()?;
     let Some(index) = tunnels.iter().position(|item| item.id == tunnel_id) else {
         return Err(AppError::NotFound(format!("tunnel {tunnel_id} not found")).into());
@@ -1458,10 +1817,7 @@ pub fn start_tunnel(
 }
 
 #[tauri::command]
-pub fn close_tunnel(
-    state: State<'_, AppState>,
-    tunnel_id: String,
-) -> Result<bool, String> {
+pub fn close_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<bool, String> {
     if let Some(runtime) = lock_tunnels(&state)?.remove(&tunnel_id) {
         runtime.stop_flag.store(true, Ordering::Relaxed);
     }
@@ -1545,6 +1901,110 @@ pub fn get_command_suggestions(
 }
 
 #[tauri::command]
+pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let release_url = "https://github.com/CrazyFigure/MyShell/releases/latest".to_string();
+    let client = reqwest::Client::new();
+    // GitHub API 要求明确 User-Agent；这里仅读取最新 Release 元数据，并挑出后续可安装的 Windows 安装包。
+    let release = client
+        .get("https://api.github.com/repos/CrazyFigure/MyShell/releases/latest")
+        .header(reqwest::header::USER_AGENT, "MyTerminal")
+        .send()
+        .await
+        .map_err(AppError::from)?
+        .error_for_status()
+        .map_err(AppError::from)?
+        .json::<GitHubReleaseResponse>()
+        .await
+        .map_err(AppError::from)?;
+
+    let latest_version = release.tag_name.trim_start_matches(['v', 'V']).to_string();
+    let update_available = is_newer_version(&release.tag_name, &current_version);
+    let installer_asset = select_update_installer_asset(&release.assets);
+    Ok(UpdateCheckResult {
+        current_version,
+        latest_version,
+        release_name: release.name,
+        release_url: if release.html_url.is_empty() {
+            release_url
+        } else {
+            release.html_url
+        },
+        published_at: release.published_at,
+        update_available,
+        installer_asset_name: installer_asset.as_ref().map(|asset| asset.name.clone()),
+        installer_download_url: installer_asset
+            .as_ref()
+            .map(|asset| asset.browser_download_url.clone()),
+        installer_size: installer_asset.and_then(|asset| asset.size),
+    })
+}
+
+#[tauri::command]
+pub async fn download_and_install_update(
+    download_url: String,
+    asset_name: String,
+) -> Result<String, String> {
+    let normalized_url = download_url.trim();
+    if !is_valid_update_download_url(normalized_url) {
+        return Err(AppError::Validation("invalid update installer URL".into()).into());
+    }
+
+    let safe_file_name = sanitize_asset_file_name(&asset_name);
+    let update_dir = env::temp_dir().join("MyShell-updates");
+    fs::create_dir_all(&update_dir).map_err(|error| AppError::from(error).to_string())?;
+    let installer_path: PathBuf = update_dir.join(safe_file_name);
+
+    let client = reqwest::Client::new();
+    // 安装包下载使用 GitHub Release 浏览器下载地址；完成写入后立即启动安装程序，交互式确认交给安装器自身处理。
+    let bytes = client
+        .get(normalized_url)
+        .header(reqwest::header::USER_AGENT, "MyTerminal")
+        .send()
+        .await
+        .map_err(AppError::from)?
+        .error_for_status()
+        .map_err(AppError::from)?
+        .bytes()
+        .await
+        .map_err(AppError::from)?;
+
+    fs::write(&installer_path, &bytes).map_err(|error| AppError::from(error).to_string())?;
+    spawn_update_installer(&installer_path).map_err(|error| AppError::from(error).to_string())?;
+    Ok(installer_path.to_string_lossy().to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_system_url_opener(url: &str) -> std::io::Result<()> {
+    Command::new("explorer.exe").arg(url).spawn().map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_system_url_opener(url: &str) -> std::io::Result<()> {
+    Command::new("open").arg(url).spawn().map(|_| ())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn spawn_system_url_opener(url: &str) -> std::io::Result<()> {
+    Command::new("xdg-open").arg(url).spawn().map(|_| ())
+}
+
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<bool, String> {
+    let normalized = url.trim();
+    if !(normalized.starts_with("https://") || normalized.starts_with("http://")) {
+        return Err(AppError::Validation("only http/https links can be opened".into()).into());
+    }
+    if normalized.chars().any(|character| character.is_control()) {
+        return Err(AppError::Validation("link contains invalid control characters".into()).into());
+    }
+
+    // 外部链接只允许交给系统默认浏览器处理，不在 WebView 内弹新窗口，避免按钮点击无反馈。
+    spawn_system_url_opener(normalized).map_err(|error| AppError::from(error).to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
 pub fn export_local_config(state: State<'_, AppState>) -> Result<String, String> {
     let bundle = LocalConfigBundle {
         schema_version: 1,
@@ -1580,24 +2040,30 @@ pub fn import_local_config(
 
     stop_all_runtimes(&state)?;
 
-    state
-        .storage
-        .backup_existing_file(&state.storage.settings_file_path(), "settings-before-local-import")?;
-    state
-        .storage
-        .backup_existing_file(&state.storage.connections_file_path(), "connections-before-local-import")?;
-    state
-        .storage
-        .backup_existing_file(&state.storage.history_file_path(), "history-before-local-import")?;
-    state
-        .storage
-        .backup_existing_file(&state.storage.tunnels_file_path(), "tunnels-before-local-import")?;
+    state.storage.backup_existing_file(
+        &state.storage.settings_file_path(),
+        "settings-before-local-import",
+    )?;
+    state.storage.backup_existing_file(
+        &state.storage.connections_file_path(),
+        "connections-before-local-import",
+    )?;
+    state.storage.backup_existing_file(
+        &state.storage.history_file_path(),
+        "history-before-local-import",
+    )?;
+    state.storage.backup_existing_file(
+        &state.storage.tunnels_file_path(),
+        "tunnels-before-local-import",
+    )?;
 
     for tunnel in &mut bundle.tunnels {
         tunnel.status = "stopped".into();
     }
 
-    state.storage.save_settings(&bundle.settings, &state.crypto)?;
+    state
+        .storage
+        .save_settings(&bundle.settings, &state.crypto)?;
     state
         .storage
         .save_connections(&bundle.connections, &state.crypto)?;
@@ -1610,7 +2076,10 @@ pub fn import_local_config(
 #[tauri::command]
 pub async fn upload_settings_to_webdav(state: State<'_, AppState>) -> Result<bool, String> {
     let settings = state.storage.load_settings(&state.crypto)?;
-    state.webdav.upload_settings(&settings, &state.crypto).await?;
+    state
+        .webdav
+        .upload_settings(&settings, &state.crypto)
+        .await?;
     Ok(true)
 }
 
@@ -1653,6 +2122,8 @@ pub async fn download_connections_from_webdav(
         .webdav
         .download_connections(&settings.webdav, &state.crypto)
         .await?;
-    state.storage.save_connections(&connections, &state.crypto)?;
+    state
+        .storage
+        .save_connections(&connections, &state.crypto)?;
     Ok(connections)
 }

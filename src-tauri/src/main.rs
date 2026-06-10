@@ -12,6 +12,7 @@ fn main() {
     let app_state = AppState::new().expect("failed to initialize app state");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             commands::bootstrap_state,
@@ -40,6 +41,9 @@ fn main() {
             commands::read_remote_shell_history,
             commands::append_command_history,
             commands::get_command_suggestions,
+            commands::check_for_updates,
+            commands::download_and_install_update,
+            commands::open_external_url,
             commands::export_local_config,
             commands::import_local_config,
             commands::upload_settings_to_webdav,

@@ -3,19 +3,24 @@ import {
   lazy,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
+  type DependencyList,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
+import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import {
   Activity,
   Cable,
+  Copy,
   Download,
   Eye,
   EyeOff,
+  ExternalLink,
   FileCode2,
   FileSymlink,
   FileText,
@@ -25,11 +30,13 @@ import {
   GripVertical,
   HardDrive,
   History,
+  Info,
   MemoryStick,
   Pencil,
   Play,
   Plus,
   RefreshCw,
+  RotateCcw,
   Save,
   Settings,
   Square,
@@ -41,18 +48,34 @@ import {
 
 import { translate, translateStatus, type TranslationKey } from './i18n';
 import { TerminalWorkspace } from './TerminalWorkspace';
+import { backend } from './backend';
 import { useAppStore } from './store';
-import type { ConnectionDraft, ConnectionProfile, RemoteFileEntry, SessionStatus, UiLanguage } from './types';
+import type { AppSettings, ConnectionDraft, ConnectionProfile, RemoteFileEntry, SessionStatus, TerminalSession, UiLanguage, UpdateCheckResult } from './types';
 
 const MonacoEditor = lazy(() => import('./MonacoEditor'));
 
 type BottomPanelTab = 'commands' | 'tunnels' | 'history';
-type SettingsTab = 'appearance' | 'sync';
+type SettingsTab = 'appearance' | 'sync' | 'about';
 type FileContextMenuState = {
   file: RemoteFileEntry;
   x: number;
   y: number;
 };
+type SessionContextMenuState = {
+  sessionId: string;
+  x: number;
+  y: number;
+};
+type InsertPlacement = 'before' | 'after';
+type SessionTabDragState = {
+  id: string;
+  label: string;
+  originX: number;
+  originY: number;
+  currentX: number;
+  currentY: number;
+} | null;
+type SessionTabDropTarget = { sessionId: string; placement: InsertPlacement } | { type: 'end' } | null;
 type ConnectionGroupNode = {
   name: string;
   path: string;
@@ -62,6 +85,14 @@ type ConnectionGroupNode = {
 type ConnectionManagerDragState =
   | { type: 'connection'; id: string; label: string; originX: number; originY: number; currentX: number; currentY: number }
   | { type: 'group'; path: string; label: string; originX: number; originY: number; currentX: number; currentY: number }
+  | null;
+type ConnectionManagerDropTarget =
+  | { type: 'connection-insert'; connectionId: string; placement: InsertPlacement }
+  | { type: 'connection-end' }
+  | { type: 'connection-group'; groupPath: string }
+  | { type: 'connection-ungrouped' }
+  | { type: 'group-insert'; groupPath: string; placement: InsertPlacement }
+  | { type: 'group-end' }
   | null;
 
 const ungroupedGroupPath = '__ungrouped__';
@@ -75,6 +106,39 @@ const explorerColumnLimits = [
   { min: 112, max: 220 },
   { min: 78, max: 180 },
   { min: 90, max: 220 },
+];
+
+// 连接列表默认列宽比之前更紧凑，动作列保留弹性空间；用户可以临时拉宽名称、主机和用户名。
+const connectionTableDefaultColumnWidths = [24, 160, 190, 64, 104];
+const connectionTableColumnLimits = [
+  { min: 24, max: 24 },
+  { min: 110, max: 420 },
+  { min: 130, max: 460 },
+  { min: 58, max: 110 },
+  { min: 82, max: 260 },
+];
+const connectionTableActionMinWidth = 270;
+
+const shellFontOptions = [
+  'JetBrains Mono',
+  'Cascadia Mono',
+  'Consolas',
+  'Fira Code',
+  'Roboto Mono',
+  'Source Code Pro',
+  'Monaco',
+  'Courier New',
+];
+
+const terminalBackgroundFitOptions: Array<{
+  value: NonNullable<AppSettings['terminalBackgroundImageFit']>;
+  labelKey: TranslationKey;
+}> = [
+  { value: 'cover', labelKey: 'backgroundFitCover' },
+  { value: 'contain', labelKey: 'backgroundFitContain' },
+  { value: 'stretch', labelKey: 'backgroundFitStretch' },
+  { value: 'tile', labelKey: 'backgroundFitTile' },
+  { value: 'center', labelKey: 'backgroundFitCenter' },
 ];
 
 const bottomTabs: Array<{ id: BottomPanelTab; labelKey: TranslationKey; icon: typeof TerminalSquare }> = [
@@ -242,12 +306,6 @@ const metricTone = (percent?: number) => {
   return 'ok';
 };
 
-const replaceLastLine = (value: string, nextLine: string) => {
-  const lines = value.split(/\r?\n/);
-  lines[lines.length - 1] = nextLine;
-  return lines.join('\n');
-};
-
 const fileLabelIcon = (file: RemoteFileEntry) => {
   if (file.isSymlink) {
     return FileSymlink;
@@ -278,8 +336,8 @@ const isConnectionGroupOrChildPath = (value: string | undefined, groupPath: stri
   return Boolean(groupPath) && (normalized === groupPath || normalized.startsWith(`${groupPath}/`));
 };
 
-// 拖拽排序只移动现有项位置，不改写路径含义；目标项作为插入锚点使用。
-const moveItemBefore = (items: string[], source: string, target: string) => {
+// 拖拽排序只移动现有项位置，不改写路径含义；目标项作为插入锚点，上下半区决定插入方向。
+const moveItemToInsert = (items: string[], source: string, target: string, placement: InsertPlacement) => {
   if (source === target) {
     return items;
   }
@@ -290,12 +348,14 @@ const moveItemBefore = (items: string[], source: string, target: string) => {
     return nextItems;
   }
 
-  nextItems.splice(targetIndex, 0, source);
+  nextItems.splice(targetIndex + (placement === 'after' ? 1 : 0), 0, source);
   return nextItems;
 };
 
+const moveItemToEnd = (items: string[], source: string) => [...items.filter((item) => item !== source), source];
+
 // 分组支持父子路径，拖动父分组时要把子分组作为一个块一起移动，避免树结构被排序拆散。
-const moveGroupBlockBefore = (groupPaths: string[], source: string, target: string) => {
+const moveGroupBlockToInsert = (groupPaths: string[], source: string, target: string, placement: InsertPlacement) => {
   if (source === target || isConnectionGroupOrChildPath(target, source)) {
     return groupPaths;
   }
@@ -307,8 +367,90 @@ const moveGroupBlockBefore = (groupPaths: string[], source: string, target: stri
     return remaining;
   }
 
-  remaining.splice(targetIndex, 0, ...sourceBlock);
+  const targetBlockEndIndex = remaining.reduce((lastIndex, path, index) => {
+    return path === target || path.startsWith(`${target}/`) ? index : lastIndex;
+  }, targetIndex);
+  const insertIndex = placement === 'after' ? targetBlockEndIndex + 1 : targetIndex;
+  remaining.splice(insertIndex, 0, ...sourceBlock);
   return remaining;
+};
+
+const moveGroupBlockToEnd = (groupPaths: string[], source: string) => {
+  const sourceBlock = groupPaths.filter((path) => path === source || path.startsWith(`${source}/`));
+  const remaining = groupPaths.filter((path) => !sourceBlock.includes(path));
+  return [...remaining, ...sourceBlock];
+};
+
+const resolveInsertPlacement = (event: PointerEvent, element: HTMLElement): InsertPlacement => {
+  const rect = element.getBoundingClientRect();
+  return event.clientY > rect.top + rect.height / 2 ? 'after' : 'before';
+};
+
+const resolveInlineInsertPlacement = (event: PointerEvent, element: HTMLElement): InsertPlacement => {
+  const rect = element.getBoundingClientRect();
+  return event.clientX > rect.left + rect.width / 2 ? 'after' : 'before';
+};
+
+const isPointInsideElement = (event: PointerEvent, element: HTMLElement | null) => {
+  if (!element) {
+    return false;
+  }
+
+  const rect = element.getBoundingClientRect();
+  return event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
+};
+
+// 列表拖拽落位后用 FLIP 动画补齐“从旧位置到新位置”的过渡，避免排序结果突然跳变。
+const useFlipListAnimation = (containerRef: React.RefObject<HTMLElement | null>, selector: string, deps: DependencyList) => {
+  const previousRectsRef = useRef<Map<string, DOMRect>>(new Map());
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const elements = Array.from(container.querySelectorAll<HTMLElement>(selector));
+    const nextRects = new Map<string, DOMRect>();
+    elements.forEach((element) => {
+      const key = element.dataset.connectionId
+        ? `connection:${element.dataset.connectionId}`
+        : element.dataset.groupPath
+          ? `group:${element.dataset.groupPath}`
+          : element.dataset.sessionId
+            ? `session:${element.dataset.sessionId}`
+            : '';
+      if (!key) {
+        return;
+      }
+
+      const currentRect = element.getBoundingClientRect();
+      const previousRect = previousRectsRef.current.get(key);
+      nextRects.set(key, currentRect);
+      if (!previousRect) {
+        return;
+      }
+
+      const deltaX = previousRect.left - currentRect.left;
+      const deltaY = previousRect.top - currentRect.top;
+      if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) {
+        return;
+      }
+
+      element.animate(
+        [
+          { transform: `translate(${deltaX}px, ${deltaY}px)` },
+          { transform: 'translate(0, 0)' },
+        ],
+        {
+          duration: 180,
+          easing: 'cubic-bezier(0.2, 0, 0, 1)',
+        },
+      );
+    });
+
+    previousRectsRef.current = nextRects;
+  }, deps);
 };
 
 // 连接排序优先使用设置中的人工顺序，旧配置或新增连接没有记录时保留当前数组顺序兜底。
@@ -417,6 +559,7 @@ function ConnectionGroupTree({
   onEdit,
   onDelete,
   dragState,
+  dropTarget,
   onStartGroupDrag,
   editLabel,
   deleteLabel,
@@ -427,6 +570,7 @@ function ConnectionGroupTree({
   onEdit: (path: string) => void;
   onDelete: (path: string) => void;
   dragState: ConnectionManagerDragState;
+  dropTarget: ConnectionManagerDropTarget;
   onStartGroupDrag: (event: ReactPointerEvent<HTMLButtonElement>, path: string, label: string) => void;
   editLabel: string;
   deleteLabel: string;
@@ -437,7 +581,7 @@ function ConnectionGroupTree({
         <div key={node.path} className="connection-group-node">
           <div
             data-group-path={node.path}
-            className={`connection-group-row ${selectedPath === node.path ? 'is-selected' : ''} ${dragState?.type === 'group' && dragState.path === node.path ? 'is-dragging' : ''}`}
+            className={`connection-group-row ${selectedPath === node.path ? 'is-selected' : ''} ${dragState?.type === 'group' && dragState.path === node.path ? 'is-dragging' : ''} ${dropTarget?.type === 'connection-group' && dropTarget.groupPath === node.path ? 'is-drop-target' : ''} ${dropTarget?.type === 'group-insert' && dropTarget.groupPath === node.path ? `is-drop-${dropTarget.placement}` : ''}`}
           >
             <button
               aria-label={`拖动分组 ${node.path}`}
@@ -486,6 +630,7 @@ function ConnectionGroupTree({
               onEdit={onEdit}
               onSelect={onSelect}
               dragState={dragState}
+              dropTarget={dropTarget}
               onStartGroupDrag={onStartGroupDrag}
               deleteLabel={deleteLabel}
               editLabel={editLabel}
@@ -797,13 +942,19 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
   const [groupDraft, setGroupDraft] = useState('');
   // 连接管理拖拽状态只保存在弹窗内，用于区分连接移动、连接排序和分组排序三种放置目标。
   const [dragState, setDragState] = useState<ConnectionManagerDragState>(null);
+  const [dropTarget, setDropTarget] = useState<ConnectionManagerDropTarget>(null);
+  const [connectionTableColumnWidths, setConnectionTableColumnWidths] = useState(connectionTableDefaultColumnWidths);
   const dragStateRef = useRef<ConnectionManagerDragState>(null);
+  const dropTargetRef = useRef<ConnectionManagerDropTarget>(null);
   const managerWasOpenRef = useRef(false);
+  const groupSidebarRef = useRef<HTMLElement | null>(null);
+  const connectionTableBodyRef = useRef<HTMLDivElement | null>(null);
   const {
     connections,
     createConnectionGroup,
     deleteConnection,
     deleteConnectionGroup,
+    duplicateConnection,
     moveConnectionToGroup,
     openConnectionForm,
     openSession,
@@ -827,6 +978,30 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
       return isConnectionGroupOrChildPath(connection.groupPath, selectedGroupPath);
     });
   }, [orderedConnections, selectedGroupPath]);
+  const connectionTableGridTemplate = useMemo(
+    () => `${connectionTableColumnWidths.map((width) => `${width}px`).join(' ')} minmax(${connectionTableActionMinWidth}px, 1fr)`,
+    [connectionTableColumnWidths],
+  );
+  const connectionTableGridMinWidth = useMemo(
+    () => connectionTableColumnWidths.reduce((total, width) => total + width, 0) + connectionTableActionMinWidth + 48,
+    [connectionTableColumnWidths],
+  );
+  const connectionTableGridStyle = useMemo<CSSProperties>(
+    () => ({ gridTemplateColumns: connectionTableGridTemplate, minWidth: connectionTableGridMinWidth }),
+    [connectionTableGridMinWidth, connectionTableGridTemplate],
+  );
+  const beginConnectionTableColumnResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>, columnIndex: number) => {
+    const startWidth = connectionTableColumnWidths[columnIndex] ?? connectionTableDefaultColumnWidths[columnIndex] ?? 120;
+    const limits = connectionTableColumnLimits[columnIndex] ?? { min: 80, max: 360 };
+
+    // 连接列表列宽只服务当前管理弹窗的阅读和对比，不写入配置，避免临时操作污染持久设置。
+    beginResize(event, (moveEvent, startX) => {
+      const nextWidth = clamp(startWidth + moveEvent.clientX - startX, limits.min, limits.max);
+      setConnectionTableColumnWidths((current) => current.map((width, index) => (index === columnIndex ? nextWidth : width)));
+    });
+  }, [connectionTableColumnWidths]);
+  useFlipListAnimation(groupSidebarRef, '[data-group-path]', [orderedGroupPaths.join('|')]);
+  useFlipListAnimation(connectionTableBodyRef, '[data-connection-id]', [visibleConnections.map((connection) => connection.id).join('|')]);
   const canSaveGroup = Boolean(normalizeConnectionGroupPath(groupDraft));
   const startCreateGroup = () => {
     setGroupEditorMode('create');
@@ -874,16 +1049,84 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
   };
   const handleDropConnectionToGroup = (connectionId: string, groupPath: string) => {
     setDragState(null);
+    setDropTarget(null);
     void moveConnectionToGroup(connectionId, groupPath === ungroupedGroupPath ? undefined : groupPath);
   };
-  const handleReorderGroup = (sourcePath: string, targetPath: string) => {
-    setDragState(null);
-    void reorderConnectionGroups(moveGroupBlockBefore(orderedGroupPaths, sourcePath, targetPath));
+  const handleDuplicateConnection = (connectionId: string) => {
+    // 复制连接遵循当前左侧选中的目录；固定的未分组入口等价于清空 groupPath。
+    const targetGroupPath = selectedGroupPath === ungroupedGroupPath ? undefined : selectedGroupPath;
+    void duplicateConnection(connectionId, targetGroupPath);
   };
-  const handleReorderConnection = (sourceId: string, targetId: string) => {
+  const handleReorderGroup = (sourcePath: string, targetPath: string, placement: InsertPlacement) => {
     setDragState(null);
+    setDropTarget(null);
+    void reorderConnectionGroups(moveGroupBlockToInsert(orderedGroupPaths, sourcePath, targetPath, placement));
+  };
+  const handleReorderGroupToEnd = (sourcePath: string) => {
+    setDragState(null);
+    setDropTarget(null);
+    void reorderConnectionGroups(moveGroupBlockToEnd(orderedGroupPaths, sourcePath));
+  };
+  const handleReorderConnection = (sourceId: string, targetId: string, placement: InsertPlacement) => {
+    setDragState(null);
+    setDropTarget(null);
     const currentIds = orderedConnections.map((connection) => connection.id);
-    void reorderConnections(moveItemBefore(currentIds, sourceId, targetId));
+    void reorderConnections(moveItemToInsert(currentIds, sourceId, targetId, placement));
+  };
+  const handleReorderConnectionToEnd = (sourceId: string) => {
+    setDragState(null);
+    setDropTarget(null);
+    const currentIds = orderedConnections.map((connection) => connection.id);
+    void reorderConnections(moveItemToEnd(currentIds, sourceId));
+  };
+  const resolveConnectionManagerDropTarget = (event: PointerEvent, currentDrag: NonNullable<ConnectionManagerDragState>): ConnectionManagerDropTarget => {
+    const target = document.elementFromPoint(event.clientX, event.clientY);
+    const targetConnection = target?.closest<HTMLElement>('[data-connection-id]');
+    const targetGroup = target?.closest<HTMLElement>('[data-group-path]');
+    const targetUngrouped = target?.closest<HTMLElement>('[data-ungrouped-drop-target]');
+
+    // 拖动连接时，连接行表示排序插入点；左侧分组行表示移动到该分组，未分组固定入口表示清空分组。
+    if (currentDrag.type === 'connection') {
+      const targetConnectionId = targetConnection?.dataset.connectionId;
+      if (targetConnectionId === currentDrag.id) {
+        return null;
+      }
+      if (targetConnectionId) {
+        return {
+          type: 'connection-insert',
+          connectionId: targetConnectionId,
+          placement: resolveInsertPlacement(event, targetConnection),
+        };
+      }
+
+      const targetGroupPath = targetGroup?.dataset.groupPath;
+      if (targetGroupPath) {
+        return { type: 'connection-group', groupPath: targetGroupPath };
+      }
+      if (targetUngrouped) {
+        return { type: 'connection-ungrouped' };
+      }
+      if (isPointInsideElement(event, connectionTableBodyRef.current)) {
+        return { type: 'connection-end' };
+      }
+      return null;
+    }
+
+    const targetGroupPath = targetGroup?.dataset.groupPath;
+    if (targetGroupPath && (targetGroupPath === currentDrag.path || isConnectionGroupOrChildPath(targetGroupPath, currentDrag.path))) {
+      return null;
+    }
+    if (targetGroupPath) {
+      return {
+        type: 'group-insert',
+        groupPath: targetGroupPath,
+        placement: resolveInsertPlacement(event, targetGroup),
+      };
+    }
+    if (isPointInsideElement(event, groupSidebarRef.current)) {
+      return { type: 'group-end' };
+    }
+    return null;
   };
   const startConnectionManagerDrag = (
     event: ReactPointerEvent<HTMLButtonElement>,
@@ -914,9 +1157,14 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
   }, [dragState]);
 
   useEffect(() => {
+    dropTargetRef.current = dropTarget;
+  }, [dropTarget]);
+
+  useEffect(() => {
     if (!open) {
       managerWasOpenRef.current = false;
       setDragState(null);
+      setDropTarget(null);
       return;
     }
     if (managerWasOpenRef.current) {
@@ -934,48 +1182,61 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
     }
 
     const handlePointerMove = (event: PointerEvent) => {
-      setDragState((current) => (current ? { ...current, currentX: event.clientX, currentY: event.clientY } : current));
+      setDragState((current) => {
+        if (!current) {
+          return current;
+        }
+
+        const nextDropTarget = resolveConnectionManagerDropTarget(event, current);
+        setDropTarget((previous) => (
+          JSON.stringify(previous) === JSON.stringify(nextDropTarget) ? previous : nextDropTarget
+        ));
+        return { ...current, currentX: event.clientX, currentY: event.clientY };
+      });
     };
 
     const handlePointerUp = (event: PointerEvent) => {
       const currentDrag = dragStateRef.current;
       if (!currentDrag) {
         setDragState(null);
+        setDropTarget(null);
         return;
       }
 
-      const target = document.elementFromPoint(event.clientX, event.clientY);
-      const targetConnection = target?.closest<HTMLElement>('[data-connection-id]');
-      const targetGroup = target?.closest<HTMLElement>('[data-group-path]');
-      const targetUngrouped = target?.closest<HTMLElement>('[data-ungrouped-drop-target]');
+      const finalDropTarget = dropTargetRef.current ?? resolveConnectionManagerDropTarget(event, currentDrag);
+      setDragState(null);
+      setDropTarget(null);
 
       // 落点按最具体的连接行优先，其次分组行，最后是固定的未分组入口。
       if (currentDrag.type === 'connection') {
-        const targetConnectionId = targetConnection?.dataset.connectionId;
-        const targetGroupPath = targetGroup?.dataset.groupPath;
-        if (targetConnectionId && targetConnectionId !== currentDrag.id) {
-          handleReorderConnection(currentDrag.id, targetConnectionId);
+        if (finalDropTarget?.type === 'connection-insert') {
+          handleReorderConnection(currentDrag.id, finalDropTarget.connectionId, finalDropTarget.placement);
           return;
         }
-        if (targetGroupPath) {
-          handleDropConnectionToGroup(currentDrag.id, targetGroupPath);
+        if (finalDropTarget?.type === 'connection-end') {
+          handleReorderConnectionToEnd(currentDrag.id);
           return;
         }
-        if (targetUngrouped) {
+        if (finalDropTarget?.type === 'connection-group') {
+          handleDropConnectionToGroup(currentDrag.id, finalDropTarget.groupPath);
+          return;
+        }
+        if (finalDropTarget?.type === 'connection-ungrouped') {
           handleDropConnectionToGroup(currentDrag.id, ungroupedGroupPath);
           return;
         }
       }
 
       if (currentDrag.type === 'group') {
-        const targetGroupPath = targetGroup?.dataset.groupPath;
-        if (targetGroupPath && targetGroupPath !== currentDrag.path) {
-          handleReorderGroup(currentDrag.path, targetGroupPath);
+        if (finalDropTarget?.type === 'group-insert') {
+          handleReorderGroup(currentDrag.path, finalDropTarget.groupPath, finalDropTarget.placement);
+          return;
+        }
+        if (finalDropTarget?.type === 'group-end') {
+          handleReorderGroupToEnd(currentDrag.path);
           return;
         }
       }
-
-      setDragState(null);
     };
 
     window.addEventListener('pointermove', handlePointerMove);
@@ -1008,7 +1269,10 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
         </div>
 
         <div className="connection-manager-layout">
-          <aside className="connection-groups-sidebar">
+          <aside
+            className={`connection-groups-sidebar ${dropTarget?.type === 'group-end' ? 'is-drop-end' : ''}`}
+            ref={groupSidebarRef}
+          >
             <div className="section-row compact">
               <strong>{t('connectionGroupsTitle')}</strong>
               <button className="secondary-button slim" onClick={startCreateGroup} type="button">
@@ -1052,13 +1316,14 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
               onEdit={startEditGroup}
               onSelect={setSelectedGroupPath}
               dragState={dragState}
+              dropTarget={dropTarget}
               onStartGroupDrag={(event, path, label) => startConnectionManagerDrag(event, { type: 'group', path, label })}
               deleteLabel={t('deleteGroup')}
               editLabel={t('editGroup')}
             />
             <div
               data-ungrouped-drop-target="true"
-              className={`connection-group-row connection-group-row-ungrouped ${selectedGroupPath === ungroupedGroupPath ? 'is-selected' : ''}`}
+              className={`connection-group-row connection-group-row-ungrouped ${selectedGroupPath === ungroupedGroupPath ? 'is-selected' : ''} ${dropTarget?.type === 'connection-ungrouped' ? 'is-drop-target' : ''} ${dropTarget?.type === 'group-end' ? 'is-drop-before' : ''}`}
             >
               <span className="drag-handle drag-handle-placeholder" aria-hidden="true" />
               <button
@@ -1079,22 +1344,34 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
             </div>
 
             <div className="connection-table-scroll">
-              <div className="connection-table-header">
-                <span />
-                <span>{t('fieldName')}</span>
-                <span>{t('fieldHost')}</span>
-                <span>{t('fieldPort')}</span>
-                <span>{t('fieldUsername')}</span>
-                <span>{t('fieldActions')}</span>
+              <div className="connection-table-header" style={connectionTableGridStyle}>
+                <span className="connection-column-header" />
+                {[t('fieldName'), t('fieldHost'), t('fieldPort'), t('fieldUsername')].map((label, index) => (
+                  <span key={label} className="connection-column-header">
+                    <span>{label}</span>
+                    <button
+                      aria-label={`调整${label}列宽`}
+                      className="connection-column-resizer"
+                      onPointerDown={(event) => beginConnectionTableColumnResize(event, index + 1)}
+                      title={`调整${label}列宽`}
+                      type="button"
+                    />
+                  </span>
+                ))}
+                <span className="connection-column-header" />
               </div>
 
-              <div className="connection-table-body">
+              <div
+                className={`connection-table-body ${dropTarget?.type === 'connection-end' ? 'is-drop-end' : ''}`}
+                ref={connectionTableBodyRef}
+              >
                 {visibleConnections.length ? (
                   visibleConnections.map((connection) => (
                     <div
                       key={connection.id}
                       data-connection-id={connection.id}
-                      className={`connection-table-row ${dragState?.type === 'connection' && dragState.id === connection.id ? 'is-dragging' : ''}`}
+                      className={`connection-table-row ${dragState?.type === 'connection' && dragState.id === connection.id ? 'is-dragging' : ''} ${dropTarget?.type === 'connection-insert' && dropTarget.connectionId === connection.id ? `is-drop-${dropTarget.placement}` : ''}`}
+                      style={connectionTableGridStyle}
                     >
                       <button
                         aria-label={`拖动连接 ${connection.name}`}
@@ -1110,11 +1387,18 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
                       <span title={String(connection.port)}>{connection.port}</span>
                       <span title={connection.username}>{connection.username}</span>
                       <div className="connection-table-actions">
-                        <button className="ghost-button slim" onClick={() => void openSession(connection.id).then(onClose)} type="button">
+                        <button className="ghost-button slim" onClick={() => {
+                          // 管理弹窗先关闭，再启动会话；避免连接建立时的状态刷新和弹窗布局同时竞争渲染。
+                          onClose();
+                          void openSession(connection.id);
+                        }} type="button">
                           {t('connect')}
                         </button>
                         <button className="ghost-button slim" onClick={() => openConnectionForm(connection)} type="button">
                           {t('edit')}
+                        </button>
+                        <button className="ghost-button slim" onClick={() => handleDuplicateConnection(connection.id)} type="button">
+                          <Copy size={13} /> {t('copy')}
                         </button>
                         <button className="ghost-button slim danger-button" onClick={() => void deleteConnection(connection.id)} type="button">
                           {t('delete')}
@@ -1211,8 +1495,14 @@ function SettingsModal({
 }) {
   const [revealWebdavPassword, setRevealWebdavPassword] = useState(false);
   const [settingsSaveMessage, setSettingsSaveMessage] = useState('');
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
+  const [updateCheckResult, setUpdateCheckResult] = useState<UpdateCheckResult | null>(null);
+  const [updateCheckError, setUpdateCheckError] = useState('');
   const settingsSaveTimerRef = useRef<number | null>(null);
   const {
+    checkForUpdates,
+    installUpdate,
     settings,
     updateSettings,
     uploadSettings,
@@ -1226,7 +1516,12 @@ function SettingsModal({
 
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements);
+  const appVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.2';
   const webdavPasswordToggleLabel = revealWebdavPassword ? t('hideSecret') : t('showSecret');
+  const selectedFontFamily = settings.shellFontFamily.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '') || 'JetBrains Mono';
+  const fontOptions = shellFontOptions.includes(selectedFontFamily)
+    ? shellFontOptions
+    : [selectedFontFamily, ...shellFontOptions];
   const persistSettingsWithFeedback = async () => {
     await persistSettings();
     setSettingsSaveMessage(t('statusSettingsSaved'));
@@ -1238,6 +1533,75 @@ function SettingsModal({
       setSettingsSaveMessage('');
       settingsSaveTimerRef.current = null;
     }, 1800);
+  };
+  const openExternalLink = (url: string) => {
+    const isDesktopRuntime = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+    if (!isDesktopRuntime) {
+      window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+
+    // 桌面端外链交给 Rust 后端调用系统浏览器，避免 Tauri WebView 拦截 window.open。
+    void backend.openExternalUrl(url).catch(() => {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    });
+  };
+  const formatReleaseTime = (value?: string) => {
+    if (!value) {
+      return t('metricUnavailable');
+    }
+
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString(settings.uiLanguage);
+  };
+  const handleCheckForUpdates = async () => {
+    setUpdateChecking(true);
+    setUpdateCheckError('');
+    setUpdateCheckResult(null);
+    try {
+      // 更新检测只读取 GitHub Release 元数据，用户确认后再通过 Release 页面下载新版安装包。
+      const result = await checkForUpdates();
+      setUpdateCheckResult(result);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      setUpdateCheckError(t('statusUpdateCheckFailed', { reason }));
+    } finally {
+      setUpdateChecking(false);
+    }
+  };
+  const handleInstallUpdate = async () => {
+    if (!updateCheckResult) {
+      return;
+    }
+
+    setUpdateInstalling(true);
+    setUpdateCheckError('');
+    try {
+      // 安装动作只在用户点击后触发；后端会下载 Release 安装包并启动安装程序。
+      await installUpdate(updateCheckResult);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      setUpdateCheckError(t('statusUpdateInstallFailed', { reason }));
+    } finally {
+      setUpdateInstalling(false);
+    }
+  };
+  const handleLocalBackgroundImage = async () => {
+    const selectedPath = await openFileDialog({
+      multiple: false,
+      filters: [
+        {
+          name: 'Images',
+          extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'],
+        },
+      ],
+    });
+    if (!selectedPath || Array.isArray(selectedPath)) {
+      return;
+    }
+
+    // 背景图需要持久保存真实本地路径，系统文件对话框会把所选文件加入 asset 协议作用域。
+    updateSettings((current) => ({ ...current, backgroundImage: selectedPath }));
   };
 
   useEffect(() => {
@@ -1282,6 +1646,14 @@ function SettingsModal({
               <Upload size={16} />
               {t('settingsTabSync')}
             </button>
+            <button
+              className={`settings-nav-item ${activeTab === 'about' ? 'is-active' : ''}`}
+              onClick={() => onTabChange('about')}
+              type="button"
+            >
+              <Info size={16} />
+              {t('settingsTabAbout')}
+            </button>
           </nav>
 
           <div className="settings-content">
@@ -1308,7 +1680,13 @@ function SettingsModal({
                   </label>
                   <label>
                     <span>{t('fieldFontFamily')}</span>
-                    <input value={settings.shellFontFamily} onChange={(event) => updateSettings((current) => ({ ...current, shellFontFamily: event.target.value }))} />
+                    <select value={selectedFontFamily} onChange={(event) => updateSettings((current) => ({ ...current, shellFontFamily: event.target.value }))}>
+                      {fontOptions.map((fontFamily) => (
+                        <option key={fontFamily} value={fontFamily}>
+                          {fontFamily}
+                        </option>
+                      ))}
+                    </select>
                   </label>
                   <label>
                     <span>{t('fieldFontSize')}</span>
@@ -1329,29 +1707,51 @@ function SettingsModal({
                       }
                     />
                   </label>
-                  <label>
-                    <span>{t('fieldTerminalBackground')}</span>
-                    <input type="color" value={settings.terminalBackground} onChange={(event) => updateSettings((current) => ({ ...current, terminalBackground: event.target.value }))} />
-                  </label>
-                  <label>
-                    <span>{t('fieldTerminalForeground')}</span>
-                    <input type="color" value={settings.terminalForeground} onChange={(event) => updateSettings((current) => ({ ...current, terminalForeground: event.target.value }))} />
-                  </label>
-                  <label>
-                    <span>{t('fieldAccentColor')}</span>
-                    <input type="color" value={settings.accentColor} onChange={(event) => updateSettings((current) => ({ ...current, accentColor: event.target.value }))} />
-                  </label>
                   <label className="span-2">
-                    <span>{t('fieldBackgroundImage')}</span>
-                    <input value={settings.backgroundImage ?? ''} onChange={(event) => updateSettings((current) => ({ ...current, backgroundImage: event.target.value }))} />
+                    <span>{t('fieldTerminalBackgroundImage')}</span>
+                    <div className="background-image-field">
+                      <input
+                        placeholder="C:\\Pictures\\terminal.png 或 https://example.com/bg.png"
+                        value={settings.backgroundImage ?? ''}
+                        onChange={(event) => updateSettings((current) => ({ ...current, backgroundImage: event.target.value }))}
+                      />
+                      <button
+                        className="secondary-button slim"
+                        onClick={() => void handleLocalBackgroundImage()}
+                        type="button"
+                      >
+                        <Upload size={14} /> {t('chooseLocalImage')}
+                      </button>
+                    </div>
                   </label>
-                  <label className="toggle-row span-2">
-                    <span>{t('fieldCompactSidebar')}</span>
-                    <input type="checkbox" checked={settings.compactSidebar} onChange={(event) => updateSettings((current) => ({ ...current, compactSidebar: event.target.checked }))} />
+                  <label>
+                    <span>{t('fieldTerminalBackgroundImageOpacity')} {Math.round((settings.terminalBackgroundImageOpacity ?? 0.18) * 100)}%</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={settings.terminalBackgroundImageOpacity ?? 0.18}
+                      onChange={(event) => updateSettings((current) => ({ ...current, terminalBackgroundImageOpacity: Number(event.target.value) }))}
+                    />
                   </label>
-                  <label className="toggle-row span-2">
-                    <span>{t('fieldGhostSuggestions')}</span>
-                    <input type="checkbox" checked={settings.showCommandGhost} onChange={(event) => updateSettings((current) => ({ ...current, showCommandGhost: event.target.checked }))} />
+                  <label>
+                    <span>{t('fieldTerminalBackgroundImageFit')}</span>
+                    <select
+                      value={settings.terminalBackgroundImageFit ?? 'cover'}
+                      onChange={(event) =>
+                        updateSettings((current) => ({
+                          ...current,
+                          terminalBackgroundImageFit: event.target.value as NonNullable<AppSettings['terminalBackgroundImageFit']>,
+                        }))
+                      }
+                    >
+                      {terminalBackgroundFitOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {t(option.labelKey)}
+                        </option>
+                      ))}
+                    </select>
                   </label>
                 </div>
 
@@ -1478,6 +1878,62 @@ function SettingsModal({
                 </section>
               </div>
             ) : null}
+
+            {activeTab === 'about' ? (
+              <div className="stack gap-16">
+                <section className="settings-section-block settings-about-section">
+                  <div className="section-row">
+                    <div>
+                      <h3>{t('aboutTitle')}</h3>
+                    </div>
+                    <button
+                      className="secondary-button"
+                      onClick={() => openExternalLink('https://github.com/CrazyFigure/MyShell')}
+                      type="button"
+                    >
+                      <ExternalLink size={16} /> {t('githubRepository')}
+                    </button>
+                  </div>
+
+                  <div className="settings-about-grid">
+                    <span>{t('currentVersion')}</span>
+                    <strong>{updateCheckResult?.currentVersion ?? appVersion}</strong>
+                    <span>{t('latestVersion')}</span>
+                    <strong>{updateCheckResult?.latestVersion ?? t('metricUnavailable')}</strong>
+                    <span>{t('releasePublishedAt')}</span>
+                    <strong>{formatReleaseTime(updateCheckResult?.publishedAt)}</strong>
+                  </div>
+
+                  <div className="section-row compact settings-update-actions">
+                    <button className="primary-button" disabled={updateChecking} onClick={() => void handleCheckForUpdates()} type="button">
+                      <RefreshCw size={16} /> {updateChecking ? t('working') : t('checkUpdates')}
+                    </button>
+                    <button
+                      className="secondary-button"
+                      disabled={
+                        updateInstalling ||
+                        !updateCheckResult?.updateAvailable ||
+                        !updateCheckResult.installerDownloadUrl ||
+                        !updateCheckResult.installerAssetName
+                      }
+                      onClick={() => void handleInstallUpdate()}
+                      type="button"
+                    >
+                      <Download size={16} /> {updateInstalling ? t('working') : t('downloadAndInstallUpdate')}
+                    </button>
+                  </div>
+
+                  {updateCheckResult ? (
+                    <div className={`update-check-result ${updateCheckResult.updateAvailable ? 'is-update-available' : 'is-up-to-date'}`}>
+                      {updateCheckResult.updateAvailable
+                        ? t('statusUpdateAvailable', { version: updateCheckResult.latestVersion })
+                        : t('statusUpdateNotAvailable')}
+                    </div>
+                  ) : null}
+                  {updateCheckError ? <div className="update-check-result is-error">{updateCheckError}</div> : null}
+                </section>
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
@@ -1495,10 +1951,16 @@ export default function App() {
   const [bottomTabByConnection, setBottomTabByConnection] = useState<Record<string, BottomPanelTab>>({});
   const [pathInput, setPathInput] = useState('~');
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
+  const [sessionContextMenu, setSessionContextMenu] = useState<SessionContextMenuState | null>(null);
+  const [sessionTabDragState, setSessionTabDragState] = useState<SessionTabDragState>(null);
+  const [sessionTabDropTarget, setSessionTabDropTarget] = useState<SessionTabDropTarget>(null);
   const [selectedFilePath, setSelectedFilePath] = useState('');
   const [explorerColumnWidths, setExplorerColumnWidths] = useState(explorerDefaultColumnWidths);
   const pathByConnectionRef = useRef<Record<string, string>>({});
   const runtimeRefreshInFlightRef = useRef(false);
+  const sessionTabDragStateRef = useRef<SessionTabDragState>(null);
+  const sessionTabDropTargetRef = useRef<SessionTabDropTarget>(null);
+  const sessionTabListRef = useRef<HTMLDivElement | null>(null);
 
   const {
     activeConnectionId,
@@ -1515,13 +1977,16 @@ export default function App() {
     files,
     history,
     openConnectionForm,
+    openSession,
     openRemoteFile,
     openTunnel,
     pollTerminalOutputs,
     refreshFiles,
     refreshRemoteHistory,
     refreshRuntimeOverview,
+    reconnectSession: reconnectSessionById,
     renameRemotePath,
+    reorderSessions,
     runtimeOverview,
     selectSession,
     sendCommand,
@@ -1560,10 +2025,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const closeContextMenu = () => setFileContextMenu(null);
+    const closeContextMenu = () => {
+      setFileContextMenu(null);
+      setSessionContextMenu(null);
+    };
     const onEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setFileContextMenu(null);
+        setSessionContextMenu(null);
       }
     };
 
@@ -1612,6 +2081,46 @@ export default function App() {
   const runtimeHostLabel = runtimeOverview?.host ?? activeRemoteConnection?.host ?? '--';
   const activeCommand = activeSessionId ? commandBuffers[activeSessionId] ?? '' : '';
   const activeBottomTab = activeRemoteConnectionId ? bottomTabByConnection[activeRemoteConnectionId] ?? 'commands' : 'commands';
+  const sessionContextSession = useMemo(
+    () => sessions.find((session) => session.id === sessionContextMenu?.sessionId),
+    [sessionContextMenu?.sessionId, sessions],
+  );
+  const closeSessionBatch = useCallback((sessionIds: string[]) => {
+    setSessionContextMenu(null);
+    // 批量关闭标签按顺序执行，避免 activeSessionId 在多个异步关闭之间来回跳。
+    void (async () => {
+      for (const sessionId of sessionIds) {
+        await closeSession(sessionId);
+      }
+    })().catch((error) => {
+      setStatusMessage(error instanceof Error ? error.message : String(error));
+    });
+  }, [closeSession, setStatusMessage]);
+  const reconnectSession = useCallback((session?: TerminalSession) => {
+    if (!session) {
+      return;
+    }
+
+    setSessionContextMenu(null);
+    // 重连交给 store 在原标签位置替换会话，避免关闭后新标签被追加到最右侧。
+    void reconnectSessionById(session.id).catch((error) => {
+      setStatusMessage(error instanceof Error ? error.message : String(error));
+    });
+  }, [reconnectSessionById, setStatusMessage]);
+  const copySessionConnection = useCallback((session?: TerminalSession) => {
+    if (!session) {
+      return;
+    }
+
+    const connection = connections.find((item) => item.id === session.connectionId);
+    const text = connection
+      ? `${connection.name} ${connection.username}@${connection.host}:${connection.port}`
+      : session.title;
+    setSessionContextMenu(null);
+    // 复制连接信息只包含定位字段，不复制密码、私钥等敏感内容。
+    void navigator.clipboard?.writeText(text).catch(() => undefined);
+    setStatusMessage(t('statusConnectionInfoCopied'));
+  }, [connections, setStatusMessage, t]);
   const connectionTunnels = useMemo(
     () => (activeConnectionId ? tunnels.filter((item) => item.connectionId === activeConnectionId) : []),
     [activeConnectionId, tunnels],
@@ -1620,49 +2129,118 @@ export default function App() {
     () => history.filter((item) => (activeRemoteConnectionId ? item.connectionId === activeRemoteConnectionId : true)),
     [activeRemoteConnectionId, history],
   );
-  const commandSuggestions = useMemo(() => {
-    const lastLine = activeCommand.split(/\r?\n/).at(-1)?.trim() ?? '';
-    if (!settings.showCommandGhost || !lastLine) {
-      return [];
-    }
-
-    return Array.from(
-      new Set(
-        connectionHistory
-          .map((item) => item.command)
-          .filter((command) => command.startsWith(lastLine) && command !== lastLine),
-      ),
-    ).slice(0, 6);
-  }, [activeCommand, connectionHistory, settings.showCommandGhost]);
-
   const shellClassName = [
     'app-shell',
     `theme-${settings.themeMode}`,
     settings.compactSidebar ? 'compact-sidebar' : '',
-    settings.backgroundImage?.trim() ? 'has-background' : '',
   ]
     .filter(Boolean)
     .join(' ');
+  useFlipListAnimation(sessionTabListRef, '[data-session-id]', [sessions.map((session) => session.id).join('|')]);
 
-  const shellStyle = useMemo<CSSProperties | undefined>(() => {
-    const backgroundImage = settings.backgroundImage?.trim();
-    if (!backgroundImage) {
-      return undefined;
+  const resolveSessionTabDropTarget = useCallback((event: PointerEvent, currentDrag: NonNullable<SessionTabDragState>): SessionTabDropTarget => {
+    const target = document.elementFromPoint(event.clientX, event.clientY);
+    const targetSessionTab = target?.closest<HTMLElement>('[data-session-id]');
+    const targetSessionId = targetSessionTab?.dataset.sessionId;
+
+    // 顶部会话标签是横向列表，落点用左右半区判断；空白区域允许直接拖到末尾。
+    if (targetSessionId === currentDrag.id) {
+      return null;
+    }
+    if (targetSessionId) {
+      return {
+        sessionId: targetSessionId,
+        placement: resolveInlineInsertPlacement(event, targetSessionTab),
+      };
+    }
+    if (isPointInsideElement(event, sessionTabListRef.current)) {
+      return { type: 'end' };
+    }
+    return null;
+  }, []);
+
+  const startSessionTabDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>, session: TerminalSession, label: string) => {
+    if (event.button !== 0) {
+      return;
+    }
+    if ((event.target as HTMLElement).closest('.session-tab-close')) {
+      return;
     }
 
-    const overlay =
-      settings.themeMode === 'dark'
-        ? 'linear-gradient(rgba(2, 6, 23, 0.78), rgba(15, 23, 42, 0.82))'
-        : 'linear-gradient(rgba(255, 255, 255, 0.58), rgba(248, 250, 252, 0.76))';
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    // 会话标签拖拽只改变前端排序，不触碰后端 PTY，拖动过程中保持当前终端输入状态。
+    setSessionContextMenu(null);
+    setSessionTabDragState({
+      id: session.id,
+      label,
+      originX: event.clientX,
+      originY: event.clientY,
+      currentX: event.clientX,
+      currentY: event.clientY,
+    });
+  }, []);
 
-    return {
-      backgroundImage: `${overlay}, url("${backgroundImage}")`,
-      backgroundSize: 'cover',
-      backgroundPosition: 'center',
-      backgroundRepeat: 'no-repeat',
-      backgroundAttachment: 'fixed',
+  useEffect(() => {
+    sessionTabDragStateRef.current = sessionTabDragState;
+  }, [sessionTabDragState]);
+
+  useEffect(() => {
+    sessionTabDropTargetRef.current = sessionTabDropTarget;
+  }, [sessionTabDropTarget]);
+
+  useEffect(() => {
+    if (!sessionTabDragState) {
+      return;
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      setSessionTabDragState((current) => {
+        if (!current) {
+          return current;
+        }
+
+        const nextDropTarget = resolveSessionTabDropTarget(event, current);
+        setSessionTabDropTarget((previous) => (
+          JSON.stringify(previous) === JSON.stringify(nextDropTarget) ? previous : nextDropTarget
+        ));
+        return { ...current, currentX: event.clientX, currentY: event.clientY };
+      });
     };
-  }, [settings.backgroundImage, settings.themeMode]);
+
+    const handlePointerUp = (event: PointerEvent) => {
+      const currentDrag = sessionTabDragStateRef.current;
+      if (!currentDrag) {
+        setSessionTabDragState(null);
+        setSessionTabDropTarget(null);
+        return;
+      }
+
+      const movedDistance = Math.hypot(event.clientX - currentDrag.originX, event.clientY - currentDrag.originY);
+      const finalDropTarget = sessionTabDropTargetRef.current ?? resolveSessionTabDropTarget(event, currentDrag);
+      setSessionTabDragState(null);
+      setSessionTabDropTarget(null);
+      if (movedDistance < 6 || !finalDropTarget) {
+        return;
+      }
+
+      const currentSessionIds = sessions.map((session) => session.id);
+      if ('type' in finalDropTarget && finalDropTarget.type === 'end') {
+        reorderSessions(moveItemToEnd(currentSessionIds, currentDrag.id));
+        return;
+      }
+      if (!('type' in finalDropTarget)) {
+        reorderSessions(moveItemToInsert(currentSessionIds, currentDrag.id, finalDropTarget.sessionId, finalDropTarget.placement));
+      }
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp, { once: true });
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [Boolean(sessionTabDragState), reorderSessions, resolveSessionTabDropTarget, sessions]);
   const explorerGridTemplate = useMemo(() => explorerColumnWidths.map((width) => `${width}px`).join(' '), [explorerColumnWidths]);
   const explorerGridMinWidth = useMemo(
     () => explorerColumnWidths.reduce((total, width) => total + width, 0) + 46,
@@ -1786,7 +2364,7 @@ export default function App() {
   }, [files, hasActiveRemoteSession, selectedFilePath]);
 
   return (
-    <div className={shellClassName} style={shellStyle}>
+    <div className={shellClassName}>
       <aside className="sidebar card" style={{ width: sidebarWidth }}>
         <section className="sidebar-panel runtime-panel" style={{ height: runtimePanelHeight }}>
           <div className="section-row runtime-header">
@@ -1977,6 +2555,43 @@ export default function App() {
         ) : null}
       </aside>
 
+      {sessionContextMenu && sessionContextSession ? (
+        <div
+          className="context-menu session-context-menu"
+          style={{ left: sessionContextMenu.x, top: sessionContextMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {(() => {
+            const sessionIndex = sessions.findIndex((session) => session.id === sessionContextSession.id);
+            const leftSessionIds = sessions.slice(0, Math.max(0, sessionIndex)).map((session) => session.id);
+            const rightSessionIds = sessions.slice(sessionIndex + 1).map((session) => session.id);
+            const otherSessionIds = sessions.filter((session) => session.id !== sessionContextSession.id).map((session) => session.id);
+            return (
+              <>
+                <button className="context-menu-item" onClick={() => closeSessionBatch([sessionContextSession.id])} type="button">
+                  <X size={14} /> {t('closeSessionAction')}
+                </button>
+                <button className="context-menu-item" disabled={!leftSessionIds.length} onClick={() => closeSessionBatch(leftSessionIds)} type="button">
+                  <X size={14} /> {t('closeSessionsLeft')}
+                </button>
+                <button className="context-menu-item" disabled={!rightSessionIds.length} onClick={() => closeSessionBatch(rightSessionIds)} type="button">
+                  <X size={14} /> {t('closeSessionsRight')}
+                </button>
+                <button className="context-menu-item" disabled={!otherSessionIds.length} onClick={() => closeSessionBatch(otherSessionIds)} type="button">
+                  <X size={14} /> {t('closeOtherSessions')}
+                </button>
+                <button className="context-menu-item" onClick={() => reconnectSession(sessionContextSession)} type="button">
+                  <RotateCcw size={14} /> {t('reconnectSession')}
+                </button>
+                <button className="context-menu-item" onClick={() => copySessionConnection(sessionContextSession)} type="button">
+                  <Copy size={14} /> {t('copyConnectionInfo')}
+                </button>
+              </>
+            );
+          })()}
+        </div>
+      ) : null}
+
       <div
         className="resize-handle resize-handle-main"
         onPointerDown={(event) => {
@@ -1989,31 +2604,52 @@ export default function App() {
 
       <main className="workspace">
         <section className="workspace-toolbar card">
-          <div className="workspace-title">
-            {/* 软件内标题栏图标与 Tauri 窗口、任务栏和托盘图标使用同一资源，避免不同入口品牌不一致。 */}
-            <img alt="" className="app-logo" src="/MyShell.ico" />
-            <h1>{t('appName')}</h1>
-          </div>
-
           <div className="session-strip">
-            <div className="tab-list">
-              {sessions.map((session) => (
-                <div key={session.id} className={`session-tab ${session.id === activeSessionId ? 'is-active' : ''}`}>
-                  <button className="session-tab-trigger" onClick={() => selectSession(session.id)} type="button">
-                    <span aria-label={translateStatus(settings.uiLanguage, session.status)} className={sessionStatusClassName(session.status)} title={translateStatus(settings.uiLanguage, session.status)} />
-                    <span>{connections.find((item) => item.id === session.connectionId)?.name ?? session.title}</span>
-                  </button>
-                  <button
-                    aria-label={t('closeSessionAction')}
-                    className="session-tab-close"
-                    onClick={() => void closeSession(session.id)}
-                    title={t('closeSessionAction')}
-                    type="button"
+            <div
+              className={`tab-list session-tab-list ${
+                sessionTabDropTarget && 'type' in sessionTabDropTarget && sessionTabDropTarget.type === 'end' ? 'is-drop-end' : ''
+              }`}
+              ref={sessionTabListRef}
+            >
+              {sessions.map((session) => {
+                const sessionLabel = connections.find((item) => item.id === session.connectionId)?.name ?? session.title;
+                return (
+                  <div
+                    key={session.id}
+                    data-session-id={session.id}
+                    className={`session-tab ${session.id === activeSessionId ? 'is-active' : ''} ${
+                      sessionTabDragState?.id === session.id ? 'is-dragging' : ''
+                    } ${
+                      sessionTabDropTarget && !('type' in sessionTabDropTarget) && sessionTabDropTarget.sessionId === session.id
+                        ? `is-drop-${sessionTabDropTarget.placement}`
+                        : ''
+                    }`}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setSessionContextMenu({ sessionId: session.id, x: event.clientX, y: event.clientY });
+                    }}
+                    onPointerDown={(event) => startSessionTabDrag(event, session, sessionLabel)}
                   >
-                    <X size={12} />
-                  </button>
-                </div>
-              ))}
+                    <button className="session-tab-trigger" onClick={() => selectSession(session.id)} type="button">
+                      <span aria-label={translateStatus(settings.uiLanguage, session.status)} className={sessionStatusClassName(session.status)} title={translateStatus(settings.uiLanguage, session.status)} />
+                      <span>{sessionLabel}</span>
+                    </button>
+                    <button
+                      aria-label={t('closeSessionAction')}
+                      className="session-tab-close"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void closeSession(session.id);
+                      }}
+                      title={t('closeSessionAction')}
+                      type="button"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -2081,26 +2717,72 @@ export default function App() {
                   );
                 })}
               </div>
+              <div className="panel-tab-actions">
+                {activeBottomTab === 'commands' ? (
+                  <button
+                    className="primary-button"
+                    disabled={!hasActiveRemoteSession || !activeCommand.trim()}
+                    onClick={() => {
+                      if (activeSessionId) {
+                        void sendCommand(activeSessionId);
+                      }
+                    }}
+                    type="button"
+                  >
+                    <Play size={16} /> {t('sendToTerminal')}
+                  </button>
+                ) : null}
+                {activeBottomTab === 'tunnels' ? (
+                  <>
+                    <button
+                      className="secondary-button"
+                      disabled={!connectionTunnels.some((item) => item.status !== 'running')}
+                      onClick={() => {
+                        void Promise.all(connectionTunnels.filter((item) => item.status !== 'running').map((item) => startTunnel(item.id))).then(() => {
+                          setStatusMessage(t('statusAllTunnelsStarted'));
+                        });
+                      }}
+                      type="button"
+                    >
+                      <Play size={16} /> {t('tunnelStartAll')}
+                    </button>
+                    <button
+                      className="secondary-button"
+                      disabled={!connectionTunnels.some((item) => item.status === 'running')}
+                      onClick={() => {
+                        void Promise.all(connectionTunnels.filter((item) => item.status === 'running').map((item) => closeTunnel(item.id))).then(() => {
+                          setStatusMessage(t('statusAllTunnelsStopped'));
+                        });
+                      }}
+                      type="button"
+                    >
+                      <Square size={16} /> {t('tunnelStopAll')}
+                    </button>
+                    <button className="primary-button" disabled={!activeConnectionId} onClick={() => void openTunnel()} type="button">
+                      <Plus size={16} /> {t('newTunnel')}
+                    </button>
+                  </>
+                ) : null}
+                {activeBottomTab === 'history' ? (
+                  <button
+                    className="secondary-button slim"
+                    disabled={!activeRemoteConnectionId}
+                    onClick={() => {
+                      if (activeRemoteConnectionId) {
+                        void refreshRemoteHistory(activeRemoteConnectionId);
+                      }
+                    }}
+                    type="button"
+                  >
+                    <RefreshCw size={14} /> {t('refresh')}
+                  </button>
+                ) : null}
+              </div>
             </header>
 
             <div className="panel-body dock-body">
               {activeBottomTab === 'commands' ? (
                 <div className="stack command-panel fill-height">
-                  <div className="section-row panel-action-row">
-                    <button
-                      className="primary-button"
-                      disabled={!hasActiveRemoteSession || !activeCommand.trim()}
-                      onClick={() => {
-                        if (activeSessionId) {
-                          void sendCommand(activeSessionId);
-                        }
-                      }}
-                      type="button"
-                    >
-                      <Play size={16} /> {t('sendToTerminal')}
-                    </button>
-                  </div>
-
                   <textarea
                     className="command-editor"
                     disabled={!hasActiveRemoteSession}
@@ -2116,62 +2798,11 @@ export default function App() {
                     }}
                   />
 
-                  {commandSuggestions.length ? (
-                    <div className="suggestion-strip">
-                      {commandSuggestions.map((suggestion) => (
-                        <button
-                          key={suggestion}
-                          className="ghost-button slim"
-                          onClick={() => {
-                            if (!activeSessionId) {
-                              return;
-                            }
-                            setCommandBuffer(activeSessionId, replaceLastLine(activeCommand, suggestion));
-                          }}
-                          type="button"
-                        >
-                          {suggestion}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
                 </div>
               ) : null}
 
               {activeBottomTab === 'tunnels' ? (
                 <div className="stack panel-stack">
-                  <div className="section-row panel-action-row">
-                    <div className="section-row compact">
-                      <button
-                        className="secondary-button"
-                        disabled={!connectionTunnels.some((item) => item.status !== 'running')}
-                        onClick={() => {
-                          void Promise.all(connectionTunnels.filter((item) => item.status !== 'running').map((item) => startTunnel(item.id))).then(() => {
-                            setStatusMessage(t('statusAllTunnelsStarted'));
-                          });
-                        }}
-                        type="button"
-                      >
-                        <Play size={16} /> {t('tunnelStartAll')}
-                      </button>
-                      <button
-                        className="secondary-button"
-                        disabled={!connectionTunnels.some((item) => item.status === 'running')}
-                        onClick={() => {
-                          void Promise.all(connectionTunnels.filter((item) => item.status === 'running').map((item) => closeTunnel(item.id))).then(() => {
-                            setStatusMessage(t('statusAllTunnelsStopped'));
-                          });
-                        }}
-                        type="button"
-                      >
-                        <Square size={16} /> {t('tunnelStopAll')}
-                      </button>
-                      <button className="primary-button" disabled={!activeConnectionId} onClick={() => void openTunnel()} type="button">
-                        <Plus size={16} /> {t('newTunnel')}
-                      </button>
-                    </div>
-                  </div>
-
                   <div className="tunnel-grid">
                     {connectionTunnels.length ? (
                       connectionTunnels.map((tunnel) => (
@@ -2206,21 +2837,6 @@ export default function App() {
 
               {activeBottomTab === 'history' ? (
                 <div className="stack panel-stack">
-                  <div className="section-row panel-action-row">
-                    <button
-                      className="secondary-button slim"
-                      disabled={!activeRemoteConnectionId}
-                      onClick={() => {
-                        if (activeRemoteConnectionId) {
-                          void refreshRemoteHistory(activeRemoteConnectionId);
-                        }
-                      }}
-                      type="button"
-                    >
-                      <RefreshCw size={14} /> {t('refresh')}
-                    </button>
-                  </div>
-
                   <div className="history-list">
                     {connectionHistory.length ? (
                       connectionHistory.map((item) => (
@@ -2259,6 +2875,15 @@ export default function App() {
       <EditorModal />
       <ConnectionFormModal />
       <TunnelFormModal />
+      {sessionTabDragState ? (
+        <div
+          className="drag-preview"
+          style={{ left: sessionTabDragState.currentX + 10, top: sessionTabDragState.currentY + 10 }}
+        >
+          <TerminalSquare size={13} />
+          <span>{sessionTabDragState.label}</span>
+        </div>
+      ) : null}
     </div>
   );
 }

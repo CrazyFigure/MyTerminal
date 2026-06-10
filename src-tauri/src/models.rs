@@ -14,7 +14,7 @@ fn default_ui_language() -> String {
 }
 
 fn default_shell_font_family() -> String {
-    "JetBrains Mono, Cascadia Mono, Consolas, monospace".into()
+    "JetBrains Mono".into()
 }
 
 fn default_shell_font_size() -> u16 {
@@ -35,6 +35,14 @@ fn default_terminal_foreground() -> String {
 
 fn default_accent_color() -> String {
     "#4f46e5".into()
+}
+
+fn default_terminal_background_image_opacity() -> f32 {
+    0.18
+}
+
+fn default_terminal_background_image_fit() -> String {
+    "cover".into()
 }
 
 fn default_show_command_ghost() -> bool {
@@ -141,6 +149,10 @@ pub struct AppSettings {
     pub accent_color: String,
     #[serde(default)]
     pub background_image: Option<String>,
+    #[serde(default = "default_terminal_background_image_opacity")]
+    pub terminal_background_image_opacity: f32,
+    #[serde(default = "default_terminal_background_image_fit")]
+    pub terminal_background_image_fit: String,
     #[serde(default)]
     pub compact_sidebar: bool,
     #[serde(default = "default_show_command_ghost")]
@@ -163,12 +175,14 @@ impl Default for AppSettings {
             ui_language: "zh-CN".into(),
             theme_mode: "light".into(),
             runtime_refresh_interval_sec: 1,
-            shell_font_family: "JetBrains Mono, Cascadia Mono, Consolas, monospace".into(),
+            shell_font_family: "JetBrains Mono".into(),
             shell_font_size: 15,
             terminal_background: "#f7f7f7".into(),
             terminal_foreground: "#111111".into(),
             accent_color: "#4f46e5".into(),
             background_image: Some(String::new()),
+            terminal_background_image_opacity: default_terminal_background_image_opacity(),
+            terminal_background_image_fit: default_terminal_background_image_fit(),
             compact_sidebar: false,
             show_command_ghost: true,
             connection_groups: default_connection_groups(),
@@ -350,6 +364,20 @@ pub struct BootstrapState {
     pub tunnels: Vec<TunnelRecord>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCheckResult {
+    pub current_version: String,
+    pub latest_version: String,
+    pub release_name: Option<String>,
+    pub release_url: String,
+    pub published_at: Option<String>,
+    pub update_available: bool,
+    pub installer_asset_name: Option<String>,
+    pub installer_download_url: Option<String>,
+    pub installer_size: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalConfigBundle {
@@ -412,6 +440,10 @@ pub struct StoredAppSettings {
     pub accent_color: String,
     #[serde(default)]
     pub background_image: Option<String>,
+    #[serde(default = "default_terminal_background_image_opacity")]
+    pub terminal_background_image_opacity: f32,
+    #[serde(default = "default_terminal_background_image_fit")]
+    pub terminal_background_image_fit: String,
     #[serde(default)]
     pub compact_sidebar: bool,
     #[serde(default = "default_show_command_ghost")]

@@ -3,6 +3,5 @@
   "identifier": "default",
   "description": "Default desktop capability for the main MyTerminal window.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:allow-open"]
 }
-
