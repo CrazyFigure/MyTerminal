@@ -12,6 +12,7 @@ fn main() {
     let app_state = AppState::new().expect("failed to initialize app state");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
@@ -30,6 +31,7 @@ fn main() {
             commands::upload_remote_file,
             commands::download_remote_file,
             commands::delete_remote_path,
+            commands::delete_remote_paths,
             commands::rename_remote_path,
             commands::load_editor_document,
             commands::save_editor_document,
@@ -46,6 +48,7 @@ fn main() {
             commands::open_external_url,
             commands::export_local_config,
             commands::import_local_config,
+            commands::test_webdav_connection,
             commands::upload_settings_to_webdav,
             commands::download_settings_from_webdav,
             commands::upload_connections_to_webdav,

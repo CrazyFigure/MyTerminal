@@ -48,6 +48,21 @@ const normalizeSingleFontFamily = (value: string) => {
   return firstFont ?? 'JetBrains Mono';
 };
 
+// 中英文字体拆分后仍同步旧字段，避免旧配置、Monaco 编辑器和旧版本数据读取到空字体。
+const normalizeFontPair = (settings: AppSettings) => {
+  const legacyFontFamily = normalizeSingleFontFamily(settings.shellFontFamily ?? 'JetBrains Mono');
+  const shellLatinFontFamily = normalizeSingleFontFamily(settings.shellLatinFontFamily ?? legacyFontFamily);
+  const shellCjkFontFamily = normalizeSingleFontFamily(settings.shellCjkFontFamily ?? shellLatinFontFamily);
+  return {
+    shellLatinFontFamily,
+    shellCjkFontFamily,
+    // 旧字段保留为 CSS 字体族组合，供编辑器和旧版本配置继续读取。
+    shellFontFamily: [shellLatinFontFamily, shellCjkFontFamily]
+      .filter((fontFamily, index, array) => array.indexOf(fontFamily) === index)
+      .join(', '),
+  };
+};
+
 const trimToUndefined = (value?: string) => {
   if (typeof value !== 'string') {
     return undefined;
@@ -67,13 +82,14 @@ const keepTextIfPresent = (value?: string) => {
 
 const normalizeSettings = (settings: AppSettings): AppSettings => ({
   ...settings,
-  shellFontFamily: normalizeSingleFontFamily(settings.shellFontFamily),
+  ...normalizeFontPair(settings),
   shellFontSize: clampFontSize(settings.shellFontSize),
   runtimeRefreshIntervalSec: clampRefreshInterval(settings.runtimeRefreshIntervalSec),
   terminalBackgroundImageOpacity: clampRatio(settings.terminalBackgroundImageOpacity, 0.18),
   terminalBackgroundImageFit: terminalBackgroundImageFits.has(settings.terminalBackgroundImageFit)
     ? settings.terminalBackgroundImageFit
     : 'cover',
+  terminalRightClickBehavior: settings.terminalRightClickBehavior === 'menu' ? 'menu' : 'paste',
   // 分组和连接排序来自用户拖拽结果，规范化时只去重清洗，不再按字母重新排序。
   connectionGroups: Array.from(
     new Set(
@@ -83,6 +99,15 @@ const normalizeSettings = (settings: AppSettings): AppSettings => ({
     ),
   ),
   connectionOrder: Array.from(new Set((settings.connectionOrder ?? []).filter(Boolean))),
+  quickCommands: settings.quickCommands ?? [],
+  webdav: {
+    baseUrl: settings.webdav?.baseUrl ?? '',
+    username: settings.webdav?.username ?? '',
+    password: settings.webdav?.password ?? '',
+    syncPassphrase: settings.webdav?.syncPassphrase ?? '',
+    remoteSettingsPath: settings.webdav?.remoteSettingsPath ?? '/myterminal/settings.enc.json',
+    remoteConnectionsPath: settings.webdav?.remoteConnectionsPath ?? '/myterminal/connections.enc.json',
+  },
 });
 
 const normalizeConnection = (connection: ConnectionProfile): ConnectionProfile => ({
@@ -111,6 +136,8 @@ const mockSettings: AppSettings = {
   uiLanguage: 'zh-CN',
   themeMode: 'light',
   runtimeRefreshIntervalSec: 1,
+  shellLatinFontFamily: 'JetBrains Mono',
+  shellCjkFontFamily: 'Microsoft YaHei UI',
   shellFontFamily: 'JetBrains Mono',
   shellFontSize: 15,
   terminalBackground: '#f7f7f7',
@@ -119,6 +146,7 @@ const mockSettings: AppSettings = {
   backgroundImage: '',
   terminalBackgroundImageOpacity: 0.18,
   terminalBackgroundImageFit: 'cover',
+  terminalRightClickBehavior: 'paste',
   compactSidebar: false,
   showCommandGhost: true,
   connectionGroups: ['ology', 'ology/ology-old'],
@@ -167,6 +195,12 @@ const mockRuntimeOverview: RuntimeOverview = {
   host: '192.168.12.28',
   os: 'Linux demo-host 6.8 x86_64',
   cpu: 'Load 0.21',
+  cpuCores: [
+    { name: 'CPU 0', percent: 18 },
+    { name: 'CPU 1', percent: 24 },
+    { name: 'CPU 2', percent: 11 },
+    { name: 'CPU 3', percent: 35 },
+  ],
   memory: '1423 / 4096 MB (35%)',
   storage: '18 / 64 GB (29%)',
   network: '192.168.12.28',
@@ -194,7 +228,7 @@ const mockState: BootstrapState = {
   tunnels: mockTunnels,
 };
 
-const mockAppVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.2';
+const mockAppVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.3';
 
 const mockUpdateCheckResult: UpdateCheckResult = {
   currentVersion: mockAppVersion,
@@ -216,7 +250,10 @@ const call = async <T>(command: string, args?: Record<string, unknown>, fallback
 };
 
 export const backend = {
-  bootstrap: () => call<BootstrapState>('bootstrap_state', undefined, mockState),
+  bootstrap: async () => {
+    const state = await call<BootstrapState>('bootstrap_state', undefined, mockState);
+    return { ...state, settings: normalizeSettings(state.settings) };
+  },
   saveSettings: (settings: AppSettings) => {
     const normalized = normalizeSettings(settings);
     return call<AppSettings>('save_app_settings', { settings: normalized }, normalized);
@@ -258,6 +295,8 @@ export const backend = {
     call<string>('download_remote_file', { connectionId, path }, `C:/Software/WorkSpace/MyTerminal/.myterminal-data/downloads/${path.split('/').pop() ?? 'download.bin'}`),
   deleteRemotePath: (connectionId: string, path: string) =>
     call<boolean>('delete_remote_path', { connectionId, path }, true),
+  deleteRemotePaths: (connectionId: string, paths: string[]) =>
+    call<boolean>('delete_remote_paths', { connectionId, paths }, true),
   renameRemotePath: (connectionId: string, path: string, newPath: string) =>
     call<boolean>('rename_remote_path', { connectionId, path, newPath }, true),
   loadEditorDocument: (connectionId: string, path: string) =>
@@ -311,11 +350,17 @@ export const backend = {
       .filter((command) => command.startsWith(prefix))
       .slice(0, 5)),
   uploadSettings: () => call<boolean>('upload_settings_to_webdav', undefined, true),
-  downloadSettings: () => call<AppSettings>('download_settings_from_webdav', undefined, mockSettings),
+  downloadSettings: async () => normalizeSettings(await call<AppSettings>('download_settings_from_webdav', undefined, mockSettings)),
   uploadConnections: () => call<boolean>('upload_connections_to_webdav', undefined, true),
   downloadConnections: () => call<ConnectionProfile[]>('download_connections_from_webdav', undefined, mockConnections),
-  exportLocalConfig: () => call<string>('export_local_config', undefined, 'C:/Software/WorkSpace/MyTerminal/.myterminal-data/exports/myterminal-config-demo.json'),
-  importLocalConfig: (content: string) => call<BootstrapState>('import_local_config', { content }, mockState),
+  testWebdavConnection: (settings: AppSettings) =>
+    call<boolean>('test_webdav_connection', { webdav: normalizeSettings(settings).webdav }, true),
+  exportLocalConfig: (targetPath: string) =>
+    call<string>('export_local_config', { targetPath }, targetPath || 'C:/Software/WorkSpace/MyTerminal/.myterminal-data/exports/myterminal-config-demo.json'),
+  importLocalConfig: async (content: string) => {
+    const state = await call<BootstrapState>('import_local_config', { content }, mockState);
+    return { ...state, settings: normalizeSettings(state.settings) };
+  },
   // 更新检测读取 GitHub Release 元数据；Web 预览环境下返回当前版本，避免误提示本地预览需要更新。
   checkForUpdates: () => call<UpdateCheckResult>('check_for_updates', undefined, mockUpdateCheckResult),
   // 更新安装只接收后端检测出的 Release 安装包，桌面端下载到临时目录后启动安装器。

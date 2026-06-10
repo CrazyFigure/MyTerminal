@@ -17,6 +17,14 @@ fn default_shell_font_family() -> String {
     "JetBrains Mono".into()
 }
 
+fn default_shell_latin_font_family() -> String {
+    "JetBrains Mono".into()
+}
+
+fn default_shell_cjk_font_family() -> String {
+    "Microsoft YaHei UI".into()
+}
+
 fn default_shell_font_size() -> u16 {
     15
 }
@@ -43,6 +51,10 @@ fn default_terminal_background_image_opacity() -> f32 {
 
 fn default_terminal_background_image_fit() -> String {
     "cover".into()
+}
+
+fn default_terminal_right_click_behavior() -> String {
+    "paste".into()
 }
 
 fn default_show_command_ghost() -> bool {
@@ -137,6 +149,13 @@ pub struct AppSettings {
     pub theme_mode: String,
     #[serde(default = "default_runtime_refresh_interval_sec")]
     pub runtime_refresh_interval_sec: u16,
+    /// 终端英文字体用于 ASCII、数字和符号优先匹配。
+    #[serde(default = "default_shell_latin_font_family")]
+    pub shell_latin_font_family: String,
+    /// 终端中文字体用于 CJK 字符优先匹配，避免中文回退影响英文宽度。
+    #[serde(default = "default_shell_cjk_font_family")]
+    pub shell_cjk_font_family: String,
+    /// 旧版单字体字段保留兼容，保存时前端会同步成中英文字体组合。
     #[serde(default = "default_shell_font_family")]
     pub shell_font_family: String,
     #[serde(default = "default_shell_font_size")]
@@ -153,6 +172,9 @@ pub struct AppSettings {
     pub terminal_background_image_opacity: f32,
     #[serde(default = "default_terminal_background_image_fit")]
     pub terminal_background_image_fit: String,
+    /// 终端右键行为由前端执行，后端负责持久化用户偏好。
+    #[serde(default = "default_terminal_right_click_behavior")]
+    pub terminal_right_click_behavior: String,
     #[serde(default)]
     pub compact_sidebar: bool,
     #[serde(default = "default_show_command_ghost")]
@@ -175,6 +197,8 @@ impl Default for AppSettings {
             ui_language: "zh-CN".into(),
             theme_mode: "light".into(),
             runtime_refresh_interval_sec: 1,
+            shell_latin_font_family: default_shell_latin_font_family(),
+            shell_cjk_font_family: default_shell_cjk_font_family(),
             shell_font_family: "JetBrains Mono".into(),
             shell_font_size: 15,
             terminal_background: "#f7f7f7".into(),
@@ -183,6 +207,7 @@ impl Default for AppSettings {
             background_image: Some(String::new()),
             terminal_background_image_opacity: default_terminal_background_image_opacity(),
             terminal_background_image_fit: default_terminal_background_image_fit(),
+            terminal_right_click_behavior: default_terminal_right_click_behavior(),
             compact_sidebar: false,
             show_command_ghost: true,
             connection_groups: default_connection_groups(),
@@ -306,6 +331,15 @@ pub struct RemoteFileEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+pub struct RuntimeCpuCore {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub percent: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeOverview {
     #[serde(default)]
     pub host: String,
@@ -313,6 +347,9 @@ pub struct RuntimeOverview {
     pub os: String,
     #[serde(default)]
     pub cpu: String,
+    /// 每个 CPU 核心的采样占用率，前端点击总 CPU 行时按需展开。
+    #[serde(default)]
+    pub cpu_cores: Vec<RuntimeCpuCore>,
     #[serde(default)]
     pub memory: String,
     #[serde(default)]
@@ -428,6 +465,10 @@ pub struct StoredAppSettings {
     pub theme_mode: String,
     #[serde(default = "default_runtime_refresh_interval_sec")]
     pub runtime_refresh_interval_sec: u16,
+    #[serde(default = "default_shell_latin_font_family")]
+    pub shell_latin_font_family: String,
+    #[serde(default = "default_shell_cjk_font_family")]
+    pub shell_cjk_font_family: String,
     #[serde(default = "default_shell_font_family")]
     pub shell_font_family: String,
     #[serde(default = "default_shell_font_size")]
@@ -444,6 +485,8 @@ pub struct StoredAppSettings {
     pub terminal_background_image_opacity: f32,
     #[serde(default = "default_terminal_background_image_fit")]
     pub terminal_background_image_fit: String,
+    #[serde(default = "default_terminal_right_click_behavior")]
+    pub terminal_right_click_behavior: String,
     #[serde(default)]
     pub compact_sidebar: bool,
     #[serde(default = "default_show_command_ghost")]

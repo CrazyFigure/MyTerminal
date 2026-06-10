@@ -1,9 +1,9 @@
 use reqwest::{Client, Method, StatusCode};
 
 use crate::{
+    crypto::CryptoService,
     error::AppError,
     models::{AppSettings, ConnectionProfile, WebDavSettings},
-    crypto::CryptoService,
 };
 
 #[derive(Debug, Clone)]
@@ -67,7 +67,8 @@ impl WebDavService {
                 .send()
                 .await?;
 
-            if response.status().is_success() || response.status() == StatusCode::METHOD_NOT_ALLOWED {
+            if response.status().is_success() || response.status() == StatusCode::METHOD_NOT_ALLOWED
+            {
                 continue;
             }
 
@@ -77,7 +78,12 @@ impl WebDavService {
         Ok(())
     }
 
-    async fn put_text(&self, url: String, settings: &WebDavSettings, body: String) -> Result<(), AppError> {
+    async fn put_text(
+        &self,
+        url: String,
+        settings: &WebDavSettings,
+        body: String,
+    ) -> Result<(), AppError> {
         let response = self
             .client
             .put(url)
@@ -103,6 +109,30 @@ impl WebDavService {
             .await?)
     }
 
+    // 使用 Depth=0 的 PROPFIND 轻量探测 WebDAV 根地址，避免测试连接时创建或覆盖任何远端文件。
+    pub async fn test_connection(&self, settings: &WebDavSettings) -> Result<(), AppError> {
+        Self::validate_settings(settings)?;
+        let method = Method::from_bytes(b"PROPFIND")
+            .map_err(|error| AppError::Validation(format!("invalid WebDAV method: {error}")))?;
+        let response = self
+            .client
+            .request(method, settings.base_url.trim_end_matches('/'))
+            .basic_auth(&settings.username, Some(&settings.password))
+            .header("Depth", "0")
+            .send()
+            .await?;
+
+        if response.status().is_success()
+            || response.status() == StatusCode::MULTI_STATUS
+            || response.status() == StatusCode::METHOD_NOT_ALLOWED
+        {
+            return Ok(());
+        }
+
+        response.error_for_status()?;
+        Ok(())
+    }
+
     pub async fn upload_settings(
         &self,
         settings: &AppSettings,
@@ -110,8 +140,12 @@ impl WebDavService {
     ) -> Result<(), AppError> {
         Self::validate_settings(&settings.webdav)?;
         let serialized = serde_json::to_string_pretty(settings)?;
-        self.ensure_parent_collections(&settings.webdav, &settings.webdav.remote_settings_path).await?;
-        let url = Self::build_url(&settings.webdav.base_url, &settings.webdav.remote_settings_path);
+        self.ensure_parent_collections(&settings.webdav, &settings.webdav.remote_settings_path)
+            .await?;
+        let url = Self::build_url(
+            &settings.webdav.base_url,
+            &settings.webdav.remote_settings_path,
+        );
         self.put_text(url, &settings.webdav, serialized).await
     }
 
@@ -134,8 +168,12 @@ impl WebDavService {
     ) -> Result<(), AppError> {
         Self::validate_settings(&settings.webdav)?;
         let serialized = serde_json::to_string_pretty(connections)?;
-        self.ensure_parent_collections(&settings.webdav, &settings.webdav.remote_connections_path).await?;
-        let url = Self::build_url(&settings.webdav.base_url, &settings.webdav.remote_connections_path);
+        self.ensure_parent_collections(&settings.webdav, &settings.webdav.remote_connections_path)
+            .await?;
+        let url = Self::build_url(
+            &settings.webdav.base_url,
+            &settings.webdav.remote_connections_path,
+        );
         self.put_text(url, &settings.webdav, serialized).await
     }
 
