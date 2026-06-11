@@ -228,7 +228,7 @@ const mockState: BootstrapState = {
   tunnels: mockTunnels,
 };
 
-const mockAppVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.3';
+const mockAppVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.4';
 
 const mockUpdateCheckResult: UpdateCheckResult = {
   currentVersion: mockAppVersion,
