@@ -2113,11 +2113,12 @@ pub fn get_command_suggestions(
 #[tauri::command]
 pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
-    let release_url = "https://github.com/CrazyFigure/MyShell/releases/latest".to_string();
+    // 更新提示返回给前端的 Release 页面地址，必须和 GitHub 仓库名保持一致。
+    let release_url = "https://github.com/CrazyFigure/MyTerminal/releases/latest".to_string();
     let client = reqwest::Client::new();
     // GitHub API 要求明确 User-Agent；这里仅读取最新 Release 元数据，并挑出后续可安装的 Windows 安装包。
     let release = client
-        .get("https://api.github.com/repos/CrazyFigure/MyShell/releases/latest")
+        .get("https://api.github.com/repos/CrazyFigure/MyTerminal/releases/latest")
         .header(reqwest::header::USER_AGENT, "MyTerminal")
         .send()
         .await

@@ -2113,9 +2113,10 @@ downloadConfig,
                     <div>
                       <h3>{t('aboutTitle')}</h3>
                     </div>
+                    {/* 关于页仓库入口固定指向当前 GitHub 仓库，仓库重命名后需要同步更新。 */}
                     <button
                       className="secondary-button"
-                      onClick={() => openExternalLink('https://github.com/CrazyFigure/MyShell')}
+                      onClick={() => openExternalLink('https://github.com/CrazyFigure/MyTerminal')}
                       type="button"
                     >
                       <ExternalLink size={16} /> {t('githubRepository')}

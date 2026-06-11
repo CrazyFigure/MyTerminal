@@ -237,7 +237,8 @@ const mockUpdateCheckResult: UpdateCheckResult = {
   currentVersion: mockAppVersion,
   latestVersion: mockAppVersion,
   releaseName: 'MyTerminal local preview',
-  releaseUrl: 'https://github.com/CrazyFigure/MyShell/releases/latest',
+  // 本地预览的更新结果也保持真实 Release 地址，便于关于页和安装链路一致跳转。
+  releaseUrl: 'https://github.com/CrazyFigure/MyTerminal/releases/latest',
   updateAvailable: false,
 };
 
