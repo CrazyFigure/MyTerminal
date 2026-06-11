@@ -390,6 +390,10 @@ const isConnectionGroupOrChildPath = (value: string | undefined, groupPath: stri
   return Boolean(groupPath) && (normalized === groupPath || normalized.startsWith(`${groupPath}/`));
 };
 
+// 管理页右侧列表只展示当前目录直属连接，父目录不混入子目录连接，方便用户按层级管理。
+const isConnectionInExactGroupPath = (value: string | undefined, groupPath: string) =>
+  normalizeConnectionGroupPath(value) === normalizeConnectionGroupPath(groupPath);
+
 // 拖拽排序只移动现有项位置，不改写路径含义；目标项作为插入锚点，上下半区决定插入方向。
 const moveItemToInsert = (items: string[], source: string, target: string, placement: InsertPlacement) => {
   if (source === target) {
@@ -1028,9 +1032,7 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
       return orderedConnections.filter((connection) => !normalizeConnectionGroupPath(connection.groupPath));
     }
 
-    return orderedConnections.filter((connection) => {
-      return isConnectionGroupOrChildPath(connection.groupPath, selectedGroupPath);
-    });
+    return orderedConnections.filter((connection) => isConnectionInExactGroupPath(connection.groupPath, selectedGroupPath));
   }, [orderedConnections, selectedGroupPath]);
   const connectionTableGridTemplate = useMemo(
     () => `${connectionTableColumnWidths.map((width) => `${width}px`).join(' ')} minmax(${connectionTableActionMinWidth}px, 1fr)`,
@@ -1313,7 +1315,11 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
             <h3>{t('connectionManagerTitle')}</h3>
           </div>
           <div className="section-row compact">
-            <button className="primary-button" onClick={() => openConnectionForm()} type="button">
+            <button
+              className="primary-button"
+              onClick={() => openConnectionForm(undefined, selectedGroupPath === ungroupedGroupPath ? undefined : selectedGroupPath)}
+              type="button"
+            >
               <Plus size={16} /> {t('newConnection')}
             </button>
             <button className="icon-button" onClick={onClose} type="button">
@@ -1585,7 +1591,7 @@ function SettingsModal({
 
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(draftSettings.uiLanguage ?? settings.uiLanguage, key, replacements);
-  const appVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.4';
+  const appVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.5';
   const webdavPasswordToggleLabel = revealWebdavPassword ? t('hideSecret') : t('showSecret');
   const selectedLatinFontFamily = draftSettings.shellLatinFontFamily || draftSettings.shellFontFamily.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '') || 'JetBrains Mono';
   const selectedCjkFontFamily = draftSettings.shellCjkFontFamily || selectedLatinFontFamily;

@@ -247,6 +247,11 @@ const isTerminalEditingInput = (data: string) => data.includes('\x7f') || data.i
 let remoteFilesRefreshSeq = 0;
 let runtimeOverviewRefreshSeq = 0;
 let remoteHistoryRefreshSeq = 0;
+let remoteFilesAutoRefreshTimer: number | undefined;
+let remoteFilesRefreshInFlight = false;
+let remoteFilesQueuedRequest: { connectionId: string; path: string; seq: number } | undefined;
+// cwd 自动同步只做轻量延迟，给用户连续输入留出优先级，避免刚 cd 就立刻抢占远端 SFTP 连接。
+const remoteFilesAutoRefreshDelayMs = 360;
 
 const statusText = (
   settings: AppSettings,
@@ -340,7 +345,7 @@ type StoreState = {
   setActivePanel: (panel: WorkspacePanel) => void;
   setActiveConnectionId: (connectionId?: string) => void;
   selectSession: (sessionId?: string) => void;
-  openConnectionForm: (connection?: ConnectionProfile) => void;
+  openConnectionForm: (connection?: ConnectionProfile, groupPath?: string) => void;
   closeConnectionForm: () => void;
   updateConnectionDraft: (key: keyof ConnectionDraft, value: string | number | string[]) => void;
   saveConnectionDraft: () => Promise<void>;
@@ -478,7 +483,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
       };
     }),
 
-  openConnectionForm: (connection) =>
+  openConnectionForm: (connection, groupPath) =>
     set({
       showConnectionForm: true,
       connectionTestResult: undefined,
@@ -494,7 +499,11 @@ export const useAppStore = create<StoreState>((set, get) => ({
             note: connection.note ?? '',
             tags: [...connection.tags],
           }
-        : emptyConnectionDraft(),
+        : {
+            ...emptyConnectionDraft(),
+            // 从连接管理的当前目录新建时预填 groupPath，减少重复手输路径和误建到未分组的概率。
+            groupPath: normalizeConnectionGroupPath(groupPath),
+          },
     }),
 
   closeConnectionForm: () =>
@@ -1118,12 +1127,12 @@ export const useAppStore = create<StoreState>((set, get) => ({
       statusMessage: statusText(prev.settings, 'statusSentCommand', { target: session?.title ?? 'session' }),
     }));
 
-    await get().pollTerminalOutputs();
+    void get().pollTerminalOutputs();
     if (session?.connectionId) {
       void get().refreshRemoteHistory(session.connectionId);
     }
     if (nextRemotePath) {
-      await get().refreshFiles(nextRemotePath);
+      void get().refreshFiles(nextRemotePath);
     }
   },
 
@@ -1136,7 +1145,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
     queueTerminalInput(sessionId, data, isTerminalEditingInput(data) ? terminalEditingInputFlushDelayMs : terminalInputFlushDelayMs);
     if (data === '\r' || data === '\n') {
       await flushQueuedTerminalInput(sessionId);
-      await get().pollTerminalOutputs();
+      void get().pollTerminalOutputs();
       return;
     }
   },
@@ -1144,7 +1153,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
   passthroughTab: async (sessionId) => {
     queueTerminalInput(sessionId, '\t');
     await flushQueuedTerminalInput(sessionId);
-    await get().pollTerminalOutputs();
+    void get().pollTerminalOutputs();
   },
 
   runQuickCommand: async (command) => {
@@ -1246,7 +1255,14 @@ export const useAppStore = create<StoreState>((set, get) => ({
     });
 
     if (activeCwdToRefresh) {
-      await get().refreshFiles(activeCwdToRefresh);
+      if (remoteFilesAutoRefreshTimer !== undefined) {
+        window.clearTimeout(remoteFilesAutoRefreshTimer);
+      }
+      // cwd 来自远端提示符，延迟刷新文件树可以吸收快速 cd/ls 连续输入，避免 SFTP 刷新阻塞终端输入反馈。
+      remoteFilesAutoRefreshTimer = window.setTimeout(() => {
+        remoteFilesAutoRefreshTimer = undefined;
+        void get().refreshFiles(activeCwdToRefresh);
+      }, remoteFilesAutoRefreshDelayMs);
     }
   },
 
@@ -1290,34 +1306,64 @@ export const useAppStore = create<StoreState>((set, get) => ({
   },
 
   refreshFiles: async (path) => {
-    const { activeConnectionId, activeSessionId, currentRemotePath, sessions } = get();
-    const activeSession = sessions.find((item) => item.id === activeSessionId);
-    const activeRemoteConnectionId = isUsableRemoteSession(activeSession?.status) ? activeSession?.connectionId : undefined;
-    // 文件管理必须绑定已打开的终端会话；只选中连接时不展示也不刷新远端文件。
-    if (!activeConnectionId || activeConnectionId !== activeRemoteConnectionId) {
+    const resolveRefreshRequest = () => {
+      const { activeConnectionId, activeSessionId, currentRemotePath, sessions } = get();
+      const activeSession = sessions.find((item) => item.id === activeSessionId);
+      const activeRemoteConnectionId = isUsableRemoteSession(activeSession?.status) ? activeSession?.connectionId : undefined;
+      // 文件管理必须绑定已打开的终端会话；只选中连接时不展示也不刷新远端文件。
+      if (!activeConnectionId || activeConnectionId !== activeRemoteConnectionId) {
+        return undefined;
+      }
+
+      return {
+        connectionId: activeConnectionId,
+        path: path ?? currentRemotePath,
+        seq: ++remoteFilesRefreshSeq,
+      };
+    };
+
+    const firstRequest = resolveRefreshRequest();
+    if (!firstRequest) {
       return;
     }
 
-    const nextPath = path ?? currentRemotePath;
-    const requestConnectionId = activeConnectionId;
-    const requestSeq = ++remoteFilesRefreshSeq;
+    if (remoteFilesRefreshInFlight) {
+      // SFTP 刷新串行执行，正在刷新时只保留最后一次目标路径，避免快速 cd/双击目录堆出多条 SSH 连接。
+      remoteFilesQueuedRequest = firstRequest;
+      return;
+    }
+
+    remoteFilesRefreshInFlight = true;
+    let request: typeof firstRequest | undefined = firstRequest;
     try {
-      const files = await backend.listRemoteFiles(activeConnectionId, nextPath);
-      if (requestSeq !== remoteFilesRefreshSeq || get().activeConnectionId !== requestConnectionId) {
-        return;
-      }
+      while (request) {
+        const currentRequest = request;
+        remoteFilesQueuedRequest = undefined;
+        try {
+          const files = await backend.listRemoteFiles(currentRequest.connectionId, currentRequest.path);
+          if (currentRequest.seq !== remoteFilesRefreshSeq || get().activeConnectionId !== currentRequest.connectionId) {
+            request = remoteFilesQueuedRequest;
+            continue;
+          }
 
-      set({ files, currentRemotePath: nextPath, statusMessage: statusText(get().settings, 'statusLoadedPath', { path: nextPath }) });
-    } catch (error) {
-      if (requestSeq !== remoteFilesRefreshSeq || get().activeConnectionId !== requestConnectionId) {
-        return;
-      }
+          set({ files, currentRemotePath: currentRequest.path, statusMessage: statusText(get().settings, 'statusLoadedPath', { path: currentRequest.path }) });
+        } catch (error) {
+          if (currentRequest.seq !== remoteFilesRefreshSeq || get().activeConnectionId !== currentRequest.connectionId) {
+            request = remoteFilesQueuedRequest;
+            continue;
+          }
 
-      set((state) => ({
-        statusMessage: statusText(state.settings, 'statusRemoteFilesFailed', {
-          reason: error instanceof Error ? error.message : String(error),
-        }),
-      }));
+          set((state) => ({
+            statusMessage: statusText(state.settings, 'statusRemoteFilesFailed', {
+              reason: error instanceof Error ? error.message : String(error),
+            }),
+          }));
+        }
+
+        request = remoteFilesQueuedRequest;
+      }
+    } finally {
+      remoteFilesRefreshInFlight = false;
     }
   },
 

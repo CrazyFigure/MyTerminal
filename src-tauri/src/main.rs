@@ -1,3 +1,6 @@
+// 发布版使用 Windows GUI 子系统，避免安装后额外弹出 myterminal.exe 控制台窗口。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod commands;
 mod crypto;
 mod error;

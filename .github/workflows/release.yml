@@ -36,9 +36,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: MyShell ${{ github.ref_name }}
+          releaseName: MyTerminal ${{ github.ref_name }}
           releaseBody: Windows EXE installer is attached below.
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           # 使用 action.yml 支持的资产命名参数，让 Release 附件名称稳定可识别。
-          assetNamePattern: MyShell_[version]_[platform]_[arch][setup][ext]
+          assetNamePattern: MyTerminal_[version]_[platform]_[arch][setup][ext]

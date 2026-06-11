@@ -228,7 +228,7 @@ const mockState: BootstrapState = {
   tunnels: mockTunnels,
 };
 
-const mockAppVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.4';
+const mockAppVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.5';
 
 const mockUpdateCheckResult: UpdateCheckResult = {
   currentVersion: mockAppVersion,
@@ -368,7 +368,7 @@ export const backend = {
     call<string>(
       'download_and_install_update',
       { downloadUrl: result.installerDownloadUrl, assetName: result.installerAssetName },
-      'C:/Software/WorkSpace/MyTerminal/.myterminal-data/updates/MyShell-update.exe',
+      'C:/Software/WorkSpace/MyTerminal/.myterminal-data/updates/MyTerminal-update.exe',
     ),
   // 外链打开在桌面端交给后端调用系统浏览器；Web 预览下保持成功返回，方便本地界面调试。
   openExternalUrl: (url: string) => call<boolean>('open_external_url', { url }, true),

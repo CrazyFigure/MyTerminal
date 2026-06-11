@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     env, fs,
     io::{ErrorKind, Read, Write},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -47,6 +47,9 @@ struct GitHubReleaseAsset {
     browser_download_url: String,
     size: Option<u64>,
 }
+
+const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
+const SSH_IO_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn lock_sessions<'a>(
     state: &'a AppState,
@@ -164,7 +167,7 @@ fn sanitize_asset_file_name(asset_name: &str) -> String {
         })
         .collect();
     if sanitized.trim_matches('_').is_empty() {
-        "MyShell-update.exe".into()
+        "MyTerminal-update.exe".into()
     } else {
         sanitized
     }
@@ -527,9 +530,26 @@ fn connect_ssh_once(
     compatibility_mode: bool,
 ) -> Result<Session, AppError> {
     let address = format!("{}:{}", connection.host, connection.port);
-    let tcp = TcpStream::connect(address)?;
-    tcp.set_read_timeout(Some(Duration::from_secs(30)))?;
-    tcp.set_write_timeout(Some(Duration::from_secs(30)))?;
+    // SSH/SFTP 辅助连接必须有明确超时，避免文件管理刷新卡在握手阶段并拖慢终端交互。
+    let mut last_error = None;
+    let addresses = address.to_socket_addrs()?;
+    let mut tcp = None;
+    for socket_address in addresses {
+        match TcpStream::connect_timeout(&socket_address, SSH_CONNECT_TIMEOUT) {
+            Ok(stream) => {
+                tcp = Some(stream);
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let tcp = tcp.ok_or_else(|| {
+        AppError::Io(last_error.unwrap_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "no resolved SSH address")
+        }))
+    })?;
+    tcp.set_read_timeout(Some(SSH_IO_TIMEOUT))?;
+    tcp.set_write_timeout(Some(SSH_IO_TIMEOUT))?;
 
     let mut session = Session::new().map_err(ssh_error)?;
     session.set_tcp_stream(tcp);
@@ -568,9 +588,19 @@ fn handle_shell_control(channel: &mut Channel, control: SessionControl) -> Resul
             Ok(false)
         }
         SessionControl::Resize { cols, rows } => {
-            channel
-                .request_pty_size(cols.into(), rows.into(), Some(0), Some(0))
-                .map_err(ssh_error)?;
+            if let Err(error) = channel.request_pty_size(cols.into(), rows.into(), Some(0), Some(0)) {
+                let message = error.to_string().to_ascii_lowercase();
+                // 非阻塞 PTY 调整尺寸偶尔会撞上 libssh2 的短暂 busy 状态；尺寸下一次变化还会同步，不能因此断开会话。
+                if message.contains("session(-37)")
+                    || message.contains("would block")
+                    || message.contains("eagain")
+                    || message.contains("temporarily unavailable")
+                    || message.contains("try again")
+                {
+                    return Ok(false);
+                }
+                return Err(ssh_error(error));
+            }
             Ok(false)
         }
         SessionControl::Close => {
@@ -591,6 +621,25 @@ fn flush_pending_shell_input(
     // 同一轮事件循环内的按键合并成一个 channel 写入，降低连续 Backspace/粘贴时的 SSH 写入压力。
     let data = std::mem::take(pending_input);
     write_channel_input(channel, data.as_bytes())
+}
+
+fn is_recoverable_terminal_write_error(error: &AppError) -> bool {
+    // 非阻塞 SSH channel 在远端同时大量输出和本地快速输入时可能暂时写不进去，保留会话比立刻断开更符合终端预期。
+    match error {
+        AppError::Io(error) => is_transient_channel_write_error(error),
+        AppError::Validation(message) | AppError::Ssh(message) => {
+            let normalized = message.to_ascii_lowercase();
+            normalized.contains("terminal input write timed out")
+                || normalized.contains("session(-37)")
+                || normalized.contains("would block")
+                || normalized.contains("eagain")
+                || normalized.contains("temporarily unavailable")
+                || normalized.contains("try again")
+                || normalized.contains("transport write")
+                || normalized.contains("socket write")
+        }
+        _ => false,
+    }
 }
 
 fn spawn_shell_thread(
@@ -645,11 +694,16 @@ fn spawn_shell_thread(
                 match control_rx.try_recv() {
                     Ok(SessionControl::Input(data)) => {
                         pending_input.push_str(&data);
-                        if pending_input.len() >= 4096
-                            && flush_pending_shell_input(&mut channel, &mut pending_input).is_err()
-                        {
-                            queue_session_status(&output_queue, &session_id, "error");
-                            return;
+                        if pending_input.len() >= 4096 {
+                            let retry_input = pending_input.clone();
+                            if let Err(error) = flush_pending_shell_input(&mut channel, &mut pending_input) {
+                                if is_recoverable_terminal_write_error(&error) {
+                                    pending_input = retry_input;
+                                    break;
+                                }
+                                queue_session_status(&output_queue, &session_id, "error");
+                                return;
+                            }
                         }
                     }
                     Ok(SessionControl::Close) => {
@@ -657,7 +711,12 @@ fn spawn_shell_thread(
                         return;
                     }
                     Ok(control) => {
-                        if flush_pending_shell_input(&mut channel, &mut pending_input).is_err() {
+                        let retry_input = pending_input.clone();
+                        if let Err(error) = flush_pending_shell_input(&mut channel, &mut pending_input) {
+                            if is_recoverable_terminal_write_error(&error) {
+                                pending_input = retry_input;
+                                break;
+                            }
                             queue_session_status(&output_queue, &session_id, "error");
                             return;
                         }
@@ -675,9 +734,15 @@ fn spawn_shell_thread(
                 }
             }
 
-            if flush_pending_shell_input(&mut channel, &mut pending_input).is_err() {
-                queue_session_status(&output_queue, &session_id, "error");
-                return;
+            let retry_input = pending_input.clone();
+            if let Err(error) = flush_pending_shell_input(&mut channel, &mut pending_input) {
+                if is_recoverable_terminal_write_error(&error) {
+                    pending_input = retry_input;
+                    thread::sleep(Duration::from_millis(20));
+                } else {
+                    queue_session_status(&output_queue, &session_id, "error");
+                    return;
+                }
             }
 
             match channel.read(&mut buffer) {
@@ -2018,7 +2083,7 @@ pub async fn download_and_install_update(
     }
 
     let safe_file_name = sanitize_asset_file_name(&asset_name);
-    let update_dir = env::temp_dir().join("MyShell-updates");
+    let update_dir = env::temp_dir().join("MyTerminal-updates");
     fs::create_dir_all(&update_dir).map_err(|error| AppError::from(error).to_string())?;
     let installer_path: PathBuf = update_dir.join(safe_file_name);
 
