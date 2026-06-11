@@ -1585,7 +1585,7 @@ function SettingsModal({
 
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(draftSettings.uiLanguage ?? settings.uiLanguage, key, replacements);
-  const appVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.3';
+  const appVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.4';
   const webdavPasswordToggleLabel = revealWebdavPassword ? t('hideSecret') : t('showSecret');
   const selectedLatinFontFamily = draftSettings.shellLatinFontFamily || draftSettings.shellFontFamily.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '') || 'JetBrains Mono';
   const selectedCjkFontFamily = draftSettings.shellCjkFontFamily || selectedLatinFontFamily;

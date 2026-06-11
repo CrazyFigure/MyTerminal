@@ -1600,6 +1600,7 @@ select:disabled {
 
 .resize-handle-main {
   display: block;
+  cursor: col-resize;
 }
 
 .resize-handle-main.is-hidden {
@@ -1685,9 +1686,6 @@ select:disabled {
   width: 22px;
   height: 22px;
   padding: 0;
-}
-
-  cursor: col-resize;
 }
 
 .resize-handle-horizontal {
