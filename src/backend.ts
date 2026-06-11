@@ -231,7 +231,7 @@ const mockState: BootstrapState = {
 };
 
 // 前端预览环境没有后端版本接口时，沿用构建注入版本作为展示与更新检查兜底。
-const mockAppVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.6';
+const mockAppVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.7';
 
 const mockUpdateCheckResult: UpdateCheckResult = {
   currentVersion: mockAppVersion,

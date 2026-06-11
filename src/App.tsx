@@ -1596,7 +1596,7 @@ downloadConfig,
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(draftSettings.uiLanguage ?? settings.uiLanguage, key, replacements);
   // 界面显示优先使用构建注入版本，避免本地预览缺少环境变量时出现空版本。
-  const appVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.6';
+  const appVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.7';
   const webdavPasswordToggleLabel = revealWebdavPassword ? t('hideSecret') : t('showSecret');
   const selectedLatinFontFamily = draftSettings.shellLatinFontFamily || draftSettings.shellFontFamily.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '') || 'JetBrains Mono';
   const selectedCjkFontFamily = draftSettings.shellCjkFontFamily || selectedLatinFontFamily;
