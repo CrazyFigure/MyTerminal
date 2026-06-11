@@ -26,8 +26,7 @@ export interface WebDavSettings {
   username: string;
   password: string;
   syncPassphrase: string;
-  remoteSettingsPath: string;
-  remoteConnectionsPath: string;
+  remotePath: string;
 }
 
 export interface AppSettings {
@@ -136,7 +135,15 @@ export interface TunnelOpenRequest {
   remotePort: number;
 }
 
+// 隧道编辑必须携带已有记录 id，其余字段沿用新增请求，便于后端按同一套规则校验端点。
+export interface TunnelUpdateRequest extends TunnelOpenRequest {
+  id: string;
+}
+
 export interface TunnelDraft {
+  // 表单草稿保留 id 与连接 id，用来区分新增/编辑，并避免切换活动连接时误保存到其他连接。
+  id: string;
+  connectionId: string;
   name: string;
   bindAddress: string;
   localPort: number;

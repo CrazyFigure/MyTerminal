@@ -12,6 +12,7 @@ import type {
   TerminalSession,
   TunnelOpenRequest,
   TunnelRecord,
+  TunnelUpdateRequest,
   UpdateCheckResult,
 } from './types';
 
@@ -105,8 +106,7 @@ const normalizeSettings = (settings: AppSettings): AppSettings => ({
     username: settings.webdav?.username ?? '',
     password: settings.webdav?.password ?? '',
     syncPassphrase: settings.webdav?.syncPassphrase ?? '',
-    remoteSettingsPath: settings.webdav?.remoteSettingsPath ?? '/myterminal/settings.enc.json',
-    remoteConnectionsPath: settings.webdav?.remoteConnectionsPath ?? '/myterminal/connections.enc.json',
+    remotePath: settings.webdav?.remotePath ?? '/myterminal',
   },
 });
 
@@ -125,9 +125,12 @@ const normalizeConnection = (connection: ConnectionProfile): ConnectionProfile =
     connection.authMethod === 'privateKey' ? keepTextIfPresent(connection.passphrase) : undefined,
 });
 
+// 隧道请求在进入 Tauri IPC 前统一清洗端点，避免前后端对空监听地址和端口默认值理解不一致。
 const normalizeTunnelRequest = (request: TunnelOpenRequest): TunnelOpenRequest => ({
   ...request,
   bindAddress: trimToUndefined(request.bindAddress) ?? '127.0.0.1',
+  name: request.name.trim(),
+  remoteHost: request.remoteHost.trim(),
   localPort: clampPort(request.localPort, 15432),
   remotePort: clampPort(request.remotePort, 5432),
 });
@@ -157,8 +160,7 @@ const mockSettings: AppSettings = {
     username: '',
     password: '',
     syncPassphrase: '',
-    remoteSettingsPath: '/myterminal/settings.enc.json',
-    remoteConnectionsPath: '/myterminal/connections.enc.json',
+    remotePath: '/myterminal',
   },
 };
 
@@ -228,7 +230,8 @@ const mockState: BootstrapState = {
   tunnels: mockTunnels,
 };
 
-const mockAppVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.5';
+// 前端预览环境没有后端版本接口时，沿用构建注入版本作为展示与更新检查兜底。
+const mockAppVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.6';
 
 const mockUpdateCheckResult: UpdateCheckResult = {
   currentVersion: mockAppVersion,
@@ -315,9 +318,21 @@ export const backend = {
       host: mockConnections.find((item) => item.id === connectionId)?.host ?? mockRuntimeOverview.host,
     }),
   listTunnels: () => call<TunnelRecord[]>('list_tunnels', undefined, mockTunnels),
+  // 新建隧道只保存配置，真正绑定本地端口交给 startTunnel，避免端口占用导致配置无法添加。
   openTunnel: (request: TunnelOpenRequest) => {
     const normalized = normalizeTunnelRequest(request);
-    return call<TunnelRecord>('open_tunnel', { request: normalized }, { ...normalized, id: crypto.randomUUID(), status: 'running' });
+    return call<TunnelRecord>('open_tunnel', { request: normalized }, { ...normalized, id: crypto.randomUUID(), status: 'stopped' });
+  },
+  // 编辑隧道会让后端停止旧监听并保存为 stopped，用户确认后可再手动开启新端点。
+  updateTunnel: (request: TunnelUpdateRequest) => {
+    const normalized = normalizeTunnelRequest(request);
+    const fallback = mockTunnels.find((item) => item.id === request.id);
+    return call<TunnelRecord>('update_tunnel', { request: { ...normalized, id: request.id } }, {
+      ...fallback,
+      ...normalized,
+      id: request.id,
+      status: 'stopped',
+    } as TunnelRecord);
   },
   startTunnel: (tunnelId: string) =>
     call<TunnelRecord>('start_tunnel', { tunnelId }, {
@@ -349,10 +364,12 @@ export const backend = {
       .map((item) => item.command)
       .filter((command) => command.startsWith(prefix))
       .slice(0, 5)),
-  uploadSettings: () => call<boolean>('upload_settings_to_webdav', undefined, true),
-  downloadSettings: async () => normalizeSettings(await call<AppSettings>('download_settings_from_webdav', undefined, mockSettings)),
-  uploadConnections: () => call<boolean>('upload_connections_to_webdav', undefined, true),
-  downloadConnections: () => call<ConnectionProfile[]>('download_connections_from_webdav', undefined, mockConnections),
+  uploadConfig: () => call<string>('upload_config_to_webdav', undefined, '/myterminal/myterminal-config-20260611-142530.enc.json'),
+  listConfigBackups: () => call<string[]>('list_config_backups', undefined, []),
+  downloadConfig: async (remotePath: string) => {
+    const state = await call<BootstrapState>('download_config_from_webdav', { remotePath }, mockState);
+    return { ...state, settings: normalizeSettings(state.settings) };
+  },
   testWebdavConnection: (settings: AppSettings) =>
     call<boolean>('test_webdav_connection', { webdav: normalizeSettings(settings).webdav }, true),
   exportLocalConfig: (targetPath: string) =>

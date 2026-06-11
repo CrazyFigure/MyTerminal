@@ -41,6 +41,7 @@ fn main() {
             commands::list_tunnels,
             commands::fetch_runtime_overview,
             commands::open_tunnel,
+            commands::update_tunnel,
             commands::start_tunnel,
             commands::close_tunnel,
             commands::read_remote_shell_history,
@@ -53,9 +54,14 @@ fn main() {
             commands::import_local_config,
             commands::test_webdav_connection,
             commands::upload_settings_to_webdav,
+            commands::list_settings_backups,
             commands::download_settings_from_webdav,
             commands::upload_connections_to_webdav,
+            commands::list_connections_backups,
             commands::download_connections_from_webdav,
+            commands::upload_config_to_webdav,
+            commands::list_config_backups,
+            commands::download_config_from_webdav,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

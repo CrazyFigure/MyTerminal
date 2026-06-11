@@ -16,6 +16,7 @@ import type {
   TunnelDraft,
   TunnelOpenRequest,
   TunnelRecord,
+  TunnelUpdateRequest,
   UpdateCheckResult,
   WorkspacePanel,
 } from './types';
@@ -45,8 +46,7 @@ const defaultSettings: AppSettings = {
     username: '',
     password: '',
     syncPassphrase: '',
-    remoteSettingsPath: '/myterminal/settings.enc.json',
-    remoteConnectionsPath: '/myterminal/connections.enc.json',
+    remotePath: '/myterminal',
   },
 };
 
@@ -67,6 +67,8 @@ const emptyConnectionDraft = (): ConnectionDraft => ({
 });
 
 const emptyTunnelDraft = (): TunnelDraft => ({
+  id: '',
+  connectionId: '',
   name: '',
   bindAddress: '127.0.0.1',
   localPort: 15432,
@@ -261,6 +263,24 @@ const statusText = (
 
 const isValidPort = (value: number) => Number.isInteger(value) && value >= 1 && value <= 65535;
 
+// 隧道草稿先校验本地必填项和端口范围，端口占用等运行态问题交给启动监听时返回明确错误。
+const getTunnelDraftValidationKey = (draft: TunnelDraft) => {
+  if (!draft.name.trim()) {
+    return 'validationNameRequired' as const;
+  }
+  if (!draft.bindAddress.trim()) {
+    return 'validationBindAddressRequired' as const;
+  }
+  if (!isValidPort(draft.localPort) || !isValidPort(draft.remotePort)) {
+    return 'validationPortInvalid' as const;
+  }
+  if (!draft.remoteHost.trim()) {
+    return 'validationRemoteHostRequired' as const;
+  }
+
+  return undefined;
+};
+
 const getConnectionDraftValidationKey = (draft: ConnectionDraft) => {
   if (!draft.name.trim()) {
     return 'validationNameRequired' as const;
@@ -388,15 +408,15 @@ type StoreState = {
   updateSettings: (updater: (settings: AppSettings) => AppSettings) => void;
   persistSettings: (settings?: AppSettings) => Promise<AppSettings>;
   testWebdavConnection: (settings?: AppSettings) => Promise<void>;
-  uploadSettings: () => Promise<void>;
-  downloadSettings: () => Promise<void>;
-  uploadConnections: () => Promise<void>;
-  downloadConnections: () => Promise<void>;
+  uploadConfig: () => Promise<void>;
+  downloadConfig: (remotePath: string) => Promise<void>;
   exportLocalConfig: (targetPath: string) => Promise<void>;
   importLocalConfig: (file: File) => Promise<void>;
   checkForUpdates: () => Promise<UpdateCheckResult>;
   installUpdate: (result: UpdateCheckResult) => Promise<void>;
   openTunnel: () => Promise<void>;
+  // 隧道编辑复用新增弹窗，草稿中的 id 用来决定保存时走新增还是更新。
+  editTunnel: (tunnel: TunnelRecord) => void;
   startTunnel: (tunnelId: string) => Promise<void>;
   startAllTunnels: () => Promise<void>;
   stopAllTunnels: () => Promise<void>;
@@ -621,12 +641,22 @@ export const useAppStore = create<StoreState>((set, get) => ({
 
   saveTunnelDraft: async () => {
     const { activeConnectionId, tunnelDraft } = get();
-    if (!activeConnectionId) {
+    const connectionId = tunnelDraft.connectionId || activeConnectionId;
+    if (!connectionId) {
       return;
     }
 
+    const validationKey = getTunnelDraftValidationKey(tunnelDraft);
+    if (validationKey) {
+      set((state) => ({
+        statusMessage: statusText(state.settings, validationKey),
+      }));
+      return;
+    }
+
+    // 保存隧道只负责落盘，启动监听由“开启”按钮触发，避免端口被占用时连配置都无法创建。
     const request: TunnelOpenRequest = {
-      connectionId: activeConnectionId,
+      connectionId,
       name: tunnelDraft.name.trim(),
       bindAddress: tunnelDraft.bindAddress.trim(),
       localPort: tunnelDraft.localPort,
@@ -634,14 +664,24 @@ export const useAppStore = create<StoreState>((set, get) => ({
       remotePort: tunnelDraft.remotePort,
     };
 
-    const tunnel = await backend.openTunnel(request);
-    set((state) => ({
-      tunnels: [tunnel, ...state.tunnels.filter((item) => item.id !== tunnel.id)],
-      activePanel: 'tunnels',
-      showTunnelForm: false,
-      tunnelDraft: emptyTunnelDraft(),
-      statusMessage: statusText(state.settings, 'statusTunnelCreated'),
-    }));
+    try {
+      const tunnel = tunnelDraft.id
+        ? await backend.updateTunnel({ ...request, id: tunnelDraft.id } as TunnelUpdateRequest)
+        : await backend.openTunnel(request);
+      set((state) => ({
+        tunnels: [tunnel, ...state.tunnels.filter((item) => item.id !== tunnel.id)],
+        activePanel: 'tunnels',
+        showTunnelForm: false,
+        tunnelDraft: emptyTunnelDraft(),
+        statusMessage: statusText(state.settings, tunnelDraft.id ? 'statusTunnelUpdated' : 'statusTunnelCreated'),
+      }));
+    } catch (error) {
+      set((state) => ({
+        statusMessage: statusText(state.settings, 'statusTunnelSaveFailed', {
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      }));
+    }
   },
 
   deleteConnection: async (connectionId) => {
@@ -1574,25 +1614,32 @@ export const useAppStore = create<StoreState>((set, get) => ({
     set({ statusMessage: statusText(settings, 'statusWebdavTestPassed') });
   },
 
-  uploadSettings: async () => {
+  uploadConfig: async () => {
     await get().persistSettings();
-    await backend.uploadSettings();
-    set({ statusMessage: statusText(get().settings, 'statusUploadedSettings') });
+    const remotePath = await backend.uploadConfig();
+    set({ statusMessage: statusText(get().settings, 'statusUploadedConfig', { path: remotePath }) });
   },
 
-  downloadSettings: async () => {
-    const settings = await backend.downloadSettings();
-    set({ settings, statusMessage: statusText(settings, 'statusDownloadedSettings') });
-  },
-
-  uploadConnections: async () => {
-    await backend.uploadConnections();
-    set({ statusMessage: statusText(get().settings, 'statusUploadedConnections') });
-  },
-
-  downloadConnections: async () => {
-    const connections = await backend.downloadConnections();
-    set({ connections, statusMessage: statusText(get().settings, 'statusDownloadedConnections') });
+  downloadConfig: async (remotePath: string) => {
+    const nextState = await backend.downloadConfig(remotePath);
+    const nextActiveSessionId = nextState.sessions[0]?.id;
+    const nextActiveConnectionId = nextState.sessions[0]?.connectionId;
+    set({
+      settings: nextState.settings,
+      connections: nextState.connections,
+      history: nextState.history,
+      sessions: nextState.sessions,
+      tunnels: nextState.tunnels,
+      activeConnectionId: nextActiveConnectionId,
+      activeSessionId: nextActiveSessionId,
+      commandBuffers: {},
+      suggestions: {},
+      files: [],
+      currentRemotePath: nextActiveSessionId ? '~' : '',
+      runtimeOverview: undefined,
+      editorDocument: undefined,
+      statusMessage: statusText(nextState.settings, 'statusDownloadedConfig', { path: remotePath }),
+    });
   },
 
   exportLocalConfig: async (targetPath) => {
@@ -1675,6 +1722,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
     set(() => ({
       showTunnelForm: true,
       tunnelDraft: {
+        id: '',
+        connectionId: activeConnectionId,
         name: `${connection.name} DB tunnel`,
         bindAddress: '127.0.0.1',
         localPort: 15432,
@@ -1685,29 +1734,74 @@ export const useAppStore = create<StoreState>((set, get) => ({
     }));
   },
 
-  startTunnel: async (tunnelId) => {
-    const tunnel = await backend.startTunnel(tunnelId);
-    set((state) => ({
-      tunnels: state.tunnels.map((item) => (item.id === tunnel.id ? tunnel : item)),
-      statusMessage: statusText(state.settings, 'statusTunnelCreated'),
+  editTunnel: (tunnel) => {
+    set(() => ({
+      showTunnelForm: true,
+      // 编辑时保留原始连接归属，避免活动连接被切换后把隧道误保存到其他 SSH 连接下。
+      tunnelDraft: {
+        id: tunnel.id,
+        connectionId: tunnel.connectionId,
+        name: tunnel.name,
+        bindAddress: tunnel.bindAddress,
+        localPort: tunnel.localPort,
+        remoteHost: tunnel.remoteHost,
+        remotePort: tunnel.remotePort,
+      },
+      activePanel: 'tunnels',
     }));
   },
 
+  startTunnel: async (tunnelId) => {
+    try {
+      const tunnel = await backend.startTunnel(tunnelId);
+      set((state) => ({
+        tunnels: state.tunnels.map((item) => (item.id === tunnel.id ? tunnel : item)),
+        statusMessage: statusText(state.settings, 'statusTunnelStarted'),
+      }));
+    } catch (error) {
+      set((state) => ({
+        statusMessage: statusText(state.settings, 'statusTunnelStartFailed', {
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      }));
+    }
+  },
+
   startAllTunnels: async () => {
-    const stoppedTunnels = get().tunnels.filter((item) => item.status !== 'running');
+    const { activeConnectionId } = get();
+    if (!activeConnectionId) {
+      return;
+    }
+
+    // 批量开启只作用于当前连接的隧道，避免底部面板操作误启动其他 SSH 主机的转发规则。
+    const stoppedTunnels = get().tunnels.filter((item) => item.connectionId === activeConnectionId && item.status !== 'running');
     if (!stoppedTunnels.length) {
       return;
     }
 
-    const restarted = await Promise.all(stoppedTunnels.map((item) => backend.startTunnel(item.id)));
-    set((state) => ({
-      tunnels: state.tunnels.map((item) => restarted.find((next) => next.id === item.id) ?? item),
-      statusMessage: statusText(state.settings, 'statusAllTunnelsStarted'),
-    }));
+    try {
+      const restarted = await Promise.all(stoppedTunnels.map((item) => backend.startTunnel(item.id)));
+      set((state) => ({
+        tunnels: state.tunnels.map((item) => restarted.find((next) => next.id === item.id) ?? item),
+        statusMessage: statusText(state.settings, 'statusAllTunnelsStarted'),
+      }));
+    } catch (error) {
+      set((state) => ({
+        statusMessage: statusText(state.settings, 'statusTunnelStartFailed', {
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      }));
+    }
   },
 
   stopAllTunnels: async () => {
-    const runningTunnels = get().tunnels.filter((item) => item.status === 'running');
+    const { activeConnectionId } = get();
+    if (!activeConnectionId) {
+      return;
+    }
+
+    // 批量停止同样限制在当前连接内，和底部隧道列表的可见范围保持一致。
+    const runningTunnels = get().tunnels.filter((item) => item.connectionId === activeConnectionId && item.status === 'running');
     if (!runningTunnels.length) {
       return;
     }

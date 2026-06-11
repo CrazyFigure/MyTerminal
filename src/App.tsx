@@ -942,7 +942,8 @@ function TunnelFormModal() {
       <div className="modal card">
         <div className="modal-header">
           <div>
-            <h3>{t('tunnelModalTitle')}</h3>
+            {/* 隧道新增和编辑共用表单，草稿 id 决定当前标题和保存分支。 */}
+            <h3>{t(tunnelDraft.id ? 'tunnelModalEditTitle' : 'tunnelModalTitle')}</h3>
           </div>
           <button className="icon-button" onClick={closeTunnelForm} type="button">
             <X size={18} />
@@ -1571,10 +1572,8 @@ function SettingsModal({
     installUpdate,
     settings,
     testWebdavConnection,
-    uploadSettings,
-    downloadSettings,
-    uploadConnections,
-    downloadConnections,
+uploadConfig,
+downloadConfig,
     exportLocalConfig,
     importLocalConfig,
     persistSettings,
@@ -1588,10 +1587,16 @@ function SettingsModal({
   const [updateCheckResult, setUpdateCheckResult] = useState<UpdateCheckResult | null>(null);
   const [updateCheckError, setUpdateCheckError] = useState('');
   const settingsSaveTimerRef = useRef<number | null>(null);
+  const [actionFeedbackMap, setActionFeedbackMap] = useState<Record<string, { kind: 'is-success' | 'is-error'; message: string }>>({});
+  const actionFeedbackTimerRef = useRef<Record<string, number>>({});
+  const [backupSelectorOpen, setBackupSelectorOpen] = useState(false);
+  const [backupList, setBackupList] = useState<string[]>([]);
+  const backupSelectorResolveRef = useRef<((value: string | null) => void) | null>(null);
 
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(draftSettings.uiLanguage ?? settings.uiLanguage, key, replacements);
-  const appVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.5';
+  // 界面显示优先使用构建注入版本，避免本地预览缺少环境变量时出现空版本。
+  const appVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.6';
   const webdavPasswordToggleLabel = revealWebdavPassword ? t('hideSecret') : t('showSecret');
   const selectedLatinFontFamily = draftSettings.shellLatinFontFamily || draftSettings.shellFontFamily.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '') || 'JetBrains Mono';
   const selectedCjkFontFamily = draftSettings.shellCjkFontFamily || selectedLatinFontFamily;
@@ -1618,22 +1623,51 @@ function SettingsModal({
     settingsSaveTimerRef.current = window.setTimeout(() => {
       setSettingsSaveMessage('');
       settingsSaveTimerRef.current = null;
-    }, 1800);
+    }, 3000);
   };
   const persistSettingsWithFeedback = async () => {
     const saved = await persistSettings(draftSettings);
     setDraftSettings(saved);
     showSettingsFeedback(t('statusSettingsSaved'));
+    showActionFeedback('save-webdav', 'is-success', t('statusSettingsSaved'));
+  };
+  const showActionFeedback = (actionKey: string, kind: 'is-success' | 'is-error', message: string) => {
+    setActionFeedbackMap((prev) => ({ ...prev, [actionKey]: { kind, message } }));
+    if (actionFeedbackTimerRef.current[actionKey]) {
+      window.clearTimeout(actionFeedbackTimerRef.current[actionKey]);
+    }
+    actionFeedbackTimerRef.current[actionKey] = window.setTimeout(() => {
+      setActionFeedbackMap((prev) => {
+        const next = { ...prev };
+        delete next[actionKey];
+        return next;
+      });
+      delete actionFeedbackTimerRef.current[actionKey];
+    }, 5000);
   };
   const runSettingsAction = async (actionKey: string, action: () => Promise<void>, successMessage?: string) => {
     setSettingsActionRunning(actionKey);
-    setSettingsSaveMessage(t('working'));
+    // 清除该按钮的旧反馈，显示 working 状态
+    setActionFeedbackMap((prev) => {
+      const next = { ...prev };
+      delete next[actionKey];
+      return next;
+    });
     try {
       await action();
-      showSettingsFeedback(successMessage ?? useAppStore.getState().statusMessage);
+      const message = successMessage ?? useAppStore.getState().statusMessage;
+      showActionFeedback(actionKey, 'is-success', message);
+      showSettingsFeedback(message);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      showSettingsFeedback(t('statusWebdavActionFailed', { reason }));
+      // 用户主动取消（如下载弹窗点取消），不展示错误提示
+      if (reason === t('downloadCancelled')) {
+        setSettingsActionRunning('');
+        return;
+      }
+      const message = t('statusWebdavActionFailed', { reason });
+      showActionFeedback(actionKey, 'is-error', message);
+      showSettingsFeedback(message);
     } finally {
       setSettingsActionRunning('');
     }
@@ -1682,7 +1716,9 @@ function SettingsModal({
     setUpdateCheckError('');
     try {
       // 安装动作只在用户点击后触发；后端会下载 Release 安装包并启动安装程序。
-      await installUpdate(updateCheckResult);
+      const installerPath = await installUpdate(updateCheckResult);
+      // 成功启动安装器后，显示明确提示
+      alert(`安装器已启动！\n\n请在弹出的安装窗口中完成安装。\n\n如果没有看到安装窗口，请检查任务栏或访问：\n${installerPath}`);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       setUpdateCheckError(t('statusUpdateInstallFailed', { reason }));
@@ -1743,6 +1779,9 @@ function SettingsModal({
       if (settingsSaveTimerRef.current !== null) {
         window.clearTimeout(settingsSaveTimerRef.current);
       }
+      Object.values(actionFeedbackTimerRef.current).forEach((timer) => {
+        window.clearTimeout(timer);
+      });
     };
   }, []);
 
@@ -1941,7 +1980,6 @@ function SettingsModal({
                       <h3>{t('webdavSaveTitle')}</h3>
                     </div>
                     <div className="section-row compact">
-                      {settingsSaveMessage ? <span className="inline-save-feedback">{settingsSaveMessage}</span> : null}
                       <button className="secondary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void runSettingsAction('test-webdav', () => testWebdavConnection(draftSettings), t('statusWebdavTestPassed'))} type="button">
                         <RefreshCw size={16} /> {settingsActionRunning === 'test-webdav' ? t('working') : t('testWebdavConnection')}
                       </button>
@@ -1950,6 +1988,8 @@ function SettingsModal({
                       </button>
                     </div>
                   </div>
+                  {actionFeedbackMap['test-webdav'] ? <div className={`sync-action-feedback ${actionFeedbackMap['test-webdav'].kind}`}>{actionFeedbackMap['test-webdav'].message}</div> : null}
+                  {actionFeedbackMap['save-webdav'] ? <div className={`sync-action-feedback ${actionFeedbackMap['save-webdav'].kind}`}>{actionFeedbackMap['save-webdav'].message}</div> : null}
 
                   <div className="form-grid">
                     <label className="span-2">
@@ -1980,13 +2020,9 @@ function SettingsModal({
                         </button>
                       </div>
                     </label>
-                    <label>
-                      <span>{t('webdavSettingsPath')}</span>
-                      <input value={draftSettings.webdav.remoteSettingsPath} onChange={(event) => updateDraftSettings((current) => ({ ...current, webdav: { ...current.webdav, remoteSettingsPath: event.target.value } }))} />
-                    </label>
-                    <label>
-                      <span>{t('webdavConnectionsPath')}</span>
-                      <input value={draftSettings.webdav.remoteConnectionsPath} onChange={(event) => updateDraftSettings((current) => ({ ...current, webdav: { ...current.webdav, remoteConnectionsPath: event.target.value } }))} />
+                    <label className="span-2">
+                      <span>{t('webdavRemoteDir')}</span>
+                      <input placeholder="/myterminal" value={draftSettings.webdav.remotePath} onChange={(event) => updateDraftSettings((current) => ({ ...current, webdav: { ...current.webdav, remotePath: event.target.value } }))} />
                     </label>
                   </div>
                 </section>
@@ -1994,40 +2030,40 @@ function SettingsModal({
                 <section className="settings-section-block">
                   <div>
                     <h3>{t('webdavTransferTitle')}</h3>
+                    <p>{t('webdavTransferDesc')}</p>
                   </div>
 
-                  <div className="sync-transfer-grid">
-                    <div className="sync-transfer-card">
-                      <strong>{t('webdavTransferSettings')}</strong>
-                      <div className="sync-transfer-actions">
-                        <button className="primary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void runSettingsAction('upload-settings', async () => {
-                          await persistSettings(draftSettings);
-                          await uploadSettings();
-                        }, t('statusUploadedSettings'))} type="button">
-                          <Upload size={16} /> {settingsActionRunning === 'upload-settings' ? t('working') : t('uploadSettings')}
-                        </button>
-                        <button className="secondary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void runSettingsAction('download-settings', async () => {
-                          await downloadSettings();
-                          setDraftSettings(useAppStore.getState().settings);
-                        }, t('statusDownloadedSettings'))} type="button">
-                          <Download size={16} /> {settingsActionRunning === 'download-settings' ? t('working') : t('downloadSettings')}
-                        </button>
-                      </div>
+                  {(actionFeedbackMap['upload-config'] || actionFeedbackMap['download-config']) ? (
+                    <div className={`sync-action-feedback ${actionFeedbackMap['upload-config'] ? actionFeedbackMap['upload-config'].kind : actionFeedbackMap['download-config']?.kind}`}>
+                      {actionFeedbackMap['upload-config']?.message || actionFeedbackMap['download-config']?.message}
                     </div>
-                    <div className="sync-transfer-card">
-                      <strong>{t('webdavTransferConnections')}</strong>
-                      <div className="sync-transfer-actions">
-                        <button className="primary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void runSettingsAction('upload-connections', async () => {
-                          await persistSettings(draftSettings);
-                          await uploadConnections();
-                        }, t('statusUploadedConnections'))} type="button">
-                          <Upload size={16} /> {settingsActionRunning === 'upload-connections' ? t('working') : t('uploadConnections')}
-                        </button>
-                        <button className="secondary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void runSettingsAction('download-connections', downloadConnections, t('statusDownloadedConnections'))} type="button">
-                          <Download size={16} /> {settingsActionRunning === 'download-connections' ? t('working') : t('downloadConnections')}
-                        </button>
-                      </div>
-                    </div>
+                  ) : null}
+
+                  <div className="sync-transfer-actions">
+                    <button className="primary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void runSettingsAction('upload-config', async () => {
+                      await persistSettings(draftSettings);
+                      await uploadConfig();
+                    }, t('statusUploadedConfig'))} type="button">
+                      <Upload size={16} /> {settingsActionRunning === 'upload-config' ? t('working') : t('uploadConfig')}
+                    </button>
+                    <button className="secondary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void runSettingsAction('download-config', async () => {
+                      const backups = await backend.listConfigBackups();
+                      if (backups.length === 0) {
+                        throw new Error(t('noBackupsFound'));
+                      }
+                      const selected = await new Promise<string | null>((resolve) => {
+                        setBackupList(backups);
+                        backupSelectorResolveRef.current = resolve;
+                        setBackupSelectorOpen(true);
+                      });
+                      if (!selected) {
+                        throw new Error(t('downloadCancelled'));
+                      }
+                      await downloadConfig(selected);
+                      setDraftSettings(useAppStore.getState().settings);
+                    }, t('statusDownloadedConfig'))} type="button">
+                      <Download size={16} /> {settingsActionRunning === 'download-config' ? t('working') : t('downloadConfig')}
+                    </button>
                   </div>
                 </section>
 
@@ -2036,7 +2072,13 @@ function SettingsModal({
                     <h3>{t('syncSectionLocal')}</h3>
                   </div>
 
-                  <div className="action-grid">
+                  {(actionFeedbackMap['export-local'] || actionFeedbackMap['import-local']) ? (
+                    <div className={`sync-action-feedback ${actionFeedbackMap['export-local'] ? actionFeedbackMap['export-local'].kind : actionFeedbackMap['import-local']?.kind}`}>
+                      {actionFeedbackMap['export-local']?.message || actionFeedbackMap['import-local']?.message}
+                    </div>
+                  ) : null}
+
+                  <div className="sync-transfer-actions">
                     <button className="primary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void handleExportLocalConfig()} type="button">
                       <Download size={16} /> {settingsActionRunning === 'export-local' ? t('working') : t('exportLocalConfig')}
                     </button>
@@ -2060,7 +2102,6 @@ function SettingsModal({
                       />
                     </label>
                   </div>
-                  {settingsSaveMessage ? <div className="settings-action-feedback">{settingsSaveMessage}</div> : null}
                 </section>
               </div>
             ) : null}
@@ -2123,6 +2164,26 @@ function SettingsModal({
           </div>
         </div>
       </div>
+
+      <BackupSelectorModal
+        open={backupSelectorOpen}
+        backups={backupList}
+        onSelect={(filename) => {
+          setBackupSelectorOpen(false);
+          const dir = draftSettings.webdav.remotePath.replace(/\/+$/, '');
+          backupSelectorResolveRef.current?.(dir + '/' + filename);
+          backupSelectorResolveRef.current = null;
+        }}
+        onDelete={(filename) => {
+          setBackupList((prev) => prev.filter((f) => f !== filename));
+        }}
+        onClose={() => {
+          setBackupSelectorOpen(false);
+          backupSelectorResolveRef.current?.(null);
+          backupSelectorResolveRef.current = null;
+        }}
+        t={t}
+      />
     </div>
   );
 }
@@ -2171,6 +2232,7 @@ export default function App() {
     currentRemotePath,
     deleteRemotePaths,
     downloadRemoteFile,
+    editTunnel,
     files,
     history,
     openConnectionForm,
@@ -2192,7 +2254,9 @@ export default function App() {
     setCommandBuffer,
     setStatusMessage,
     settings,
+    startAllTunnels,
     startTunnel,
+    stopAllTunnels,
     tunnels,
     uploadLocalFile,
   } = useAppStore();
@@ -3114,11 +3178,7 @@ export default function App() {
                     <button
                       className="secondary-button"
                       disabled={!connectionTunnels.some((item) => item.status !== 'running')}
-                      onClick={() => {
-                        void Promise.all(connectionTunnels.filter((item) => item.status !== 'running').map((item) => startTunnel(item.id))).then(() => {
-                          setStatusMessage(t('statusAllTunnelsStarted'));
-                        });
-                      }}
+                      onClick={() => void startAllTunnels()}
                       type="button"
                     >
                       <Play size={16} /> {t('tunnelStartAll')}
@@ -3126,11 +3186,7 @@ export default function App() {
                     <button
                       className="secondary-button"
                       disabled={!connectionTunnels.some((item) => item.status === 'running')}
-                      onClick={() => {
-                        void Promise.all(connectionTunnels.filter((item) => item.status === 'running').map((item) => closeTunnel(item.id))).then(() => {
-                          setStatusMessage(t('statusAllTunnelsStopped'));
-                        });
-                      }}
+                      onClick={() => void stopAllTunnels()}
                       type="button"
                     >
                       <Square size={16} /> {t('tunnelStopAll')}
@@ -3193,6 +3249,10 @@ export default function App() {
                           </div>
                           <div className="section-row compact">
                             <span className={`status-badge status-${tunnel.status}`}>{translateStatus(settings.uiLanguage, tunnel.status)}</span>
+                            {/* 编辑隧道只更新配置并停止旧监听，避免运行中改端点后后台仍占用旧端口。 */}
+                            <button className="ghost-button slim" onClick={() => editTunnel(tunnel)} type="button">
+                              <Pencil size={14} /> {t('edit')}
+                            </button>
                             {tunnel.status === 'running' ? (
                               <button className="ghost-button slim" onClick={() => void closeTunnel(tunnel.id)} type="button">
                                 <Square size={14} /> {t('stop')}
@@ -3279,6 +3339,117 @@ export default function App() {
           <span>{sessionTabDragState.label}</span>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/* ── Backup Selector Modal ─────────────────────────────────────────────── */
+
+interface BackupItem {
+  filename: string;
+  timestamp: string;
+  type: 'bundle' | 'settings' | 'connections';
+}
+
+function BackupSelectorModal({
+  open,
+  backups,
+  onSelect,
+  onDelete,
+  onClose,
+  t,
+}: {
+  open: boolean;
+  backups: string[];
+  onSelect: (filename: string) => void;
+  onDelete: (filename: string) => void;
+  onClose: () => void;
+  t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
+}) {
+  const [deleting, setDeleting] = useState<string | null>(null);
+
+  const parsed = useMemo<BackupItem[]>(() => {
+    const items = backups.map((filename) => {
+      let type: BackupItem['type'] = 'bundle';
+      if (filename.startsWith('settings')) type = 'settings';
+      else if (filename.startsWith('connections')) type = 'connections';
+
+      // 从文件名提取时间戳: myterminal-config-20260611-160128.enc.json
+      const match = filename.match(/(\d{8})-(\d{6})/);
+      let timestamp = '-';
+      let sortKey = '';
+      if (match) {
+        const [, date, time] = match;
+        timestamp = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6)} ${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4)}`;
+        sortKey = date + time;
+      }
+
+      return { filename, timestamp, type, sortKey };
+    });
+    // 按时间戳倒序排列（最新的在前面）
+    return items.sort((a, b) => b.sortKey.localeCompare(a.sortKey));
+  }, [backups]);
+
+  if (!open) return null;
+
+  return (
+    <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="card modal modal-backup-selector">
+        <div className="modal-header">
+          <h3>{t('selectBackupVersion')}</h3>
+          <button className="icon-button" onClick={onClose} type="button">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="backup-table-shell">
+          <div className="backup-table-header">
+            <span className="backup-col-name">{t('fieldFilename')}</span>
+            <span className="backup-col-time">{t('fieldTimestamp')}</span>
+            <span className="backup-col-type">{t('backupType')}</span>
+            <span className="backup-col-actions">{t('backupActions')}</span>
+          </div>
+          <div className="backup-table-body">
+            {parsed.length === 0 ? (
+              <div className="backup-empty">{t('noBackupsFound')}</div>
+            ) : (
+              parsed.map((item) => (
+                <div key={item.filename} className="backup-table-row">
+                  <span className="backup-col-name" title={item.filename}>{item.filename}</span>
+                  <span className="backup-col-time">{item.timestamp}</span>
+                  <span className="backup-col-type">
+                    {item.type === 'bundle' ? t('typeBundle') : item.type === 'settings' ? t('typeSettings') : t('typeConnections')}
+                  </span>
+                  <div className="backup-col-actions">
+                    <button
+                      className="ghost-button slim backup-download-btn"
+                      onClick={() => onSelect(item.filename)}
+                      type="button"
+                    >
+                      <Download size={14} /> {t('actionDownload')}
+                    </button>
+                    <button
+                      className="ghost-button slim danger-button"
+                      disabled={deleting === item.filename}
+                      onClick={() => {
+                        setDeleting(item.filename);
+                        onDelete(item.filename);
+                      }}
+                      type="button"
+                    >
+                      <Trash2 size={14} /> {t('actionDelete')}
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+        <div className="modal-actions">
+          <button className="secondary-button" onClick={onClose} type="button">
+            {t('actionCancel')}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

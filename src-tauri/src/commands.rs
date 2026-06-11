@@ -25,7 +25,7 @@ use crate::{
     models::{
         AppSettings, BootstrapState, ConnectionProfile, EditorDocument, HistoryEntry,
         HistoryEntryInput, LocalConfigBundle, RemoteFileEntry, RuntimeCpuCore, RuntimeOverview,
-        TerminalOutputChunk, TerminalSession, TunnelOpenRequest, TunnelRecord, UpdateCheckResult,
+        TerminalOutputChunk, TerminalSession, TunnelOpenRequest, TunnelRecord, TunnelUpdateRequest, UpdateCheckResult,
         WebDavSettings,
     },
     state::{AppState, RuntimeSession, SessionControl, TunnelRuntime},
@@ -79,6 +79,29 @@ fn ensure_connection_exists(
         .into_iter()
         .find(|item| item.id == connection_id)
         .ok_or_else(|| AppError::NotFound(format!("connection {connection_id} not found")))
+}
+
+fn validate_tunnel_fields(tunnel: &TunnelRecord) -> Result<(), AppError> {
+    // 隧道端点必须在保存前完整可识别；实际端口占用和 SSH 可达性留到启动监听时判断。
+    if tunnel.connection_id.trim().is_empty() {
+        return Err(AppError::Validation("tunnel connection is required".into()));
+    }
+    if tunnel.name.trim().is_empty() {
+        return Err(AppError::Validation("tunnel name is required".into()));
+    }
+    if tunnel.bind_address.trim().is_empty() {
+        return Err(AppError::Validation("tunnel bind address is required".into()));
+    }
+    if tunnel.local_port == 0 || tunnel.remote_port == 0 {
+        return Err(AppError::Validation(
+            "tunnel ports must be between 1 and 65535".into(),
+        ));
+    }
+    if tunnel.remote_host.trim().is_empty() {
+        return Err(AppError::Validation("tunnel remote host is required".into()));
+    }
+
+    Ok(())
 }
 
 fn parse_version_parts(version: &str) -> Option<Vec<u64>> {
@@ -187,14 +210,31 @@ fn spawn_update_installer(path: &Path) -> std::io::Result<()> {
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if extension == "msi" {
+
+    let mut child = if extension == "msi" {
         Command::new("msiexec.exe")
             .arg("/i")
             .arg(path)
-            .spawn()
-            .map(|_| ())
+            .spawn()?
+    } else if extension == "exe" {
+        Command::new(path).spawn()?
     } else {
-        Command::new(path).spawn().map(|_| ())
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "不支持的安装包格式",
+        ));
+    };
+
+    // 验证进程是否成功启动（等待 100ms 检查是否立即退出）
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    match child.try_wait()? {
+        Some(status) if !status.success() => {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("安装器启动失败，退出码：{}", status.code().unwrap_or(-1)),
+            ))
+        }
+        _ => Ok(()),
     }
 }
 
@@ -1891,31 +1931,69 @@ pub fn open_tunnel(
         remote_port,
     } = request;
 
-    let connection = ensure_connection_exists(&state, &connection_id)?;
+    // 新增隧道只创建配置记录；本地端口监听在 start_tunnel 中启动，避免端口冲突阻塞保存。
+    let _ = ensure_connection_exists(&state, &connection_id)?;
     let tunnel = TunnelRecord {
         id: uuid::Uuid::new_v4().to_string(),
+        connection_id,
+        name: name.trim().into(),
+        bind_address: bind_address.trim().into(),
+        local_port,
+        remote_host: remote_host.trim().into(),
+        remote_port,
+        status: "stopped".into(),
+    };
+    validate_tunnel_fields(&tunnel)?;
+
+    let mut tunnels = state.storage.load_tunnels()?;
+    tunnels.retain(|item| item.id != tunnel.id);
+    tunnels.insert(0, tunnel.clone());
+    state.storage.save_tunnels(&tunnels)?;
+    Ok(tunnel)
+}
+
+#[tauri::command]
+pub fn update_tunnel(
+    state: State<'_, AppState>,
+    request: TunnelUpdateRequest,
+) -> Result<TunnelRecord, String> {
+    let TunnelUpdateRequest {
+        id,
         connection_id,
         name,
         bind_address,
         local_port,
         remote_host,
         remote_port,
-        status: "running".into(),
-    };
+    } = request;
 
-    let stop_flag = Arc::new(AtomicBool::new(false));
-    spawn_tunnel_listener(connection, tunnel.clone(), Arc::clone(&stop_flag))?;
+    // 编辑端点前先确认连接仍存在，避免留下指向已删除 SSH 配置的隧道记录。
+    let _ = ensure_connection_exists(&state, &connection_id)?;
+    let mut tunnel = TunnelRecord {
+        id,
+        connection_id,
+        name: name.trim().into(),
+        bind_address: bind_address.trim().into(),
+        local_port,
+        remote_host: remote_host.trim().into(),
+        remote_port,
+        status: "stopped".into(),
+    };
+    validate_tunnel_fields(&tunnel)?;
 
     let mut tunnels = state.storage.load_tunnels()?;
-    tunnels.retain(|item| item.id != tunnel.id);
-    tunnels.insert(0, tunnel.clone());
+    let Some(index) = tunnels.iter().position(|item| item.id == tunnel.id) else {
+        return Err(AppError::NotFound(format!("tunnel {} not found", tunnel.id)).into());
+    };
+
+    if let Some(runtime) = lock_tunnels(&state)?.remove(&tunnel.id) {
+        // 编辑端点会让旧监听参数失效，先停旧监听，再把新配置以停止状态落盘。
+        runtime.stop_flag.store(true, Ordering::Relaxed);
+    }
+
+    tunnel.status = "stopped".into();
+    tunnels[index] = tunnel.clone();
     state.storage.save_tunnels(&tunnels)?;
-    lock_tunnels(&state)?.insert(
-        tunnel.id.clone(),
-        TunnelRuntime {
-            stop_flag: Arc::clone(&stop_flag),
-        },
-    );
     Ok(tunnel)
 }
 
@@ -2218,13 +2296,20 @@ pub fn import_local_config(
 }
 
 #[tauri::command]
-pub async fn upload_settings_to_webdav(state: State<'_, AppState>) -> Result<bool, String> {
+pub async fn upload_settings_to_webdav(state: State<'_, AppState>) -> Result<String, String> {
     let settings = state.storage.load_settings(&state.crypto)?;
-    state
+    let remote_path = state
         .webdav
         .upload_settings(&settings, &state.crypto)
         .await?;
-    Ok(true)
+    Ok(remote_path)
+}
+
+#[tauri::command]
+pub async fn list_settings_backups(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let settings = state.storage.load_settings(&state.crypto)?;
+    let files = state.webdav.list_settings_backups(&settings.webdav).await?;
+    Ok(files)
 }
 
 #[tauri::command]
@@ -2240,6 +2325,7 @@ pub async fn test_webdav_connection(
 #[tauri::command]
 pub async fn download_settings_from_webdav(
     state: State<'_, AppState>,
+    remote_path: String,
 ) -> Result<AppSettings, String> {
     let current_settings = state.storage.load_settings(&state.crypto)?;
     state
@@ -2247,26 +2333,34 @@ pub async fn download_settings_from_webdav(
         .backup_existing_file(&state.storage.settings_file_path(), "settings")?;
     let downloaded = state
         .webdav
-        .download_settings(&current_settings.webdav, &state.crypto)
+        .download_settings(&current_settings.webdav, &remote_path, &state.crypto)
         .await?;
     state.storage.save_settings(&downloaded, &state.crypto)?;
     Ok(downloaded)
 }
 
 #[tauri::command]
-pub async fn upload_connections_to_webdav(state: State<'_, AppState>) -> Result<bool, String> {
+pub async fn upload_connections_to_webdav(state: State<'_, AppState>) -> Result<String, String> {
     let settings = state.storage.load_settings(&state.crypto)?;
     let connections = state.storage.load_connections(&state.crypto)?;
-    state
+    let remote_path = state
         .webdav
         .upload_connections(&settings, &connections, &state.crypto)
         .await?;
-    Ok(true)
+    Ok(remote_path)
+}
+
+#[tauri::command]
+pub async fn list_connections_backups(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let settings = state.storage.load_settings(&state.crypto)?;
+    let files = state.webdav.list_connections_backups(&settings.webdav).await?;
+    Ok(files)
 }
 
 #[tauri::command]
 pub async fn download_connections_from_webdav(
     state: State<'_, AppState>,
+    remote_path: String,
 ) -> Result<Vec<ConnectionProfile>, String> {
     let settings = state.storage.load_settings(&state.crypto)?;
     state
@@ -2274,10 +2368,142 @@ pub async fn download_connections_from_webdav(
         .backup_existing_file(&state.storage.connections_file_path(), "connections")?;
     let connections = state
         .webdav
-        .download_connections(&settings.webdav, &state.crypto)
+        .download_connections(&settings.webdav, &remote_path, &state.crypto)
         .await?;
     state
         .storage
         .save_connections(&connections, &state.crypto)?;
     Ok(connections)
+}
+
+#[tauri::command]
+/// 合并上传所有配置到 WebDAV，与本地导出使用相同的 LocalConfigBundle 结构。
+pub async fn upload_config_to_webdav(state: State<'_, AppState>) -> Result<String, String> {
+    let settings = state.storage.load_settings(&state.crypto)?;
+    let connections = state.storage.load_connections(&state.crypto)?;
+    let history = state.storage.load_history()?;
+    let tunnels = state.storage.load_tunnels()?;
+    let bundle = LocalConfigBundle {
+        schema_version: 1,
+        exported_at: Utc::now().to_rfc3339(),
+        settings: settings.clone(),
+        connections,
+        history,
+        tunnels,
+    };
+    let remote_path = state
+        .webdav
+        .upload_config_bundle(&settings.webdav, &bundle)
+        .await?;
+    Ok(remote_path)
+}
+
+#[tauri::command]
+pub async fn list_config_backups(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let settings = state.storage.load_settings(&state.crypto)?;
+    let files = state.webdav.list_config_backups(&settings.webdav).await?;
+    Ok(files)
+}
+
+#[tauri::command]
+/// 从 WebDAV 下载配置包并覆盖本地数据。
+/// 优先尝试合并格式（LocalConfigBundle），若失败则兼容旧格式：
+/// - settings-*.enc.json：只覆盖应用设置
+/// - connections-*.enc.json：只覆盖 SSH 连接
+pub async fn download_config_from_webdav(
+    state: State<'_, AppState>,
+    remote_path: String,
+) -> Result<BootstrapState, String> {
+    let current_settings = state.storage.load_settings(&state.crypto)?;
+    let filename = remote_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&remote_path);
+
+    // 先尝试合并格式（myterminal-config-*.enc.json）
+    if filename.starts_with("myterminal-config") {
+        let mut bundle = state
+            .webdav
+            .download_config_bundle(&current_settings.webdav, &remote_path)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        if bundle.schema_version > 1 {
+            return Err(AppError::Validation(format!(
+                "unsupported config schema version {}",
+                bundle.schema_version
+            ))
+            .to_string());
+        }
+
+        stop_all_runtimes(&state)?;
+
+        state.storage.backup_existing_file(
+            &state.storage.settings_file_path(),
+            "settings-before-webdav-import",
+        )?;
+        state.storage.backup_existing_file(
+            &state.storage.connections_file_path(),
+            "connections-before-webdav-import",
+        )?;
+        state.storage.backup_existing_file(
+            &state.storage.history_file_path(),
+            "history-before-webdav-import",
+        )?;
+        state.storage.backup_existing_file(
+            &state.storage.tunnels_file_path(),
+            "tunnels-before-webdav-import",
+        )?;
+
+        for tunnel in &mut bundle.tunnels {
+            tunnel.status = "stopped".into();
+        }
+
+        state
+            .storage
+            .save_settings(&bundle.settings, &state.crypto)?;
+        state
+            .storage
+            .save_connections(&bundle.connections, &state.crypto)?;
+        state.storage.save_history(&bundle.history)?;
+        state.storage.save_tunnels(&bundle.tunnels)?;
+
+        return Ok(bootstrap_from_storage(&state)?);
+    }
+
+    // 兼容旧格式：settings-*.enc.json 或 connections-*.enc.json
+    stop_all_runtimes(&state)?;
+
+    if filename.starts_with("settings") {
+        state.storage.backup_existing_file(
+            &state.storage.settings_file_path(),
+            "settings-before-webdav-import",
+        )?;
+        let downloaded = state
+            .webdav
+            .download_settings(&current_settings.webdav, &remote_path, &state.crypto)
+            .await
+            .map_err(|error| error.to_string())?;
+        state.storage.save_settings(&downloaded, &state.crypto)?;
+    } else if filename.starts_with("connections") {
+        state.storage.backup_existing_file(
+            &state.storage.connections_file_path(),
+            "connections-before-webdav-import",
+        )?;
+        let connections = state
+            .webdav
+            .download_connections(&current_settings.webdav, &remote_path, &state.crypto)
+            .await
+            .map_err(|error| error.to_string())?;
+        state
+            .storage
+            .save_connections(&connections, &state.crypto)?;
+    } else {
+        return Err(AppError::Validation(format!(
+            "unrecognized backup file: {filename}"
+        ))
+        .to_string());
+    }
+
+    Ok(bootstrap_from_storage(&state)?)
 }

@@ -160,8 +160,14 @@ impl StorageService {
                 base_url: stored.webdav_base_url,
                 username: stored.webdav_username,
                 password: crypto.decrypt_local(&stored.webdav_password_encrypted)?,
-                remote_settings_path: stored.webdav_remote_settings_path,
-                remote_connections_path: stored.webdav_remote_connections_path,
+                sync_passphrase: String::new(),
+                remote_path: if stored.webdav_remote_path.is_empty() && !stored.webdav_remote_settings_path.is_empty() {
+                    stored.webdav_remote_settings_path
+                } else {
+                    stored.webdav_remote_path
+                },
+                remote_settings_path: String::new(),
+                remote_connections_path: String::new(),
             },
         })
     }
@@ -194,8 +200,9 @@ impl StorageService {
             webdav_base_url: settings.webdav.base_url.clone(),
             webdav_username: settings.webdav.username.clone(),
             webdav_password_encrypted: crypto.encrypt_local(&settings.webdav.password)?,
-            webdav_remote_settings_path: settings.webdav.remote_settings_path.clone(),
-            webdav_remote_connections_path: settings.webdav.remote_connections_path.clone(),
+            webdav_remote_path: settings.webdav.remote_path.clone(),
+            webdav_remote_settings_path: String::new(),
+            webdav_remote_connections_path: String::new(),
         };
         self.write_json(&self.settings_path(), &stored)
     }

@@ -73,12 +73,16 @@ fn default_auth_method() -> String {
     "password".into()
 }
 
+fn default_remote_path() -> String {
+    "/myterminal".into()
+}
+
 fn default_remote_settings_path() -> String {
-    "/myterminal/settings.enc.json".into()
+    "/myterminal".into()
 }
 
 fn default_remote_connections_path() -> String {
-    "/myterminal/connections.enc.json".into()
+    "/myterminal".into()
 }
 
 fn default_ssh_port() -> u16 {
@@ -122,9 +126,16 @@ pub struct WebDavSettings {
     pub username: String,
     #[serde(default)]
     pub password: String,
-    #[serde(default = "default_remote_settings_path")]
+    #[serde(default)]
+    pub sync_passphrase: String,
+    /// 远程同步目录，合并后只保留一个路径。
+    #[serde(default = "default_remote_path")]
+    pub remote_path: String,
+    /// 旧字段保留反序列化兼容，已有配置文件中仍包含此字段。
+    #[serde(default = "default_remote_settings_path", skip_serializing)]
     pub remote_settings_path: String,
-    #[serde(default = "default_remote_connections_path")]
+    /// 旧字段保留反序列化兼容，已有配置文件中仍包含此字段。
+    #[serde(default = "default_remote_connections_path", skip_serializing)]
     pub remote_connections_path: String,
 }
 
@@ -134,8 +145,10 @@ impl Default for WebDavSettings {
             base_url: String::new(),
             username: String::new(),
             password: String::new(),
-            remote_settings_path: "/myterminal/settings.enc.json".into(),
-            remote_connections_path: "/myterminal/connections.enc.json".into(),
+            sync_passphrase: String::new(),
+            remote_path: "/myterminal".into(),
+            remote_settings_path: String::new(),
+            remote_connections_path: String::new(),
         }
     }
 }
@@ -457,6 +470,20 @@ pub struct TunnelOpenRequest {
     pub remote_port: u16,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TunnelUpdateRequest {
+    // 编辑隧道必须定位已有记录，其余端点字段与新增保持一致，避免两套校验规则漂移。
+    pub id: String,
+    pub connection_id: String,
+    pub name: String,
+    #[serde(default = "default_bind_address")]
+    pub bind_address: String,
+    pub local_port: u16,
+    pub remote_host: String,
+    pub remote_port: u16,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredAppSettings {
     #[serde(default = "default_ui_language")]
@@ -503,9 +530,13 @@ pub struct StoredAppSettings {
     pub webdav_username: String,
     #[serde(default)]
     pub webdav_password_encrypted: String,
-    #[serde(default = "default_remote_settings_path")]
+    #[serde(default = "default_remote_path")]
+    pub webdav_remote_path: String,
+    /// 旧字段保留反序列化兼容，已有配置文件中仍包含此字段。
+    #[serde(default = "default_remote_settings_path", skip_serializing)]
     pub webdav_remote_settings_path: String,
-    #[serde(default = "default_remote_connections_path")]
+    /// 旧字段保留反序列化兼容，已有配置文件中仍包含此字段。
+    #[serde(default = "default_remote_connections_path", skip_serializing)]
     pub webdav_remote_connections_path: String,
 }
 
