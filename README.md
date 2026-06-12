@@ -2,6 +2,8 @@
 
 基于 Rust + Tauri 2 + React 的现代化远程终端管理工具，目标是复刻并优化 FinalShell 的核心体验。
 
+示例图：
+![img.png](img.png)
 当前版本：`v0.1.7`
 
 ## 当前功能状态
