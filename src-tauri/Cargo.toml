@@ -1,9 +1,11 @@
 [package]
 name = "myterminal"
-version = "0.1.7"
+version = "0.1.8"
 description = "A modern Rust + Tauri 2 remote terminal manager inspired by FinalShell"
 authors = ["OpenAI"]
 edition = "2021"
+# 项目同时包含桌面主程序和 myterminal-cli；Tauri dev 默认 cargo run 时必须明确主程序。
+default-run = "myterminal"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

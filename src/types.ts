@@ -29,6 +29,19 @@ export interface WebDavSettings {
   remotePath: string;
 }
 
+export interface AgentBridgeSettings {
+  /** AI Bridge 默认关闭，开启后本地 Broker 才会监听 127.0.0.1。 */
+  enabled: boolean;
+  /** 自动执行只对 allowedConnectionIds 中的连接生效；关闭时命令和写操作均走 GUI 审批。 */
+  autoExecute: boolean;
+  /** 允许自动执行的连接白名单，避免全局放开远端命令执行。 */
+  allowedConnectionIds: string[];
+  /** Agent 命令默认超时秒数，防止外部工具长时间占用远端 channel。 */
+  defaultTimeoutSec: number;
+  /** 单次命令最大输出字节数，超出后后端截断并标记 truncated。 */
+  maxOutputBytes: number;
+}
+
 export interface AppSettings {
   uiLanguage: UiLanguage;
   themeMode: ThemeMode;
@@ -58,6 +71,7 @@ export interface AppSettings {
   connectionOrder: string[];
   quickCommands: string[];
   webdav: WebDavSettings;
+  agentBridge: AgentBridgeSettings;
 }
 
 export interface TerminalSession {
@@ -176,6 +190,34 @@ export interface BootstrapState {
   history: HistoryEntry[];
   sessions: TerminalSession[];
   tunnels: TunnelRecord[];
+}
+
+export interface AgentBridgeStatus {
+  enabled: boolean;
+  running: boolean;
+  port?: number;
+  token?: string;
+  discoveryPath: string;
+  cliCommand: string;
+  mcpCommand: string;
+}
+
+export interface AgentBridgeRequest {
+  id: string;
+  kind: 'run_command' | 'file_write' | 'file_delete' | 'file_rename' | 'file_mkdir' | string;
+  status: 'pending' | 'running' | 'completed' | 'rejected' | 'error' | string;
+  connectionId: string;
+  sessionId?: string;
+  title: string;
+  command?: string;
+  path?: string;
+  newPath?: string;
+  contentPreview?: string;
+  logs: string[];
+  result?: unknown;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ConnectionDraft {

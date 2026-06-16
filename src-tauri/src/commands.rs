@@ -21,12 +21,13 @@ use ssh2::{Channel, ExtendedData, MethodType, Session, Sftp};
 use tauri::State;
 
 use crate::{
+    agent_bridge,
     error::AppError,
     models::{
         AppSettings, BootstrapState, ConnectionProfile, EditorDocument, HistoryEntry,
         HistoryEntryInput, LocalConfigBundle, RemoteFileEntry, RuntimeCpuCore, RuntimeOverview,
-        TerminalOutputChunk, TerminalSession, TunnelOpenRequest, TunnelRecord, TunnelUpdateRequest, UpdateCheckResult,
-        WebDavSettings,
+        TerminalOutputChunk, TerminalSession, TunnelOpenRequest, TunnelRecord, TunnelUpdateRequest,
+        UpdateCheckResult, WebDavSettings,
     },
     state::{AppState, RuntimeSession, SessionControl, TunnelRuntime},
 };
@@ -90,7 +91,9 @@ fn validate_tunnel_fields(tunnel: &TunnelRecord) -> Result<(), AppError> {
         return Err(AppError::Validation("tunnel name is required".into()));
     }
     if tunnel.bind_address.trim().is_empty() {
-        return Err(AppError::Validation("tunnel bind address is required".into()));
+        return Err(AppError::Validation(
+            "tunnel bind address is required".into(),
+        ));
     }
     if tunnel.local_port == 0 || tunnel.remote_port == 0 {
         return Err(AppError::Validation(
@@ -98,7 +101,9 @@ fn validate_tunnel_fields(tunnel: &TunnelRecord) -> Result<(), AppError> {
         ));
     }
     if tunnel.remote_host.trim().is_empty() {
-        return Err(AppError::Validation("tunnel remote host is required".into()));
+        return Err(AppError::Validation(
+            "tunnel remote host is required".into(),
+        ));
     }
 
     Ok(())
@@ -212,10 +217,7 @@ fn spawn_update_installer(path: &Path) -> std::io::Result<()> {
         .to_ascii_lowercase();
 
     let mut child = if extension == "msi" {
-        Command::new("msiexec.exe")
-            .arg("/i")
-            .arg(path)
-            .spawn()?
+        Command::new("msiexec.exe").arg("/i").arg(path).spawn()?
     } else if extension == "exe" {
         Command::new(path).spawn()?
     } else {
@@ -228,12 +230,10 @@ fn spawn_update_installer(path: &Path) -> std::io::Result<()> {
     // 验证进程是否成功启动（等待 100ms 检查是否立即退出）
     std::thread::sleep(std::time::Duration::from_millis(100));
     match child.try_wait()? {
-        Some(status) if !status.success() => {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("安装器启动失败，退出码：{}", status.code().unwrap_or(-1)),
-            ))
-        }
+        Some(status) if !status.success() => Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("安装器启动失败，退出码：{}", status.code().unwrap_or(-1)),
+        )),
         _ => Ok(()),
     }
 }
@@ -585,7 +585,10 @@ fn connect_ssh_once(
     }
     let tcp = tcp.ok_or_else(|| {
         AppError::Io(last_error.unwrap_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "no resolved SSH address")
+            std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                "no resolved SSH address",
+            )
         }))
     })?;
     tcp.set_read_timeout(Some(SSH_IO_TIMEOUT))?;
@@ -612,7 +615,7 @@ fn connect_ssh_once(
     Ok(session)
 }
 
-fn connect_ssh(connection: &ConnectionProfile) -> Result<Session, AppError> {
+pub(crate) fn connect_ssh(connection: &ConnectionProfile) -> Result<Session, AppError> {
     match connect_ssh_once(connection, false) {
         Ok(session) => Ok(session),
         Err(error) if is_key_exchange_error(&error) => connect_ssh_once(connection, true),
@@ -628,7 +631,8 @@ fn handle_shell_control(channel: &mut Channel, control: SessionControl) -> Resul
             Ok(false)
         }
         SessionControl::Resize { cols, rows } => {
-            if let Err(error) = channel.request_pty_size(cols.into(), rows.into(), Some(0), Some(0)) {
+            if let Err(error) = channel.request_pty_size(cols.into(), rows.into(), Some(0), Some(0))
+            {
                 let message = error.to_string().to_ascii_lowercase();
                 // 非阻塞 PTY 调整尺寸偶尔会撞上 libssh2 的短暂 busy 状态；尺寸下一次变化还会同步，不能因此断开会话。
                 if message.contains("session(-37)")
@@ -736,7 +740,9 @@ fn spawn_shell_thread(
                         pending_input.push_str(&data);
                         if pending_input.len() >= 4096 {
                             let retry_input = pending_input.clone();
-                            if let Err(error) = flush_pending_shell_input(&mut channel, &mut pending_input) {
+                            if let Err(error) =
+                                flush_pending_shell_input(&mut channel, &mut pending_input)
+                            {
                                 if is_recoverable_terminal_write_error(&error) {
                                     pending_input = retry_input;
                                     break;
@@ -752,7 +758,9 @@ fn spawn_shell_thread(
                     }
                     Ok(control) => {
                         let retry_input = pending_input.clone();
-                        if let Err(error) = flush_pending_shell_input(&mut channel, &mut pending_input) {
+                        if let Err(error) =
+                            flush_pending_shell_input(&mut channel, &mut pending_input)
+                        {
                             if is_recoverable_terminal_write_error(&error) {
                                 pending_input = retry_input;
                                 break;
@@ -1547,6 +1555,13 @@ fn bootstrap_from_storage(state: &AppState) -> Result<BootstrapState, AppError> 
 
 #[tauri::command]
 pub fn bootstrap_state(state: State<'_, AppState>) -> Result<BootstrapState, String> {
+    let settings = state.storage.load_settings(&state.crypto)?;
+    agent_bridge::sync_server(
+        &state.agent_bridge,
+        &state.storage,
+        &state.crypto,
+        &settings.agent_bridge,
+    )?;
     Ok(bootstrap_from_storage(&state)?)
 }
 
@@ -1556,7 +1571,108 @@ pub fn save_app_settings(
     settings: AppSettings,
 ) -> Result<AppSettings, String> {
     state.storage.save_settings(&settings, &state.crypto)?;
+    agent_bridge::sync_server(
+        &state.agent_bridge,
+        &state.storage,
+        &state.crypto,
+        &settings.agent_bridge,
+    )?;
     Ok(settings)
+}
+
+#[tauri::command]
+pub fn agent_bridge_status(
+    state: State<'_, AppState>,
+) -> Result<agent_bridge::AgentBridgeStatus, String> {
+    let settings = state.storage.load_settings(&state.crypto)?;
+    Ok(agent_bridge::bridge_status(
+        &state.agent_bridge,
+        &state.storage,
+        &settings.agent_bridge,
+    )?)
+}
+
+#[tauri::command]
+pub fn list_agent_bridge_requests(
+    state: State<'_, AppState>,
+) -> Result<Vec<agent_bridge::AgentBridgeRequest>, String> {
+    Ok(agent_bridge::list_requests(&state.agent_bridge)?)
+}
+
+#[tauri::command]
+pub fn approve_agent_bridge_request(
+    state: State<'_, AppState>,
+    request_id: String,
+    edited_command: Option<String>,
+) -> Result<bool, String> {
+    let settings = state.storage.load_settings(&state.crypto)?;
+    Ok(agent_bridge::approve_request(
+        &state.agent_bridge,
+        &state.storage,
+        &state.crypto,
+        &settings.agent_bridge,
+        &request_id,
+        edited_command,
+    )?)
+}
+
+#[tauri::command]
+pub fn reject_agent_bridge_request(
+    state: State<'_, AppState>,
+    request_id: String,
+    reason: Option<String>,
+) -> Result<bool, String> {
+    Ok(agent_bridge::reject_request(
+        &state.agent_bridge,
+        &request_id,
+        reason,
+    )?)
+}
+
+#[tauri::command]
+pub fn clear_agent_bridge_requests(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(agent_bridge::clear_finished_requests(&state.agent_bridge)?)
+}
+
+#[tauri::command]
+pub fn set_agent_bridge_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<agent_bridge::AgentBridgeStatus, String> {
+    let mut settings = state.storage.load_settings(&state.crypto)?;
+    settings.agent_bridge.enabled = enabled;
+    state.storage.save_settings(&settings, &state.crypto)?;
+    agent_bridge::sync_server(
+        &state.agent_bridge,
+        &state.storage,
+        &state.crypto,
+        &settings.agent_bridge,
+    )?;
+    Ok(agent_bridge::bridge_status(
+        &state.agent_bridge,
+        &state.storage,
+        &settings.agent_bridge,
+    )?)
+}
+
+#[tauri::command]
+pub fn reset_agent_bridge_token(
+    state: State<'_, AppState>,
+) -> Result<agent_bridge::AgentBridgeStatus, String> {
+    let settings = state.storage.load_settings(&state.crypto)?;
+    agent_bridge::stop_server(&state.agent_bridge, &state.storage)?;
+    agent_bridge::reset_agent_bridge_token(&state.storage)?;
+    agent_bridge::sync_server(
+        &state.agent_bridge,
+        &state.storage,
+        &state.crypto,
+        &settings.agent_bridge,
+    )?;
+    Ok(agent_bridge::bridge_status(
+        &state.agent_bridge,
+        &state.storage,
+        &settings.agent_bridge,
+    )?)
 }
 
 #[tauri::command]
@@ -2354,7 +2470,10 @@ pub async fn upload_connections_to_webdav(state: State<'_, AppState>) -> Result<
 #[tauri::command]
 pub async fn list_connections_backups(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let settings = state.storage.load_settings(&state.crypto)?;
-    let files = state.webdav.list_connections_backups(&settings.webdav).await?;
+    let files = state
+        .webdav
+        .list_connections_backups(&settings.webdav)
+        .await?;
     Ok(files)
 }
 
@@ -2416,10 +2535,7 @@ pub async fn download_config_from_webdav(
     remote_path: String,
 ) -> Result<BootstrapState, String> {
     let current_settings = state.storage.load_settings(&state.crypto)?;
-    let filename = remote_path
-        .rsplit('/')
-        .next()
-        .unwrap_or(&remote_path);
+    let filename = remote_path.rsplit('/').next().unwrap_or(&remote_path);
 
     // 先尝试合并格式（myterminal-config-*.enc.json）
     if filename.starts_with("myterminal-config") {
@@ -2500,10 +2616,9 @@ pub async fn download_config_from_webdav(
             .storage
             .save_connections(&connections, &state.crypto)?;
     } else {
-        return Err(AppError::Validation(format!(
-            "unrecognized backup file: {filename}"
-        ))
-        .to_string());
+        return Err(
+            AppError::Validation(format!("unrecognized backup file: {filename}")).to_string(),
+        );
     }
 
     Ok(bootstrap_from_storage(&state)?)

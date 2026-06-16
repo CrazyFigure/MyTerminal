@@ -1,15 +1,7 @@
 // 发布版使用 Windows GUI 子系统，避免安装后额外弹出 myterminal.exe 控制台窗口。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod commands;
-mod crypto;
-mod error;
-mod models;
-mod state;
-mod storage;
-mod webdav;
-
-use state::AppState;
+use myterminal::{commands, state::AppState};
 
 fn main() {
     let app_state = AppState::new().expect("failed to initialize app state");
@@ -21,6 +13,13 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::bootstrap_state,
             commands::save_app_settings,
+            commands::agent_bridge_status,
+            commands::list_agent_bridge_requests,
+            commands::approve_agent_bridge_request,
+            commands::reject_agent_bridge_request,
+            commands::clear_agent_bridge_requests,
+            commands::reset_agent_bridge_token,
+            commands::set_agent_bridge_enabled,
             commands::test_connection,
             commands::create_connection,
             commands::update_connection,

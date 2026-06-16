@@ -16,6 +16,7 @@ import {
 import { open as openFileDialog, save as saveFileDialog } from '@tauri-apps/plugin-dialog';
 import {
   Activity,
+  Bot,
   Cable,
   ChevronDown,
   ChevronLeft,
@@ -56,12 +57,12 @@ import { TerminalWorkspace } from './TerminalWorkspace';
 import { backend } from './backend';
 import { writeClipboardText } from './clipboard';
 import { useAppStore } from './store';
-import type { AppSettings, ConnectionDraft, ConnectionProfile, RemoteFileEntry, SessionStatus, TerminalSession, UiLanguage, UpdateCheckResult } from './types';
+import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, RemoteFileEntry, SessionStatus, TerminalSession, UiLanguage, UpdateCheckResult } from './types';
 
 const MonacoEditor = lazy(() => import('./MonacoEditor'));
 
-type BottomPanelTab = 'commands' | 'tunnels' | 'history';
-type SettingsTab = 'appearance' | 'sync' | 'about';
+type BottomPanelTab = 'commands' | 'tunnels' | 'history' | 'agent';
+type SettingsTab = 'appearance' | 'sync' | 'agent' | 'about';
 type FileContextMenuState = {
   file: RemoteFileEntry;
   x: number;
@@ -184,6 +185,38 @@ const buildPreviewFontFamily = (settings: AppSettings) =>
     .filter((fontFamily, index, array) => array.indexOf(fontFamily) === index)
     .join(', ');
 
+const defaultAgentMcpPackagePath = 'C:\\Software\\WorkSpace\\MyTerminal\\mcp\\myterminal-mcp';
+
+const buildAgentMcpPackagePath = (discoveryPath?: string) => {
+  const normalized = discoveryPath?.trim().replace(/\\/g, '/');
+  const marker = '/.myterminal-data/';
+  const markerIndex = normalized?.lastIndexOf(marker) ?? -1;
+  if (!normalized || markerIndex < 0) {
+    return defaultAgentMcpPackagePath;
+  }
+
+  // discovery 文件位于项目数据目录下，反推项目根目录后拼出本地 npx launcher 包。
+  const rootPath = normalized.slice(0, markerIndex);
+  return `${rootPath}/mcp/myterminal-mcp`;
+};
+
+const buildAgentMcpConfig = (discoveryPath?: string) => {
+  const npxArgs = ['--yes', buildAgentMcpPackagePath(discoveryPath)];
+  return JSON.stringify(
+    {
+      mcpServers: {
+        myterminal: {
+          type: 'stdio',
+          command: 'npx',
+          args: npxArgs,
+        },
+      },
+    },
+    null,
+    2,
+  );
+};
+
 const terminalBackgroundFitOptions: Array<{
   value: NonNullable<AppSettings['terminalBackgroundImageFit']>;
   labelKey: TranslationKey;
@@ -199,6 +232,7 @@ const bottomTabs: Array<{ id: BottomPanelTab; labelKey: TranslationKey; icon: ty
   { id: 'commands', labelKey: 'panelCommands', icon: TerminalSquare },
   { id: 'tunnels', labelKey: 'panelTunnels', icon: Cable },
   { id: 'history', labelKey: 'panelHistory', icon: History },
+  { id: 'agent', labelKey: 'panelAgent', icon: Bot },
 ];
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -696,6 +730,60 @@ function ConnectionGroupTree({
           ) : null}
         </div>
       ))}
+    </div>
+  );
+}
+
+function AgentAutoConnectionTree({
+  nodes,
+  ungroupedConnections,
+  allowedConnectionIds,
+  onToggleConnection,
+  ungroupedLabel,
+}: {
+  nodes: ConnectionGroupNode[];
+  ungroupedConnections: ConnectionProfile[];
+  allowedConnectionIds: string[];
+  onToggleConnection: (connectionId: string, checked: boolean) => void;
+  ungroupedLabel: string;
+}) {
+  const renderConnection = (connection: ConnectionProfile) => (
+    <label key={connection.id} className="agent-tree-connection">
+      <input
+        checked={allowedConnectionIds.includes(connection.id)}
+        type="checkbox"
+        onChange={(event) => onToggleConnection(connection.id, event.target.checked)}
+      />
+      <span>{connection.name}</span>
+      <strong>{connection.username}@{connection.host}:{connection.port}</strong>
+    </label>
+  );
+
+  const renderGroup = (node: ConnectionGroupNode) => (
+    <div key={node.path} className="agent-tree-group">
+      <div className="agent-tree-group-title">
+        <Folder size={14} />
+        <span>{node.name}</span>
+      </div>
+      <div className="agent-tree-group-body">
+        {node.connections.map(renderConnection)}
+        {node.children.map(renderGroup)}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="agent-connection-tree">
+      {nodes.map(renderGroup)}
+      {ungroupedConnections.length ? (
+        <div className="agent-tree-group">
+          <div className="agent-tree-group-title">
+            <FolderOpen size={14} />
+            <span>{ungroupedLabel}</span>
+          </div>
+          <div className="agent-tree-group-body">{ungroupedConnections.map(renderConnection)}</div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1569,14 +1657,16 @@ function SettingsModal({
 }) {
   const {
     checkForUpdates,
+    connections,
     installUpdate,
     settings,
     testWebdavConnection,
-uploadConfig,
-downloadConfig,
+    uploadConfig,
+    downloadConfig,
     exportLocalConfig,
     importLocalConfig,
     persistSettings,
+    updateSettings,
   } = useAppStore();
   const [revealWebdavPassword, setRevealWebdavPassword] = useState(false);
   const [settingsSaveMessage, setSettingsSaveMessage] = useState('');
@@ -1586,6 +1676,8 @@ downloadConfig,
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [updateCheckResult, setUpdateCheckResult] = useState<UpdateCheckResult | null>(null);
   const [updateCheckError, setUpdateCheckError] = useState('');
+  const [agentBridgeStatus, setAgentBridgeStatus] = useState<AgentBridgeStatus | null>(null);
+  const [agentBridgeTransition, setAgentBridgeTransition] = useState<'starting' | 'stopping' | ''>('');
   const settingsSaveTimerRef = useRef<number | null>(null);
   const [actionFeedbackMap, setActionFeedbackMap] = useState<Record<string, { kind: 'is-success' | 'is-error'; message: string }>>({});
   const actionFeedbackTimerRef = useRef<Record<string, number>>({});
@@ -1596,12 +1688,20 @@ downloadConfig,
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(draftSettings.uiLanguage ?? settings.uiLanguage, key, replacements);
   // 界面显示优先使用构建注入版本，避免本地预览缺少环境变量时出现空版本。
-  const appVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.7';
+  const appVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.8';
   const webdavPasswordToggleLabel = revealWebdavPassword ? t('hideSecret') : t('showSecret');
   const selectedLatinFontFamily = draftSettings.shellLatinFontFamily || draftSettings.shellFontFamily.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '') || 'JetBrains Mono';
   const selectedCjkFontFamily = draftSettings.shellCjkFontFamily || selectedLatinFontFamily;
   const latinOptions = ensureFontOption(latinFontOptions, selectedLatinFontFamily);
   const cjkOptions = ensureFontOption(cjkFontOptions, selectedCjkFontFamily);
+  const agentAutoGroups = useMemo(
+    () => buildConnectionGroupTree(draftSettings.connectionGroups, connections),
+    [connections, draftSettings.connectionGroups],
+  );
+  const agentAutoUngroupedConnections = useMemo(
+    () => connections.filter((connection) => !normalizeConnectionGroupPath(connection.groupPath)),
+    [connections],
+  );
   const terminalPreviewStyle = useMemo<CSSProperties>(
     () => ({
       fontFamily: buildPreviewFontFamily(draftSettings),
@@ -1613,6 +1713,15 @@ downloadConfig,
   );
   const updateDraftSettings = (updater: (settings: AppSettings) => AppSettings) => {
     setDraftSettings((current) => updater(current));
+  };
+  const toggleAgentAutoConnection = (connectionId: string, checked: boolean) => {
+    updateDraftSettings((current) => {
+      const currentIds = current.agentBridge.allowedConnectionIds;
+      const allowedConnectionIds = checked
+        ? Array.from(new Set([...currentIds, connectionId]))
+        : currentIds.filter((item) => item !== connectionId);
+      return { ...current, agentBridge: { ...current.agentBridge, allowedConnectionIds } };
+    });
   };
   const showSettingsFeedback = (message: string) => {
     setSettingsSaveMessage(message);
@@ -1628,8 +1737,23 @@ downloadConfig,
   const persistSettingsWithFeedback = async () => {
     const saved = await persistSettings(draftSettings);
     setDraftSettings(saved);
+    void refreshAgentBridgeStatus();
     showSettingsFeedback(t('statusSettingsSaved'));
     showActionFeedback('save-webdav', 'is-success', t('statusSettingsSaved'));
+  };
+  const refreshAgentBridgeStatus = async () => {
+    try {
+      const status = await backend.agentBridgeStatus();
+      setAgentBridgeStatus(status);
+      return status;
+    } catch {
+      setAgentBridgeStatus(null);
+      return null;
+    }
+  };
+  const copyAgentMcpConfig = async () => {
+    await writeClipboardText(buildAgentMcpConfig(agentBridgeStatus?.discoveryPath));
+    showActionFeedback('copy-agent-config', 'is-success', t('statusAgentBridgeConfigCopied'));
   };
   const showActionFeedback = (actionKey: string, kind: 'is-success' | 'is-error', message: string) => {
     setActionFeedbackMap((prev) => ({ ...prev, [actionKey]: { kind, message } }));
@@ -1671,6 +1795,67 @@ downloadConfig,
     } finally {
       setSettingsActionRunning('');
     }
+  };
+  const waitForAgentBridgeState = async (enabled: boolean, initialStatus: AgentBridgeStatus | null) => {
+    if (initialStatus?.running === enabled) {
+      return initialStatus;
+    }
+
+    // Broker 启停通常很快；短轮询只兜底后端监听线程或端口释放稍慢的情况。
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+      const status = await refreshAgentBridgeStatus();
+      if (status?.running === enabled) {
+        return status;
+      }
+    }
+    return initialStatus;
+  };
+  const setAgentBridgeEnabled = async (enabled: boolean) => {
+    const previousEnabled = draftSettings.agentBridge.enabled;
+    const nextTransition = enabled ? 'starting' : 'stopping';
+    const applyEnabled = (value: boolean) => {
+      updateDraftSettings((current) => ({
+        ...current,
+        agentBridge: { ...current.agentBridge, enabled: value },
+      }));
+      updateSettings((current) => ({
+        ...current,
+        agentBridge: { ...current.agentBridge, enabled: value },
+      }));
+    };
+
+    setAgentBridgeTransition(nextTransition);
+    applyEnabled(enabled);
+    try {
+      const status = await backend.setAgentBridgeEnabled(enabled);
+      const confirmedStatus = await waitForAgentBridgeState(enabled, status);
+      if (confirmedStatus) {
+        setAgentBridgeStatus(confirmedStatus);
+      }
+      showSettingsFeedback(enabled ? t('statusAgentBridgeStarted') : t('statusAgentBridgeStopped'));
+    } catch (error) {
+      applyEnabled(previousEnabled);
+      const status = await refreshAgentBridgeStatus();
+      if (status) {
+        applyEnabled(status.enabled);
+      }
+      const reason = error instanceof Error ? error.message : String(error);
+      showSettingsFeedback(t('statusAgentBridgeToggleFailed', { reason }));
+    } finally {
+      setAgentBridgeTransition('');
+    }
+  };
+  const saveAgentBridgeSettings = async () => {
+    await runSettingsAction(
+      'save-agent-settings',
+      async () => {
+        const saved = await persistSettings(draftSettings);
+        setDraftSettings(saved);
+        await refreshAgentBridgeStatus();
+      },
+      t('statusAgentBridgeSettingsSaved'),
+    );
   };
   const openExternalLink = (url: string) => {
     const isDesktopRuntime = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -1771,6 +1956,7 @@ downloadConfig,
       setDraftSettings(settings);
       setSettingsSaveMessage('');
       setSettingsActionRunning('');
+      void refreshAgentBridgeStatus();
     }
   }, [open, settings]);
 
@@ -1788,6 +1974,15 @@ downloadConfig,
   if (!open) {
     return null;
   }
+
+  const agentBridgeSwitchBusy = Boolean(agentBridgeTransition);
+  const agentBridgeSwitchLabel = agentBridgeTransition === 'starting'
+    ? t('agentBridgeStarting')
+    : agentBridgeTransition === 'stopping'
+      ? t('agentBridgeStopping')
+      : draftSettings.agentBridge.enabled
+        ? t('enabled')
+        : t('disabled');
 
   return (
     <div className="modal-backdrop">
@@ -1818,6 +2013,14 @@ downloadConfig,
             >
               <Upload size={16} />
               {t('settingsTabSync')}
+            </button>
+            <button
+              className={`settings-nav-item ${activeTab === 'agent' ? 'is-active' : ''}`}
+              onClick={() => onTabChange('agent')}
+              type="button"
+            >
+              <Cable size={16} />
+              {t('settingsTabAgent')}
             </button>
             <button
               className={`settings-nav-item ${activeTab === 'about' ? 'is-active' : ''}`}
@@ -2106,6 +2309,141 @@ downloadConfig,
               </div>
             ) : null}
 
+            {activeTab === 'agent' ? (
+              <div className="stack gap-16">
+                <section className={`settings-section-block agent-bridge-control ${agentBridgeSwitchBusy ? 'is-pending' : ''}`}>
+                  <div className="agent-bridge-control-main">
+                    <div>
+                      <h3>{t('agentBridgeTitle')}</h3>
+                      <p>{t('agentBridgeDesc')}</p>
+                    </div>
+                    <label className={`agent-toggle-field agent-bridge-power ${agentBridgeSwitchBusy ? 'is-pending' : ''}`}>
+                      <span>{t('fieldAgentBridgeEnabled')}</span>
+                      <input
+                        checked={draftSettings.agentBridge.enabled}
+                        disabled={agentBridgeSwitchBusy}
+                        type="checkbox"
+                        onChange={(event) => void setAgentBridgeEnabled(event.target.checked)}
+                      />
+                      <strong>{agentBridgeSwitchLabel}</strong>
+                    </label>
+                  </div>
+
+                  <div className="settings-about-grid agent-bridge-status-grid">
+                    <span>{t('agentBridgeRunState')}</span>
+                    <strong>{agentBridgeStatus?.running ? t('statusRunningLabel') : t('statusStoppedLabel')}</strong>
+                    <span>{t('agentBridgePort')}</span>
+                    <strong>{agentBridgeStatus?.port ?? t('metricUnavailable')}</strong>
+                    <span>{t('agentBridgeDiscoveryPath')}</span>
+                    <strong>{agentBridgeStatus?.discoveryPath ?? t('metricUnavailable')}</strong>
+                  </div>
+                </section>
+
+                <section className="settings-section-block">
+                  <div className="section-row">
+                    <div>
+                      <h3>{t('agentBridgeConfigTitle')}</h3>
+                      <p>{t('agentBridgeConfigDesc')}</p>
+                    </div>
+                    <button
+                      className="primary-button"
+                      disabled={Boolean(settingsActionRunning) || agentBridgeSwitchBusy}
+                      onClick={() => void saveAgentBridgeSettings()}
+                      type="button"
+                    >
+                      <Save size={16} /> {settingsActionRunning === 'save-agent-settings' ? t('working') : t('saveAgentBridgeSettings')}
+                    </button>
+                  </div>
+                  {actionFeedbackMap['save-agent-settings'] ? <div className={`sync-action-feedback ${actionFeedbackMap['save-agent-settings'].kind}`}>{actionFeedbackMap['save-agent-settings'].message}</div> : null}
+
+                  <div className="form-grid">
+                    <label className="agent-toggle-field">
+                      <span>{t('fieldAgentBridgeAutoExecute')}</span>
+                      <input
+                        checked={draftSettings.agentBridge.autoExecute}
+                        type="checkbox"
+                        onChange={(event) =>
+                          updateDraftSettings((current) => ({
+                            ...current,
+                            agentBridge: { ...current.agentBridge, autoExecute: event.target.checked },
+                          }))
+                        }
+                      />
+                      <strong>{draftSettings.agentBridge.autoExecute ? t('enabled') : t('disabled')}</strong>
+                    </label>
+                    <label>
+                      <span>{t('fieldAgentBridgeTimeout')}</span>
+                      <input
+                        min={1}
+                        max={3600}
+                        type="number"
+                        value={draftSettings.agentBridge.defaultTimeoutSec}
+                        onChange={(event) =>
+                          updateDraftSettings((current) => ({
+                            ...current,
+                            agentBridge: { ...current.agentBridge, defaultTimeoutSec: Number(event.target.value) || 60 },
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>{t('fieldAgentBridgeMaxOutput')}</span>
+                      <input
+                        min={1024}
+                        type="number"
+                        value={draftSettings.agentBridge.maxOutputBytes}
+                        onChange={(event) =>
+                          updateDraftSettings((current) => ({
+                            ...current,
+                            agentBridge: { ...current.agentBridge, maxOutputBytes: Number(event.target.value) || 200000 },
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
+                </section>
+
+                <section className="settings-section-block">
+                  <div className="section-row">
+                    <div>
+                      <h3>{t('agentBridgeUsageTitle')}</h3>
+                      <p>{t('agentBridgeUsageDesc')}</p>
+                    </div>
+                    <button className="secondary-button" onClick={() => void copyAgentMcpConfig()} type="button">
+                      <Copy size={16} /> {t('copyAgentBridgeConfig')}
+                    </button>
+                  </div>
+                  {actionFeedbackMap['copy-agent-config'] ? <div className={`sync-action-feedback ${actionFeedbackMap['copy-agent-config'].kind}`}>{actionFeedbackMap['copy-agent-config'].message}</div> : null}
+                  <div className="agent-bridge-code-grid">
+                    <label className="span-2">
+                      <span>{t('agentBridgeMcpConfig')}</span>
+                      <textarea readOnly rows={9} spellCheck={false} value={buildAgentMcpConfig(agentBridgeStatus?.discoveryPath)} />
+                    </label>
+                  </div>
+                </section>
+
+                <section className="settings-section-block">
+                  <div>
+                    <h3>{t('agentBridgeAutoConnections')}</h3>
+                    <p>{t('agentBridgeAutoConnectionsDesc')}</p>
+                  </div>
+                  <div className="agent-connection-list">
+                    {connections.length ? (
+                      <AgentAutoConnectionTree
+                        allowedConnectionIds={draftSettings.agentBridge.allowedConnectionIds}
+                        nodes={agentAutoGroups}
+                        ungroupedConnections={agentAutoUngroupedConnections}
+                        ungroupedLabel={t('ungroupedConnections')}
+                        onToggleConnection={toggleAgentAutoConnection}
+                      />
+                    ) : (
+                      <div className="empty-state">{t('connectionManagerEmpty')}</div>
+                    )}
+                  </div>
+                </section>
+              </div>
+            ) : null}
+
             {activeTab === 'about' ? (
               <div className="stack gap-16">
                 <section className="settings-section-block settings-about-section">
@@ -2203,6 +2541,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('appearance');
   const [connectionsOpen, setConnectionsOpen] = useState(false);
+  const [globalBottomTab, setGlobalBottomTab] = useState<BottomPanelTab>('commands');
   const [bottomTabByConnection, setBottomTabByConnection] = useState<Record<string, BottomPanelTab>>({});
   const [pathInput, setPathInput] = useState('~');
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
@@ -2214,6 +2553,8 @@ export default function App() {
   const [cpuCoresExpanded, setCpuCoresExpanded] = useState(false);
   const [bottomDockCollapsed, setBottomDockCollapsed] = useState(false);
   const [transferProgressItems, setTransferProgressItems] = useState<TransferProgressItem[]>([]);
+  const [agentBridgeRequests, setAgentBridgeRequests] = useState<AgentBridgeRequest[]>([]);
+  const [agentCommandEdits, setAgentCommandEdits] = useState<Record<string, string>>({});
   const [explorerColumnWidths, setExplorerColumnWidths] = useState(explorerDefaultColumnWidths);
   const pathByConnectionRef = useRef<Record<string, string>>({});
   const runtimeRefreshInFlightRef = useRef(false);
@@ -2264,6 +2605,30 @@ export default function App() {
 
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements);
+
+  const refreshAgentBridgeRequests = useCallback(async () => {
+    try {
+      const requests = await backend.listAgentBridgeRequests();
+      setAgentBridgeRequests(requests);
+      setAgentCommandEdits((current) => {
+        const activeIds = new Set(requests.map((request) => request.id));
+        const next: Record<string, string> = {};
+        Object.entries(current).forEach(([requestId, value]) => {
+          if (activeIds.has(requestId)) {
+            next[requestId] = value;
+          }
+        });
+        requests.forEach((request) => {
+          if (request.kind === 'run_command' && request.command && next[request.id] === undefined) {
+            next[request.id] = request.command;
+          }
+        });
+        return next;
+      });
+    } catch {
+      setAgentBridgeRequests([]);
+    }
+  }, []);
 
   const dismissTransferProgress = useCallback((id: string) => {
     setTransferProgressItems((current) => current.filter((item) => item.id !== id));
@@ -2364,6 +2729,14 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [pollTerminalOutputs, sessions.length]);
 
+  useEffect(() => {
+    void refreshAgentBridgeRequests();
+    const timer = window.setInterval(() => {
+      void refreshAgentBridgeRequests();
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [refreshAgentBridgeRequests]);
+
   const activeSession = useMemo(() => sessions.find((item) => item.id === activeSessionId), [activeSessionId, sessions]);
   // 远端文件、运行状态和历史都必须绑定到已经打开的终端会话，避免仅选中连接时提前拉取远端数据。
   const hasActiveRemoteSession = isUsableRemoteSession(activeSession?.status);
@@ -2375,7 +2748,7 @@ export default function App() {
   // 左上运行状态直接以主机 IP 作为标题，减少说明性文字占位，把空间留给终端和文件表格。
   const runtimeHostLabel = runtimeOverview?.host ?? activeRemoteConnection?.host ?? '--';
   const activeCommand = activeSessionId ? commandBuffers[activeSessionId] ?? '' : '';
-  const activeBottomTab = activeRemoteConnectionId ? bottomTabByConnection[activeRemoteConnectionId] ?? 'commands' : 'commands';
+  const activeBottomTab = activeRemoteConnectionId ? bottomTabByConnection[activeRemoteConnectionId] ?? globalBottomTab : globalBottomTab;
   const sessionContextSession = useMemo(
     () => sessions.find((session) => session.id === sessionContextMenu?.sessionId),
     [sessionContextMenu?.sessionId, sessions],
@@ -2402,6 +2775,28 @@ export default function App() {
       setStatusMessage(error instanceof Error ? error.message : String(error));
     });
   }, [reconnectSessionById, setStatusMessage]);
+  const approveAgentBridgeRequest = useCallback((request: AgentBridgeRequest) => {
+    const editedCommand = request.kind === 'run_command' ? agentCommandEdits[request.id] : undefined;
+    void backend.approveAgentBridgeRequest(request.id, editedCommand).then(() => {
+      void refreshAgentBridgeRequests();
+    }).catch((error) => {
+      setStatusMessage(error instanceof Error ? error.message : String(error));
+    });
+  }, [agentCommandEdits, refreshAgentBridgeRequests, setStatusMessage]);
+  const rejectAgentBridgeRequest = useCallback((request: AgentBridgeRequest) => {
+    void backend.rejectAgentBridgeRequest(request.id, 'rejected by user').then(() => {
+      void refreshAgentBridgeRequests();
+    }).catch((error) => {
+      setStatusMessage(error instanceof Error ? error.message : String(error));
+    });
+  }, [refreshAgentBridgeRequests, setStatusMessage]);
+  const clearAgentBridgeRequests = useCallback(() => {
+    void backend.clearAgentBridgeRequests().then(() => {
+      void refreshAgentBridgeRequests();
+    }).catch((error) => {
+      setStatusMessage(error instanceof Error ? error.message : String(error));
+    });
+  }, [refreshAgentBridgeRequests, setStatusMessage]);
   const copySessionConnection = useCallback((session?: TerminalSession) => {
     if (!session) {
       return;
@@ -3138,6 +3533,7 @@ export default function App() {
                       key={tab.id}
                       className={`panel-tab ${activeBottomTab === tab.id ? 'is-active' : ''}`}
                       onClick={() => {
+                        setGlobalBottomTab(tab.id);
                         if (activeRemoteConnectionId) {
                           setBottomTabByConnection((current) => ({ ...current, [activeRemoteConnectionId]: tab.id }));
                         }
@@ -3209,6 +3605,11 @@ export default function App() {
                     type="button"
                   >
                     <RefreshCw size={14} /> {t('refresh')}
+                  </button>
+                ) : null}
+                {activeBottomTab === 'agent' ? (
+                  <button className="secondary-button slim" onClick={() => clearAgentBridgeRequests()} type="button">
+                    <Trash2 size={14} /> {t('clearAgentBridgeRequests')}
                   </button>
                 ) : null}
               </div>
@@ -3301,6 +3702,61 @@ export default function App() {
                       <div className="empty-state">{t('noHistory')}</div>
                     )}
                   </div>
+                </div>
+              ) : null}
+
+              {activeBottomTab === 'agent' ? (
+                <div className="stack panel-stack agent-request-panel">
+                  {agentBridgeRequests.length ? (
+                    agentBridgeRequests.map((request) => (
+                      <div key={request.id} className={`agent-request-card status-${request.status}`}>
+                        <div className="section-row">
+                          <div>
+                            <strong>{request.kind}</strong>
+                            <p>{request.title} · {new Date(request.createdAt).toLocaleString()}</p>
+                          </div>
+                          <span className={`status-badge status-${request.status}`}>{request.status}</span>
+                        </div>
+                        {request.kind === 'run_command' ? (
+                          <label>
+                            <span>{t('agentRequestCommand')}</span>
+                            <textarea
+                              disabled={request.status !== 'pending'}
+                              rows={3}
+                              spellCheck={false}
+                              value={agentCommandEdits[request.id] ?? request.command ?? ''}
+                              onChange={(event) => setAgentCommandEdits((current) => ({ ...current, [request.id]: event.target.value }))}
+                            />
+                          </label>
+                        ) : null}
+                        {request.path ? (
+                          <p className="agent-request-path">
+                            {request.path}{request.newPath ? ` -> ${request.newPath}` : ''}
+                          </p>
+                        ) : null}
+                        {request.contentPreview ? <pre className="agent-request-output">{request.contentPreview}</pre> : null}
+                        {request.logs.length ? (
+                          <div className="agent-request-logs">
+                            {request.logs.map((line, index) => <span key={`${request.id}-log-${index}`}>{line}</span>)}
+                          </div>
+                        ) : null}
+                        {request.error ? <div className="sync-action-feedback is-error">{request.error}</div> : null}
+                        {request.result ? <pre className="agent-request-output">{JSON.stringify(request.result, null, 2)}</pre> : null}
+                        {request.status === 'pending' ? (
+                          <div className="section-row compact">
+                            <button className="primary-button" onClick={() => approveAgentBridgeRequest(request)} type="button">
+                              <Play size={16} /> {t('approveAgentRequest')}
+                            </button>
+                            <button className="secondary-button" onClick={() => rejectAgentBridgeRequest(request)} type="button">
+                              <X size={16} /> {t('rejectAgentRequest')}
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="empty-state">{t('agentBridgeRequestsEmpty')}</div>
+                  )}
                 </div>
               ) : null}
             </div>

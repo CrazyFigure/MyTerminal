@@ -2108,6 +2108,192 @@ select:disabled {
   justify-content: flex-start;
 }
 
+.agent-bridge-control {
+  gap: 14px;
+}
+
+.agent-bridge-control.is-pending {
+  border-color: rgba(79, 70, 229, 0.24);
+}
+
+.agent-bridge-control-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, auto);
+  gap: 18px;
+  align-items: center;
+}
+
+.agent-bridge-power {
+  justify-self: end;
+  min-width: 220px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: var(--app-input-bg);
+}
+
+.agent-bridge-power.is-pending {
+  color: var(--app-muted);
+}
+
+.agent-bridge-status-grid {
+  grid-template-columns: 86px minmax(0, 1fr);
+}
+
+.agent-bridge-code-grid,
+.agent-connection-list,
+.agent-request-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.agent-bridge-code-grid textarea,
+.agent-request-card textarea {
+  width: 100%;
+  min-height: 68px;
+  resize: vertical;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+}
+
+.agent-toggle-field {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  pointer-events: none;
+}
+
+.agent-toggle-field > span,
+.agent-toggle-field > strong {
+  pointer-events: auto;
+}
+
+.agent-toggle-field input[type='checkbox'] {
+  width: 38px;
+  height: 20px;
+  appearance: none;
+  border: 1px solid var(--app-card-border);
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.28);
+  position: relative;
+  transition: background 0.16s ease, border-color 0.16s ease;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.agent-toggle-field input[type='checkbox']::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.18);
+  transition: transform 0.16s ease;
+}
+
+.agent-toggle-field input[type='checkbox']:checked {
+  border-color: var(--app-active-border);
+  background: var(--app-active-text);
+}
+
+.agent-toggle-field.is-pending input[type='checkbox'],
+.agent-toggle-field input[type='checkbox']:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.agent-toggle-field.is-pending input[type='checkbox']:checked {
+  background: rgba(79, 70, 229, 0.38);
+}
+
+.agent-toggle-field input[type='checkbox']:checked::after {
+  transform: translateX(18px);
+}
+
+.agent-request-card {
+  border: 1px solid var(--app-card-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--app-item-bg);
+}
+
+.agent-connection-tree {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-tree-group {
+  display: grid;
+  gap: 6px;
+}
+
+.agent-tree-group-title {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--app-subtle-text);
+  font-weight: 700;
+}
+
+.agent-tree-group-body {
+  display: grid;
+  gap: 6px;
+  margin-left: 18px;
+  padding-left: 10px;
+  border-left: 1px solid var(--app-card-border);
+}
+
+.agent-tree-connection {
+  display: grid;
+  grid-template-columns: auto minmax(100px, 1fr) minmax(160px, 1.5fr);
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--app-card-border);
+  border-radius: 8px;
+  background: var(--app-input-bg);
+}
+
+.agent-tree-connection strong {
+  color: var(--app-muted);
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.agent-request-card {
+  display: grid;
+  gap: 10px;
+}
+
+.agent-request-path {
+  margin: 0;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  color: var(--app-muted);
+  word-break: break-all;
+}
+
+.agent-request-logs {
+  display: grid;
+  gap: 4px;
+  color: var(--app-muted);
+  font-size: 12px;
+}
+
+.agent-request-output {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.06);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .update-check-result {
   padding: 8px 10px;
   border: 1px solid rgba(148, 163, 184, 0.22);
@@ -2349,6 +2535,15 @@ select:disabled {
   .connection-manager-layout {
     grid-template-columns: 1fr;
   }
+
+  .agent-bridge-control-main {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-bridge-power {
+    justify-self: stretch;
+    min-width: 0;
+  }
 }
 
 @media (max-width: 720px) {
@@ -2369,6 +2564,10 @@ select:disabled {
   .connection-table-row {
     grid-template-columns: minmax(0, 1fr);
     min-width: 0;
+  }
+
+  .agent-bridge-status-grid {
+    grid-template-columns: 1fr;
   }
 }
 

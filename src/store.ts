@@ -48,6 +48,13 @@ const defaultSettings: AppSettings = {
     syncPassphrase: '',
     remotePath: '/myterminal',
   },
+  agentBridge: {
+    enabled: false,
+    autoExecute: false,
+    allowedConnectionIds: [],
+    defaultTimeoutSec: 60,
+    maxOutputBytes: 200000,
+  },
 };
 
 const emptyConnectionDraft = (): ConnectionDraft => ({
