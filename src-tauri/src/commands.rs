@@ -7,7 +7,7 @@ use std::{
     process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, TryRecvError},
+        mpsc::{self, RecvTimeoutError, TryRecvError},
         Arc, MutexGuard,
     },
     thread,
@@ -18,7 +18,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{TimeZone, Utc};
 use serde::Deserialize;
 use ssh2::{Channel, ExtendedData, MethodType, Session, Sftp};
-use tauri::State;
+use tauri::{Emitter, State};
 
 use crate::{
     agent_bridge,
@@ -51,6 +51,18 @@ struct GitHubReleaseAsset {
 
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
 const SSH_IO_TIMEOUT: Duration = Duration::from_secs(20);
+// Shell 主循环每轮最多处理的前端控制事件数；输入风暴下必须留出读 SSH 输出的机会。
+const SSH_SHELL_MAX_CONTROL_EVENTS_PER_TICK: usize = 64;
+// Shell 主循环每轮最多连续读 SSH 输出次数；既尽快排空远端回显，也避免长期占住线程。
+const SSH_SHELL_MAX_READS_PER_TICK: usize = 32;
+// 单轮最多写入远端 PTY 的输入字节数；限制写入爆发，给远端回显和窗口调整留出空间。
+const SSH_SHELL_MAX_WRITE_CHUNK_BYTES: usize = 8192;
+// 单次非阻塞写入预算；输入很长时分多轮推进，避免写路径压过读路径。
+const SSH_SHELL_WRITE_BUDGET: Duration = Duration::from_millis(8);
+// Shell 主循环空闲时最长等待控制通道的时间；有输入到达会立即唤醒，不再固定睡完整周期。
+const SSH_SHELL_IDLE_WAIT: Duration = Duration::from_millis(5);
+// libssh2 暂时不可写或 transport 抖动时的轻量退避，避免瞬时错误下空转烧 CPU。
+const SSH_SHELL_RETRY_WAIT: Duration = Duration::from_millis(1);
 
 fn lock_sessions<'a>(
     state: &'a AppState,
@@ -238,44 +250,44 @@ fn spawn_update_installer(path: &Path) -> std::io::Result<()> {
     }
 }
 
-fn write_channel_input(channel: &mut Channel, data: &[u8]) -> Result<(), AppError> {
+/// 非阻塞写入：在短时间预算内尽量写入，返回实际写入的字节数。
+/// 不会长时间阻塞 shell 线程，允许读写在主循环中自然交替；真实 I/O 错误则上抛让会话退出。
+fn write_channel_input(channel: &mut Channel, data: &[u8]) -> Result<usize, AppError> {
+    if data.is_empty() {
+        return Ok(0);
+    }
     let started_at = Instant::now();
     let mut written = 0;
     while written < data.len() {
+        if started_at.elapsed() > SSH_SHELL_WRITE_BUDGET {
+            break;
+        }
         match channel.write(&data[written..]) {
             Ok(0) => {
-                if started_at.elapsed() > Duration::from_secs(12) {
-                    return Err(AppError::Validation(
-                        "terminal input write timed out".into(),
-                    ));
-                }
-                thread::sleep(Duration::from_millis(5));
+                thread::sleep(Duration::from_millis(1));
             }
             Ok(size) => {
                 written += size;
             }
             Err(error) if is_transient_channel_write_error(&error) => {
-                if started_at.elapsed() > Duration::from_secs(12) {
-                    return Err(AppError::from(error));
-                }
-                thread::sleep(Duration::from_millis(5));
+                // 非阻塞模式下所有写入错误都视为暂时无法继续；
+                // 跳出让 read 先执行，下轮主循环再重试写入。
+                break;
             }
             Err(error) => return Err(AppError::from(error)),
         }
     }
 
-    loop {
+    // 尝试 flush 已写入的数据，不阻塞
+    if written > 0 {
         match channel.flush() {
-            Ok(()) => return Ok(()),
-            Err(error) if is_transient_channel_write_error(&error) => {
-                if started_at.elapsed() > Duration::from_secs(12) {
-                    return Err(AppError::from(error));
-                }
-                thread::sleep(Duration::from_millis(5));
-            }
+            Ok(()) => {}
+            Err(error) if is_transient_channel_write_error(&error) => {}
             Err(error) => return Err(AppError::from(error)),
         }
     }
+
+    Ok(written)
 }
 
 fn is_transient_channel_write_error(error: &std::io::Error) -> bool {
@@ -297,6 +309,7 @@ fn is_transient_channel_write_error(error: &std::io::Error) -> bool {
 
 fn queue_output(
     queue: &Arc<std::sync::Mutex<Vec<TerminalOutputChunk>>>,
+    app_handle: &tauri::AppHandle,
     session_id: &str,
     content: impl Into<String>,
 ) {
@@ -308,10 +321,13 @@ fn queue_output(
             content: content.into(),
         });
     }
+    // 数据入队后立即通知前端拉取当前会话，替代全局定时轮询，实现低延迟回显。
+    let _ = app_handle.emit("terminal-output-ready", session_id);
 }
 
 fn queue_session_status(
     queue: &Arc<std::sync::Mutex<Vec<TerminalOutputChunk>>>,
+    app_handle: &tauri::AppHandle,
     session_id: &str,
     status: impl Into<String>,
 ) {
@@ -324,21 +340,34 @@ fn queue_session_status(
             content: String::new(),
         });
     }
+    // 状态变化同样定向唤醒对应会话，避免多会话时每次事件都扫全部输出队列。
+    let _ = app_handle.emit("terminal-output-ready", session_id);
 }
 
 fn is_transient_transport_read_error(error: &std::io::Error) -> bool {
     let message = error.to_string().to_ascii_lowercase();
-    // libssh2 在非阻塞 PTY 读取时偶尔会把短暂底层读抖动包装成 transport read；未到 EOF 时先按瞬时错误重试。
+    // libssh2 非阻塞模式下 channel.read() 可能因 transport 层正在处理写入而返回多种瞬时错误；
+    // 未到 EOF 时统一按瞬时错误重试，避免快速输入时误判断连。
     message.contains("transport read")
+        || message.contains("transport write")
+        || message.contains("session(-37)")
+        || message.contains("would block")
+        || message.contains("eagain")
+        || message.contains("temporarily unavailable")
+        || message.contains("try again")
+        || message.contains("socket send")
+        || message.contains("socket write")
 }
 
 /// 目录同步标记使用 OSC 控制序列，终端可见内容会被后端过滤，仅把 cwd 元数据传给前端。
 const CWD_SYNC_MARKER_PREFIX: &str = "\x1b]6973;MyTerminalCwd=";
 const CWD_SYNC_MARKER_SUFFIX: char = '\x07';
 const CWD_SYNC_SETUP_NAME: &str = "__myterminal_sync_cwd";
+const CWD_SYNC_HISTORY_PREP_TOKEN: &str = "HIST_IGNORE_SPACE";
 
 fn queue_cwd(
     queue: &Arc<std::sync::Mutex<Vec<TerminalOutputChunk>>>,
+    app_handle: &tauri::AppHandle,
     session_id: &str,
     cwd: impl Into<String>,
 ) {
@@ -350,30 +379,50 @@ fn queue_cwd(
             content: String::new(),
         });
     }
+    // cwd 元数据只影响当前会话，事件 payload 直接携带 session_id 供前端定向拉取。
+    let _ = app_handle.emit("terminal-output-ready", session_id);
 }
 
-/// 注入到交互 Shell 的目录同步与历史落盘钩子；bash/zsh 额外包装 cd/pushd/popd，其他 sh 通过 PS1 命令替换兜底。
+/// 注入到交互 Shell 的目录同步与历史落盘钩子；启动期会隐藏 setup 回显、规避新历史写入，并清理 bash 内存里的旧注入项。
 fn shell_cwd_sync_command() -> String {
-    [
+    let setup_command = [
         "__myterminal_sync_cwd(){ printf '\\033]6973;MyTerminalCwd=%s\\a' \"$PWD\"; }",
         "__myterminal_sync_history(){ if [ -n \"${ZSH_VERSION-}\" ]; then fc -AI 2>/dev/null || true; elif [ -n \"${BASH_VERSION-}\" ]; then history -a 2>/dev/null || true; fi; }",
+        "__myterminal_clean_history(){ if [ -n \"${BASH_VERSION-}\" ]; then for __myterminal_history_id in $(history | sed -n '/__myterminal_sync_cwd/{s/^ *\\([0-9][0-9]*\\).*/\\1/p}' | sort -rn); do history -d \"$__myterminal_history_id\" 2>/dev/null || true; done; unset __myterminal_history_id; fi; }",
         "__myterminal_sync_prompt(){ __myterminal_sync_history; __myterminal_sync_cwd; }",
         "if [ -n \"${BASH_VERSION-}${ZSH_VERSION-}\" ]; then cd(){ builtin cd \"$@\"; __myterminal_status=$?; __myterminal_sync_prompt; return $__myterminal_status; }; pushd(){ builtin pushd \"$@\"; __myterminal_status=$?; __myterminal_sync_prompt; return $__myterminal_status; }; popd(){ builtin popd \"$@\"; __myterminal_status=$?; __myterminal_sync_prompt; return $__myterminal_status; }; fi",
         "if [ -n \"${ZSH_VERSION-}\" ]; then autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd __myterminal_sync_prompt 2>/dev/null || PS1='$(__myterminal_sync_prompt)'\"$PS1\"",
         "elif [ -n \"${BASH_VERSION-}\" ]; then PROMPT_COMMAND=\"__myterminal_sync_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"",
         "else PS1='$(__myterminal_sync_prompt)'\"$PS1\"",
         "fi",
+        "__myterminal_clean_history",
         "__myterminal_sync_prompt",
-        "\n",
     ]
-    .join("; ")
+    .join("; ");
+
+    [
+        // 先让常见交互 Shell 忽略空格开头的历史项，再用空格前缀注入真正的 setup 命令，避免用户按上键翻到内部协议。
+        " HISTCONTROL=\"${HISTCONTROL:+$HISTCONTROL:}ignorespace\"; setopt HIST_IGNORE_SPACE 2>/dev/null || true\n".to_string(),
+        format!(" {setup_command}\n"),
+    ]
+    .concat()
 }
 
 /// 记录跨 SSH 分片的半截 OSC 标记，保证 cwd 标记不泄漏到终端输出。
-#[derive(Default)]
 struct ShellOutputFilter {
     pending: String,
     suppress_setup_echo_line: bool,
+    suppress_initial_setup_echo: bool,
+}
+
+impl Default for ShellOutputFilter {
+    fn default() -> Self {
+        Self {
+            pending: String::new(),
+            suppress_setup_echo_line: false,
+            suppress_initial_setup_echo: true,
+        }
+    }
 }
 
 impl ShellOutputFilter {
@@ -396,6 +445,8 @@ impl ShellOutputFilter {
                     if !cwd.is_empty() {
                         cwd_updates.push(cwd);
                     }
+                    // 第一次 cwd 标记说明启动注入已执行完毕；之后如果用户历史里出现内部函数名，不能再隐藏 readline 的重绘输出。
+                    self.suppress_initial_setup_echo = false;
                     let remainder_start =
                         value_start + value_end + CWD_SYNC_MARKER_SUFFIX.len_utf8();
                     self.pending = self.pending[remainder_start..].to_string();
@@ -431,7 +482,10 @@ impl ShellOutputFilter {
         let mut visible = String::new();
 
         for line in value.split_inclusive('\n') {
-            if line.contains(CWD_SYNC_SETUP_NAME) {
+            let is_initial_setup_echo = self.suppress_initial_setup_echo
+                && (line.contains(CWD_SYNC_SETUP_NAME)
+                    || line.contains(CWD_SYNC_HISTORY_PREP_TOKEN));
+            if is_initial_setup_echo {
                 self.suppress_setup_echo_line = true;
             }
 
@@ -591,10 +645,17 @@ fn connect_ssh_once(
             )
         }))
     })?;
-    tcp.set_read_timeout(Some(SSH_IO_TIMEOUT))?;
-    tcp.set_write_timeout(Some(SSH_IO_TIMEOUT))?;
-
+    // 交互终端输入是大量小包，必须关闭 Nagle，避免连续字符/退格被 TCP 合并后成批回显。
+    tcp.set_nodelay(true)?;
+    // 不在 TCP socket 上设 SO_RCVTIMEO/SO_SNDTIMEO：
+    // Windows 上 socket timeout 与非阻塞模式冲突，recv()/send() 超时后返回 WSAETIMEDOUT，
+    // libssh2 不认识这个错误码，包装成 "transport read" 错误导致非阻塞会话卡死。
+    // 改用 libssh2 自身的 session.set_timeout() 控制阻塞操作（握手/认证）超时。
+    // 底层 socket 必须先切到 OS 非阻塞：libssh2 的阻塞 API 会自行 wait_socket，
+    // 交互 Shell 的非阻塞 API 才能稳定收到 EAGAIN/WouldBlock，而不是 transport read。
+    tcp.set_nonblocking(true)?;
     let mut session = Session::new().map_err(ssh_error)?;
+    session.set_timeout(SSH_IO_TIMEOUT.as_millis() as u32);
     session.set_tcp_stream(tcp);
     if compatibility_mode {
         configure_ssh_compatibility_preferences(&session)?;
@@ -623,67 +684,99 @@ pub(crate) fn connect_ssh(connection: &ConnectionProfile) -> Result<Session, App
     }
 }
 
-fn handle_shell_control(channel: &mut Channel, control: SessionControl) -> Result<bool, AppError> {
-    match control {
-        SessionControl::Input(data) => {
-            // libssh2 非阻塞 channel 在粘贴或连续 Backspace 时可能短暂 WouldBlock；这里分片重试，避免误判为会话断开。
-            write_channel_input(channel, data.as_bytes())?;
-            Ok(false)
+/// 调整远端 PTY 尺寸；libssh2 非阻塞忙碌时返回 false，让 shell 主循环保留目标尺寸下轮重试。
+fn request_shell_pty_size(channel: &mut Channel, cols: u16, rows: u16) -> Result<bool, AppError> {
+    if let Err(error) = channel.request_pty_size(cols.into(), rows.into(), Some(0), Some(0)) {
+        let message = error.to_string().to_ascii_lowercase();
+        // 非阻塞 PTY 调整尺寸偶尔会撞上 libssh2 的短暂 busy 状态；尺寸是状态值，不能丢，调用方要重试。
+        if message.contains("session(-37)")
+            || message.contains("would block")
+            || message.contains("eagain")
+            || message.contains("temporarily unavailable")
+            || message.contains("try again")
+        {
+            return Ok(false);
         }
-        SessionControl::Resize { cols, rows } => {
-            if let Err(error) = channel.request_pty_size(cols.into(), rows.into(), Some(0), Some(0))
-            {
-                let message = error.to_string().to_ascii_lowercase();
-                // 非阻塞 PTY 调整尺寸偶尔会撞上 libssh2 的短暂 busy 状态；尺寸下一次变化还会同步，不能因此断开会话。
-                if message.contains("session(-37)")
-                    || message.contains("would block")
-                    || message.contains("eagain")
-                    || message.contains("temporarily unavailable")
-                    || message.contains("try again")
-                {
-                    return Ok(false);
-                }
-                return Err(ssh_error(error));
-            }
-            Ok(false)
-        }
-        SessionControl::Close => {
-            let _ = channel.close();
-            Ok(true)
-        }
+        return Err(ssh_error(error));
     }
+    Ok(true)
 }
 
+/// 非阻塞刷新：写入尽可能多的 pending_input，未写完的部分保留在原地等下轮主循环重试。
 fn flush_pending_shell_input(
     channel: &mut Channel,
-    pending_input: &mut String,
-) -> Result<(), AppError> {
+    pending_input: &mut Vec<u8>,
+) -> Result<usize, AppError> {
     if pending_input.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
 
-    // 同一轮事件循环内的按键合并成一个 channel 写入，降低连续 Backspace/粘贴时的 SSH 写入压力。
-    let data = std::mem::take(pending_input);
-    write_channel_input(channel, data.as_bytes())
+    // 单轮只推进一小段输入，避免用户高速输入时 write 路径长期占用 libssh2 transport。
+    let write_len = pending_input.len().min(SSH_SHELL_MAX_WRITE_CHUNK_BYTES);
+    let written = write_channel_input(channel, &pending_input[..write_len])?;
+    if written >= pending_input.len() {
+        pending_input.clear();
+    } else if written > 0 {
+        // 保留未写完的字节，下轮事件循环继续尝试；按字节缓冲避免 UTF-8 分片写入后切 String 崩溃。
+        pending_input.drain(..written);
+    }
+
+    Ok(written)
 }
 
-fn is_recoverable_terminal_write_error(error: &AppError) -> bool {
-    // 非阻塞 SSH channel 在远端同时大量输出和本地快速输入时可能暂时写不进去，保留会话比立刻断开更符合终端预期。
-    match error {
-        AppError::Io(error) => is_transient_channel_write_error(error),
-        AppError::Validation(message) | AppError::Ssh(message) => {
-            let normalized = message.to_ascii_lowercase();
-            normalized.contains("terminal input write timed out")
-                || normalized.contains("session(-37)")
-                || normalized.contains("would block")
-                || normalized.contains("eagain")
-                || normalized.contains("temporarily unavailable")
-                || normalized.contains("try again")
-                || normalized.contains("transport write")
-                || normalized.contains("socket write")
-        }
-        _ => false,
+#[cfg(windows)]
+fn ssh_socket_error_hint(session: &Session) -> String {
+    use std::os::windows::io::AsRawSocket;
+
+    // Windows 版 libc 未公开 WinSock 的 SOL_SOCKET/SO_ERROR 常量；这里使用 WinSock 固定值读取底层 socket 状态。
+    const WINDOWS_SOL_SOCKET: libc::c_int = 0xffff;
+    const WINDOWS_SO_ERROR: libc::c_int = 0x1007;
+
+    let mut error_code = 0 as libc::c_int;
+    let mut option_len = std::mem::size_of::<libc::c_int>() as libc::c_int;
+    let result = unsafe {
+        libc::getsockopt(
+            session.as_raw_socket() as libc::SOCKET,
+            WINDOWS_SOL_SOCKET,
+            WINDOWS_SO_ERROR,
+            &mut error_code as *mut _ as *mut libc::c_char,
+            &mut option_len,
+        )
+    };
+
+    if result == 0 {
+        format!("so_error={error_code}")
+    } else {
+        format!("so_error_unavailable={}", std::io::Error::last_os_error())
     }
+}
+
+#[cfg(unix)]
+fn ssh_socket_error_hint(session: &Session) -> String {
+    use std::os::fd::AsRawFd;
+
+    let mut error_code = 0 as libc::c_int;
+    let mut option_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    let result = unsafe {
+        libc::getsockopt(
+            session.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_ERROR,
+            &mut error_code as *mut _ as *mut libc::c_void,
+            &mut option_len,
+        )
+    };
+
+    if result == 0 {
+        format!("so_error={error_code}")
+    } else {
+        format!("so_error_unavailable={}", std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn ssh_socket_error_hint(_session: &Session) -> String {
+    "so_error=unsupported_platform".into()
 }
 
 fn spawn_shell_thread(
@@ -693,12 +786,14 @@ fn spawn_shell_thread(
     rows: u16,
     output_queue: Arc<std::sync::Mutex<Vec<TerminalOutputChunk>>>,
     control_rx: mpsc::Receiver<SessionControl>,
+    app_handle: tauri::AppHandle,
 ) {
     thread::spawn(move || {
         let mut channel = match ssh_session.channel_session() {
             Ok(channel) => channel,
-            Err(_) => {
-                queue_session_status(&output_queue, &session_id, "error");
+            Err(e) => {
+                eprintln!("[SSH-DIAG] channel_session failed: {e:?}");
+                queue_session_status(&output_queue, &app_handle, &session_id, "error");
                 return;
             }
         };
@@ -708,12 +803,12 @@ fn spawn_shell_thread(
             .request_pty("xterm", None, Some((cols.into(), rows.into(), 0, 0)))
             .is_err()
         {
-            queue_session_status(&output_queue, &session_id, "error");
+            queue_session_status(&output_queue, &app_handle, &session_id, "error");
             return;
         }
 
         if channel.shell().is_err() {
-            queue_session_status(&output_queue, &session_id, "error");
+            queue_session_status(&output_queue, &app_handle, &session_id, "error");
             return;
         }
 
@@ -722,8 +817,10 @@ fn spawn_shell_thread(
         let _ = channel.flush();
 
         ssh_session.set_blocking(false);
+        // libssh2 session 超时设为 0 表示不超时，由我们自己的主循环控制。
+        ssh_session.set_timeout(0);
 
-        queue_session_status(&output_queue, &session_id, "connected");
+        queue_session_status(&output_queue, &app_handle, &session_id, "connected");
 
         let mut buffer = [0_u8; 8192];
         // 终端输出可能把 OSC 同步标记拆成多段，过滤器负责跨分片拼接与隐藏。
@@ -731,109 +828,148 @@ fn spawn_shell_thread(
         // transport read 可能是短暂底层读抖动；连续超过阈值才认为会话异常，避免终端误断开。
         let mut transient_read_errors = 0_usize;
         let mut transient_error_started_at: Option<Instant> = None;
-        let mut pending_input = String::new();
+        // pending_input 保存尚未写入远端 PTY 的原始字节；不能用 String 按字节裁剪，避免 UTF-8 分片时越界。
+        let mut pending_input = Vec::<u8>::new();
+        // pending_resize 保存远端 PTY 目标尺寸；request_pty_size 瞬时 busy 时必须重试，避免长行编辑按旧列宽重绘。
+        let mut pending_resize: Option<(u16, u16)> = None;
         let mut last_keepalive_at = Instant::now();
         loop {
-            loop {
+            // 本轮是否处理过前端控制事件；用于决定末尾是立即继续，还是进入可被输入唤醒的空闲等待。
+            let mut handled_control_event = false;
+            for _ in 0..SSH_SHELL_MAX_CONTROL_EVENTS_PER_TICK {
                 match control_rx.try_recv() {
                     Ok(SessionControl::Input(data)) => {
-                        pending_input.push_str(&data);
-                        if pending_input.len() >= 4096 {
-                            let retry_input = pending_input.clone();
-                            if let Err(error) =
-                                flush_pending_shell_input(&mut channel, &mut pending_input)
-                            {
-                                if is_recoverable_terminal_write_error(&error) {
-                                    pending_input = retry_input;
-                                    break;
-                                }
-                                queue_session_status(&output_queue, &session_id, "error");
-                                return;
-                            }
-                        }
+                        handled_control_event = true;
+                        pending_input.extend_from_slice(data.as_bytes());
                     }
                     Ok(SessionControl::Close) => {
                         let _ = channel.close();
                         return;
                     }
-                    Ok(control) => {
-                        let retry_input = pending_input.clone();
-                        if let Err(error) =
-                            flush_pending_shell_input(&mut channel, &mut pending_input)
-                        {
-                            if is_recoverable_terminal_write_error(&error) {
-                                pending_input = retry_input;
-                                break;
-                            }
-                            queue_session_status(&output_queue, &session_id, "error");
-                            return;
-                        }
-                        match handle_shell_control(&mut channel, control) {
-                            Ok(true) => return,
-                            Ok(false) => {}
-                            Err(_) => {
-                                queue_session_status(&output_queue, &session_id, "error");
-                                return;
-                            }
-                        }
+                    Ok(SessionControl::Resize { cols, rows }) => {
+                        handled_control_event = true;
+                        pending_resize = Some((cols, rows));
                     }
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => return,
                 }
             }
 
-            let retry_input = pending_input.clone();
-            if let Err(error) = flush_pending_shell_input(&mut channel, &mut pending_input) {
-                if is_recoverable_terminal_write_error(&error) {
-                    pending_input = retry_input;
-                    thread::sleep(Duration::from_millis(20));
-                } else {
-                    queue_session_status(&output_queue, &session_id, "error");
-                    return;
+            // 先排空一批远端输出，再写入新输入；持续高速输入时也不能饿死 SSH read/window adjust。
+            let mut read_transport_error = false;
+            // 本轮读到过远端输出时不要进入睡眠，马上继续读下一批，降低 echo 到 xterm 的等待时间。
+            let mut read_made_progress = false;
+            for _ in 0..SSH_SHELL_MAX_READS_PER_TICK {
+                match channel.read(&mut buffer) {
+                    Ok(0) => {
+                        if channel.eof() {
+                            queue_session_status(&output_queue, &app_handle, &session_id, "closed");
+                            let _ = channel.close();
+                            return;
+                        }
+                        break;
+                    }
+                    Ok(size) => {
+                        read_made_progress = true;
+                        transient_read_errors = 0;
+                        transient_error_started_at = None;
+                        let content = String::from_utf8_lossy(&buffer[..size]).into_owned();
+                        let (visible_content, cwd_updates) = output_filter.consume(&content);
+                        if !visible_content.is_empty() {
+                            queue_output(&output_queue, &app_handle, &session_id, visible_content);
+                        }
+                        for cwd in cwd_updates {
+                            queue_cwd(&output_queue, &app_handle, &session_id, cwd);
+                        }
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(error) if is_transient_transport_read_error(&error) && !channel.eof() => {
+                        read_transport_error = true;
+                        transient_read_errors += 1;
+                        let started_at =
+                            transient_error_started_at.get_or_insert_with(Instant::now);
+                        // 前几次错误时打印详细诊断，包含 socket SO_ERROR，帮助确认是否为连接重置/超时。
+                        if transient_read_errors <= 3 || transient_read_errors % 2000 == 0 {
+                            let dirs = ssh_session.block_directions();
+                            let socket_hint = ssh_socket_error_hint(&ssh_session);
+                            eprintln!(
+                                "[SSH-DIAG] transport read error #{transient_read_errors}: error={error}, block_directions={dirs:?}, pending_input_len={}, {socket_hint}",
+                                pending_input.len(),
+                            );
+                        }
+                        // transport read 表示底层 receive 已失败；此轮不要继续写入，否则 write 会再次 drain incoming flow 并放大错误。
+                        if started_at.elapsed() > Duration::from_secs(30) {
+                            eprintln!("[SSH-DIAG] transient read error limit hit: count={transient_read_errors}, elapsed={:?}, last_error={error:?}, {}", started_at.elapsed(), ssh_socket_error_hint(&ssh_session));
+                            queue_session_status(&output_queue, &app_handle, &session_id, "error");
+                            let _ = channel.close();
+                            return;
+                        }
+                        break;
+                    }
+                    Err(catch_all_err) => {
+                        if !channel.eof() {
+                            read_transport_error = true;
+                            transient_read_errors += 1;
+                            let started_at =
+                                transient_error_started_at.get_or_insert_with(Instant::now);
+                            if started_at.elapsed() <= Duration::from_secs(30) {
+                                if transient_read_errors <= 3 || transient_read_errors % 2000 == 0 {
+                                    eprintln!(
+                                        "[SSH-DIAG] catch-all read retry: count={transient_read_errors}, error={catch_all_err:?}, {}",
+                                        ssh_socket_error_hint(&ssh_session),
+                                    );
+                                }
+                                break;
+                            }
+                        }
+                        eprintln!("[SSH-DIAG] catch-all read error, eof={}, count={transient_read_errors}, error={catch_all_err:?}, {}", channel.eof(), ssh_socket_error_hint(&ssh_session));
+                        queue_session_status(&output_queue, &app_handle, &session_id, "error");
+                        let _ = channel.close();
+                        return;
+                    }
                 }
             }
 
-            match channel.read(&mut buffer) {
-                Ok(0) => {
-                    if channel.eof() {
-                        queue_session_status(&output_queue, &session_id, "closed");
+            // 非阻塞刷新：读侧正常时才写入，写不完的留给下轮；读侧异常时暂停写入避免放大 transport 错误。
+            let mut resized_pty = false;
+            let mut written_input_bytes = 0_usize;
+            if !read_transport_error {
+                if let Some((cols, rows)) = pending_resize {
+                    match request_shell_pty_size(&mut channel, cols, rows) {
+                        Ok(true) => {
+                            resized_pty = true;
+                            pending_resize = None;
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            eprintln!("[SSH-DIAG] resize pty failed: {error:?}");
+                            queue_session_status(&output_queue, &app_handle, &session_id, "error");
+                            let _ = channel.close();
+                            return;
+                        }
+                    }
+                }
+
+                match flush_pending_shell_input(&mut channel, &mut pending_input) {
+                    Ok(written) => {
+                        written_input_bytes = written;
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "[SSH-DIAG] flush pending input failed: {error:?}, {}",
+                            ssh_socket_error_hint(&ssh_session),
+                        );
+                        queue_session_status(&output_queue, &app_handle, &session_id, "error");
                         let _ = channel.close();
                         return;
                     }
-                }
-                Ok(size) => {
-                    transient_read_errors = 0;
-                    transient_error_started_at = None;
-                    let content = String::from_utf8_lossy(&buffer[..size]).into_owned();
-                    let (visible_content, cwd_updates) = output_filter.consume(&content);
-                    if !visible_content.is_empty() {
-                        queue_output(&output_queue, &session_id, visible_content);
-                    }
-                    for cwd in cwd_updates {
-                        queue_cwd(&output_queue, &session_id, cwd);
-                    }
-                }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
-                    ) => {}
-                Err(error) if is_transient_transport_read_error(&error) && !channel.eof() => {
-                    transient_read_errors += 1;
-                    let started_at = transient_error_started_at.get_or_insert_with(Instant::now);
-                    // transport read 在网络抖动或远端短暂无输出时可能连续出现；这里按时间窗口容忍，避免 400ms 内误判掉线。
-                    if transient_read_errors > 160 || started_at.elapsed() > Duration::from_secs(8)
-                    {
-                        queue_session_status(&output_queue, &session_id, "error");
-                        let _ = channel.close();
-                        return;
-                    }
-                    thread::sleep(Duration::from_millis(50));
-                }
-                Err(_) => {
-                    queue_session_status(&output_queue, &session_id, "error");
-                    let _ = channel.close();
-                    return;
                 }
             }
 
@@ -843,7 +979,32 @@ fn spawn_shell_thread(
                 last_keepalive_at = Instant::now();
             }
 
-            thread::sleep(Duration::from_millis(16));
+            // 写入成功后立即回到 read 阶段等待远端 echo；读到输出或处理控制事件时也不额外睡眠。
+            if written_input_bytes > 0 || resized_pty || read_made_progress || handled_control_event {
+                thread::yield_now();
+                continue;
+            }
+
+            if !pending_input.is_empty() || pending_resize.is_some() || transient_read_errors > 0 {
+                thread::sleep(SSH_SHELL_RETRY_WAIT);
+                continue;
+            }
+
+            // 空闲时等待控制通道，输入到达会立即唤醒 shell 线程；超时仅用于继续轮询远端输出。
+            match control_rx.recv_timeout(SSH_SHELL_IDLE_WAIT) {
+                Ok(SessionControl::Input(data)) => {
+                    pending_input.extend_from_slice(data.as_bytes());
+                }
+                Ok(SessionControl::Resize { cols, rows }) => {
+                    pending_resize = Some((cols, rows));
+                }
+                Ok(SessionControl::Close) => {
+                    let _ = channel.close();
+                    return;
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
         }
     });
 }
@@ -1754,6 +1915,7 @@ pub fn delete_connection(
 #[tauri::command]
 pub fn open_ssh_session(
     state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
     connection_id: String,
 ) -> Result<TerminalSession, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
@@ -1783,6 +1945,7 @@ pub fn open_ssh_session(
         runtime.rows,
         output_queue,
         control_rx,
+        app_handle,
     );
 
     let session = runtime.session.clone();

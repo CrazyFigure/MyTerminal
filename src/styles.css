@@ -455,9 +455,12 @@ select:disabled {
   padding: 4px;
 }
 
-.terminal-surface .xterm,
-.terminal-surface .xterm-viewport {
+.terminal-surface .xterm {
   height: 100%;
+  background: transparent !important;
+}
+
+.terminal-surface .xterm-viewport {
   background: transparent !important;
 }
 
@@ -469,15 +472,10 @@ select:disabled {
   max-height: 100%;
 }
 
-/* xterm 6 的 DOM renderer 会基于测量结果写入 letter-spacing；测量偶发偏差时会把每个字符横向拉开。 */
+/* xterm 6 的 DOM renderer 需要自管 letter-spacing 来保持列坐标准确；这里只关闭字偶距，避免破坏长行重绘。 */
 .terminal-surface .xterm-rows,
 .terminal-surface .xterm-rows span {
-  letter-spacing: 0 !important;
   font-kerning: none;
-}
-
-.terminal-surface .xterm-scroll-area {
-  width: 0 !important;
 }
 
 .terminal-empty-state {
@@ -1955,12 +1953,8 @@ select:disabled {
   scrollbar-width: none;
 }
 
-.terminal-surface .xterm {
-  overflow: hidden !important;
-}
-
 .terminal-surface .xterm-viewport {
-  overflow: hidden !important;
+  overflow-y: scroll;
   scrollbar-width: none;
 }
 

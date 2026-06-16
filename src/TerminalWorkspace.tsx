@@ -233,6 +233,23 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     });
   };
 
+  const syncTerminalSizeToRemote = () => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+
+    fitAddonRef.current?.fit();
+    const currentSession = sessionRef.current;
+    const nextSize = { cols: terminal.cols, rows: terminal.rows };
+    const previousSize = terminalSizeRef.current;
+    terminalSizeRef.current = nextSize;
+    // 远端 readline/zle 按 PTY 列宽重绘长命令；session 切换后也必须同步一次，不能只依赖 ResizeObserver。
+    if (currentSession && (!previousSize || previousSize.cols !== nextSize.cols || previousSize.rows !== nextSize.rows)) {
+      void backend.resizeTerminal(currentSession.id, terminal.cols, terminal.rows);
+    }
+  };
+
   useEffect(() => {
     if (!containerRef.current || terminalRef.current) {
       return;
@@ -241,7 +258,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     // 终端实例只初始化一次；主题、字体和背景图后续通过 options 更新，避免设置视觉项时清空当前会话画面。
     const terminal = new Terminal({
       allowTransparency: true,
-      convertEol: true,
+      // 交互 SSH PTY 必须保留远端原始 CR/LF 与 ANSI 行编辑序列；convertEol 会破坏长行历史重绘。
+      convertEol: false,
       cursorBlink: true,
       disableStdin: !canAcceptTerminalInput(sessionRef.current),
       fontFamily: terminalFontFamily,
@@ -254,19 +272,6 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(containerRef.current);
-    fitAddon.fit();
-
-    const syncTerminalSize = () => {
-      fitAddon.fit();
-      const currentSession = sessionRef.current;
-      const nextSize = { cols: terminal.cols, rows: terminal.rows };
-      const previousSize = terminalSizeRef.current;
-      terminalSizeRef.current = nextSize;
-      // 只有终端列/行实际变化时才通知后端，避免拖动和窗口变化期间频繁 IPC 造成选区和输入卡顿。
-      if (currentSession && (!previousSize || previousSize.cols !== nextSize.cols || previousSize.rows !== nextSize.rows)) {
-        void backend.resizeTerminal(currentSession.id, terminal.cols, terminal.rows);
-      }
-    };
 
     const scheduleTerminalSizeSync = () => {
       if (resizeFrameRef.current !== null) {
@@ -275,7 +280,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
 
       resizeFrameRef.current = window.requestAnimationFrame(() => {
         resizeFrameRef.current = null;
-        syncTerminalSize();
+        syncTerminalSizeToRemote();
       });
     };
 
@@ -287,6 +292,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+    syncTerminalSizeToRemote();
 
     const observer = new ResizeObserver(scheduleTerminalSizeSync);
     observer.observe(containerRef.current);
@@ -350,14 +356,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     terminal.clearTextureAtlas();
 
     window.requestAnimationFrame(() => {
-      fitAddonRef.current?.fit();
-      const currentSession = sessionRef.current;
-      const nextSize = { cols: terminal.cols, rows: terminal.rows };
-      const previousSize = terminalSizeRef.current;
-      terminalSizeRef.current = nextSize;
-      if (currentSession && (!previousSize || previousSize.cols !== nextSize.cols || previousSize.rows !== nextSize.rows)) {
-        void backend.resizeTerminal(currentSession.id, terminal.cols, terminal.rows);
-      }
+      syncTerminalSizeToRemote();
     });
   }, [settings.shellFontSize, terminalFontFamily, terminalTheme]);
 
@@ -371,7 +370,9 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     if (session?.id) {
       terminal.write(cachedOutputBySessionRef.current[session.id] ?? '');
     }
-    fitAddonRef.current?.fit();
+    // 新会话打开时立刻把当前 xterm 尺寸推给远端 PTY，避免默认 120 列和实际界面列宽不一致。
+    terminalSizeRef.current = null;
+    window.requestAnimationFrame(() => syncTerminalSizeToRemote());
   }, [session?.id]);
 
   return (
