@@ -1,13 +1,10 @@
 use std::{
     collections::HashMap,
-    sync::{
-        atomic::AtomicBool,
-        mpsc::Sender,
-        Arc, Mutex,
-    },
+    sync::{atomic::AtomicBool, mpsc::Sender, Arc, Mutex},
 };
 
 use crate::{
+    agent_bridge::AgentBridgeRuntime,
     crypto::CryptoService,
     error::AppError,
     models::{TerminalOutputChunk, TerminalSession},
@@ -41,6 +38,7 @@ pub struct AppState {
     pub storage: StorageService,
     pub crypto: CryptoService,
     pub webdav: WebDavService,
+    pub agent_bridge: AgentBridgeRuntime,
     pub sessions: Mutex<HashMap<String, RuntimeSession>>,
     pub tunnels: Mutex<HashMap<String, TunnelRuntime>>,
 }
@@ -49,7 +47,9 @@ impl AppState {
     pub fn new() -> Result<Self, AppError> {
         let storage = StorageService::new(StorageService::default_data_dir())?;
         let mut persisted_tunnels = storage.load_tunnels()?;
-        let had_running_tunnels = persisted_tunnels.iter().any(|tunnel| tunnel.status == "running");
+        let had_running_tunnels = persisted_tunnels
+            .iter()
+            .any(|tunnel| tunnel.status == "running");
         if had_running_tunnels {
             for tunnel in &mut persisted_tunnels {
                 if tunnel.status == "running" {
@@ -64,6 +64,7 @@ impl AppState {
             storage,
             crypto,
             webdav: WebDavService::new(),
+            agent_bridge: AgentBridgeRuntime::new(),
             sessions: Mutex::new(HashMap::new()),
             tunnels: Mutex::new(HashMap::new()),
         })

@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 
 import type {
+  AgentBridgeRequest,
+  AgentBridgeStatus,
   AppSettings,
   BootstrapState,
   ConnectionProfile,
@@ -108,6 +110,13 @@ const normalizeSettings = (settings: AppSettings): AppSettings => ({
     syncPassphrase: settings.webdav?.syncPassphrase ?? '',
     remotePath: settings.webdav?.remotePath ?? '/myterminal',
   },
+  agentBridge: {
+    enabled: Boolean(settings.agentBridge?.enabled),
+    autoExecute: Boolean(settings.agentBridge?.autoExecute),
+    allowedConnectionIds: Array.from(new Set(settings.agentBridge?.allowedConnectionIds ?? [])),
+    defaultTimeoutSec: Math.min(3600, Math.max(1, Number(settings.agentBridge?.defaultTimeoutSec) || 60)),
+    maxOutputBytes: Math.min(10_000_000, Math.max(1024, Number(settings.agentBridge?.maxOutputBytes) || 200_000)),
+  },
 });
 
 const normalizeConnection = (connection: ConnectionProfile): ConnectionProfile => ({
@@ -161,6 +170,13 @@ const mockSettings: AppSettings = {
     password: '',
     syncPassphrase: '',
     remotePath: '/myterminal',
+  },
+  agentBridge: {
+    enabled: false,
+    autoExecute: false,
+    allowedConnectionIds: [],
+    defaultTimeoutSec: 60,
+    maxOutputBytes: 200000,
   },
 };
 
@@ -230,8 +246,16 @@ const mockState: BootstrapState = {
   tunnels: mockTunnels,
 };
 
+const mockAgentBridgeStatus: AgentBridgeStatus = {
+  enabled: false,
+  running: false,
+  discoveryPath: 'C:/Software/WorkSpace/MyTerminal/.myterminal-data/agent-bridge-discovery.json',
+  cliCommand: 'myterminal-cli bridge status --json',
+  mcpCommand: 'myterminal-cli mcp --stdio',
+};
+
 // 前端预览环境没有后端版本接口时，沿用构建注入版本作为展示与更新检查兜底。
-const mockAppVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.7';
+const mockAppVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.8';
 
 const mockUpdateCheckResult: UpdateCheckResult = {
   currentVersion: mockAppVersion,
@@ -262,6 +286,15 @@ export const backend = {
     const normalized = normalizeSettings(settings);
     return call<AppSettings>('save_app_settings', { settings: normalized }, normalized);
   },
+  agentBridgeStatus: () => call<AgentBridgeStatus>('agent_bridge_status', undefined, mockAgentBridgeStatus),
+  listAgentBridgeRequests: () => call<AgentBridgeRequest[]>('list_agent_bridge_requests', undefined, []),
+  approveAgentBridgeRequest: (requestId: string, editedCommand?: string) =>
+    call<boolean>('approve_agent_bridge_request', { requestId, editedCommand }, true),
+  rejectAgentBridgeRequest: (requestId: string, reason?: string) =>
+    call<boolean>('reject_agent_bridge_request', { requestId, reason }, true),
+  clearAgentBridgeRequests: () => call<boolean>('clear_agent_bridge_requests', undefined, true),
+  resetAgentBridgeToken: () => call<AgentBridgeStatus>('reset_agent_bridge_token', undefined, mockAgentBridgeStatus),
+  setAgentBridgeEnabled: (enabled: boolean) => call<AgentBridgeStatus>('set_agent_bridge_enabled', { enabled }, mockAgentBridgeStatus),
   testConnection: (connection: ConnectionProfile) => {
     const normalized = normalizeConnection(connection);
     return call<boolean>('test_connection', { connection: normalized }, true);

@@ -59,6 +59,14 @@ impl StorageService {
         self.tunnels_path()
     }
 
+    pub fn agent_bridge_secret_path(&self) -> PathBuf {
+        self.data_dir.join("agent-bridge-secret.json")
+    }
+
+    pub fn agent_bridge_discovery_path(&self) -> PathBuf {
+        self.data_dir.join("agent-bridge-discovery.json")
+    }
+
     pub fn downloads_dir_path(&self) -> PathBuf {
         self.data_dir.join("downloads")
     }
@@ -136,6 +144,11 @@ impl StorageService {
             return Ok(AppSettings::default());
         };
 
+        let mut agent_bridge = stored.agent_bridge;
+        // AI Bridge 属于本机运行态入口，每次启动都默认关闭，必须由用户在设置页手动重新打开。
+        agent_bridge.enabled = false;
+        agent_bridge.auto_execute = false;
+
         Ok(AppSettings {
             ui_language: stored.ui_language,
             theme_mode: stored.theme_mode,
@@ -156,12 +169,15 @@ impl StorageService {
             connection_groups: stored.connection_groups,
             connection_order: stored.connection_order,
             quick_commands: stored.quick_commands,
+            agent_bridge,
             webdav: WebDavSettings {
                 base_url: stored.webdav_base_url,
                 username: stored.webdav_username,
                 password: crypto.decrypt_local(&stored.webdav_password_encrypted)?,
                 sync_passphrase: String::new(),
-                remote_path: if stored.webdav_remote_path.is_empty() && !stored.webdav_remote_settings_path.is_empty() {
+                remote_path: if stored.webdav_remote_path.is_empty()
+                    && !stored.webdav_remote_settings_path.is_empty()
+                {
                     stored.webdav_remote_settings_path
                 } else {
                     stored.webdav_remote_path
@@ -197,6 +213,7 @@ impl StorageService {
             connection_groups: settings.connection_groups.clone(),
             connection_order: settings.connection_order.clone(),
             quick_commands: settings.quick_commands.clone(),
+            agent_bridge: settings.agent_bridge.clone(),
             webdav_base_url: settings.webdav.base_url.clone(),
             webdav_username: settings.webdav.username.clone(),
             webdav_password_encrypted: crypto.encrypt_local(&settings.webdav.password)?,

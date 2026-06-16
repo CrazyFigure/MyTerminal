@@ -61,6 +61,14 @@ fn default_show_command_ghost() -> bool {
     true
 }
 
+fn default_agent_bridge_timeout_sec() -> u16 {
+    60
+}
+
+fn default_agent_bridge_max_output_bytes() -> usize {
+    200_000
+}
+
 fn default_connection_groups() -> Vec<String> {
     Vec::new()
 }
@@ -155,6 +163,38 @@ impl Default for WebDavSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentBridgeSettings {
+    /// AI Bridge 默认关闭，只有用户在设置页明确启用后才暴露本地 Broker。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 自动执行只对用户选择的连接生效；关闭时命令和写操作都必须由 GUI 审批。
+    #[serde(default)]
+    pub auto_execute: bool,
+    /// 允许自动执行的连接白名单；为空时不自动执行任何连接。
+    #[serde(default)]
+    pub allowed_connection_ids: Vec<String>,
+    /// 远端命令默认超时，避免 agent 发起的命令长期占用 SSH channel。
+    #[serde(default = "default_agent_bridge_timeout_sec")]
+    pub default_timeout_sec: u16,
+    /// 单次命令输出最大保留字节数，超出后截断并标记 truncated。
+    #[serde(default = "default_agent_bridge_max_output_bytes")]
+    pub max_output_bytes: usize,
+}
+
+impl Default for AgentBridgeSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auto_execute: false,
+            allowed_connection_ids: Vec::new(),
+            default_timeout_sec: default_agent_bridge_timeout_sec(),
+            max_output_bytes: default_agent_bridge_max_output_bytes(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     #[serde(default = "default_ui_language")]
     pub ui_language: String,
@@ -202,6 +242,8 @@ pub struct AppSettings {
     pub quick_commands: Vec<String>,
     #[serde(default)]
     pub webdav: WebDavSettings,
+    #[serde(default)]
+    pub agent_bridge: AgentBridgeSettings,
 }
 
 impl Default for AppSettings {
@@ -227,6 +269,7 @@ impl Default for AppSettings {
             connection_order: default_connection_order(),
             quick_commands: default_quick_commands(),
             webdav: WebDavSettings::default(),
+            agent_bridge: AgentBridgeSettings::default(),
         }
     }
 }
@@ -524,6 +567,8 @@ pub struct StoredAppSettings {
     pub connection_order: Vec<String>,
     #[serde(default = "default_quick_commands")]
     pub quick_commands: Vec<String>,
+    #[serde(default)]
+    pub agent_bridge: AgentBridgeSettings,
     #[serde(default)]
     pub webdav_base_url: String,
     #[serde(default)]

@@ -1,161 +1,163 @@
 # MyTerminal
 
-基于 Rust + Tauri 2 + React 的现代化远程终端管理工具，目标是复刻并优化 FinalShell 的核心体验。
+[English](./README.md) | [简体中文](./README_CN.md)
 
-示例图：
-![img.png](img.png)
-当前版本：`v0.1.7`
+![Release](https://img.shields.io/github/v/release/CrazyFigure/MyTerminal?include_prereleases&label=release)
+![License](https://img.shields.io/github/license/CrazyFigure/MyTerminal)
+![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111)
+![Rust](https://img.shields.io/badge/Rust-stable-000?logo=rust&logoColor=white)
 
-## 当前功能状态
+A modern desktop SSH terminal manager built with Rust, Tauri 2, and React.
 
-目前已经实现：
+MyTerminal brings terminal tabs, SSH profiles, SFTP file management, remote file editing, local port forwarding, and WebDAV backup into one clean desktop app. It is designed for developers and operators who want a lightweight, open, and hackable alternative to heavyweight remote terminal suites.
 
-- Tauri 2 + React + TypeScript + Vite 项目骨架
-- 现代化 FinalShell 风格界面
-- 默认简体中文界面，并支持切换英文
-- 深浅色切换、单字体选择、终端背景图片、自定义终端外观、紧凑侧边栏
-- xterm 终端界面，默认 JetBrains Mono、15px、浅色背景
-- SSH 连接新增、编辑、删除
-- SSH 密码认证与私钥认证
-- 连接表单测试连接
-- 密码 / 私钥口令明文查看开关
-- 多会话标签页、右键菜单、关闭 / 重连 / 复制连接信息、标签拖拽排序
-- 本地加密保存 SSH 密码、WebDAV 凭证、同步口令
-- 基于 `ssh2` 的真实 SSH PTY 会话
-- 终端当前目录自动同步文件管理路径
-- 真实 SFTP 列表、上传、下载、删除、重命名、读取、写回
-- 内置 Monaco 编辑器，支持远程保存与本地缓存回退
-- 本地 SSH 隧道 / 本地端口转发，自定义 bind 地址与目标
-- 从远端 Shell 历史文件读取命令历史
-- WebDAV 手动同步（设置 / SSH 连接分开）
-- 本地 JSON 配置导出 / 导入（覆盖）与导入前备份
-- GitHub Release 更新检测、安装包下载与启动安装
-- 连接分组新增、编辑、删除、拖拽排序，以及连接复制和跨分组移动
+![MyTerminal preview](img.png)
 
-当前已知限制：
+## Highlights
 
-- 暂未实现 `known_hosts` / 主机指纹校验流
-- SFTP 大文件传输暂未实现进度条与取消能力
-- 隧道已支持新增、编辑、开启和停止；暂未提供重启、实时连接数等高级管理能力
-- Monaco 已改为懒加载，但 xterm / Monaco 仍可能让生产构建出现较大 chunk 提示
+- **SSH profile manager** - Create, edit, group, duplicate, move, sort, and test SSH connections before opening a session.
+- **Password and private-key auth** - Connect with passwords or private keys, including passphrase visibility toggles where needed.
+- **Tabbed terminal workspace** - Open multiple PTY sessions, reorder tabs, reconnect in place, and use right-click actions for common session operations.
+- **SFTP file browser** - Browse remote directories, upload, download, delete, rename, read, and write files through real SFTP operations.
+- **Remote file editor** - Edit remote files with the built-in Monaco editor, with local cache fallback when saving or loading needs recovery.
+- **Path-aware terminal + files** - When the shell changes directory, the file manager can follow the terminal's current remote path.
+- **SSH tunnels** - Create, edit, start, and stop local port forwarding rules with custom bind addresses and targets.
+- **Manual WebDAV sync** - Upload and download app settings and SSH profiles separately when you want to move between machines.
+- **MCP Bridge for AI coding tools** - Let Claude Code, Codex, and other MCP clients list SSH profiles, open bridge sessions, run remote commands, and read/write remote files through a local GUI-approved broker.
+- **Local import/export** - Export JSON configuration packages and restore them later, with automatic local backups before import.
+- **Desktop update flow** - Check GitHub Releases, download installers, and launch the installer from inside the app.
+- **Personalized terminal UI** - Switch between Chinese and English, light and dark themes, terminal fonts, compact sidebar, and background images.
 
-## 技术栈
+## Download
 
-- 前端：React、TypeScript、Vite、Zustand、xterm、Monaco Editor
-- 后端：Rust、Tauri 2、`ssh2`、`reqwest`、AES-GCM、本地 JSON 持久化
+Windows installers are published on the [GitHub Releases](https://github.com/CrazyFigure/MyTerminal/releases) page when a version tag is released.
 
-## 快速开始
+MyTerminal is still early-stage software. Please keep backups of important SSH profiles and avoid treating local exports as encrypted backups: exported JSON files contain sensitive values in plain text.
 
-### 环境建议
+## Quick Start
 
-- Node.js 20.19+ 或 22.12+
+### Requirements
+
+- Node.js 20.19+ or 22.12+
 - npm 9+
-- Rust stable（MSVC toolchain）
+- Rust stable with the MSVC toolchain
 - Visual Studio Build Tools 2022
 - Windows 10/11 SDK
-- Strawberry Perl（Windows 下 vendored OpenSSL 常需要）
+- Strawberry Perl on Windows when vendored OpenSSL is required
 
-### 常用命令
-
-安装依赖：
+### Run From Source
 
 ```powershell
 npm install
-```
-
-检查环境：
-
-```powershell
 npm run check:env
-```
-
-执行前后端检查：
-
-```powershell
-npm run check
-```
-
-启动桌面开发模式：
-
-```powershell
 npm run tauri:dev
 ```
 
-仅启动前端开发服务器：
-
-```powershell
-npm run dev
-```
-
-打包桌面安装包：
+### Build Installer
 
 ```powershell
 npm run package
 ```
 
-打包成功后，通常可在下面目录找到产物：
+Build outputs are usually generated under:
 
 ```text
 src-tauri/target/release/bundle/
 ```
 
-更完整的 Windows 启动与打包说明，请查看项目根目录中的：
+For the full Windows setup and packaging notes, see [START_BUILD.md](./START_BUILD.md).
 
-```text
-START_BUILD.md
+## MCP Bridge
+
+MyTerminal can expose your saved SSH connections to Claude Code, Codex, and other MCP clients through a local `CLI + MCP + GUI Broker` bridge.
+
+### How it works
+
+- The bridge is disabled by default. Enable it in **Settings > MCP**.
+- MyTerminal starts a local Broker bound to `127.0.0.1` and writes a discovery file with the current port and token.
+- MCP clients start the local package with `npx`; the package launches `myterminal-cli mcp --stdio`.
+- Read-only tools, such as listing connections and reading remote files, can run directly.
+- Command execution and write operations are shown in the MyTerminal AI request panel for approval by default.
+- Auto-execution can be enabled per SSH connection from the MCP settings page.
+
+### MCP client config
+
+Copy the JSON from **Settings > MCP > Usage**. In development it looks like this:
+
+```json
+{
+  "mcpServers": {
+    "myterminal": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "--yes",
+        "C:/Software/WorkSpace/MyTerminal/mcp/myterminal-mcp"
+      ]
+    }
+  }
+}
 ```
 
-## 检查脚本
+### Available MCP tools
 
-- `npm run typecheck`：仅做前端类型检查
-- `npm run check:web`：构建前端
-- `npm run check:perl`：检查 Perl / Strawberry Perl
-- `npm run check:rust`：检查 Rust/Tauri 后端
-- `npm run check:env`：检查 Node、npm、cargo、perl、link.exe
+- `myterminal_list_connections`
+- `myterminal_open_session`
+- `myterminal_close_session`
+- `myterminal_run_command`
+- `myterminal_file_list`
+- `myterminal_file_read`
+- `myterminal_file_write`
+- `myterminal_file_delete`
+- `myterminal_file_rename`
+- `myterminal_file_mkdir`
 
-## 同步与备份说明
+The connection list only returns non-secret metadata such as name, group path, host, port, username, tags, and notes. Passwords, private keys, and passphrases are never exposed through MCP.
 
-- WebDAV 同步是手动触发的，并分为两块：
-  - 应用设置上传 / 下载
-  - SSH 连接上传 / 下载
-- 本地导出会在 `.myterminal-data/exports/` 下生成明文 JSON 配置包
-- 本地导入会覆盖：
-  - 设置
-  - SSH 连接
-  - 历史记录
-  - 隧道配置
-- 在本地导入前，会把当前本地数据备份到 `.myterminal-data/backups/`
-- 导出的本地配置文件包含密码明文，仅用于迁移和恢复，请妥善保管
+## Useful Scripts
 
-## 手工验证清单
+```powershell
+npm run dev          # Start the Vite web dev server only
+npm run typecheck    # Run frontend TypeScript checks
+npm run check:web    # Build the frontend
+npm run check:rust   # Check the Rust/Tauri backend
+npm run check:perl   # Check the local Perl environment
+npm run check:env    # Check Node, npm, cargo, Perl, and link.exe
+npm run check        # Run frontend build and Rust backend checks
+```
 
-- 打开应用，确认界面正常加载
-- 确认默认终端样式：
-  - 背景 `#f7f7f7`
-  - 前景 `#111111`
-  - 字体 `JetBrains Mono`
-  - 字号 `15px`
-- 在设置页测试语言切换、深浅色切换、字体下拉、终端背景图片、本地图片选择、透明度和适配方式
-- 新建 SSH 连接并测试：
-  - 密码模式
-  - 私钥模式
-  - 测试连接按钮
-- 切换密码 / 私钥口令明文显示
-- 打开多个终端标签页，切换、拖拽排序、右键关闭 / 重连时确认状态正确
-- 在 xterm 中直接输入，确认远程 shell 能收到输入
-- 在终端中执行 `cd /` 等目录切换，确认文件管理路径同步变化
-- 执行持续输出命令（如 `ping`、`tail -f`），确认输出持续刷新
-- 打开文件面板，测试目录浏览、上传、下载、重命名、删除确认、返回上级
-- 打开远程文件到内置编辑器并保存回远端
-- 配置 WebDAV，并测试上传 / 下载
-- 使用本地导出与本地导入，确认导入会覆盖本地数据
-- 创建、编辑并开启 / 停止一个隧道记录
-- 在设置页关于标签中检测更新，确认可识别 GitHub Release 安装包
+## Tech Stack
 
-## 致谢
+- **Desktop shell:** Tauri 2
+- **Backend:** Rust, ssh2, reqwest, AES-GCM, local JSON persistence
+- **Frontend:** React, TypeScript, Vite, Zustand
+- **Terminal and editor:** xterm.js, Monaco Editor
+- **Sync and files:** SFTP, WebDAV, local import/export
 
-- 社区：[Linux.do](https://linux.do)
+## Current Limitations
+
+- `known_hosts` and host fingerprint trust flows are not implemented yet.
+- Large SFTP transfers do not have progress bars or cancel controls yet.
+- Tunnel management supports create, edit, start, and stop, but does not yet expose advanced runtime metrics such as active connection counts.
+- Monaco is lazy-loaded, but production builds may still show large chunk warnings because xterm.js and Monaco are both substantial dependencies.
+
+## Contributing
+
+Issues, bug reports, and pull requests are welcome. A good contribution usually includes:
+
+- A clear description of the problem or feature.
+- Steps to reproduce when reporting a bug.
+- Screenshots or logs for UI and connection issues.
+- A focused change set that keeps unrelated refactors out of the same pull request.
+
+Before opening a pull request, run the smallest useful checks for your change. For behavior that touches both frontend and backend, `npm run check` is the preferred baseline.
+
+## Acknowledgements
+
+- Community: [Linux.do](https://linux.do)
+- Inspired by practical remote terminal workflows found in tools such as FinalShell.
 
 ## License
 
-MIT
+[MIT](./LICENSE) © 2026 CrazyFigure
