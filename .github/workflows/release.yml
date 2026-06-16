@@ -37,7 +37,21 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: MyTerminal ${{ github.ref_name }}
-          releaseBody: Windows EXE installer is attached below.
+          releaseBody: |
+            新增：
+            - 新增 CLI + MCP + GUI Broker 桥接能力，支持 Claude Code、Codex 通过 npx 连接 MyTerminal。
+            - 新增 MCP 设置页、AI 请求审批面板、自动执行连接白名单和连接脱敏输出。
+            - 新增 myterminal-cli 的 MCP stdio、JSON 输出、远程命令和 SFTP 文件工具。
+
+            修复：
+            - 修复多 binary 场景下 Tauri dev 无法确定默认运行程序的问题。
+            - 修复 MCP stdio 握手和分帧兼容性问题，兼容 NDJSON 与 Content-Length。
+            - 修复 MCP Bridge 启停状态同步与重复点击控制。
+
+            优化：
+            - 更新 README 和 README_CN 的 MCP Bridge 使用说明与 npx 配置示例。
+            - 优化 MCP 设置页布局、保存反馈、开关状态和自动执行连接树展示。
+            - 升级版本号到 0.1.8。
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           # 使用 action.yml 支持的资产命名参数，让 Release 附件名称稳定可识别。
