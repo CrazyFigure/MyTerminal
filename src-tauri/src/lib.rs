@@ -1,8 +1,7 @@
-pub mod agent_bridge;
+pub mod application;
 pub mod commands;
-pub mod crypto;
+pub mod domain;
 pub mod error;
-pub mod models;
+pub mod infrastructure;
+pub mod interface;
 pub mod state;
-pub mod storage;
-pub mod webdav;

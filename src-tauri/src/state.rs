@@ -4,12 +4,12 @@ use std::{
 };
 
 use crate::{
-    agent_bridge::AgentBridgeRuntime,
-    crypto::CryptoService,
+    domain::entities::{TerminalOutputChunk, TerminalSession},
     error::AppError,
-    models::{TerminalOutputChunk, TerminalSession},
-    storage::StorageService,
-    webdav::WebDavService,
+    infrastructure::agent_bridge::AgentBridgeRuntime,
+    infrastructure::crypto::CryptoService,
+    infrastructure::persistence::StorageService,
+    infrastructure::webdav::WebDavService,
 };
 
 #[derive(Debug, Clone)]

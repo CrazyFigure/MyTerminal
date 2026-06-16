@@ -8,12 +8,15 @@ use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    crypto::CryptoService,
-    error::AppError,
-    models::{
-        AppSettings, ConnectionProfile, EditorDocument, HistoryEntry, StoredAppSettings,
-        StoredConnectionProfile, TunnelRecord, WebDavSettings,
+    domain::entities::{
+        AppSettings, ConnectionProfile, EditorDocument, HistoryEntry, TunnelRecord, WebDavSettings,
     },
+    domain::repositories::{
+        ConnectionRepository, HistoryRepository, SettingsRepository, TunnelRepository,
+    },
+    error::AppError,
+    infrastructure::crypto::CryptoService,
+    infrastructure::persistence::stored_types::{StoredAppSettings, StoredConnectionProfile},
 };
 
 #[derive(Debug, Clone)]
@@ -324,5 +327,55 @@ impl StorageService {
     pub fn save_editor_cache(&self, document: &EditorDocument) -> Result<(), AppError> {
         let path = self.editor_cache_path(&document.connection_id, &document.path);
         self.write_json(&path, document)
+    }
+}
+
+// ── 仓储接口实现 ──
+
+impl SettingsRepository for StorageService {
+    fn load_settings(&self, crypto: &CryptoService) -> Result<AppSettings, AppError> {
+        self.load_settings(crypto)
+    }
+
+    fn save_settings(
+        &self,
+        settings: &AppSettings,
+        crypto: &CryptoService,
+    ) -> Result<(), AppError> {
+        self.save_settings(settings, crypto)
+    }
+}
+
+impl ConnectionRepository for StorageService {
+    fn load_connections(&self, crypto: &CryptoService) -> Result<Vec<ConnectionProfile>, AppError> {
+        self.load_connections(crypto)
+    }
+
+    fn save_connections(
+        &self,
+        connections: &[ConnectionProfile],
+        crypto: &CryptoService,
+    ) -> Result<(), AppError> {
+        self.save_connections(connections, crypto)
+    }
+}
+
+impl HistoryRepository for StorageService {
+    fn load_history(&self) -> Result<Vec<HistoryEntry>, AppError> {
+        self.load_history()
+    }
+
+    fn save_history(&self, history: &[HistoryEntry]) -> Result<(), AppError> {
+        self.save_history(history)
+    }
+}
+
+impl TunnelRepository for StorageService {
+    fn load_tunnels(&self) -> Result<Vec<TunnelRecord>, AppError> {
+        self.load_tunnels()
+    }
+
+    fn save_tunnels(&self, tunnels: &[TunnelRecord]) -> Result<(), AppError> {
+        self.save_tunnels(tunnels)
     }
 }

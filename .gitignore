@@ -31,3 +31,10 @@ Thumbs.db
 *.log
 *.tmp
 *.temp
+
+# OY 系统工作产物，不应进入仓库。
+.oy-agent-output/
+src-tauri/.oy-agent-output/
+
+# 图标 PNG 文件由 Tauri 构建自动生成，不应手动提交。
+src-tauri/icons/icon.png

@@ -1,15 +1,22 @@
-use reqwest::{Client, Method, StatusCode};
 use chrono::Local;
+use reqwest::{Client, Method, StatusCode};
 
 use crate::{
-    crypto::CryptoService,
+    domain::entities::{AppSettings, ConnectionProfile, WebDavSettings},
     error::AppError,
-    models::{AppSettings, ConnectionProfile, LocalConfigBundle, WebDavSettings},
+    infrastructure::crypto::CryptoService,
+    interface::dto::LocalConfigBundle,
 };
 
 #[derive(Debug, Clone)]
 pub struct WebDavService {
     client: Client,
+}
+
+impl Default for WebDavService {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WebDavService {
@@ -150,7 +157,7 @@ impl WebDavService {
             let after_open = &body[abs_pos..];
             if let Some(tag_end) = after_open.find('>') {
                 let tag_name = &after_open[..tag_end + 1]; // 如 "<D:href>"
-                // 检查是否是 href 开标签（不是 </ 开头的闭标签）
+                                                           // 检查是否是 href 开标签（不是 </ 开头的闭标签）
                 if tag_name.contains("href") && !tag_name.contains('/') {
                     let content_start = abs_pos + tag_end + 1;
                     // 找对应的闭标签 </...href>
@@ -177,11 +184,15 @@ impl WebDavService {
     }
 
     /// 从 href 列表中提取符合指定前缀和扩展名的文件名。
-    fn filter_backup_filenames(hrefs: &[String], prefixes: &[&str], extensions: &[&str]) -> Vec<String> {
+    fn filter_backup_filenames(
+        hrefs: &[String],
+        prefixes: &[&str],
+        extensions: &[&str],
+    ) -> Vec<String> {
         let mut files = Vec::new();
         for href in hrefs {
             let decoded = urlencoding::decode(href).unwrap_or_default();
-            if let Some(filename) = decoded.split('/').last() {
+            if let Some(filename) = decoded.split('/').next_back() {
                 if filename.is_empty() {
                     continue;
                 }
@@ -233,7 +244,8 @@ impl WebDavService {
         let dir = settings.webdav.remote_path.trim_end_matches('/');
         let remote_path = format!("{}/settings-{}.enc.json", dir, timestamp);
 
-        self.ensure_parent_collections(&settings.webdav, &remote_path).await?;
+        self.ensure_parent_collections(&settings.webdav, &remote_path)
+            .await?;
         let url = Self::build_url(&settings.webdav.base_url, &remote_path);
         self.put_text(url, &settings.webdav, serialized).await?;
         Ok(remote_path)
@@ -249,7 +261,11 @@ impl WebDavService {
         let url = Self::build_url(&webdav.base_url, dir_path);
         let body = self.propfind(webdav, &url).await?;
         let hrefs = Self::extract_hrefs(&body);
-        Ok(Self::filter_backup_filenames(&hrefs, &["settings"], &[".enc.json"]))
+        Ok(Self::filter_backup_filenames(
+            &hrefs,
+            &["settings"],
+            &[".enc.json"],
+        ))
     }
 
     pub async fn download_settings(
@@ -277,7 +293,8 @@ impl WebDavService {
         let dir = settings.webdav.remote_path.trim_end_matches('/');
         let remote_path = format!("{}/connections-{}.enc.json", dir, timestamp);
 
-        self.ensure_parent_collections(&settings.webdav, &remote_path).await?;
+        self.ensure_parent_collections(&settings.webdav, &remote_path)
+            .await?;
         let url = Self::build_url(&settings.webdav.base_url, &remote_path);
         self.put_text(url, &settings.webdav, serialized).await?;
         Ok(remote_path)
@@ -293,7 +310,11 @@ impl WebDavService {
         let url = Self::build_url(&webdav.base_url, dir_path);
         let body = self.propfind(webdav, &url).await?;
         let hrefs = Self::extract_hrefs(&body);
-        Ok(Self::filter_backup_filenames(&hrefs, &["connections"], &[".enc.json"]))
+        Ok(Self::filter_backup_filenames(
+            &hrefs,
+            &["connections"],
+            &[".enc.json"],
+        ))
     }
 
     pub async fn download_connections(
@@ -338,18 +359,13 @@ impl WebDavService {
         let url = Self::build_url(&webdav.base_url, dir_path);
         let body = self.propfind(webdav, &url).await?;
 
-        eprintln!("[WebDAV DEBUG] PROPFIND URL: {url}");
-        eprintln!("[WebDAV DEBUG] PROPFIND response body:\n{body}");
-
         let hrefs = Self::extract_hrefs(&body);
-        eprintln!("[WebDAV DEBUG] Extracted hrefs: {hrefs:?}");
 
         let files = Self::filter_backup_filenames(
             &hrefs,
             &["myterminal-config", "settings", "connections"],
             &[".enc.json"],
         );
-        eprintln!("[WebDAV DEBUG] Filtered backup files: {files:?}");
 
         Ok(files)
     }

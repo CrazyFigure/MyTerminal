@@ -8,7 +8,7 @@ use std::{
 
 use serde_json::{json, Value};
 
-use myterminal::{agent_bridge::AgentBridgeDiscovery, error::AppError};
+use myterminal::{error::AppError, infrastructure::agent_bridge::types::AgentBridgeDiscovery};
 
 #[derive(Debug, Clone, Copy)]
 enum McpFraming {
@@ -174,7 +174,7 @@ impl BrokerClient {
             "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             self.port,
             self.token,
-            body_text.as_bytes().len(),
+            body_text.len(),
             body_text
         );
         stream.write_all(request.as_bytes())?;

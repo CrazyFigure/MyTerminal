@@ -120,4 +120,3 @@ impl CryptoService {
         Self::decrypt_with_key(&key, payload)
     }
 }
-
