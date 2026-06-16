@@ -173,15 +173,17 @@ const emitTerminalOutput = (chunk: TerminalOutputChunk) => {
   window.dispatchEvent(new CustomEvent(terminalOutputEventName, { detail: chunk }));
 };
 
-// 终端输入跨 Tauri IPC 写入，普通按键用极短窗口合并，减少逐字 IPC 带来的输入和选区卡顿。
+// 终端输入跨 Tauri IPC 写入：交互按键只合并同一浏览器事件轮次，避免固定延迟造成远端 echo 成批出现。
 const terminalInputBuffers = new Map<string, string>();
 const terminalInputFlushPromises = new Map<string, Promise<void>>();
+// 即时刷新任务只用微任务排队，不用 setTimeout；同一轮 onData 的多段输入会自然合并，下一轮按键会立刻发出。
+const terminalInputImmediateFlushSessions = new Set<string>();
 const terminalInputFlushTimers = new Map<string, number>();
 const terminalInputFlushTimerDelays = new Map<string, number>();
-// 连续退格和粘贴会产生密集 onData，小窗口合并可减少 IPC 与 SSH channel 写入抖动，同时保持按键回显足够即时。
-const terminalInputFlushDelayMs = 28;
-// Backspace/Delete 属于强交互编辑键，窗口太长会出现尾部删除回显滞后，保持轻微合并但更快落到 PTY。
-const terminalEditingInputFlushDelayMs = 8;
+// 大段粘贴保留极短合并窗口，避免一次粘贴拆成大量 IPC；普通按键和编辑键不走这个延迟。
+const terminalBulkInputFlushDelayMs = 8;
+// xterm 的方向键/Delete 等控制序列通常只有 3-4 字节；超过该阈值基本可视为粘贴或程序批量输入。
+const terminalBulkInputThreshold = 64;
 
 // 会话关闭或重连时清理尚未写入的输入，避免旧 PTY 已释放后仍被延迟刷新命中。
 const clearQueuedTerminalInput = (sessionId: string) => {
@@ -191,6 +193,7 @@ const clearQueuedTerminalInput = (sessionId: string) => {
     terminalInputFlushTimers.delete(sessionId);
     terminalInputFlushTimerDelays.delete(sessionId);
   }
+  terminalInputImmediateFlushSessions.delete(sessionId);
   terminalInputBuffers.delete(sessionId);
 };
 
@@ -227,12 +230,23 @@ const flushQueuedTerminalInput = (sessionId: string) => {
   return flushPromise;
 };
 
-// 普通按键先入队再短延迟刷新，Enter/Tab 等需要立即反馈的输入会主动等待刷新完成。
-const queueTerminalInput = (sessionId: string, data: string, flushDelayMs = terminalInputFlushDelayMs) => {
-  terminalInputBuffers.set(sessionId, `${terminalInputBuffers.get(sessionId) ?? ''}${data}`);
+// 交互输入入队后用微任务立即刷新，去掉固定毫秒级等待；这保持远端 echo 语义，不做本地假回显。
+const scheduleImmediateTerminalInputFlush = (sessionId: string) => {
+  if (terminalInputImmediateFlushSessions.has(sessionId)) {
+    return;
+  }
+  terminalInputImmediateFlushSessions.add(sessionId);
+  window.queueMicrotask(() => {
+    terminalInputImmediateFlushSessions.delete(sessionId);
+    void flushQueuedTerminalInput(sessionId).catch(() => undefined);
+  });
+};
+
+// 批量输入才使用短定时窗口，多个粘贴分片会并成一次后端写入，降低 SSH channel 抖动。
+const scheduleDelayedTerminalInputFlush = (sessionId: string, flushDelayMs: number) => {
   const pendingTimer = terminalInputFlushTimers.get(sessionId);
   if (pendingTimer) {
-    const pendingDelayMs = terminalInputFlushTimerDelays.get(sessionId) ?? terminalInputFlushDelayMs;
+    const pendingDelayMs = terminalInputFlushTimerDelays.get(sessionId) ?? terminalBulkInputFlushDelayMs;
     if (flushDelayMs >= pendingDelayMs) {
       return;
     }
@@ -250,7 +264,27 @@ const queueTerminalInput = (sessionId: string, data: string, flushDelayMs = term
   terminalInputFlushTimerDelays.set(sessionId, flushDelayMs);
 };
 
+// 终端输入默认立即刷新；仅对大段文本启用短窗口合并，避免牺牲单字符输入跟手感。
+const queueTerminalInput = (sessionId: string, data: string, flushDelayMs = 0) => {
+  terminalInputBuffers.set(sessionId, `${terminalInputBuffers.get(sessionId) ?? ''}${data}`);
+
+  if (flushDelayMs <= 0) {
+    const pendingTimer = terminalInputFlushTimers.get(sessionId);
+    if (pendingTimer) {
+      window.clearTimeout(pendingTimer);
+      terminalInputFlushTimers.delete(sessionId);
+      terminalInputFlushTimerDelays.delete(sessionId);
+    }
+    scheduleImmediateTerminalInputFlush(sessionId);
+    return;
+  }
+
+  scheduleDelayedTerminalInputFlush(sessionId, flushDelayMs);
+};
+
 const isTerminalEditingInput = (data: string) => data.includes('\x7f') || data.includes('\b') || data.includes('\x1b[3~');
+// 大段文本不属于逐键交互，允许 8ms 合并；控制序列和普通字符必须立即进入远端 PTY。
+const isBulkTerminalInput = (data: string) => data.length > terminalBulkInputThreshold && !isTerminalEditingInput(data);
 
 // 远端刷新请求可能被快速 cd、目录双击或自动轮询连续触发；序号只允许最后一次结果落到界面。
 let remoteFilesRefreshSeq = 0;
@@ -399,7 +433,7 @@ type StoreState = {
   sendTerminalData: (sessionId: string, data: string) => Promise<void>;
   passthroughTab: (sessionId: string) => Promise<void>;
   runQuickCommand: (command: string) => Promise<void>;
-  pollTerminalOutputs: () => Promise<void>;
+  pollTerminalOutputs: (sessionId?: string) => Promise<void>;
   refreshRemoteHistory: (connectionId?: string) => Promise<void>;
   refreshFiles: (path?: string) => Promise<void>;
   uploadLocalFile: (file: File) => Promise<void>;
@@ -1189,7 +1223,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
       return;
     }
 
-    queueTerminalInput(sessionId, data, isTerminalEditingInput(data) ? terminalEditingInputFlushDelayMs : terminalInputFlushDelayMs);
+    queueTerminalInput(sessionId, data, isBulkTerminalInput(data) ? terminalBulkInputFlushDelayMs : 0);
     if (data === '\r' || data === '\n') {
       await flushQueuedTerminalInput(sessionId);
       void get().pollTerminalOutputs();
@@ -1218,17 +1252,21 @@ export const useAppStore = create<StoreState>((set, get) => ({
     await get().sendCommand(activeSessionId);
   },
 
-  pollTerminalOutputs: async () => {
+  pollTerminalOutputs: async (targetSessionId) => {
     const { sessions } = get();
-    if (!sessions.length) {
+    const targetSessions = targetSessionId ? sessions.filter((session) => session.id === targetSessionId) : sessions;
+    if (!targetSessions.length) {
       return;
     }
 
-    const settledOutputs = await Promise.allSettled(sessions.map((session) => backend.readTerminalOutput(session.id)));
+    // 后端输出事件携带 sessionId 时只拉取对应会话；兜底轮询不传 sessionId，仍覆盖全部会话。
+    const settledOutputs = await Promise.allSettled(targetSessions.map((session) => backend.readTerminalOutput(session.id)));
     const outputFailures = new Set<string>();
     settledOutputs.forEach((result, index) => {
       if (result.status === 'rejected') {
-        outputFailures.add(sessions[index]?.id ?? '');
+        const sessionId = targetSessions[index]?.id ?? '';
+        console.error(`[SSH-DIAG] readTerminalOutput rejected for session=${sessionId}:`, result.reason);
+        outputFailures.add(sessionId);
       }
     });
     const outputs = settledOutputs

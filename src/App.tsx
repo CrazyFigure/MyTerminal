@@ -2709,25 +2709,76 @@ export default function App() {
       return;
     }
 
-    // 高频轮询用于降低远端 PTY 回显延迟；in-flight 保护避免慢请求堆叠。
+    // 后端 shell 线程在读到数据后通过 Tauri 事件推送通知；事件携带 sessionId，前端只拉取对应会话输出。
     let outputPollInFlight = false;
-    const pollOutputs = () => {
+    // dirty 标记：poll 进行中收到的事件不会丢失；多个会话同时变脏时降级为全量拉取。
+    let outputDirty = false;
+    let dirtyAllSessions = false;
+    let dirtySessionId: string | undefined;
+    const markDirtySession = (sessionId?: string) => {
+      if (!sessionId || dirtyAllSessions) {
+        dirtyAllSessions = true;
+        dirtySessionId = undefined;
+        return;
+      }
+      if (dirtySessionId && dirtySessionId !== sessionId) {
+        dirtyAllSessions = true;
+        dirtySessionId = undefined;
+        return;
+      }
+      dirtySessionId = sessionId;
+    };
+    const pollOutputs = (sessionId?: string) => {
       if (outputPollInFlight) {
+        outputDirty = true;
+        markDirtySession(sessionId);
         return;
       }
 
       outputPollInFlight = true;
-      void pollTerminalOutputs().finally(() => {
+      outputDirty = false;
+      dirtyAllSessions = false;
+      dirtySessionId = undefined;
+      void pollTerminalOutputs(sessionId).finally(() => {
         outputPollInFlight = false;
+        // poll 期间有新事件到达，立即再拉一次
+        if (outputDirty) {
+          pollOutputs(dirtyAllSessions ? undefined : dirtySessionId);
+        }
       });
     };
 
     pollOutputs();
-    const timer = window.setInterval(() => {
+
+    // Tauri 事件驱动：后端每次 queue_output 后会 emit "terminal-output-ready"，payload 为 sessionId。
+    let unlistenFn: (() => void) | undefined;
+    let isMounted = true;
+    void import('@tauri-apps/api/event').then(({ listen }) =>
+      listen<string>('terminal-output-ready', (event) => {
+        pollOutputs(typeof event.payload === 'string' ? event.payload : undefined);
+      }),
+    ).then((unlisten) => {
+      if (isMounted) {
+        unlistenFn = unlisten;
+      } else {
+        unlisten();
+      }
+    }).catch(() => {
+      // 非 Tauri 环境（Web 开发模式）下 fallback 到轮询
+    });
+
+    // 低频兜底定时器，仅用于处理事件丢失等极端场景，不再承担回显即时性职责。
+    const fallbackTimer = window.setInterval(() => {
       pollOutputs();
-    }, 80);
-    return () => window.clearInterval(timer);
+    }, 2000);
+
+    return () => {
+      isMounted = false;
+      window.clearInterval(fallbackTimer);
+      unlistenFn?.();
+    };
   }, [pollTerminalOutputs, sessions.length]);
+
 
   useEffect(() => {
     void refreshAgentBridgeRequests();
