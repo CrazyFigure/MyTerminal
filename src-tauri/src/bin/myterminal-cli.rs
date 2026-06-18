@@ -102,6 +102,30 @@ fn run_cli() -> Result<(), AppError> {
                 &json!({ "sessionId": session_id, "path": path, "content": content }),
             )?
         }
+        [command, subcommand, rest @ ..] if command == "file" && subcommand == "upload" => {
+            let session_id = required_option(rest, "--session")?;
+            let local_path = absolutize_local_path(&required_option(rest, "--local-path")?)?;
+            let remote_dir = option_value(rest, "--remote-dir");
+            let remote_path = option_value(rest, "--remote-path");
+            client.post(
+                "/files/upload",
+                &json!({ "sessionId": session_id, "localPath": local_path, "remoteDir": remote_dir, "remotePath": remote_path }),
+            )?
+        }
+        [command, subcommand, rest @ ..] if command == "file" && subcommand == "download" => {
+            let session_id = required_option(rest, "--session")?;
+            let path = required_option(rest, "--path")?;
+            let local_dir = option_value(rest, "--local-dir")
+                .map(|value| absolutize_local_path(&value))
+                .transpose()?;
+            let local_path = option_value(rest, "--local-path")
+                .map(|value| absolutize_local_path(&value))
+                .transpose()?;
+            client.post(
+                "/files/download",
+                &json!({ "sessionId": session_id, "path": path, "localDir": local_dir, "localPath": local_path }),
+            )?
+        }
         [command, subcommand, rest @ ..] if command == "file" && subcommand == "delete" => {
             let session_id = required_option(rest, "--session")?;
             let path = required_option(rest, "--path")?;
@@ -245,6 +269,54 @@ fn option_value(args: &[String], name: &str) -> Option<String> {
 
 fn required_option(args: &[String], name: &str) -> Result<String, AppError> {
     option_value(args, name).ok_or_else(|| AppError::Validation(format!("{name} is required")))
+}
+
+fn absolutize_local_path(path: &str) -> Result<String, AppError> {
+    let raw = PathBuf::from(path.trim());
+    let absolute = if raw.is_absolute() {
+        raw
+    } else {
+        // MCP/CLI 传输路径按调用方当前目录解析，避免交给 GUI Bridge 后变成 MyTerminal 进程目录。
+        env::current_dir()?.join(raw)
+    };
+    Ok(absolute.to_string_lossy().to_string())
+}
+
+fn normalize_transfer_local_paths(mut args: Value) -> Result<Value, AppError> {
+    let Some(object) = args.as_object_mut() else {
+        return Ok(args);
+    };
+    for key in ["localPath", "localDir"] {
+        let Some(value) = object
+            .get(key)
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+        else {
+            continue;
+        };
+        if value.trim().is_empty() {
+            continue;
+        }
+
+        object.insert(
+            key.to_string(),
+            Value::String(absolutize_local_path(&value)?),
+        );
+    }
+    if let Some(values) = object.get_mut("localPaths").and_then(Value::as_array_mut) {
+        for value in values {
+            let Some(path) = value.as_str().map(ToString::to_string) else {
+                continue;
+            };
+            if path.trim().is_empty() {
+                continue;
+            }
+
+            // MCP 批量上传同样按调用方当前目录解析相对路径，避免 Bridge 进程目录污染路径语义。
+            *value = Value::String(absolutize_local_path(&path)?);
+        }
+    }
+    Ok(args)
 }
 
 fn command_after_separator(args: &[String]) -> Result<String, AppError> {
@@ -471,12 +543,50 @@ fn mcp_tools() -> Value {
         ),
         tool_schema(
             "myterminal_file_write",
-            "写入远端文件，默认需要 GUI 审批。",
+            "写入远端小文件内容，默认需要 GUI 审批。不要用它上传本地大文件或文件夹；本地文件/文件夹请使用 myterminal_file_upload 的 localPath/localPaths。",
             json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string" }, "path": { "type": "string" }, "content": { "type": "string" }, "contentBase64": { "type": "string" } } })
         ),
         tool_schema(
+            "myterminal_file_upload",
+            "上传本地文件或文件夹到远端，支持单个 localPath 或多个 localPaths，默认需要 GUI 审批。Bridge 会用 MyTerminal 已保存的 SSH 凭据通过 SFTP 传输，不需要 agent 自己执行 scp，也不要把文件内容转成 base64。remotePath 仅用于单个源路径；批量上传请使用 remoteDir。",
+            json!({
+                "type": "object",
+                "required": ["sessionId"],
+                "anyOf": [
+                    { "required": ["localPath"] },
+                    { "required": ["localPaths"] }
+                ],
+                "properties": {
+                    "sessionId": { "type": "string" },
+                    "localPath": { "type": "string", "description": "单个本地文件或文件夹路径。" },
+                    "localPaths": { "type": "array", "items": { "type": "string" }, "description": "多个本地文件或文件夹路径。" },
+                    "remoteDir": { "type": "string", "description": "远端目标目录；未提供时使用会话 cwd。" },
+                    "remotePath": { "type": "string", "description": "单个源路径的完整远端目标路径。" }
+                }
+            })
+        ),
+        tool_schema(
+            "myterminal_file_download",
+            "下载远端文件或文件夹到本地，支持单个 path 或多个 paths，默认需要 GUI 审批。localPath 仅用于单个远端路径；批量下载请使用 localDir，未提供时使用 MyTerminal 下载目录。",
+            json!({
+                "type": "object",
+                "required": ["sessionId"],
+                "anyOf": [
+                    { "required": ["path"] },
+                    { "required": ["paths"] }
+                ],
+                "properties": {
+                    "sessionId": { "type": "string" },
+                    "path": { "type": "string", "description": "单个远端文件或文件夹路径。" },
+                    "paths": { "type": "array", "items": { "type": "string" }, "description": "多个远端文件或文件夹路径。" },
+                    "localDir": { "type": "string", "description": "本地目标目录。" },
+                    "localPath": { "type": "string", "description": "单个远端路径的完整本地目标路径。" }
+                }
+            })
+        ),
+        tool_schema(
             "myterminal_file_delete",
-            "删除远端文件或空目录，默认需要 GUI 审批。",
+            "递归删除远端文件或文件夹，默认需要 GUI 审批。",
             json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string" }, "path": { "type": "string" } } })
         ),
         tool_schema(
@@ -517,6 +627,12 @@ fn call_mcp_tool(id: Value, params: Value) -> Result<Value, AppError> {
         "myterminal_file_list" => client.post("/files/list", &args),
         "myterminal_file_read" => client.post("/files/read", &args),
         "myterminal_file_write" => client.post("/files/write", &args),
+        "myterminal_file_upload" => {
+            client.post("/files/upload", &normalize_transfer_local_paths(args)?)
+        }
+        "myterminal_file_download" => {
+            client.post("/files/download", &normalize_transfer_local_paths(args)?)
+        }
         "myterminal_file_delete" => client.post("/files/delete", &args),
         "myterminal_file_rename" => client.post("/files/rename", &args),
         "myterminal_file_mkdir" => client.post("/files/mkdir", &args),

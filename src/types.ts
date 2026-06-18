@@ -1,9 +1,37 @@
 export type ThemeMode = 'light' | 'dark';
 export type UiLanguage = 'zh-CN' | 'en-US';
 export type SshAuthMethod = 'password' | 'privateKey';
+export type SshProxyType = 'http' | 'socks5';
 export type WorkspacePanel = 'files' | 'editor' | 'tunnels' | 'sync' | 'settings' | 'history';
 export type SessionStatus = 'idle' | 'connecting' | 'connected' | 'stub' | 'error' | 'closed';
 export type TerminalRightClickBehavior = 'paste' | 'menu';
+
+export interface SshJumpHost {
+  /** 跳板机条目稳定 id，用于表单增删排序时保持 React key 与保存结构稳定。 */
+  id: string;
+  /** 可选显示名，仅用于用户区分多级跳板，不参与实际 SSH 连接。 */
+  name?: string;
+  /** 当前跳板机的 SSH 地址；多级跳板按数组顺序逐级连接。 */
+  host: string;
+  port: number;
+  username: string;
+  authMethod: SshAuthMethod;
+  password?: string;
+  privateKeyPath?: string;
+  privateKeyText?: string;
+  passphrase?: string;
+}
+
+export interface SshProxyConfig {
+  /** 代理开关关闭时保留字段但连接层忽略，便于用户临时启停配置。 */
+  enabled: boolean;
+  /** HTTP 表示 CONNECT 代理，SOCKS5 表示标准 SOCKS5 代理。 */
+  type: SshProxyType;
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+}
 
 export interface ConnectionProfile {
   id: string;
@@ -17,6 +45,10 @@ export interface ConnectionProfile {
   privateKeyPath?: string;
   privateKeyText?: string;
   passphrase?: string;
+  /** 多级跳板按顺序串接，最后一级跳板再连目标 SSH 主机。 */
+  jumpHosts?: SshJumpHost[];
+  /** 代理仅作用于第一跳网络连接：无跳板时连目标，有跳板时连第一个跳板。 */
+  proxy?: SshProxyConfig;
   note?: string;
   tags: string[];
 }
@@ -32,9 +64,9 @@ export interface WebDavSettings {
 export interface AgentBridgeSettings {
   /** AI Bridge 默认关闭，开启后本地 Broker 才会监听 127.0.0.1。 */
   enabled: boolean;
-  /** 自动执行只对 allowedConnectionIds 中的连接生效；关闭时命令和写操作均走 GUI 审批。 */
+  /** 自动执行开启时全部连接跳过 GUI 审批；关闭时仅 allowedConnectionIds 中的连接自动执行。 */
   autoExecute: boolean;
-  /** 允许自动执行的连接白名单，避免全局放开远端命令执行。 */
+  /** 自动执行关闭时仍允许自动执行的连接白名单。 */
   allowedConnectionIds: string[];
   /** Agent 命令默认超时秒数，防止外部工具长时间占用远端 channel。 */
   defaultTimeoutSec: number;
@@ -104,6 +136,17 @@ export interface RemoteFileEntry {
   owner?: string;
   /** SFTP 通常只返回 gid，这里优先展示可读名称，缺失时前端保持占位。 */
   group?: string;
+}
+
+export interface FileTransferSummary {
+  /** 普通文件数量；目录内文件会计入此值。 */
+  files: number;
+  /** 目录数量；空目录也会计入此值。 */
+  directories: number;
+  /** 已复制字节数，后端递归统计。 */
+  bytes: number;
+  /** 传输根目标路径列表，用于状态栏展示和问题定位。 */
+  destinations: string[];
 }
 
 export interface RuntimeOverview {
@@ -204,7 +247,7 @@ export interface AgentBridgeStatus {
 
 export interface AgentBridgeRequest {
   id: string;
-  kind: 'run_command' | 'file_write' | 'file_delete' | 'file_rename' | 'file_mkdir' | string;
+  kind: 'run_command' | 'file_write' | 'file_upload' | 'file_download' | 'file_delete' | 'file_rename' | 'file_mkdir' | string;
   status: 'pending' | 'running' | 'completed' | 'rejected' | 'error' | string;
   connectionId: string;
   sessionId?: string;
@@ -232,6 +275,10 @@ export interface ConnectionDraft {
   privateKeyPath: string;
   privateKeyText: string;
   passphrase: string;
+  /** 表单草稿中的跳板机保留敏感字段明文，保存前由后端加密落盘。 */
+  jumpHosts: SshJumpHost[];
+  /** 表单草稿中的代理配置支持临时关闭但保留输入值。 */
+  proxy: SshProxyConfig;
   note?: string;
   tags: string[] | string;
 }

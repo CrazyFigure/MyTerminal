@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use myterminal::{commands, state::AppState};
+use tauri::{Manager, WindowEvent};
 
 fn main() {
     let app_state = AppState::new().expect("failed to initialize app state");
@@ -10,6 +11,19 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                // 关闭窗口时先让界面消失，再后台清理 SSH/MCP 后端，避免远端 close 阻塞用户退出体验。
+                api.prevent_close();
+                let _ = window.hide();
+                let app_handle = window.app_handle().clone();
+                std::thread::spawn(move || {
+                    let state = app_handle.state::<AppState>();
+                    let _ = commands::shutdown_app_backends(&state);
+                    app_handle.exit(0);
+                });
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::bootstrap_state,
             commands::save_app_settings,
@@ -31,7 +45,9 @@ fn main() {
             commands::resize_terminal,
             commands::list_remote_files,
             commands::upload_remote_file,
+            commands::upload_local_paths,
             commands::download_remote_file,
+            commands::download_remote_paths,
             commands::delete_remote_path,
             commands::delete_remote_paths,
             commands::rename_remote_path,

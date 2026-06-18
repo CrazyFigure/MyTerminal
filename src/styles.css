@@ -47,6 +47,8 @@ select:disabled {
   --app-muted: #64748b;
   --app-subtle-text: #475569;
   --app-card-bg: rgba(255, 255, 255, 0.94);
+  /* 弹窗、右键菜单和下拉浮层承载操作入口，必须使用实色背景避免底层终端内容透出。 */
+  --app-overlay-bg: #ffffff;
   --app-card-border: rgba(148, 163, 184, 0.28);
   --app-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
   --app-panel-bg: rgba(248, 250, 252, 0.95);
@@ -76,6 +78,7 @@ select:disabled {
   --app-muted: #94a3b8;
   --app-subtle-text: #cbd5e1;
   --app-card-bg: rgba(15, 23, 42, 0.88);
+  --app-overlay-bg: #0f172a;
   --app-card-border: rgba(71, 85, 105, 0.42);
   --app-shadow: 0 22px 52px rgba(2, 6, 23, 0.34);
   --app-panel-bg: rgba(30, 41, 59, 0.9);
@@ -915,10 +918,34 @@ select:disabled {
   min-height: 0;
 }
 
+/* 拖入本地文件时只高亮文件管理区域，提醒用户当前投放会上传到远端当前目录。 */
+.explorer-panel.is-local-drop-active .explorer-shell {
+  border-color: rgba(79, 70, 229, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(79, 70, 229, 0.32);
+  background: rgba(224, 231, 255, 0.34);
+}
+
+.secondary-button.is-drop-target {
+  border-color: rgba(79, 70, 229, 0.72);
+  background: rgba(224, 231, 255, 0.72);
+  color: #312e81;
+}
+
+.app-shell.theme-dark .explorer-panel.is-local-drop-active .explorer-shell,
+.app-shell.theme-dark .secondary-button.is-drop-target {
+  border-color: rgba(129, 140, 248, 0.78);
+  background: rgba(67, 56, 202, 0.3);
+  color: #e0e7ff;
+}
+
 .explorer-list {
   flex: 1;
   min-width: 0;
   overflow: auto;
+}
+
+.explorer-virtual-body {
+  position: relative;
 }
 
 .explorer-list-header,
@@ -948,8 +975,16 @@ select:disabled {
   background: transparent;
 }
 
-.explorer-row:nth-child(odd) {
+.explorer-row.is-odd {
   background: rgba(248, 250, 252, 0.72);
+}
+
+.explorer-row.is-virtual {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  will-change: transform;
 }
 
 .explorer-row:hover {
@@ -1058,6 +1093,77 @@ select:disabled {
 
 .password-toggle-button {
   white-space: nowrap;
+}
+
+.connection-form-tabs {
+  margin: 14px 0 12px;
+}
+
+.connection-form-panels {
+  min-height: 360px;
+}
+
+.connection-form-panel {
+  display: none;
+}
+
+.connection-form-panel.is-active {
+  display: block;
+}
+
+.connection-jump-hosts-toolbar,
+.connection-proxy-toolbar,
+.connection-jump-host-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.connection-jump-hosts-toolbar,
+.connection-proxy-toolbar {
+  margin-bottom: 12px;
+}
+
+.connection-jump-hosts-toolbar h4,
+.connection-proxy-toolbar h4 {
+  margin: 0 0 4px;
+  font-size: 0.92rem;
+}
+
+.connection-jump-hosts-toolbar p,
+.connection-proxy-toolbar p {
+  margin: 0;
+  color: var(--app-muted);
+  font-size: 0.8rem;
+}
+
+.connection-jump-host-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.connection-jump-host-card {
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  background: var(--app-item-bg);
+}
+
+.connection-jump-host-card-header {
+  margin-bottom: 10px;
+}
+
+.connection-jump-host-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.connection-proxy-toggle {
+  flex: 0 0 auto;
+  min-width: 112px;
 }
 
 .connection-test-result {
@@ -1255,7 +1361,7 @@ select:disabled {
   min-width: 150px;
   border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: 10px;
-  background: var(--app-card-bg);
+  background: var(--app-overlay-bg);
   box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
   padding: 6px;
 }
@@ -1329,7 +1435,7 @@ select:disabled {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
   gap: 12px;
-  min-height: 420px;
+  min-height: 0;
 }
 
 .connection-groups-sidebar,
@@ -1499,7 +1605,7 @@ select:disabled {
   min-width: 150px;
   border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: 10px;
-  background: var(--app-card-bg);
+  background: var(--app-overlay-bg);
   box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
   padding: 6px;
 }
@@ -1533,6 +1639,10 @@ select:disabled {
 }
 
 .modal-backdrop {
+  /* 弹窗固定高度只跟窗口高度联动，禁止内容多少改变弹窗外框尺寸。 */
+  --modal-fixed-height: min(720px, calc(100vh - 48px));
+  --modal-editor-fixed-height: min(760px, calc(100vh - 48px));
+  --modal-compact-fixed-height: min(600px, calc(100vh - 48px));
   position: fixed;
   inset: 0;
   display: grid;
@@ -1544,13 +1654,53 @@ select:disabled {
 
 .modal {
   width: min(780px, 100%);
-  max-height: min(92vh, 920px);
+  height: var(--modal-fixed-height);
+  max-height: none;
   padding: 20px;
   overflow: auto;
 }
 
+/* 所有弹窗外壳统一使用实色浮层背景，避免通用 card 的半透明背景泄露到底层终端。 */
+.modal.card {
+  background: var(--app-overlay-bg);
+}
+
+/* 弹窗高度由窗口尺寸决定，连接表单把正文区独立滚动，避免 tab 或跳板机数量变化导致外框跳动。 */
+.connection-form-modal {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  overflow: hidden;
+  background: var(--app-overlay-bg);
+}
+
+.connection-form-modal .connection-form-panels {
+  min-height: 0;
+  overflow: auto;
+  /* 表单滚动区左右对称留白，滚动条本身收窄，避免贴内容但不显得右侧笨重。 */
+  padding-inline: 8px;
+  scrollbar-width: thin;
+}
+
+/* 连接测试错误可能较长，反馈区单独滚动，保证底部按钮行位置固定。 */
+.connection-form-feedback {
+  display: grid;
+  gap: 6px;
+  max-height: 86px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.connection-form-feedback:empty {
+  display: none;
+}
+
 .modal-wide {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  /* 连接管理头部操作区和下方列表面板稍微分开，避免按钮区贴着内容卡片。 */
+  gap: 10px;
   width: min(1120px, 100%);
+  overflow: hidden;
 }
 
 .modal-editor {
@@ -1674,7 +1824,7 @@ select:disabled {
   padding: 9px;
   border: 1px solid rgba(148, 163, 184, 0.24);
   border-radius: 8px;
-  background: var(--app-card-bg);
+  background: var(--app-overlay-bg);
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
   color: var(--app-text);
   font-size: 0.78rem;
@@ -1781,7 +1931,7 @@ select:disabled {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   width: min(980px, 100%);
-  height: min(720px, 92vh);
+  height: var(--modal-fixed-height);
   overflow: hidden;
   background: #ffffff;
 }
@@ -1796,7 +1946,26 @@ select:disabled {
 
 .modal-settings .settings-content {
   overflow: auto;
-  padding-right: 2px;
+  /* 设置页滚动区和表单内容左右对称留白，滚动条本身保持轻量宽度。 */
+  padding-inline: 8px;
+  scrollbar-width: thin;
+}
+
+.connection-form-modal .connection-form-panels::-webkit-scrollbar,
+.modal-settings .settings-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.connection-form-modal .connection-form-panels::-webkit-scrollbar-thumb,
+.modal-settings .settings-content::-webkit-scrollbar-thumb {
+  border: 2px solid var(--app-overlay-bg);
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.62);
+}
+
+.connection-form-modal .connection-form-panels::-webkit-scrollbar-track,
+.modal-settings .settings-content::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .background-image-field {
@@ -1913,10 +2082,12 @@ select:disabled {
 }
 
 .explorer-row {
+  height: 27px;
   min-height: 27px;
 }
 
 .explorer-row-main {
+  height: 27px;
   min-height: 27px;
   padding: 2px 8px;
   font-size: 0.86rem;
@@ -2141,6 +2312,19 @@ select:disabled {
   gap: 10px;
 }
 
+.agent-auto-connections-panel {
+  display: grid;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--app-card-border);
+}
+
+/* 自动执行连接现在是执行配置的子块，标题层级低于 section 主标题。 */
+.agent-auto-connections-panel h4 {
+  margin: 0 0 6px;
+  font-size: 0.92rem;
+}
+
 .agent-bridge-code-grid textarea,
 .agent-request-card textarea {
   width: 100%;
@@ -2293,6 +2477,7 @@ select:disabled {
   border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 8px;
   font-size: 0.84rem;
+  word-break: break-word;
 }
 
 .update-check-result.is-update-available {
@@ -2301,6 +2486,11 @@ select:disabled {
 }
 
 .update-check-result.is-up-to-date {
+  color: #166534;
+  background: rgba(220, 252, 231, 0.68);
+}
+
+.update-check-result.is-success {
   color: #166534;
   background: rgba(220, 252, 231, 0.68);
 }
@@ -2330,7 +2520,7 @@ select:disabled {
   padding: 4px;
   border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 8px;
-  background: var(--app-card-bg);
+  background: var(--app-overlay-bg);
   box-shadow: 0 14px 32px rgba(15, 23, 42, 0.12);
 }
 
@@ -2365,7 +2555,7 @@ select:disabled {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   width: min(1200px, 100%);
-  height: min(760px, 92vh);
+  height: var(--modal-editor-fixed-height);
   overflow: hidden;
   background: #ffffff;
 }
@@ -2635,7 +2825,8 @@ select:disabled {
 
 .modal-backup-selector {
   width: min(720px, 94vw);
-  max-height: min(80vh, 600px);
+  height: var(--modal-compact-fixed-height);
+  max-height: none;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 12px;
