@@ -2235,6 +2235,9 @@ mod tests {
             private_key_path: Some("C:/key".into()),
             private_key_text: Some("PRIVATE".into()),
             passphrase: Some("pass".into()),
+            // 脱敏测试只关注主连接凭据，跳板与代理使用空配置保持构造体完整。
+            jump_hosts: Vec::new(),
+            proxy: crate::models::SshProxyConfig::default(),
             note: Some("note".into()),
             tags: vec!["prod".into()],
         });

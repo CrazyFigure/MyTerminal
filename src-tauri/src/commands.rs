@@ -477,6 +477,11 @@ const CWD_SYNC_MARKER_PREFIX: &str = "\x1b]6973;MyTerminalCwd=";
 const CWD_SYNC_MARKER_SUFFIX: char = '\x07';
 const CWD_SYNC_SETUP_NAME: &str = "__myterminal_sync_cwd";
 const CWD_SYNC_HISTORY_PREP_TOKEN: &str = "HIST_IGNORE_SPACE";
+/// 部分命令行工具会在绘制进度时隐藏光标，异常返回 shell 时可能漏发恢复序列；提示符边界需要兜底恢复。
+const TERMINAL_CURSOR_HIDE_SEQUENCE: &str = "\x1b[?25l";
+const TERMINAL_CURSOR_SHOW_SEQUENCE: &str = "\x1b[?25h";
+/// 光标控制序列长度固定为 6 字节，保留前一分片末尾 5 字节即可识别跨 SSH 分片的半截序列。
+const TERMINAL_CURSOR_CONTROL_TAIL_BYTES: usize = TERMINAL_CURSOR_HIDE_SEQUENCE.len() - 1;
 
 fn queue_cwd(
     queue: &Arc<std::sync::Mutex<Vec<TerminalOutputChunk>>>,
@@ -526,6 +531,8 @@ struct ShellOutputFilter {
     pending: String,
     suppress_setup_echo_line: bool,
     suppress_initial_setup_echo: bool,
+    cursor_hidden_by_remote_output: bool,
+    cursor_control_tail: String,
 }
 
 impl Default for ShellOutputFilter {
@@ -534,6 +541,8 @@ impl Default for ShellOutputFilter {
             pending: String::new(),
             suppress_setup_echo_line: false,
             suppress_initial_setup_echo: true,
+            cursor_hidden_by_remote_output: false,
+            cursor_control_tail: String::new(),
         }
     }
 }
@@ -548,7 +557,7 @@ impl ShellOutputFilter {
         loop {
             if let Some(marker_start) = self.pending.find(CWD_SYNC_MARKER_PREFIX) {
                 let before_marker = self.pending[..marker_start].to_string();
-                visible.push_str(&self.strip_cwd_sync_setup_echo(&before_marker));
+                self.push_filtered_visible(&mut visible, &before_marker);
                 let value_start = marker_start + CWD_SYNC_MARKER_PREFIX.len();
 
                 if let Some(value_end) = self.pending[value_start..].find(CWD_SYNC_MARKER_SUFFIX) {
@@ -560,6 +569,7 @@ impl ShellOutputFilter {
                     }
                     // 第一次 cwd 标记说明启动注入已执行完毕；之后如果用户历史里出现内部函数名，不能再隐藏 readline 的重绘输出。
                     self.suppress_initial_setup_echo = false;
+                    self.restore_cursor_at_prompt_boundary(&mut visible);
                     let remainder_start =
                         value_start + value_end + CWD_SYNC_MARKER_SUFFIX.len_utf8();
                     self.pending = self.pending[remainder_start..].to_string();
@@ -582,12 +592,57 @@ impl ShellOutputFilter {
 
             let drain_len = self.pending.len().saturating_sub(keep);
             let drainable = self.pending[..drain_len].to_string();
-            visible.push_str(&self.strip_cwd_sync_setup_echo(&drainable));
+            self.push_filtered_visible(&mut visible, &drainable);
             self.pending = self.pending[drain_len..].to_string();
             break;
         }
 
         (visible, cwd_updates)
+    }
+
+    /// 写入真正要交给 xterm 的内容，并同步跟踪远端是否把光标切到隐藏状态。
+    fn push_filtered_visible(&mut self, visible: &mut String, value: &str) {
+        let filtered = self.strip_cwd_sync_setup_echo(value);
+        if filtered.is_empty() {
+            return;
+        }
+
+        self.track_cursor_visibility_sequences(&filtered);
+        visible.push_str(&filtered);
+    }
+
+    /// 解析远端输出中的光标显示/隐藏控制序列；只记录最后一次状态，实际序列仍原样交给 xterm。
+    fn track_cursor_visibility_sequences(&mut self, value: &str) {
+        let combined = format!("{}{}", self.cursor_control_tail, value);
+        let last_hide = combined.rfind(TERMINAL_CURSOR_HIDE_SEQUENCE);
+        let last_show = combined.rfind(TERMINAL_CURSOR_SHOW_SEQUENCE);
+
+        match (last_hide, last_show) {
+            (Some(hide_index), Some(show_index)) => {
+                self.cursor_hidden_by_remote_output = hide_index > show_index;
+            }
+            (Some(_), None) => {
+                self.cursor_hidden_by_remote_output = true;
+            }
+            (None, Some(_)) => {
+                self.cursor_hidden_by_remote_output = false;
+            }
+            (None, None) => {}
+        }
+
+        self.cursor_control_tail =
+            keep_trailing_utf8_by_bytes(&combined, TERMINAL_CURSOR_CONTROL_TAIL_BYTES);
+    }
+
+    /// shell 提示符即将出现时若远端遗漏了恢复光标，则补发一次 show cursor，避免后续输入看不到插入点。
+    fn restore_cursor_at_prompt_boundary(&mut self, visible: &mut String) {
+        if !self.cursor_hidden_by_remote_output {
+            return;
+        }
+
+        visible.push_str(TERMINAL_CURSOR_SHOW_SEQUENCE);
+        self.cursor_hidden_by_remote_output = false;
+        self.cursor_control_tail.clear();
     }
 
     /// 过滤我方注入命令的回显，避免用户在终端里看到同步协议细节。
@@ -612,6 +667,84 @@ impl ShellOutputFilter {
         }
 
         visible
+    }
+}
+
+/// 按 UTF-8 字符边界保留字符串末尾若干字节，避免中文输出被光标序列探测逻辑截断到非法边界。
+fn keep_trailing_utf8_by_bytes(value: &str, max_bytes: usize) -> String {
+    let mut tail = String::new();
+    for ch in value.chars().rev() {
+        if tail.len() + ch.len_utf8() > max_bytes {
+            break;
+        }
+        tail.insert(0, ch);
+    }
+    tail
+}
+
+#[cfg(test)]
+mod shell_output_filter_tests {
+    use super::*;
+
+    fn cwd_marker(cwd: &str) -> String {
+        format!("{CWD_SYNC_MARKER_PREFIX}{cwd}{CWD_SYNC_MARKER_SUFFIX}")
+    }
+
+    #[test]
+    fn restores_cursor_when_prompt_marker_arrives_after_hidden_cursor() {
+        let mut filter = ShellOutputFilter::default();
+        let input = format!(
+            "docker progress{TERMINAL_CURSOR_HIDE_SEQUENCE}{}",
+            cwd_marker("/ology/ology-server")
+        );
+
+        let (visible, cwd_updates) = filter.consume(&input);
+
+        assert_eq!(cwd_updates, vec!["/ology/ology-server".to_string()]);
+        assert_eq!(
+            visible,
+            format!(
+                "docker progress{TERMINAL_CURSOR_HIDE_SEQUENCE}{TERMINAL_CURSOR_SHOW_SEQUENCE}"
+            )
+        );
+    }
+
+    #[test]
+    fn does_not_duplicate_remote_cursor_restore_before_prompt_marker() {
+        let mut filter = ShellOutputFilter::default();
+        let input = format!(
+            "{TERMINAL_CURSOR_HIDE_SEQUENCE}{TERMINAL_CURSOR_SHOW_SEQUENCE}{}",
+            cwd_marker("/tmp")
+        );
+
+        let (visible, cwd_updates) = filter.consume(&input);
+
+        assert_eq!(cwd_updates, vec!["/tmp".to_string()]);
+        assert_eq!(visible.matches(TERMINAL_CURSOR_SHOW_SEQUENCE).count(), 1);
+    }
+
+    #[test]
+    fn tracks_cursor_hide_sequence_split_across_output_chunks() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (first_visible, _) = filter.consume("\x1b[?2");
+        let (second_visible, _) = filter.consume("5l");
+        let (prompt_visible, cwd_updates) = filter.consume(&cwd_marker("/split"));
+
+        assert_eq!(first_visible, "\x1b[?2");
+        assert_eq!(second_visible, "5l");
+        assert_eq!(cwd_updates, vec!["/split".to_string()]);
+        assert_eq!(prompt_visible, TERMINAL_CURSOR_SHOW_SEQUENCE);
+    }
+
+    #[test]
+    fn keeps_prompt_marker_without_cursor_restore_when_cursor_was_visible() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (visible, cwd_updates) = filter.consume(&cwd_marker("/visible"));
+
+        assert_eq!(visible, "");
+        assert_eq!(cwd_updates, vec!["/visible".to_string()]);
     }
 }
 
