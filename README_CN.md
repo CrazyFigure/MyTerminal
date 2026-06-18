@@ -12,7 +12,7 @@
 
 MyTerminal 把终端标签页、支持跳板机与代理的 SSH 连接管理、SFTP 文件管理、远程文件编辑、本地端口转发和 WebDAV 备份放到一个清爽的桌面应用里。它面向开发者和运维场景，希望提供一个轻量、开放、可折腾的远程终端工具。
 
-**版本：** v0.2.2
+**版本：** v0.2.3
 
 ![MyTerminal 预览](img_cn.png)
 
@@ -33,10 +33,20 @@ MyTerminal 把终端标签页、支持跳板机与代理的 SSH 连接管理、S
 - **交互输入处理** - 普通字符使用极短合并窗口降低 WebView 到 Rust 的 IPC 压力，Enter、Tab、控制序列和编辑键立即发送到远端 PTY。
 - **右键工作流** - 支持右键菜单复制 / 粘贴，也可配置右键直接粘贴；菜单操作结束后会把焦点交回终端。
 - **光标恢复** - 远端程序隐藏光标后如果异常返回 shell，提示符边界会兜底恢复光标，避免后续输入看不到插入点。
+- **本地光标兜底** - 切换会话或重放缓存输出时，前端会恢复 xterm 光标显示，且不会把控制符发送回 SSH。
 - **搜索与自适应尺寸** - 基于 xterm.js 提供终端渲染、尺寸适配和搜索能力。
 - **终端路径联动** - 注入远端 cwd 同步钩子后，终端执行 `cd`、`pushd`、`popd` 可联动文件管理器路径。
 - **子 Shell 路径同步** - Bash 子 Shell 会继承 cwd 同步钩子，非交互脚本不会输出 MyTerminal 的同步标记。
 - **远端历史读取** - 可读取远端 shell 历史文件用于命令历史能力，同时隐藏 MyTerminal 内部注入命令。
+
+### 本地终端与 AI CLI
+
+- **本地终端标签页** - 可在 SSH 标签旁打开本地原生 PTY 会话，底层使用 ConPTY / portable-pty，而不是模拟输出。
+- **AI CLI 启动器** - 可在指定工作目录启动 Claude Code、Codex、opencode 或自定义本地命令。
+- **纯 Shell 模式** - 选择内置“本地终端”命令时，会直接打开配置的本机 Shell，不强制启动 AI CLI。
+- **本地专属配置** - 本地 Shell 路径、命令预设和历史目录写入 `local-terminals.json`，不会进入 WebDAV 同步包。
+- **历史目录** - 可按最近目录重新打开本地终端，并在每次启动前为该目录选择命令，历史记录以目录为主。
+- **紧凑本地标签** - 本地终端顶部标签只显示最后一级目录名，例如 `codex · MyTerminal` 或 `MyTerminal`，完整路径仍保留在历史和会话详情中。
 
 ### SFTP 文件与编辑
 
@@ -187,7 +197,7 @@ npm run check        # 执行前端构建和 Rust 后端检查
 - **桌面外壳：** Tauri 2
 - **后端：** Rust、ssh2、reqwest、AES-GCM、本地 JSON 持久化
 - **前端：** React、TypeScript、Vite、Zustand
-- **终端与编辑器：** xterm.js、Monaco Editor
+- **终端与编辑器：** xterm.js、portable-pty、Monaco Editor
 - **同步与文件：** SFTP、WebDAV、本地导入 / 导出
 
 ## 当前限制

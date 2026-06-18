@@ -77,6 +77,43 @@ fn default_connection_order() -> Vec<String> {
     Vec::new()
 }
 
+fn default_local_terminal_commands() -> Vec<LocalTerminalCommand> {
+    vec![
+        LocalTerminalCommand {
+            id: "shell".into(),
+            name: "本地终端".into(),
+            command: String::new(),
+            built_in: true,
+        },
+        LocalTerminalCommand {
+            id: "claude".into(),
+            name: "claude".into(),
+            command: "claude".into(),
+            built_in: true,
+        },
+        LocalTerminalCommand {
+            id: "codex".into(),
+            name: "codex".into(),
+            command: "codex".into(),
+            built_in: true,
+        },
+        LocalTerminalCommand {
+            id: "opencode".into(),
+            name: "opencode".into(),
+            command: "opencode".into(),
+            built_in: true,
+        },
+    ]
+}
+
+fn default_terminal_session_kind() -> String {
+    "ssh".into()
+}
+
+fn default_local_terminal_title() -> String {
+    "本地终端".into()
+}
+
 fn default_auth_method() -> String {
     "password".into()
 }
@@ -403,8 +440,14 @@ impl HistoryEntry {
 pub struct TerminalSession {
     #[serde(default = "new_id")]
     pub id: String,
+    /// 会话来源决定前端是否启用远端文件、运行状态和隧道等 SSH 专属能力。
+    #[serde(default = "default_terminal_session_kind")]
+    pub kind: String,
     #[serde(default)]
     pub connection_id: String,
+    /// 本地终端启动项 id 只用于重开和展示，不参与 SSH 连接查找。
+    #[serde(default)]
+    pub local_profile_id: Option<String>,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
@@ -426,6 +469,57 @@ pub struct TerminalOutputChunk {
     pub status: Option<String>,
     #[serde(default)]
     pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalTerminalCommand {
+    #[serde(default = "new_id")]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub command: String,
+    /// 内置命令由应用兜底提供，前端允许排序但不允许删除。
+    #[serde(default)]
+    pub built_in: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalTerminalProfile {
+    #[serde(default = "new_id")]
+    pub id: String,
+    #[serde(default = "default_local_terminal_title")]
+    pub title: String,
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default)]
+    pub command: String,
+    #[serde(default)]
+    pub last_used_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalTerminalSettings {
+    #[serde(default)]
+    pub shell_path: String,
+    /// 命令顺序来自本地终端管理页，内置命令缺失时加载阶段会自动补齐。
+    #[serde(default = "default_local_terminal_commands")]
+    pub commands: Vec<LocalTerminalCommand>,
+    #[serde(default)]
+    pub profiles: Vec<LocalTerminalProfile>,
+}
+
+impl Default for LocalTerminalSettings {
+    fn default() -> Self {
+        Self {
+            shell_path: String::new(),
+            commands: default_local_terminal_commands(),
+            profiles: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -520,6 +614,7 @@ pub struct TunnelRecord {
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapState {
     pub settings: AppSettings,
+    pub local_terminals: LocalTerminalSettings,
     pub connections: Vec<ConnectionProfile>,
     pub history: Vec<HistoryEntry>,
     pub sessions: Vec<TerminalSession>,

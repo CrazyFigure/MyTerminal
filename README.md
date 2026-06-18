@@ -12,7 +12,7 @@ A modern desktop SSH terminal manager built with Rust, Tauri 2, and React.
 
 MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP file management, remote file editing, local port forwarding, and WebDAV backup into one clean desktop app. It is designed for developers and operators who want a lightweight, open, and hackable alternative to heavyweight remote terminal suites.
 
-**Version:** v0.2.2
+**Version:** v0.2.3
 
 ![MyTerminal preview](img.png)
 
@@ -33,10 +33,20 @@ MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP 
 - **Interactive input handling** - Printable input is lightly batched to reduce WebView-to-Rust IPC load, while Enter, Tab, control sequences, and editing keys are flushed immediately.
 - **Right-click workflows** - Use right-click menu actions for copy and paste, or configure right-click to paste directly; terminal focus is restored after menu actions.
 - **Cursor recovery** - Remote programs that hide the terminal cursor and fail to restore it are handled at prompt boundaries so the input cursor comes back.
+- **Local cursor fallback** - The frontend restores xterm cursor visibility when switching sessions or replaying cached output, without sending control characters back to SSH.
 - **Search and fit behavior** - xterm.js powers terminal rendering, sizing, and terminal search support.
 - **Path-aware terminal output** - The shell injects a cwd sync hook so the app can follow remote directory changes made with `cd`, `pushd`, or `popd`.
 - **Child-shell cwd sync** - Bash child shells inherit the cwd sync hook, while non-interactive scripts avoid emitting MyTerminal sync markers.
 - **Remote shell history** - Read remote shell history files for command history features without exposing MyTerminal's internal setup command.
+
+### Local Terminals and AI CLIs
+
+- **Local terminal tabs** - Open native local PTY sessions beside SSH tabs, backed by ConPTY/portable-pty instead of a fake command output view.
+- **AI CLI launcher** - Start Claude Code, Codex, opencode, or custom local commands from selected working directories.
+- **Pure shell mode** - Choose the built-in local terminal command to open the configured shell directly without launching an AI CLI.
+- **Local-only settings** - Local shell path, command presets, and directory history are stored in `local-terminals.json` and are not included in WebDAV sync packages.
+- **History directories** - Reopen recent local directories, choose a command per directory at launch time, and keep history focused on paths rather than fixed command pairs.
+- **Compact local tabs** - Local terminal tab titles use short directory names, such as `codex · MyTerminal` or `MyTerminal`, while full paths remain available in history and session details.
 
 ### SFTP Files and Editing
 
@@ -187,7 +197,7 @@ npm run check        # Run frontend build and Rust backend checks
 - **Desktop shell:** Tauri 2
 - **Backend:** Rust, ssh2, reqwest, AES-GCM, local JSON persistence
 - **Frontend:** React, TypeScript, Vite, Zustand
-- **Terminal and editor:** xterm.js, Monaco Editor
+- **Terminal and editor:** xterm.js, portable-pty, Monaco Editor
 - **Sync and files:** SFTP, WebDAV, local import/export
 
 ## Current Limitations

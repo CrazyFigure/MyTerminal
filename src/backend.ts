@@ -9,6 +9,8 @@ import type {
   EditorDocument,
   FileTransferSummary,
   HistoryEntry,
+  LocalTerminalProfile,
+  LocalTerminalSettings,
   RemoteFileEntry,
   RuntimeOverview,
   SshJumpHost,
@@ -178,6 +180,50 @@ const normalizeTunnelRequest = (request: TunnelOpenRequest): TunnelOpenRequest =
   remotePort: clampPort(request.remotePort, 5432),
 });
 
+// 本地终端配置在 Web stub 和 Tauri 后端之间保持同一套归一化规则，空命令表示纯 shell。
+const normalizeLocalTerminalSettings = (settings: LocalTerminalSettings): LocalTerminalSettings => {
+  // 内置命令始终补齐，避免旧配置缺失“本地终端”导致无法直接打开 shell。
+  const defaultCommands: LocalTerminalSettings['commands'] = [
+    { id: 'shell', name: '本地终端', command: '', builtIn: true },
+    { id: 'claude', name: 'claude', command: 'claude', builtIn: true },
+    { id: 'codex', name: 'codex', command: 'codex', builtIn: true },
+    { id: 'opencode', name: 'opencode', command: 'opencode', builtIn: true },
+  ];
+  const commandMap = new Map<string, LocalTerminalSettings['commands'][number]>();
+  [...(settings.commands ?? []), ...defaultCommands].forEach((item) => {
+    const command = item.command.trim();
+    const name = item.name.trim() || command || '本地终端';
+    if (!command && !item.builtIn) {
+      return;
+    }
+    const id = item.id.trim() || command || 'shell';
+    if (!commandMap.has(id)) {
+      commandMap.set(id, { id, name, command, builtIn: Boolean(item.builtIn) });
+    }
+  });
+
+  // 历史目录只要求目录有效；命令允许为空，空命令由后端解释为直接打开本地 shell。
+  const profiles = (settings.profiles ?? [])
+    .map((profile) => ({
+      ...profile,
+      id: profile.id?.trim() || crypto.randomUUID(),
+      cwd: profile.cwd.trim(),
+      command: profile.command.trim(),
+      lastUsedAt: profile.lastUsedAt || '',
+    }))
+    .filter((profile) => profile.cwd)
+    .map((profile) => ({
+      ...profile,
+      title: profile.title?.trim() || (profile.command ? `${profile.command} · ${profile.cwd}` : profile.cwd),
+    }));
+
+  return {
+    shellPath: settings.shellPath?.trim() ?? '',
+    commands: Array.from(commandMap.values()),
+    profiles,
+  };
+};
+
 const mockSettings: AppSettings = {
   uiLanguage: 'zh-CN',
   themeMode: 'light',
@@ -212,6 +258,17 @@ const mockSettings: AppSettings = {
     defaultTimeoutSec: 60,
     maxOutputBytes: 200000,
   },
+};
+
+const mockLocalTerminals: LocalTerminalSettings = {
+  shellPath: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+  commands: [
+    { id: 'shell', name: '本地终端', command: '', builtIn: true },
+    { id: 'claude', name: 'claude', command: 'claude', builtIn: true },
+    { id: 'codex', name: 'codex', command: 'codex', builtIn: true },
+    { id: 'opencode', name: 'opencode', command: 'opencode', builtIn: true },
+  ],
+  profiles: [],
 };
 
 const mockConnections: ConnectionProfile[] = [
@@ -281,6 +338,7 @@ const mockTunnels: TunnelRecord[] = [
 
 const mockState: BootstrapState = {
   settings: mockSettings,
+  localTerminals: mockLocalTerminals,
   connections: mockConnections,
   history: mockHistory,
   sessions: [],
@@ -321,11 +379,23 @@ const call = async <T>(command: string, args?: Record<string, unknown>, fallback
 export const backend = {
   bootstrap: async () => {
     const state = await call<BootstrapState>('bootstrap_state', undefined, mockState);
-    return { ...state, settings: normalizeSettings(state.settings) };
+    return {
+      ...state,
+      settings: normalizeSettings(state.settings),
+      localTerminals: normalizeLocalTerminalSettings(state.localTerminals ?? mockLocalTerminals),
+    };
   },
   saveSettings: (settings: AppSettings) => {
     const normalized = normalizeSettings(settings);
     return call<AppSettings>('save_app_settings', { settings: normalized }, normalized);
+  },
+  loadLocalTerminals: async () => {
+    const settings = await call<LocalTerminalSettings>('load_local_terminal_settings', undefined, mockLocalTerminals);
+    return normalizeLocalTerminalSettings(settings);
+  },
+  saveLocalTerminals: (settings: LocalTerminalSettings) => {
+    const normalized = normalizeLocalTerminalSettings(settings);
+    return call<LocalTerminalSettings>('save_local_terminal_settings', { settings: normalized }, normalized);
   },
   agentBridgeStatus: () => call<AgentBridgeStatus>('agent_bridge_status', undefined, mockAgentBridgeStatus),
   listAgentBridgeRequests: () => call<AgentBridgeRequest[]>('list_agent_bridge_requests', undefined, []),
@@ -351,10 +421,26 @@ export const backend = {
       { connectionId },
       {
         id: crypto.randomUUID(),
+        kind: 'ssh',
         connectionId,
+        localProfileId: undefined,
         title: `SSH ${connectionId}`,
         status: 'stub',
         cwd: '~',
+      },
+    ),
+  openLocalTerminal: (profile: LocalTerminalProfile) =>
+    call<TerminalSession>(
+      'open_local_terminal_session',
+      { profile },
+      {
+        id: crypto.randomUUID(),
+        kind: 'local',
+        connectionId: '',
+        localProfileId: profile.id,
+        title: profile.title || (profile.command ? `${profile.command} · ${profile.cwd}` : profile.cwd),
+        status: 'stub',
+        cwd: profile.cwd,
       },
     ),
   closeSession: (sessionId: string) => call<boolean>('close_ssh_session', { sessionId }, true),

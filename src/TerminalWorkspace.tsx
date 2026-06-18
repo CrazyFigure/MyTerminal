@@ -18,6 +18,7 @@ type Props = {
 
 const terminalOutputEventName = 'myterminal-terminal-output';
 const maxCachedTerminalOutputLength = 1_000_000;
+const terminalCursorShowSequence = '\x1b[?25h';
 
 // 只有后端 PTY 已就绪的会话才接收键盘输入，connecting 阶段避免用户输入被前端或后端吞掉。
 const canAcceptTerminalInput = (session?: TerminalSession) => Boolean(session && ['connected', 'stub'].includes(session.status));
@@ -201,6 +202,16 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     terminal.focus();
   };
 
+  // 远端命令可能输出隐藏光标控制符；会话切换或缓存重放后只恢复本地 xterm 光标，不把控制符写回 SSH。
+  const restoreLocalCursorVisibility = () => {
+    const terminal = terminalRef.current;
+    if (!terminal || !canAcceptTerminalInput(sessionRef.current)) {
+      return;
+    }
+
+    terminal.write(terminalCursorShowSequence);
+  };
+
   // 右键菜单动作完成后延后一帧恢复焦点，确保 React 已经卸载菜单按钮。
   const restoreTerminalFocusAfterContextMenuAction = () => {
     // 右键菜单按钮会短暂拿走焦点；等待菜单卸载后再聚焦 xterm，避免复制/粘贴后键盘输入停在旧光标状态。
@@ -368,6 +379,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     }
 
     terminal.options.disableStdin = !canAcceptTerminalInput(session);
+    restoreLocalCursorVisibility();
   }, [session?.id, session?.status]);
 
   useEffect(() => {
@@ -398,6 +410,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     if (session?.id) {
       terminal.write(cachedOutputBySessionRef.current[session.id] ?? '');
     }
+    restoreLocalCursorVisibility();
     // 新会话打开时立刻把当前 xterm 尺寸推给远端 PTY，避免默认 120 列和实际界面列宽不一致。
     terminalSizeRef.current = null;
     window.requestAnimationFrame(() => syncTerminalSizeToRemote());
