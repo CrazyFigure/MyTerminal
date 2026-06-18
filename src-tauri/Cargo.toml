@@ -1,6 +1,6 @@
 [package]
 name = "myterminal"
-version = "0.2.0"
+version = "0.2.1"
 description = "A modern Rust + Tauri 2 remote terminal manager inspired by FinalShell"
 authors = ["OpenAI"]
 edition = "2021"
