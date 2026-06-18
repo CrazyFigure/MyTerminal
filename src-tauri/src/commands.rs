@@ -604,14 +604,18 @@ fn queue_cwd(
 
 /// 注入到交互 Shell 的目录同步与历史落盘钩子；启动期会隐藏 setup 回显、规避新历史写入，并清理 bash 内存里的旧注入项。
 fn shell_cwd_sync_command() -> String {
+    // 目录同步依赖远端 shell 主动回传 PWD；Bash 子 shell 会继承导出的函数和 PROMPT_COMMAND，避免用户进入 bash 后 cd 不再联动。
+    // cd/pushd/popd 包装函数只在交互 shell 中触发同步，避免非交互脚本继承函数后把 OSC 标记写入普通命令输出。
     let setup_command = [
         "__myterminal_sync_cwd(){ printf '\\033]6973;MyTerminalCwd=%s\\a' \"$PWD\"; }",
         "__myterminal_sync_history(){ if [ -n \"${ZSH_VERSION-}\" ]; then fc -AI 2>/dev/null || true; elif [ -n \"${BASH_VERSION-}\" ]; then history -a 2>/dev/null || true; fi; }",
         "__myterminal_clean_history(){ if [ -n \"${BASH_VERSION-}\" ]; then for __myterminal_history_id in $(history | sed -n '/__myterminal_sync_cwd/{s/^ *\\([0-9][0-9]*\\).*/\\1/p}' | sort -rn); do history -d \"$__myterminal_history_id\" 2>/dev/null || true; done; unset __myterminal_history_id; fi; }",
-        "__myterminal_sync_prompt(){ __myterminal_sync_history; __myterminal_sync_cwd; }",
-        "if [ -n \"${BASH_VERSION-}${ZSH_VERSION-}\" ]; then cd(){ builtin cd \"$@\"; __myterminal_status=$?; __myterminal_sync_prompt; return $__myterminal_status; }; pushd(){ builtin pushd \"$@\"; __myterminal_status=$?; __myterminal_sync_prompt; return $__myterminal_status; }; popd(){ builtin popd \"$@\"; __myterminal_status=$?; __myterminal_sync_prompt; return $__myterminal_status; }; fi",
+        "__myterminal_is_interactive(){ case $- in *i*) return 0;; *) return 1;; esac; }",
+        "__myterminal_install_cwd_wrappers(){ if [ -n \"${BASH_VERSION-}${ZSH_VERSION-}\" ]; then cd(){ builtin cd \"$@\"; __myterminal_status=$?; __myterminal_is_interactive && __myterminal_sync_prompt; return $__myterminal_status; }; pushd(){ builtin pushd \"$@\"; __myterminal_status=$?; __myterminal_is_interactive && __myterminal_sync_prompt; return $__myterminal_status; }; popd(){ builtin popd \"$@\"; __myterminal_status=$?; __myterminal_is_interactive && __myterminal_sync_prompt; return $__myterminal_status; }; fi; }",
+        "__myterminal_sync_prompt(){ __myterminal_install_cwd_wrappers; __myterminal_sync_history; __myterminal_sync_cwd; }",
+        "__myterminal_install_cwd_wrappers",
         "if [ -n \"${ZSH_VERSION-}\" ]; then autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd __myterminal_sync_prompt 2>/dev/null || PS1='$(__myterminal_sync_prompt)'\"$PS1\"",
-        "elif [ -n \"${BASH_VERSION-}\" ]; then PROMPT_COMMAND=\"__myterminal_sync_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"",
+        "elif [ -n \"${BASH_VERSION-}\" ]; then PROMPT_COMMAND=\"__myterminal_sync_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; export PROMPT_COMMAND; export -f __myterminal_sync_cwd __myterminal_sync_history __myterminal_is_interactive __myterminal_install_cwd_wrappers __myterminal_sync_prompt cd pushd popd 2>/dev/null || true",
         "else PS1='$(__myterminal_sync_prompt)'\"$PS1\"",
         "fi",
         "__myterminal_clean_history",
@@ -846,6 +850,17 @@ mod shell_output_filter_tests {
 
         assert_eq!(visible, "");
         assert_eq!(cwd_updates, vec!["/visible".to_string()]);
+    }
+
+    #[test]
+    fn exports_bash_cwd_sync_hook_for_child_shells() {
+        let command = shell_cwd_sync_command();
+
+        assert!(command.contains("export PROMPT_COMMAND"));
+        assert!(command.contains("export -f __myterminal_sync_cwd"));
+        assert!(command.contains("__myterminal_install_cwd_wrappers"));
+        assert!(command.contains("cd pushd popd"));
+        assert!(command.contains("case $- in *i*)"));
     }
 }
 
