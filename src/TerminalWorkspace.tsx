@@ -19,8 +19,8 @@ type Props = {
 const terminalOutputEventName = 'myterminal-terminal-output';
 const maxCachedTerminalOutputLength = 1_000_000;
 
-// 只有可交互会话才接收键盘输入，关闭或异常状态由标签栏图标提示，不在终端正文里叠加状态层。
-const canAcceptTerminalInput = (session?: TerminalSession) => Boolean(session && !['closed', 'error'].includes(session.status));
+// 只有后端 PTY 已就绪的会话才接收键盘输入，connecting 阶段避免用户输入被前端或后端吞掉。
+const canAcceptTerminalInput = (session?: TerminalSession) => Boolean(session && ['connected', 'stub'].includes(session.status));
 
 const terminalFontFallbacks = ['Cascadia Mono', 'Consolas', 'Courier New', 'monospace'];
 

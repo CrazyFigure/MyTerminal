@@ -18,7 +18,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{TimeZone, Utc};
 use serde::Deserialize;
 use ssh2::{Channel, ExtendedData, MethodType, Session, Sftp};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
     agent_bridge,
@@ -29,7 +29,7 @@ use crate::{
         SshJumpHost, SshProxyConfig, TerminalOutputChunk, TerminalSession, TunnelOpenRequest,
         TunnelRecord, TunnelUpdateRequest, UpdateCheckResult, WebDavSettings,
     },
-    state::{AppState, RuntimeSession, SessionControl, TunnelRuntime},
+    state::{AppState, AuxiliarySshSession, RuntimeSession, SessionControl, TunnelRuntime},
 };
 
 #[derive(Debug, Deserialize)]
@@ -96,6 +96,33 @@ fn lock_tunnels<'a>(
         .tunnels
         .lock()
         .map_err(|_| AppError::Validation("tunnel registry is unavailable".into()))
+}
+
+fn lock_auxiliary_sessions<'a>(
+    state: &'a AppState,
+) -> Result<
+    MutexGuard<'a, std::collections::HashMap<String, Arc<std::sync::Mutex<AuxiliarySshSession>>>>,
+    AppError,
+> {
+    state
+        .auxiliary_sessions
+        .lock()
+        .map_err(|_| AppError::Validation("auxiliary ssh registry is unavailable".into()))
+}
+
+fn auxiliary_session_lock(
+    state: &AppState,
+    connection_id: &str,
+) -> Result<Arc<std::sync::Mutex<()>>, AppError> {
+    let mut locks = state
+        .auxiliary_session_locks
+        .lock()
+        .map_err(|_| AppError::Validation("auxiliary ssh lock registry is unavailable".into()))?;
+    Ok(Arc::clone(
+        locks
+            .entry(connection_id.to_string())
+            .or_insert_with(|| Arc::new(std::sync::Mutex::new(()))),
+    ))
 }
 
 fn ensure_connection_exists(
@@ -934,12 +961,11 @@ fn authenticate_ssh_session(session: &Session, auth: &SshAuthConfig<'_>) -> Resu
             return Ok(());
         }
 
-        let private_key_path =
-            non_empty_trimmed(auth.private_key_path).ok_or_else(|| {
-                AppError::Validation(
-                    "private key authentication requires a key path or pasted key content".into(),
-                )
-            })?;
+        let private_key_path = non_empty_trimmed(auth.private_key_path).ok_or_else(|| {
+            AppError::Validation(
+                "private key authentication requires a key path or pasted key content".into(),
+            )
+        })?;
 
         session
             .userauth_pubkey_file(
@@ -1054,7 +1080,10 @@ fn connect_tcp_direct(host: &str, port: u16) -> Result<TcpStream, AppError> {
     }
 
     Err(AppError::Io(last_error.unwrap_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "no reachable TCP address")
+        std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            "no reachable TCP address",
+        )
     })))
 }
 
@@ -1086,9 +1115,8 @@ fn connect_http_proxy(
     stream.set_write_timeout(Some(SSH_CONNECT_TIMEOUT))?;
 
     let target = format_tcp_endpoint(target_host, target_port);
-    let mut request = format!(
-        "CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nProxy-Connection: Keep-Alive\r\n"
-    );
+    let mut request =
+        format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nProxy-Connection: Keep-Alive\r\n");
     if let Some(username) = non_empty_trimmed(proxy.username.as_deref()) {
         let password = proxy.password.as_deref().unwrap_or("");
         let credentials = STANDARD.encode(format!("{username}:{password}"));
@@ -1117,11 +1145,7 @@ fn connect_http_proxy(
     Ok(stream)
 }
 
-fn socks5_write_address(
-    stream: &mut TcpStream,
-    host: &str,
-    port: u16,
-) -> Result<(), AppError> {
+fn socks5_write_address(stream: &mut TcpStream, host: &str, port: u16) -> Result<(), AppError> {
     let normalized_host = strip_ipv6_brackets(host);
     if let Ok(ip) = normalized_host.parse::<IpAddr>() {
         match ip {
@@ -1187,7 +1211,11 @@ fn connect_socks5_proxy(
     stream.set_write_timeout(Some(SSH_CONNECT_TIMEOUT))?;
 
     let has_credentials = non_empty_trimmed(proxy.username.as_deref()).is_some();
-    let methods: &[u8] = if has_credentials { &[0x00, 0x02] } else { &[0x00] };
+    let methods: &[u8] = if has_credentials {
+        &[0x00, 0x02]
+    } else {
+        &[0x00]
+    };
     stream.write_all(&[0x05, methods.len() as u8])?;
     stream.write_all(methods)?;
     stream.flush()?;
@@ -1195,7 +1223,9 @@ fn connect_socks5_proxy(
     let mut selection = [0_u8; 2];
     stream.read_exact(&mut selection)?;
     if selection[0] != 0x05 {
-        return Err(AppError::Ssh("SOCKS5 proxy returned invalid version".into()));
+        return Err(AppError::Ssh(
+            "SOCKS5 proxy returned invalid version".into(),
+        ));
     }
 
     if selection[1] == 0x02 {
@@ -1342,7 +1372,8 @@ fn establish_ssh_session(
     if !session.authenticated() {
         return Err(AppError::Validation(format!(
             "authentication failed for {}@{}",
-            auth.username.trim(), auth_host_label
+            auth.username.trim(),
+            auth_host_label
         )));
     }
 
@@ -1386,8 +1417,7 @@ fn spawn_jump_bridge(
                         let _ = local_stream.shutdown(Shutdown::Both);
                         break;
                     }
-                    let Ok(channel) =
-                        session.channel_direct_tcpip(&target_host, target_port, None)
+                    let Ok(channel) = session.channel_direct_tcpip(&target_host, target_port, None)
                     else {
                         let _ = local_stream.shutdown(Shutdown::Both);
                         continue;
@@ -1496,6 +1526,132 @@ pub(crate) fn connect_ssh(connection: &ConnectionProfile) -> Result<Session, App
         Err(error) if is_key_exchange_error(&error) => connect_ssh_once(connection, true),
         Err(error) => Err(error),
     }
+}
+
+fn get_or_connect_auxiliary_session(
+    state: &AppState,
+    connection: &ConnectionProfile,
+) -> Result<Arc<std::sync::Mutex<AuxiliarySshSession>>, AppError> {
+    if let Some(cached) = lock_auxiliary_sessions(state)?.get(&connection.id).cloned() {
+        return Ok(cached);
+    }
+
+    let connect_lock = auxiliary_session_lock(state, &connection.id)?;
+    let _connect_guard = connect_lock
+        .lock()
+        .map_err(|_| AppError::Validation("auxiliary ssh connect lock is unavailable".into()))?;
+    if let Some(cached) = lock_auxiliary_sessions(state)?.get(&connection.id).cloned() {
+        return Ok(cached);
+    }
+
+    // 辅助会话独立于交互 PTY；连接建立可能较慢，仅锁住当前连接，避免同一连接并发重复握手。
+    let session = connect_ssh(connection)?;
+    let cached = Arc::new(std::sync::Mutex::new(AuxiliarySshSession {
+        session,
+        sftp: None,
+        user_names: None,
+        group_names: None,
+    }));
+
+    let mut sessions = lock_auxiliary_sessions(state)?;
+    let entry = sessions
+        .entry(connection.id.clone())
+        .or_insert_with(|| Arc::clone(&cached));
+    Ok(Arc::clone(entry))
+}
+
+fn drop_auxiliary_session(state: &AppState, connection_id: &str) {
+    if let Ok(mut sessions) = lock_auxiliary_sessions(state) {
+        sessions.remove(connection_id);
+    }
+}
+
+fn clear_auxiliary_sessions(state: &AppState) {
+    if let Ok(mut sessions) = lock_auxiliary_sessions(state) {
+        sessions.clear();
+    }
+}
+
+fn with_auxiliary_session<T>(
+    state: &AppState,
+    connection: &ConnectionProfile,
+    operation: impl Fn(&mut AuxiliarySshSession) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let cached = get_or_connect_auxiliary_session(state, connection)?;
+    {
+        let mut session = cached
+            .lock()
+            .map_err(|_| AppError::Validation("auxiliary ssh session is unavailable".into()))?;
+        match operation(&mut session) {
+            Ok(value) => return Ok(value),
+            Err(error @ (AppError::Ssh(_) | AppError::Io(_))) => {
+                // 复用连接可能被远端空闲回收；读类操作先丢弃旧缓存，下面用新会话自动重试一次。
+                drop(session);
+                drop_auxiliary_session(state, &connection.id);
+                let refreshed = get_or_connect_auxiliary_session(state, connection)?;
+                let mut refreshed_session = refreshed.lock().map_err(|_| {
+                    AppError::Validation("auxiliary ssh session is unavailable".into())
+                })?;
+                return operation(&mut refreshed_session).map_err(|retry_error| {
+                    if matches!(retry_error, AppError::Ssh(_) | AppError::Io(_)) {
+                        retry_error
+                    } else {
+                        error
+                    }
+                });
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn with_auxiliary_session_once<T>(
+    state: &AppState,
+    connection: &ConnectionProfile,
+    operation: impl FnOnce(&mut AuxiliarySshSession) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let cached = get_or_connect_auxiliary_session(state, connection)?;
+    let mut session = cached
+        .lock()
+        .map_err(|_| AppError::Validation("auxiliary ssh session is unavailable".into()))?;
+    let result = operation(&mut session);
+    if result
+        .as_ref()
+        .err()
+        .is_some_and(|error| matches!(error, AppError::Ssh(_) | AppError::Io(_)))
+    {
+        drop(session);
+        drop_auxiliary_session(state, &connection.id);
+    }
+    result
+}
+
+fn auxiliary_sftp(session: &mut AuxiliarySshSession) -> Result<&Sftp, AppError> {
+    if session.sftp.is_none() {
+        // SFTP 子系统初始化成功后挂在辅助 SSH 会话上，目录切换不再重复打开子系统。
+        session.sftp = Some(session.session.sftp().map_err(ssh_error)?);
+    }
+
+    session
+        .sftp
+        .as_ref()
+        .ok_or_else(|| AppError::Validation("sftp session is unavailable".into()))
+}
+
+fn auxiliary_identity_maps(
+    session: &mut AuxiliarySshSession,
+) -> (HashMap<u32, String>, HashMap<u32, String>) {
+    if session.user_names.is_none() || session.group_names.is_none() {
+        // 账号表远端变化频率很低，缓存后可避免目录切换时重复 exec 读取 passwd/group。
+        let (user_names, group_names) = load_remote_identity_maps(&session.session);
+        session.user_names = Some(user_names);
+        session.group_names = Some(group_names);
+    }
+
+    (
+        session.user_names.clone().unwrap_or_default(),
+        session.group_names.clone().unwrap_or_default(),
+    )
 }
 
 /// 调整远端 PTY 尺寸；libssh2 非阻塞忙碌时返回 false，让 shell 主循环保留目标尺寸下轮重试。
@@ -2218,18 +2374,18 @@ fn parse_remote_history(connection_id: &str, contents: &str, limit: usize) -> Ve
     entries.into_iter().rev().take(limit.max(1)).collect()
 }
 
-fn read_remote_shell_history_entries(
+fn read_remote_shell_history_entries_with_session(
     connection: &ConnectionProfile,
+    session: &Session,
     limit: usize,
 ) -> Result<Vec<HistoryEntry>, AppError> {
-    let session = connect_ssh(connection)?;
     let remote_limit = limit.clamp(1, 500);
     // 远端 history 是 shell 内置，独立 exec 不一定能读取交互会话内存；这里读取历史文件，
     // 并依赖交互 Shell 的 prompt 钩子先执行 history -a / fc -AI，把当前会话命令落盘。
     let command = format!(
         "sh -lc 'limit={remote_limit}; seen=\"\"; for file in \"${{HISTFILE:-}}\" \"$HOME/.zsh_history\" \"$HOME/.bash_history\"; do [ -n \"$file\" ] || continue; case \":$seen:\" in *:\"$file\":*) continue;; esac; seen=\"$seen:$file\"; [ -r \"$file\" ] || continue; tail -n \"$limit\" \"$file\" 2>/dev/null; done'"
     );
-    let contents = exec_remote_command(&session, &command)?;
+    let contents = exec_remote_command(session, &command)?;
     Ok(parse_remote_history(
         &connection.id,
         &contents,
@@ -2337,11 +2493,13 @@ fn parse_cpu_core_percents(contents: &str) -> Vec<RuntimeCpuCore> {
     cores
 }
 
-fn query_runtime_overview(connection: &ConnectionProfile) -> Result<RuntimeOverview, AppError> {
-    let session = connect_ssh(connection)?;
+fn query_runtime_overview_with_session(
+    connection: &ConnectionProfile,
+    session: &Session,
+) -> Result<RuntimeOverview, AppError> {
     // 运行状态一次性读取所有需要的远端文本，避免 CPU/内存/磁盘等指标各自开 channel 导致刷新发慢。
     let sections = exec_remote_command(
-        &session,
+        session,
         "sh -lc 'printf \"__MYTERMINAL_OS__\\n\"; (uname -srmo 2>/dev/null || uname -a 2>/dev/null || true); printf \"\\n__MYTERMINAL_CPUSTAT__\\n\"; (grep -E \"^cpu[0-9 ]\" /proc/stat 2>/dev/null; sleep 0.2; grep -E \"^cpu[0-9 ]\" /proc/stat 2>/dev/null) || true; printf \"\\n__MYTERMINAL_MEMINFO__\\n\"; cat /proc/meminfo 2>/dev/null || true; printf \"\\n__MYTERMINAL_DF__\\n\"; df -Pk / 2>/dev/null || true; printf \"\\n__MYTERMINAL_HOSTIP__\\n\"; hostname -I 2>/dev/null || true; printf \"\\n__MYTERMINAL_UPTIME__\\n\"; cat /proc/uptime 2>/dev/null || true'",
     )
     .map(|contents| parse_marked_sections(&contents))
@@ -2487,25 +2645,215 @@ fn list_remote_entries(
     Ok(entries)
 }
 
-fn read_remote_file_bytes(connection: &ConnectionProfile, path: &str) -> Result<Vec<u8>, AppError> {
-    let session = connect_ssh(connection)?;
-    let sftp = session.sftp().map_err(ssh_error)?;
-    let remote_path = normalize_remote_path(path);
-    let mut remote_file = sftp.open(Path::new(&remote_path)).map_err(ssh_error)?;
-    let mut bytes = Vec::new();
-    remote_file.read_to_end(&mut bytes)?;
-    Ok(bytes)
+fn read_remote_file_bytes(
+    state: &AppState,
+    connection: &ConnectionProfile,
+    path: &str,
+) -> Result<Vec<u8>, AppError> {
+    with_auxiliary_session(state, connection, |auxiliary| {
+        let sftp = auxiliary_sftp(auxiliary)?;
+        let remote_path = normalize_remote_path(path);
+        let mut remote_file = sftp.open(Path::new(&remote_path)).map_err(ssh_error)?;
+        let mut bytes = Vec::new();
+        remote_file.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })
 }
 
 fn write_remote_file_bytes(
+    state: &AppState,
     connection: &ConnectionProfile,
     path: &str,
     bytes: &[u8],
 ) -> Result<(), AppError> {
-    let session = connect_ssh(connection)?;
-    let sftp = session.sftp().map_err(ssh_error)?;
-    let remote_path = normalize_remote_path(path);
-    write_remote_file_with_sftp(&sftp, &remote_path, bytes)
+    with_auxiliary_session_once(state, connection, |auxiliary| {
+        let sftp = auxiliary_sftp(auxiliary)?;
+        let remote_path = normalize_remote_path(path);
+        write_remote_file_with_sftp(sftp, &remote_path, bytes)
+    })
+}
+
+fn list_remote_entries_cached(
+    state: &AppState,
+    connection: &ConnectionProfile,
+    path: &str,
+) -> Result<Vec<RemoteFileEntry>, AppError> {
+    with_auxiliary_session(state, connection, |auxiliary| {
+        let (user_names, group_names) = auxiliary_identity_maps(auxiliary);
+        let sftp = auxiliary_sftp(auxiliary)?;
+        list_remote_entries(sftp, path, &user_names, &group_names)
+    })
+}
+
+fn query_runtime_overview_cached(
+    state: &AppState,
+    connection: &ConnectionProfile,
+) -> Result<RuntimeOverview, AppError> {
+    with_auxiliary_session(state, connection, |auxiliary| {
+        query_runtime_overview_with_session(connection, &auxiliary.session)
+    })
+}
+
+fn read_remote_shell_history_entries_cached(
+    state: &AppState,
+    connection: &ConnectionProfile,
+    limit: usize,
+) -> Result<Vec<HistoryEntry>, AppError> {
+    with_auxiliary_session(state, connection, |auxiliary| {
+        read_remote_shell_history_entries_with_session(connection, &auxiliary.session, limit)
+    })
+}
+
+fn upload_remote_file_with_cache(
+    state: &AppState,
+    connection: &ConnectionProfile,
+    remote_dir: &str,
+    file_name: &str,
+    bytes: &[u8],
+) -> Result<(), AppError> {
+    with_auxiliary_session_once(state, connection, |auxiliary| {
+        let sftp = auxiliary_sftp(auxiliary)?;
+        let directory = resolve_remote_dir(sftp, remote_dir)?;
+        let remote_name = normalize_remote_relative_path(file_name)?;
+        let remote_path = join_remote_path(&directory, &remote_name);
+        write_remote_file_with_sftp(sftp, &remote_path, bytes)
+    })
+}
+
+fn upload_local_paths_with_cache(
+    state: &AppState,
+    connection: &ConnectionProfile,
+    remote_dir: &str,
+    local_paths: &[String],
+) -> Result<FileTransferSummary, AppError> {
+    with_auxiliary_session_once(state, connection, |auxiliary| {
+        let sftp = auxiliary_sftp(auxiliary)?;
+        let directory = resolve_remote_dir(sftp, remote_dir)?;
+        let mut summary = FileTransferSummary::default();
+
+        // 桌面拖放会直接给本机路径；批量上传复用同一条 SFTP 连接，逐项创建远端根目录或文件。
+        for local_path in local_paths
+            .iter()
+            .map(|path| path.trim())
+            .filter(|path| !path.is_empty())
+        {
+            let source = PathBuf::from(local_path);
+            let source_name = source
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| AppError::Validation(format!("invalid local path: {local_path}")))?;
+            let remote_name = normalize_remote_relative_path(source_name)?;
+            let remote_path = join_remote_path(&directory, &remote_name);
+            upload_local_path_to_remote(sftp, &source, &remote_path, &mut summary)?;
+            summary.destinations.push(remote_path);
+        }
+
+        Ok(summary)
+    })
+}
+
+fn download_remote_file_with_cache(
+    state: &AppState,
+    connection: &ConnectionProfile,
+    path: &str,
+) -> Result<String, AppError> {
+    let downloads_dir = state.storage.downloads_dir_path();
+    fs::create_dir_all(&downloads_dir)?;
+    with_auxiliary_session_once(state, connection, |auxiliary| {
+        let sftp = auxiliary_sftp(auxiliary)?;
+        let remote_path = normalize_remote_path(path);
+        let remote_stat = sftp.stat(Path::new(&remote_path)).map_err(ssh_error)?;
+        let file_name = remote_file_name(&remote_path).unwrap_or_else(|| "download".into());
+        let destination = downloads_dir.join(sanitize_local_file_name(&file_name, "download"));
+        let mut summary = FileTransferSummary::default();
+        if stat_is_dir(&remote_stat) {
+            download_remote_directory_to_local(sftp, &remote_path, &destination, &mut summary)?;
+        } else {
+            download_remote_file_to_local(sftp, &remote_path, &destination, &mut summary)?;
+        }
+
+        Ok(destination.to_string_lossy().to_string())
+    })
+}
+
+fn download_remote_paths_with_cache(
+    state: &AppState,
+    connection: &ConnectionProfile,
+    paths: &[String],
+    local_dir: Option<&str>,
+) -> Result<FileTransferSummary, AppError> {
+    let base_dir = local_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.storage.downloads_dir_path());
+    fs::create_dir_all(&base_dir)?;
+
+    with_auxiliary_session_once(state, connection, |auxiliary| {
+        let sftp = auxiliary_sftp(auxiliary)?;
+        let mut used_destinations = HashSet::new();
+        let mut summary = FileTransferSummary::default();
+        // 多路径下载只建立一次 SFTP 会话；同名文件自动追加序号，避免后下载项覆盖先下载项。
+        for path in paths
+            .iter()
+            .map(|path| path.trim())
+            .filter(|path| !path.is_empty())
+        {
+            let remote_path = normalize_remote_path(path);
+            let file_name = remote_file_name(&remote_path).unwrap_or_else(|| "download".into());
+            let destination = unique_local_destination(
+                base_dir.join(sanitize_local_file_name(&file_name, "download")),
+                &mut used_destinations,
+            );
+            download_remote_path_to_local(sftp, &remote_path, &destination, &mut summary)?;
+            summary
+                .destinations
+                .push(destination.to_string_lossy().to_string());
+        }
+
+        Ok(summary)
+    })
+}
+
+fn delete_remote_path_with_cache(
+    state: &AppState,
+    connection: &ConnectionProfile,
+    path: &str,
+) -> Result<(), AppError> {
+    with_auxiliary_session_once(state, connection, |auxiliary| {
+        let sftp = auxiliary_sftp(auxiliary)?;
+        delete_remote_path_with_sftp(sftp, path)
+    })
+}
+
+fn delete_remote_paths_with_cache(
+    state: &AppState,
+    connection: &ConnectionProfile,
+    paths: &[String],
+) -> Result<(), AppError> {
+    with_auxiliary_session_once(state, connection, |auxiliary| {
+        let sftp = auxiliary_sftp(auxiliary)?;
+        // 批量删除复用同一个 SFTP 会话，避免多选删除时为每个文件重复握手导致界面卡顿。
+        for path in paths.iter().filter(|path| !path.trim().is_empty()) {
+            delete_remote_path_with_sftp(sftp, path)?;
+        }
+        Ok(())
+    })
+}
+
+fn rename_remote_path_with_cache(
+    state: &AppState,
+    connection: &ConnectionProfile,
+    path: &str,
+    new_path: &str,
+) -> Result<(), AppError> {
+    with_auxiliary_session_once(state, connection, |auxiliary| {
+        let sftp = auxiliary_sftp(auxiliary)?;
+        let remote_path = normalize_remote_path(path);
+        let next_remote_path = normalize_remote_path(new_path);
+        sftp.rename(Path::new(&remote_path), Path::new(&next_remote_path), None)
+            .map_err(ssh_error)
+    })
 }
 
 fn upload_local_file_to_remote(
@@ -2791,9 +3139,11 @@ fn detect_language(path: &str) -> String {
 fn stop_all_runtimes(state: &AppState) -> Result<(), AppError> {
     let mut sessions = lock_sessions(state)?;
     for runtime in sessions.drain().map(|(_, runtime)| runtime) {
+        runtime.stop_flag.store(true, Ordering::Relaxed);
         let _ = runtime.control_tx.send(SessionControl::Close);
     }
     drop(sessions);
+    clear_auxiliary_sessions(state);
 
     let mut tunnels = lock_tunnels(state)?;
     for runtime in tunnels.drain().map(|(_, runtime)| runtime) {
@@ -2816,7 +3166,13 @@ fn terminate_myterminal_cli_processes() -> Result<(), AppError> {
 
     // 只清理当前安装/开发目录旁边的 CLI，避免误杀其他 MyTerminal 副本或同名调试程序。
     Command::new("powershell")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
         .status()
         .map(|_| ())
         .map_err(AppError::from)
@@ -3023,6 +3379,7 @@ pub fn create_connection(
     connection: ConnectionProfile,
 ) -> Result<ConnectionProfile, String> {
     validate_connection_profile(&connection)?;
+    drop_auxiliary_session(&state, &connection.id);
     let mut connections = state.storage.load_connections(&state.crypto)?;
     connections.retain(|item| item.id != connection.id);
     connections.insert(0, connection.clone());
@@ -3045,6 +3402,7 @@ pub fn delete_connection(
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<bool, String> {
+    drop_auxiliary_session(&state, &connection_id);
     let mut connections = state.storage.load_connections(&state.crypto)?;
     connections.retain(|item| item.id != connection_id);
     state
@@ -3061,6 +3419,7 @@ pub fn delete_connection(
 
     for session_id in session_ids {
         if let Some(runtime) = sessions.remove(&session_id) {
+            runtime.stop_flag.store(true, Ordering::Relaxed);
             let _ = runtime.control_tx.send(SessionControl::Close);
         }
     }
@@ -3095,43 +3454,82 @@ pub fn open_ssh_session(
     connection_id: String,
 ) -> Result<TerminalSession, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
-    let ssh_session = connect_ssh(&connection)?;
     let session_id = uuid::Uuid::new_v4().to_string();
     let output_queue = Arc::new(std::sync::Mutex::new(Vec::<TerminalOutputChunk>::new()));
     let (control_tx, control_rx) = mpsc::channel();
+    let stop_flag = Arc::new(AtomicBool::new(false));
 
     let runtime = RuntimeSession {
         session: TerminalSession {
             id: session_id.clone(),
             connection_id: connection.id.clone(),
             title: format!("{}@{}", connection.username, connection.host),
-            status: "connected".into(),
+            status: "connecting".into(),
             cwd: Some("~".into()),
         },
         cols: 120,
         rows: 32,
         output_queue: Arc::clone(&output_queue),
         control_tx: control_tx.clone(),
+        stop_flag: Arc::clone(&stop_flag),
     };
-
-    spawn_shell_thread(
-        session_id,
-        ssh_session,
-        runtime.cols,
-        runtime.rows,
-        output_queue,
-        control_rx,
-        app_handle,
-    );
 
     let session = runtime.session.clone();
     lock_sessions(&state)?.insert(session.id.clone(), runtime);
+
+    let thread_session_id = session_id.clone();
+    let thread_output_queue = Arc::clone(&output_queue);
+    let thread_app_handle = app_handle.clone();
+    thread::spawn(move || {
+        // SSH 握手和认证放到后台线程，前端先获得 connecting 标签，避免打开连接时主交互等待网络。
+        match connect_ssh(&connection) {
+            Ok(ssh_session) => {
+                if stop_flag.load(Ordering::Relaxed) {
+                    return;
+                }
+                let app_state = thread_app_handle.state::<AppState>();
+                let Ok(sessions) = lock_sessions(&app_state) else {
+                    return;
+                };
+                let Some(runtime) = sessions.get(&thread_session_id) else {
+                    return;
+                };
+                let (cols, rows) = (runtime.cols, runtime.rows);
+                drop(sessions);
+                spawn_shell_thread(
+                    thread_session_id,
+                    ssh_session,
+                    cols,
+                    rows,
+                    thread_output_queue,
+                    control_rx,
+                    thread_app_handle,
+                );
+            }
+            Err(error) => {
+                queue_session_status(
+                    &thread_output_queue,
+                    &thread_app_handle,
+                    &thread_session_id,
+                    "error",
+                );
+                queue_output(
+                    &thread_output_queue,
+                    &thread_app_handle,
+                    &thread_session_id,
+                    format!("\r\n连接失败：{error}\r\n"),
+                );
+            }
+        }
+    });
+
     Ok(session)
 }
 
 #[tauri::command]
 pub fn close_ssh_session(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
     if let Some(runtime) = lock_sessions(&state)?.remove(&session_id) {
+        runtime.stop_flag.store(true, Ordering::Relaxed);
         let _ = runtime.control_tx.send(SessionControl::Close);
     }
     Ok(true)
@@ -3202,10 +3600,7 @@ pub fn list_remote_files(
     path: String,
 ) -> Result<Vec<RemoteFileEntry>, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
-    let session = connect_ssh(&connection)?;
-    let (user_names, group_names) = load_remote_identity_maps(&session);
-    let sftp = session.sftp().map_err(ssh_error)?;
-    list_remote_entries(&sftp, &path, &user_names, &group_names).map_err(Into::into)
+    list_remote_entries_cached(&state, &connection, &path).map_err(Into::into)
 }
 
 #[tauri::command]
@@ -3217,16 +3612,11 @@ pub fn upload_remote_file(
     content_base64: String,
 ) -> Result<bool, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
-    let session = connect_ssh(&connection)?;
-    let sftp = session.sftp().map_err(ssh_error)?;
-    let directory = resolve_remote_dir(&sftp, &remote_dir)?;
-    let remote_name = normalize_remote_relative_path(&file_name)?;
-    let remote_path = join_remote_path(&directory, &remote_name);
     let bytes = STANDARD
         .decode(content_base64)
         .map_err(|error| AppError::Validation(format!("invalid upload payload: {error}")))?;
     // 上传已持有当前 SFTP 连接，直接在该连接上写入，避免一次上传重复建立 SSH/SFTP 导致远端连接抖动。
-    write_remote_file_with_sftp(&sftp, &remote_path, &bytes)?;
+    upload_remote_file_with_cache(&state, &connection, &remote_dir, &file_name, &bytes)?;
     Ok(true)
 }
 
@@ -3238,29 +3628,12 @@ pub fn upload_local_paths(
     local_paths: Vec<String>,
 ) -> Result<FileTransferSummary, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
-    let session = connect_ssh(&connection)?;
-    let sftp = session.sftp().map_err(ssh_error)?;
-    let directory = resolve_remote_dir(&sftp, &remote_dir)?;
-    let mut summary = FileTransferSummary::default();
-
-    // 桌面拖放会直接给本机路径；批量上传复用同一条 SFTP 连接，逐项创建远端根目录或文件。
-    for local_path in local_paths
-        .iter()
-        .map(|path| path.trim())
-        .filter(|path| !path.is_empty())
-    {
-        let source = PathBuf::from(local_path);
-        let source_name = source
-            .file_name()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| AppError::Validation(format!("invalid local path: {local_path}")))?;
-        let remote_name = normalize_remote_relative_path(source_name)?;
-        let remote_path = join_remote_path(&directory, &remote_name);
-        upload_local_path_to_remote(&sftp, &source, &remote_path, &mut summary)?;
-        summary.destinations.push(remote_path);
-    }
-
-    Ok(summary)
+    Ok(upload_local_paths_with_cache(
+        &state,
+        &connection,
+        &remote_dir,
+        &local_paths,
+    )?)
 }
 
 #[tauri::command]
@@ -3270,26 +3643,7 @@ pub fn download_remote_file(
     path: String,
 ) -> Result<String, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
-    let session = connect_ssh(&connection)?;
-    let sftp = session.sftp().map_err(ssh_error)?;
-    let remote_path = normalize_remote_path(&path);
-    let remote_stat = sftp.stat(Path::new(&remote_path)).map_err(ssh_error)?;
-
-    let downloads_dir = state.storage.downloads_dir_path();
-    fs::create_dir_all(&downloads_dir).map_err(|error| AppError::from(error).to_string())?;
-
-    let file_name = remote_file_name(&remote_path).unwrap_or_else(|| "download".into());
-    let destination = downloads_dir.join(sanitize_local_file_name(&file_name, "download"));
-    let mut summary = FileTransferSummary::default();
-    if stat_is_dir(&remote_stat) {
-        download_remote_directory_to_local(&sftp, &remote_path, &destination, &mut summary)
-            .map_err(|error| error.to_string())?;
-    } else {
-        download_remote_file_to_local(&sftp, &remote_path, &destination, &mut summary)
-            .map_err(|error| error.to_string())?;
-    }
-
-    Ok(destination.to_string_lossy().to_string())
+    Ok(download_remote_file_with_cache(&state, &connection, &path)?)
 }
 
 #[tauri::command]
@@ -3300,37 +3654,12 @@ pub fn download_remote_paths(
     local_dir: Option<String>,
 ) -> Result<FileTransferSummary, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
-    let session = connect_ssh(&connection)?;
-    let sftp = session.sftp().map_err(ssh_error)?;
-    let base_dir = local_dir
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| state.storage.downloads_dir_path());
-    fs::create_dir_all(&base_dir).map_err(|error| AppError::from(error).to_string())?;
-
-    let mut used_destinations = HashSet::new();
-    let mut summary = FileTransferSummary::default();
-    // 多路径下载只建立一次 SFTP 会话；同名文件自动追加序号，避免后下载项覆盖先下载项。
-    for path in paths
-        .iter()
-        .map(|path| path.trim())
-        .filter(|path| !path.is_empty())
-    {
-        let remote_path = normalize_remote_path(path);
-        let file_name = remote_file_name(&remote_path).unwrap_or_else(|| "download".into());
-        let destination = unique_local_destination(
-            base_dir.join(sanitize_local_file_name(&file_name, "download")),
-            &mut used_destinations,
-        );
-        download_remote_path_to_local(&sftp, &remote_path, &destination, &mut summary)?;
-        summary
-            .destinations
-            .push(destination.to_string_lossy().to_string());
-    }
-
-    Ok(summary)
+    Ok(download_remote_paths_with_cache(
+        &state,
+        &connection,
+        &paths,
+        local_dir.as_deref(),
+    )?)
 }
 
 #[tauri::command]
@@ -3340,9 +3669,7 @@ pub fn delete_remote_path(
     path: String,
 ) -> Result<bool, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
-    let session = connect_ssh(&connection)?;
-    let sftp = session.sftp().map_err(ssh_error)?;
-    delete_remote_path_with_sftp(&sftp, &path)?;
+    delete_remote_path_with_cache(&state, &connection, &path)?;
     Ok(true)
 }
 
@@ -3380,12 +3707,7 @@ pub fn delete_remote_paths(
     paths: Vec<String>,
 ) -> Result<bool, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
-    let session = connect_ssh(&connection)?;
-    let sftp = session.sftp().map_err(ssh_error)?;
-    // 批量删除复用同一个 SFTP 会话，避免多选删除时为每个文件重复握手导致界面卡顿。
-    for path in paths.iter().filter(|path| !path.trim().is_empty()) {
-        delete_remote_path_with_sftp(&sftp, path)?;
-    }
+    delete_remote_paths_with_cache(&state, &connection, &paths)?;
     Ok(true)
 }
 
@@ -3397,12 +3719,7 @@ pub fn rename_remote_path(
     new_path: String,
 ) -> Result<bool, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
-    let session = connect_ssh(&connection)?;
-    let sftp = session.sftp().map_err(ssh_error)?;
-    let remote_path = normalize_remote_path(&path);
-    let next_remote_path = normalize_remote_path(&new_path);
-    sftp.rename(Path::new(&remote_path), Path::new(&next_remote_path), None)
-        .map_err(ssh_error)?;
+    rename_remote_path_with_cache(&state, &connection, &path, &new_path)?;
     Ok(true)
 }
 
@@ -3413,7 +3730,7 @@ pub fn load_editor_document(
     path: String,
 ) -> Result<EditorDocument, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
-    let bytes = match read_remote_file_bytes(&connection, &path) {
+    let bytes = match read_remote_file_bytes(&state, &connection, &path) {
         Ok(bytes) => bytes,
         Err(error) => {
             if let Some(mut cached) = state.storage.load_editor_cache(&connection_id, &path)? {
@@ -3442,7 +3759,7 @@ pub fn save_editor_document(
     content: String,
 ) -> Result<bool, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
-    write_remote_file_bytes(&connection, &path, content.as_bytes())?;
+    write_remote_file_bytes(&state, &connection, &path, content.as_bytes())?;
 
     let document = EditorDocument {
         connection_id,
@@ -3466,7 +3783,7 @@ pub fn fetch_runtime_overview(
     connection_id: String,
 ) -> Result<RuntimeOverview, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
-    Ok(query_runtime_overview(&connection)?)
+    Ok(query_runtime_overview_cached(&state, &connection)?)
 }
 
 #[tauri::command]
@@ -3601,7 +3918,8 @@ pub fn read_remote_shell_history(
     limit: Option<usize>,
 ) -> Result<Vec<HistoryEntry>, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
-    read_remote_shell_history_entries(&connection, limit.unwrap_or(100)).map_err(Into::into)
+    read_remote_shell_history_entries_cached(&state, &connection, limit.unwrap_or(100))
+        .map_err(Into::into)
 }
 
 #[tauri::command]

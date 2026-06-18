@@ -3568,7 +3568,7 @@ export default function App() {
     const rememberedPath = pathByConnectionRef.current[activeRemoteConnectionId];
     void refreshFiles(rememberedPath ?? activeSession?.cwd ?? '~');
     refreshRuntimeOverviewOnce();
-  }, [activeRemoteConnectionId, activeSessionId, refreshFiles, refreshRuntimeOverviewOnce]);
+  }, [activeRemoteConnectionId, activeSessionId, activeSession?.status, refreshFiles, refreshRuntimeOverviewOnce]);
 
   useEffect(() => {
     if (!activeRemoteConnectionId) {

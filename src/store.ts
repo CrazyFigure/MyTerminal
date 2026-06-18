@@ -287,6 +287,8 @@ const terminalInputFlushTimers = new Map<string, number>();
 const terminalInputFlushTimerDelays = new Map<string, number>();
 // 大段粘贴保留极短合并窗口，避免一次粘贴拆成大量 IPC；普通按键和编辑键不走这个延迟。
 const terminalBulkInputFlushDelayMs = 8;
+// 普通可打印字符使用单帧级合并，降低 WebView->Rust IPC 频率，同时把体感延迟压在不可感知范围内。
+const terminalInteractiveInputFlushDelayMs = 2;
 // xterm 的方向键/Delete 等控制序列通常只有 3-4 字节；超过该阈值基本可视为粘贴或程序批量输入。
 const terminalBulkInputThreshold = 64;
 
@@ -388,7 +390,14 @@ const queueTerminalInput = (sessionId: string, data: string, flushDelayMs = 0) =
 };
 
 const isTerminalEditingInput = (data: string) => data.includes('\x7f') || data.includes('\b') || data.includes('\x1b[3~');
-// 大段文本不属于逐键交互，允许 8ms 合并；控制序列和普通字符必须立即进入远端 PTY。
+// 回车、Tab、控制序列和编辑键必须立即送到远端；普通连续字符允许极短合并以改善输入丝滑度。
+const shouldFlushTerminalInputImmediately = (data: string) =>
+  data === '\r' ||
+  data === '\n' ||
+  data === '\t' ||
+  data.includes('\x1b') ||
+  isTerminalEditingInput(data);
+// 大段文本不属于逐键交互，允许 8ms 合并；普通字符走 2ms 合并，控制序列仍立即进入远端 PTY。
 const isBulkTerminalInput = (data: string) => data.length > terminalBulkInputThreshold && !isTerminalEditingInput(data);
 
 // 远端刷新请求可能被快速 cd、目录双击或自动轮询连续触发；序号只允许最后一次结果落到界面。
@@ -1156,12 +1165,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
         currentRemotePath: nextSession.cwd ?? '~',
         runtimeOverview: undefined,
       }));
-      // 文件、运行状态和首屏终端输出并行刷新，避免打开会话后等待远端状态查询阻塞终端交互。
-      void Promise.allSettled([
-        get().refreshFiles(nextSession.cwd ?? '~'),
-        get().refreshRuntimeOverview(),
-        get().pollTerminalOutputs(),
-      ]);
+      // SSH 握手在后端后台线程完成；连接状态事件回来后再刷新文件、运行状态和首屏输出。
+      void get().pollTerminalOutputs(nextSession.id);
     } catch (error) {
       set((state) => ({
         loading: false,
@@ -1227,12 +1232,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
         };
       });
 
-      // 重连后保持原标签位置，但远端文件、状态和终端首屏输出需要按新 session 重新拉取。
-      void Promise.allSettled([
-        get().refreshFiles(nextSession.cwd ?? '~'),
-        get().refreshRuntimeOverview(),
-        get().pollTerminalOutputs(),
-      ]);
+      // 重连后保持原标签位置；后台连上后由状态事件触发远端文件和运行状态首刷。
+      void get().pollTerminalOutputs(nextSession.id);
     } catch (error) {
       set((current) => ({
         loading: false,
@@ -1366,7 +1367,12 @@ export const useAppStore = create<StoreState>((set, get) => ({
       return;
     }
 
-    queueTerminalInput(sessionId, data, isBulkTerminalInput(data) ? terminalBulkInputFlushDelayMs : 0);
+    const flushDelayMs = shouldFlushTerminalInputImmediately(data)
+      ? 0
+      : isBulkTerminalInput(data)
+        ? terminalBulkInputFlushDelayMs
+        : terminalInteractiveInputFlushDelayMs;
+    queueTerminalInput(sessionId, data, flushDelayMs);
     if (data === '\r' || data === '\n') {
       await flushQueuedTerminalInput(sessionId);
       void get().pollTerminalOutputs();
