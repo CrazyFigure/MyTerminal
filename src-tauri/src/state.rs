@@ -11,6 +11,7 @@ use crate::{
     storage::StorageService,
     webdav::WebDavService,
 };
+use ssh2::{Session, Sftp};
 
 #[derive(Debug, Clone)]
 pub enum SessionControl {
@@ -26,11 +27,35 @@ pub struct RuntimeSession {
     pub rows: u16,
     pub output_queue: Arc<Mutex<Vec<TerminalOutputChunk>>>,
     pub control_tx: Sender<SessionControl>,
+    /// 连接仍在后台握手时，关闭标签需要能阻止迟到的状态事件重新激活会话。
+    pub stop_flag: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TunnelRuntime {
     pub stop_flag: Arc<AtomicBool>,
+}
+
+pub struct AuxiliarySshSession {
+    /// 文件管理、运行状态和历史查询共用的 SSH 会话，避免每次刷新都重新握手。
+    pub session: Session,
+    /// SFTP 子系统按需初始化；目录切换和文件读取优先复用同一个远端文件通道。
+    pub sftp: Option<Sftp>,
+    /// 远端 uid 到用户名的缓存，SFTP 属性刷新时不重复读取 /etc/passwd。
+    pub user_names: Option<HashMap<u32, String>>,
+    /// 远端 gid 到组名的缓存，SFTP 属性刷新时不重复读取 /etc/group。
+    pub group_names: Option<HashMap<u32, String>>,
+}
+
+impl std::fmt::Debug for AuxiliarySshSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuxiliarySshSession")
+            .field("has_sftp", &self.sftp.is_some())
+            .field("has_user_names", &self.user_names.is_some())
+            .field("has_group_names", &self.group_names.is_some())
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -40,6 +65,10 @@ pub struct AppState {
     pub webdav: WebDavService,
     pub agent_bridge: AgentBridgeRuntime,
     pub sessions: Mutex<HashMap<String, RuntimeSession>>,
+    /// 辅助 SSH 缓存只服务非交互查询，不和终端 PTY 共用连接，避免文件管理阻塞键盘输入。
+    pub auxiliary_sessions: Mutex<HashMap<String, Arc<Mutex<AuxiliarySshSession>>>>,
+    /// 首次建立辅助连接按连接 ID 串行化，防止文件列表和运行状态同时触发两次 SSH 握手。
+    pub auxiliary_session_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     pub tunnels: Mutex<HashMap<String, TunnelRuntime>>,
 }
 
@@ -66,6 +95,8 @@ impl AppState {
             webdav: WebDavService::new(),
             agent_bridge: AgentBridgeRuntime::new(),
             sessions: Mutex::new(HashMap::new()),
+            auxiliary_sessions: Mutex::new(HashMap::new()),
+            auxiliary_session_locks: Mutex::new(HashMap::new()),
             tunnels: Mutex::new(HashMap::new()),
         })
     }
