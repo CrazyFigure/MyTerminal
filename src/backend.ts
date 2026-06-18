@@ -473,7 +473,12 @@ export const backend = {
   installUpdate: (result: UpdateCheckResult) =>
     call<string>(
       'download_and_install_update',
-      { downloadUrl: result.installerDownloadUrl, assetName: result.installerAssetName },
+      // 安装包大小来自 Release 元数据，后端用它判断本地缓存是否完整，避免复用半截文件。
+      {
+        downloadUrl: result.installerDownloadUrl,
+        assetName: result.installerAssetName,
+        installerSize: result.installerSize ?? null,
+      },
       'C:/Software/WorkSpace/MyTerminal/.myterminal-data/updates/MyTerminal-update.exe',
     ),
   // 外链打开在桌面端交给后端调用系统浏览器；Web 预览下保持成功返回，方便本地界面调试。

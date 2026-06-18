@@ -61,6 +61,12 @@ pub struct FileTransferSummary {
 
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
 const SSH_IO_TIMEOUT: Duration = Duration::from_secs(20);
+// 更新检查和安装包下载要快速失败，避免 GitHub 直连或代理异常时设置页长时间停在处理中。
+const UPDATE_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+// Release 下载通常只有几 MB，读超时用于识别连接已建立但后续没有数据的卡死场景。
+const UPDATE_HTTP_READ_TIMEOUT: Duration = Duration::from_secs(15);
+// 安装包总下载时长设置为人可接受的上限；超时后让用户检查代理或稍后重试。
+const UPDATE_INSTALLER_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(45);
 // Shell 主循环每轮最多处理的前端控制事件数；输入风暴下必须留出读 SSH 输出的机会。
 const SSH_SHELL_MAX_CONTROL_EVENTS_PER_TICK: usize = 64;
 // Shell 主循环每轮最多连续读 SSH 输出次数；既尽快排空远端回显，也避免长期占住线程。
@@ -331,6 +337,101 @@ fn is_valid_update_download_url(url: &str) -> bool {
     (normalized.starts_with("https://") || normalized.starts_with("http://"))
         && (normalized.ends_with(".exe") || normalized.ends_with(".msi"))
         && !normalized.chars().any(|character| character.is_control())
+}
+
+fn build_update_http_client(total_timeout: Duration) -> Result<reqwest::Client, AppError> {
+    // 更新相关请求必须尊重系统代理；Cargo 特性启用后，默认 Client 会读取 Windows 代理和代理环境变量。
+    reqwest::Client::builder()
+        .connect_timeout(UPDATE_HTTP_CONNECT_TIMEOUT)
+        .read_timeout(UPDATE_HTTP_READ_TIMEOUT)
+        .timeout(total_timeout)
+        .build()
+        .map_err(AppError::from)
+}
+
+fn installer_path_matches_expected_size(
+    path: &Path,
+    expected_size: Option<u64>,
+) -> Result<bool, AppError> {
+    // Release 元数据有文件大小时必须严格匹配，避免复用之前中断留下的半截安装包。
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(AppError::from(error)),
+    };
+    if !metadata.is_file() {
+        return Ok(false);
+    }
+
+    // 少数 Release 可能缺少 size 字段；此时只复用非空文件，仍避免 0 字节缓存导致安装失败。
+    Ok(expected_size
+        .map(|size| metadata.len() == size)
+        .unwrap_or(metadata.len() > 0))
+}
+
+async fn download_update_installer(
+    client: &reqwest::Client,
+    download_url: &str,
+    installer_path: &Path,
+    expected_size: Option<u64>,
+) -> Result<(), AppError> {
+    // 临时文件完整落盘后才替换正式安装包，避免下载中断时污染下次可复用的缓存。
+    let temp_installer_path = installer_path.with_extension(format!(
+        "{}.download",
+        installer_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("tmp")
+    ));
+    match fs::remove_file(&temp_installer_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(AppError::from(error)),
+    }
+
+    let mut response = client
+        .get(download_url)
+        .header(reqwest::header::USER_AGENT, "MyTerminal")
+        .send()
+        .await
+        .map_err(AppError::from)?
+        .error_for_status()
+        .map_err(AppError::from)?;
+    let mut temp_file = fs::File::create(&temp_installer_path).map_err(AppError::from)?;
+    let mut downloaded_size = 0_u64;
+
+    while let Some(chunk) = response.chunk().await.map_err(AppError::from)? {
+        // 下载过程中持续校验大小上界，防止错误地址返回 HTML 或其它大文件时继续写入。
+        downloaded_size += chunk.len() as u64;
+        if expected_size.is_some_and(|size| downloaded_size > size) {
+            return Err(AppError::Validation(
+                "downloaded update installer is larger than expected".into(),
+            ));
+        }
+        temp_file.write_all(&chunk).map_err(AppError::from)?;
+    }
+    temp_file.flush().map_err(AppError::from)?;
+    drop(temp_file);
+
+    // 下载结束后再次校验精确大小，确保启动安装器前拿到的是完整 Release 资产。
+    if expected_size.is_some_and(|size| downloaded_size != size) {
+        return Err(AppError::Validation(
+            "downloaded update installer size does not match release metadata".into(),
+        ));
+    }
+    if downloaded_size == 0 {
+        return Err(AppError::Validation(
+            "downloaded update installer is empty".into(),
+        ));
+    }
+
+    match fs::remove_file(installer_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(AppError::from(error)),
+    }
+    fs::rename(&temp_installer_path, installer_path).map_err(AppError::from)?;
+    Ok(())
 }
 
 fn spawn_update_installer(path: &Path) -> std::io::Result<()> {
@@ -3551,7 +3652,7 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
     // 更新提示返回给前端的 Release 页面地址，必须和 GitHub 仓库名保持一致。
     let release_url = "https://github.com/CrazyFigure/MyTerminal/releases/latest".to_string();
-    let client = reqwest::Client::new();
+    let client = build_update_http_client(UPDATE_HTTP_READ_TIMEOUT)?;
     // GitHub API 要求明确 User-Agent；这里仅读取最新 Release 元数据，并挑出后续可安装的 Windows 安装包。
     let release = client
         .get("https://api.github.com/repos/CrazyFigure/MyTerminal/releases/latest")
@@ -3591,6 +3692,7 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
 pub async fn download_and_install_update(
     download_url: String,
     asset_name: String,
+    installer_size: Option<u64>,
 ) -> Result<String, String> {
     let normalized_url = download_url.trim();
     if !is_valid_update_download_url(normalized_url) {
@@ -3602,21 +3704,16 @@ pub async fn download_and_install_update(
     fs::create_dir_all(&update_dir).map_err(|error| AppError::from(error).to_string())?;
     let installer_path: PathBuf = update_dir.join(safe_file_name);
 
-    let client = reqwest::Client::new();
-    // 安装包下载使用 GitHub Release 浏览器下载地址；完成写入后立即启动安装程序，交互式确认交给安装器自身处理。
-    let bytes = client
-        .get(normalized_url)
-        .header(reqwest::header::USER_AGENT, "MyTerminal")
-        .send()
-        .await
-        .map_err(AppError::from)?
-        .error_for_status()
-        .map_err(AppError::from)?
-        .bytes()
-        .await
-        .map_err(AppError::from)?;
+    // 本地已有完整安装包时直接启动，避免用户重复点击时再次等待 GitHub 下载。
+    if installer_path_matches_expected_size(&installer_path, installer_size)? {
+        spawn_update_installer(&installer_path)
+            .map_err(|error| AppError::from(error).to_string())?;
+        return Ok(installer_path.to_string_lossy().to_string());
+    }
 
-    fs::write(&installer_path, &bytes).map_err(|error| AppError::from(error).to_string())?;
+    let client = build_update_http_client(UPDATE_INSTALLER_DOWNLOAD_TIMEOUT)?;
+    // 安装包下载使用 GitHub Release 浏览器下载地址；完成写入后立即启动安装程序，交互式确认交给安装器自身处理。
+    download_update_installer(&client, normalized_url, &installer_path, installer_size).await?;
     spawn_update_installer(&installer_path).map_err(|error| AppError::from(error).to_string())?;
     Ok(installer_path.to_string_lossy().to_string())
 }
