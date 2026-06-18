@@ -38,6 +38,7 @@ import {
   HardDrive,
   History,
   Info,
+  Laptop,
   MemoryStick,
   Pencil,
   Play,
@@ -58,7 +59,7 @@ import { TerminalWorkspace } from './TerminalWorkspace';
 import { backend } from './backend';
 import { writeClipboardText } from './clipboard';
 import { useAppStore } from './store';
-import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, RemoteFileEntry, SessionStatus, SshJumpHost, TerminalSession, UiLanguage, UpdateCheckResult } from './types';
+import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, RemoteFileEntry, SshJumpHost, TerminalSession, UiLanguage, UpdateCheckResult } from './types';
 
 const MonacoEditor = lazy(() => import('./MonacoEditor'));
 
@@ -228,6 +229,46 @@ const buildPreviewFontFamily = (settings: AppSettings) =>
     .join(', ');
 
 const defaultAgentMcpPackagePath = 'C:\\Software\\WorkSpace\\MyTerminal\\mcp\\myterminal-mcp';
+
+// 本地终端首次打开时默认指向当前工作区，用户仍可在弹窗内切换任意目录。
+const defaultLocalTerminalCwd = 'C:\\Software\\WorkSpace\\MyTerminal';
+
+const nowIso = () => new Date().toISOString();
+
+// 空命令代表直接打开本地 shell，是本地终端和 AI CLI 之间的兜底启动项。
+const localTerminalShellCommand = { id: 'shell', name: '本地终端', command: '', builtIn: true };
+
+// 本地终端标题要兼容空命令，避免纯 shell 会话显示成“ · 目录”。
+const normalizeLocalTerminalProfileTitle = (cwd: string, command: string) => command ? `${command} · ${cwd}` : cwd;
+
+// 顶部 tab 宽度有限，本地目录只取最后一级；历史和会话详情仍保留完整路径。
+const getLocalTerminalDirectoryName = (cwd?: string) => {
+  const normalized = cwd?.trim().replace(/[\\/]+$/, '');
+  if (!normalized) {
+    return '本地终端';
+  }
+  const parts = normalized.split(/[\\/]+/).filter(Boolean);
+  return parts.at(-1) || normalized;
+};
+
+// 本地终端 tab 用短标题展示，命令为空时只显示目录名，避免纯 shell 标签过长。
+const formatLocalTerminalTabLabel = (session: TerminalSession) => {
+  const directoryName = getLocalTerminalDirectoryName(session.cwd);
+  const fullCwd = session.cwd?.trim();
+  const command = fullCwd && session.title.endsWith(` · ${fullCwd}`)
+    ? session.title.slice(0, -` · ${fullCwd}`.length).trim()
+    : '';
+  return command ? `${command} · ${directoryName}` : directoryName;
+};
+
+// 新建历史目录时同步生成标题和最近使用时间，后端会再次校验目录有效性。
+const createLocalTerminalProfile = (cwd: string, command: string): LocalTerminalProfile => ({
+  id: crypto.randomUUID(),
+  title: normalizeLocalTerminalProfileTitle(cwd, command),
+  cwd,
+  command,
+  lastUsedAt: nowIso(),
+});
 
 const buildAgentMcpPackagePath = (discoveryPath?: string) => {
   const normalized = discoveryPath?.trim().replace(/\\/g, '/');
@@ -491,8 +532,9 @@ const fileLabelIcon = (file: RemoteFileEntry) => {
 // 会话状态只在标签栏用紧凑图标表达，避免把连接/断开信息写进终端正文影响 Shell 阅读。
 const sessionStatusClassName = (status?: string) => `session-status-icon status-${status ?? 'idle'}`;
 
-// 只有真实可用的远端会话才驱动文件、运行状态和历史刷新，断开/异常会话只保留标签用于查看终端残留内容。
-const isUsableRemoteSession = (status?: SessionStatus) => status === 'connected' || status === 'stub';
+// 只有真实可用的 SSH 会话才驱动文件、运行状态和历史刷新，本地终端只占用终端标签页。
+const isUsableRemoteSession = (session?: TerminalSession) =>
+  session?.kind !== 'local' && (session?.status === 'connected' || session?.status === 'stub');
 
 // 连接分组需要合并显式分组和连接自带 groupPath，保证空分组也能展示和继续维护。
 const normalizeConnectionGroupPath = (value?: string) =>
@@ -1904,6 +1946,285 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
   );
 }
 
+function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const {
+    localTerminals,
+    openLocalTerminal,
+    saveLocalTerminals,
+    setStatusMessage,
+  } = useAppStore();
+  const [draft, setDraft] = useState<LocalTerminalSettings>(localTerminals);
+  // 当前启动目录默认落到工作区，避免用户第一次打开时面对空白路径。
+  const [cwd, setCwd] = useState(localTerminals.profiles[0]?.cwd ?? defaultLocalTerminalCwd);
+  // 启动命令允许为空，空值表示直接打开本地 shell，而不是强制启动 CLI。
+  const [command, setCommand] = useState(localTerminals.profiles[0]?.command ?? localTerminals.commands[0]?.command ?? '');
+  const [newCommand, setNewCommand] = useState('');
+  // 历史目录保留最近一次选择的命令，打开时允许单独切换，不把历史固定死成单一入口。
+  const [profileCommands, setProfileCommands] = useState<Record<string, string>>({});
+
+  const commandOptions = useMemo(() => {
+    const map = new Map<string, LocalTerminalCommand>();
+    [localTerminalShellCommand, ...draft.commands].forEach((item) => {
+      if (!map.has(item.id)) {
+        map.set(item.id, item);
+      }
+    });
+    return Array.from(map.values());
+  }, [draft.commands]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    setDraft(localTerminals);
+    setCwd(localTerminals.profiles[0]?.cwd ?? defaultLocalTerminalCwd);
+    setCommand(localTerminals.profiles[0]?.command ?? localTerminals.commands[0]?.command ?? '');
+    setProfileCommands(Object.fromEntries(localTerminals.profiles.map((profile) => [profile.id, profile.command ?? ''])));
+    setNewCommand('');
+  }, [open]);
+
+  if (!open) {
+    return null;
+  }
+
+  const persistDraft = async (nextDraft: LocalTerminalSettings) => {
+    setDraft(nextDraft);
+    await saveLocalTerminals(nextDraft);
+  };
+
+  const browseDirectory = async () => {
+    const selected = await openFileDialog({
+      directory: true,
+      multiple: false,
+      defaultPath: cwd,
+    }).catch(() => null);
+    if (typeof selected === 'string') {
+      setCwd(selected);
+    }
+  };
+
+  const browseShellPath = async () => {
+    const selected = await openFileDialog({
+      directory: false,
+      multiple: false,
+      defaultPath: draft.shellPath || undefined,
+    }).catch(() => null);
+    if (typeof selected === 'string') {
+      setDraft((current) => ({ ...current, shellPath: selected }));
+    }
+  };
+
+  const openCurrentTerminal = async () => {
+    const normalizedCwd = cwd.trim();
+    const normalizedCommand = command.trim();
+    if (!normalizedCwd) {
+      setStatusMessage('请填写本地目录。');
+      return;
+    }
+    await persistDraft(draft);
+    onClose();
+    void openLocalTerminal(createLocalTerminalProfile(normalizedCwd, normalizedCommand));
+  };
+
+  const addCommand = async () => {
+    const normalized = newCommand.trim();
+    if (!normalized) {
+      return;
+    }
+    if (draft.commands.some((item) => item.command === normalized)) {
+      setCommand(normalized);
+      setNewCommand('');
+      return;
+    }
+    const nextDraft = {
+      ...draft,
+      commands: [
+        ...draft.commands,
+        {
+          id: crypto.randomUUID(),
+          name: normalized,
+          command: normalized,
+          builtIn: false,
+        },
+      ],
+    };
+    await persistDraft(nextDraft);
+    setCommand(normalized);
+    setNewCommand('');
+  };
+
+  const deleteCommand = async (commandId: string) => {
+    const target = draft.commands.find((item) => item.id === commandId);
+    if (!target || target.builtIn) {
+      return;
+    }
+    const nextCommands = draft.commands.filter((item) => item.id !== commandId);
+    const nextDraft = { ...draft, commands: nextCommands };
+    await persistDraft(nextDraft);
+    if (command === target.command) {
+      setCommand(nextCommands[0]?.command ?? '');
+    }
+  };
+
+  const deleteProfile = async (profileId: string) => {
+    await persistDraft({
+      ...draft,
+      profiles: draft.profiles.filter((profile) => profile.id !== profileId),
+    });
+  };
+
+  const openProfile = (profile: LocalTerminalProfile, selectedCommand: string) => {
+    const normalizedCommand = selectedCommand.trim();
+    onClose();
+    void openLocalTerminal({
+      ...profile,
+      command: normalizedCommand,
+      title: normalizeLocalTerminalProfileTitle(profile.cwd, normalizedCommand),
+    });
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal card modal-wide local-terminal-modal">
+        <div className="modal-header">
+          <div>
+            <h3>本地终端</h3>
+          </div>
+          <button className="icon-button" onClick={onClose} type="button">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="local-terminal-layout">
+          <section className="local-terminal-panel local-terminal-command-panel">
+            <div className="section-row compact">
+              <strong>打开目录</strong>
+            </div>
+            <div className="local-terminal-form-row">
+              <input value={cwd} onChange={(event) => setCwd(event.target.value)} />
+              <button className="secondary-button" onClick={() => void browseDirectory()} type="button">
+                <FolderOpen size={15} /> 浏览
+              </button>
+            </div>
+
+            <div className="section-row compact">
+              <strong>启动命令</strong>
+            </div>
+            <div className="local-terminal-form-row">
+              <select value={command} onChange={(event) => setCommand(event.target.value)}>
+                {commandOptions.map((item) => (
+                  <option key={item.id} value={item.command}>{item.name}</option>
+                ))}
+              </select>
+              <button className="primary-button" onClick={() => void openCurrentTerminal()} type="button">
+                <Play size={15} /> 打开终端
+              </button>
+            </div>
+
+            <div className="section-row compact">
+              <strong>终端路径</strong>
+              <button
+                className="secondary-button slim"
+                onClick={() => void persistDraft(draft)}
+                type="button"
+              >
+                <Save size={14} /> 保存
+              </button>
+            </div>
+            <div className="local-terminal-form-row">
+              <input
+                placeholder="留空时自动使用 PowerShell / bash"
+                value={draft.shellPath}
+                onChange={(event) => setDraft((current) => ({ ...current, shellPath: event.target.value }))}
+              />
+              <button className="secondary-button" onClick={() => void browseShellPath()} type="button">
+                <FolderOpen size={15} /> 浏览
+              </button>
+            </div>
+          </section>
+
+          <section className="local-terminal-panel">
+            <div className="section-row compact">
+              <strong>命令管理</strong>
+            </div>
+            <div className="local-terminal-form-row">
+              <input
+                placeholder="新增命令，例如 qwen"
+                value={newCommand}
+                onChange={(event) => setNewCommand(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void addCommand();
+                  }
+                }}
+              />
+              <button className="secondary-button" onClick={() => void addCommand()} type="button">
+                <Plus size={15} /> 新增
+              </button>
+            </div>
+            <div className="local-terminal-command-list">
+              {draft.commands.map((item) => (
+                <div key={item.id} className="local-terminal-command-row">
+                  <span>{item.name}</span>
+                  <code>{item.command || 'shell'}</code>
+                  <button
+                    className="icon-button"
+                    disabled={item.builtIn}
+                    onClick={() => void deleteCommand(item.id)}
+                    title={item.builtIn ? '内置命令不可删除' : '删除命令'}
+                    type="button"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="local-terminal-panel local-terminal-history-panel">
+            <div className="section-row compact">
+              <strong>历史目录</strong>
+              <span>{draft.profiles.length}</span>
+            </div>
+            <div className="local-terminal-history-list">
+              {draft.profiles.length ? draft.profiles.map((profile) => (
+                <div key={profile.id} className="local-terminal-history-row">
+                  <div className="local-terminal-history-main">
+                    <strong>{profile.cwd}</strong>
+                    <span>{profile.command || '本地终端'}</span>
+                  </div>
+                  <select
+                    className="local-terminal-history-command"
+                    value={profileCommands[profile.id] ?? profile.command ?? ''}
+                    onChange={(event) => setProfileCommands((current) => ({ ...current, [profile.id]: event.target.value }))}
+                  >
+                    {commandOptions.map((item) => (
+                      <option key={item.id} value={item.command}>{item.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    className="secondary-button slim"
+                    onClick={() => openProfile(profile, profileCommands[profile.id] ?? profile.command ?? '')}
+                    type="button"
+                  >
+                    <Play size={14} /> 打开
+                  </button>
+                  <button className="icon-button" onClick={() => void deleteProfile(profile.id)} title="删除历史" type="button">
+                    <X size={14} />
+                  </button>
+                </div>
+              )) : (
+                <div className="empty-state">还没有本地终端历史。</div>
+              )}
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function EditorModal({
   onSaveWithProgress,
 }: {
@@ -2873,6 +3194,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('appearance');
   const [connectionsOpen, setConnectionsOpen] = useState(false);
+  const [localTerminalsOpen, setLocalTerminalsOpen] = useState(false);
   const [globalBottomTab, setGlobalBottomTab] = useState<BottomPanelTab>('commands');
   const [bottomTabByConnection, setBottomTabByConnection] = useState<Record<string, BottomPanelTab>>({});
   const [pathInput, setPathInput] = useState('~');
@@ -2951,7 +3273,7 @@ export default function App() {
 
   const activeSession = useMemo(() => sessions.find((item) => item.id === activeSessionId), [activeSessionId, sessions]);
   // 远端文件、运行状态和历史都必须绑定到已经打开的终端会话，避免仅选中连接时提前拉取远端数据。
-  const hasActiveRemoteSession = isUsableRemoteSession(activeSession?.status);
+  const hasActiveRemoteSession = isUsableRemoteSession(activeSession);
   const activeRemoteConnectionId = hasActiveRemoteSession ? activeSession?.connectionId : undefined;
   const activeRemoteConnection = useMemo(
     () => connections.find((item) => item.id === activeRemoteConnectionId),
@@ -3344,6 +3666,14 @@ export default function App() {
   }, [refreshAgentBridgeRequests, setStatusMessage]);
   const copySessionConnection = useCallback((session?: TerminalSession) => {
     if (!session) {
+      return;
+    }
+
+    if (session.kind === 'local') {
+      const text = `${session.title} ${session.cwd ?? ''}`.trim();
+      setSessionContextMenu(null);
+      void writeClipboardText(text).catch(() => undefined);
+      setStatusMessage('已复制本地终端信息。');
       return;
     }
 
@@ -4249,7 +4579,9 @@ export default function App() {
               ref={sessionTabListRef}
             >
               {sessions.map((session) => {
-                const sessionLabel = connections.find((item) => item.id === session.connectionId)?.name ?? session.title;
+                const sessionLabel = session.kind === 'local'
+                  ? formatLocalTerminalTabLabel(session)
+                  : connections.find((item) => item.id === session.connectionId)?.name ?? session.title;
                 return (
                   <div
                     key={session.id}
@@ -4291,6 +4623,9 @@ export default function App() {
           </div>
 
           <div className="workspace-toolbar-actions">
+            <button className="secondary-button" onClick={() => setLocalTerminalsOpen(true)} type="button">
+              <Laptop size={16} /> 本地终端
+            </button>
             <button className="secondary-button" onClick={() => setConnectionsOpen(true)} type="button">
               <FolderTree size={16} /> {t('manageConnections')}
             </button>
@@ -4304,8 +4639,14 @@ export default function App() {
             >
               <Settings size={16} /> {t('openSettings')}
             </button>
-            <button className="primary-button" onClick={() => openConnectionForm()} type="button">
-              <Plus size={16} /> {t('newConnection')}
+            <button
+              aria-label={t('newConnection')}
+              className="primary-button toolbar-icon-only"
+              onClick={() => openConnectionForm()}
+              title={t('newConnection')}
+              type="button"
+            >
+              <Plus size={16} />
             </button>
           </div>
         </section>
@@ -4599,6 +4940,7 @@ export default function App() {
       </main>
 
       <ConnectionManagerModal open={connectionsOpen} onClose={() => setConnectionsOpen(false)} />
+      <LocalTerminalManagerModal open={localTerminalsOpen} onClose={() => setLocalTerminalsOpen(false)} />
       <SettingsModal open={settingsOpen} activeTab={settingsTab} onClose={() => setSettingsOpen(false)} onTabChange={setSettingsTab} />
       <EditorModal onSaveWithProgress={saveRemoteFileWithProgress} />
       <ConnectionFormModal />

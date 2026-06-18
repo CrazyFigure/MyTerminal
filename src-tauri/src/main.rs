@@ -28,6 +28,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::bootstrap_state,
             commands::save_app_settings,
+            commands::load_local_terminal_settings,
+            commands::save_local_terminal_settings,
             commands::agent_bridge_status,
             commands::list_agent_bridge_requests,
             commands::approve_agent_bridge_request,
@@ -40,6 +42,7 @@ fn main() {
             commands::update_connection,
             commands::delete_connection,
             commands::open_ssh_session,
+            commands::open_local_terminal_session,
             commands::close_ssh_session,
             commands::write_terminal_input,
             commands::read_terminal_output,

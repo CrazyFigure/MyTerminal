@@ -11,9 +11,10 @@ use crate::{
     crypto::CryptoService,
     error::AppError,
     models::{
-        AppSettings, ConnectionProfile, EditorDocument, HistoryEntry, SshJumpHost, SshProxyConfig,
-        StoredAppSettings, StoredConnectionProfile, StoredSshJumpHost, StoredSshProxyConfig,
-        TunnelRecord, WebDavSettings,
+        AppSettings, ConnectionProfile, EditorDocument, HistoryEntry, LocalTerminalCommand,
+        LocalTerminalProfile, LocalTerminalSettings, SshJumpHost, SshProxyConfig, StoredAppSettings,
+        StoredConnectionProfile, StoredSshJumpHost, StoredSshProxyConfig, TunnelRecord,
+        WebDavSettings,
     },
 };
 
@@ -60,6 +61,10 @@ impl StorageService {
         self.tunnels_path()
     }
 
+    pub fn local_terminals_file_path(&self) -> PathBuf {
+        self.local_terminals_path()
+    }
+
     pub fn agent_bridge_secret_path(&self) -> PathBuf {
         self.data_dir.join("agent-bridge-secret.json")
     }
@@ -90,6 +95,10 @@ impl StorageService {
 
     fn tunnels_path(&self) -> PathBuf {
         self.data_dir.join("tunnels.json")
+    }
+
+    fn local_terminals_path(&self) -> PathBuf {
+        self.data_dir.join("local-terminals.json")
     }
 
     fn editor_cache_dir(&self) -> PathBuf {
@@ -361,6 +370,16 @@ impl StorageService {
         self.write_json(&self.tunnels_path(), &tunnels)
     }
 
+    pub fn load_local_terminals(&self) -> Result<LocalTerminalSettings, AppError> {
+        let stored = self.read_json_or_default::<LocalTerminalSettings>(&self.local_terminals_path())?;
+        Ok(normalize_local_terminal_settings(stored))
+    }
+
+    pub fn save_local_terminals(&self, settings: &LocalTerminalSettings) -> Result<(), AppError> {
+        let normalized = normalize_local_terminal_settings(settings.clone());
+        self.write_json(&self.local_terminals_path(), &normalized)
+    }
+
     fn editor_cache_path(&self, connection_id: &str, remote_path: &str) -> PathBuf {
         let digest = Sha256::digest(format!("{connection_id}:{remote_path}").as_bytes());
         let hex = digest
@@ -385,5 +404,79 @@ impl StorageService {
     pub fn save_editor_cache(&self, document: &EditorDocument) -> Result<(), AppError> {
         let path = self.editor_cache_path(&document.connection_id, &document.path);
         self.write_json(&path, document)
+    }
+}
+
+fn normalize_local_terminal_settings(settings: LocalTerminalSettings) -> LocalTerminalSettings {
+    let mut command_ids = std::collections::HashSet::new();
+    let mut commands = Vec::<LocalTerminalCommand>::new();
+
+    // 内置命令始终保留；旧配置或手动编辑文件丢失时在加载阶段补齐，避免管理页没有默认 CLI。
+    for command in settings.commands.into_iter().chain(LocalTerminalSettings::default().commands) {
+        let name = command.name.trim();
+        let command_text = command.command.trim();
+        if name.is_empty() || (!command.built_in && command_text.is_empty()) {
+            continue;
+        }
+        let id = if command.id.trim().is_empty() {
+            if command_text.is_empty() {
+                "shell".into()
+            } else {
+                command_text.to_string()
+            }
+        } else {
+            command.id.trim().to_string()
+        };
+        if command_ids.insert(id.clone()) {
+            commands.push(LocalTerminalCommand {
+                id,
+                name: name.to_string(),
+                command: command_text.to_string(),
+                built_in: command.built_in,
+            });
+        }
+    }
+
+    let mut profile_ids = std::collections::HashSet::new();
+    let profiles = settings
+        .profiles
+        .into_iter()
+        .filter_map(|profile| {
+            let cwd = profile.cwd.trim();
+            let command = profile.command.trim();
+            if cwd.is_empty() {
+                return None;
+            }
+            let id = if profile.id.trim().is_empty() {
+                uuid::Uuid::new_v4().to_string()
+            } else {
+                profile.id.trim().to_string()
+            };
+            if !profile_ids.insert(id.clone()) {
+                return None;
+            }
+            let title = profile.title.trim();
+            Some(LocalTerminalProfile {
+                id,
+                title: if title.is_empty() {
+                    if command.is_empty() {
+                        cwd.to_string()
+                    } else {
+                        format!("{command} · {cwd}")
+                    }
+                } else {
+                    title.to_string()
+                },
+                cwd: cwd.to_string(),
+                command: command.to_string(),
+                last_used_at: profile.last_used_at,
+            })
+        })
+        .collect();
+
+    LocalTerminalSettings {
+        shell_path: settings.shell_path.trim().to_string(),
+        commands,
+        profiles,
     }
 }

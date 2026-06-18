@@ -16,6 +16,7 @@ use std::{
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{TimeZone, Utc};
+use portable_pty::{CommandBuilder, PtySize};
 use serde::Deserialize;
 use ssh2::{Channel, ExtendedData, MethodType, Session, Sftp};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -25,9 +26,10 @@ use crate::{
     error::AppError,
     models::{
         AppSettings, BootstrapState, ConnectionProfile, EditorDocument, HistoryEntry,
-        HistoryEntryInput, LocalConfigBundle, RemoteFileEntry, RuntimeCpuCore, RuntimeOverview,
-        SshJumpHost, SshProxyConfig, TerminalOutputChunk, TerminalSession, TunnelOpenRequest,
-        TunnelRecord, TunnelUpdateRequest, UpdateCheckResult, WebDavSettings,
+        HistoryEntryInput, LocalConfigBundle, LocalTerminalProfile, LocalTerminalSettings,
+        RemoteFileEntry, RuntimeCpuCore, RuntimeOverview, SshJumpHost, SshProxyConfig,
+        TerminalOutputChunk, TerminalSession, TunnelOpenRequest, TunnelRecord,
+        TunnelUpdateRequest, UpdateCheckResult, WebDavSettings,
     },
     state::{AppState, AuxiliarySshSession, RuntimeSession, SessionControl, TunnelRuntime},
 };
@@ -79,6 +81,16 @@ const SSH_SHELL_WRITE_BUDGET: Duration = Duration::from_millis(8);
 const SSH_SHELL_IDLE_WAIT: Duration = Duration::from_millis(5);
 // libssh2 暂时不可写或 transport 抖动时的轻量退避，避免瞬时错误下空转烧 CPU。
 const SSH_SHELL_RETRY_WAIT: Duration = Duration::from_millis(1);
+
+#[cfg(windows)]
+const DEFAULT_LOCAL_SHELL_CANDIDATES: &[&str] = &[
+    "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+    "pwsh.exe",
+    "powershell.exe",
+];
+
+#[cfg(not(windows))]
+const DEFAULT_LOCAL_SHELL_CANDIDATES: &[&str] = &["bash", "sh"];
 
 fn lock_sessions<'a>(
     state: &'a AppState,
@@ -1980,6 +1992,200 @@ fn spawn_shell_thread(
     });
 }
 
+fn resolve_local_shell_path(settings: &LocalTerminalSettings) -> String {
+    let configured = settings.shell_path.trim();
+    if !configured.is_empty() {
+        return configured.to_string();
+    }
+
+    DEFAULT_LOCAL_SHELL_CANDIDATES
+        .iter()
+        .find(|candidate| {
+            let path = Path::new(candidate);
+            path.is_absolute() && path.exists() || !path.is_absolute()
+        })
+        .unwrap_or(&DEFAULT_LOCAL_SHELL_CANDIDATES[0])
+        .to_string()
+}
+
+#[cfg(windows)]
+fn build_local_terminal_command(shell_path: &str, command: &str) -> CommandBuilder {
+    let shell_name = Path::new(shell_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(shell_path)
+        .to_ascii_lowercase();
+    let mut builder = CommandBuilder::new(shell_path);
+    let trimmed_command = command.trim();
+    if trimmed_command.is_empty() {
+        return builder;
+    }
+    if shell_name.contains("powershell") || shell_name.contains("pwsh") {
+        builder.args(["-NoLogo", "-NoExit", "-Command", command]);
+    } else if shell_name == "cmd.exe" || shell_name == "cmd" {
+        builder.args(["/K", command]);
+    } else {
+        builder.arg(command);
+    }
+    builder
+}
+
+#[cfg(not(windows))]
+fn build_local_terminal_command(shell_path: &str, command: &str) -> CommandBuilder {
+    let mut builder = CommandBuilder::new(shell_path);
+    let trimmed_command = command.trim();
+    if !trimmed_command.is_empty() {
+        builder.args(["-lc", trimmed_command]);
+    }
+    builder
+}
+
+fn spawn_local_terminal_thread(
+    session_id: String,
+    settings: LocalTerminalSettings,
+    profile: LocalTerminalProfile,
+    cols: u16,
+    rows: u16,
+    output_queue: Arc<std::sync::Mutex<Vec<TerminalOutputChunk>>>,
+    control_rx: mpsc::Receiver<SessionControl>,
+    app_handle: tauri::AppHandle,
+) {
+    thread::spawn(move || {
+        let shell_path = resolve_local_shell_path(&settings);
+        let pty_system = portable_pty::native_pty_system();
+        let pair = match pty_system.openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        }) {
+            Ok(pair) => pair,
+            Err(error) => {
+                queue_session_status(&output_queue, &app_handle, &session_id, "error");
+                queue_output(
+                    &output_queue,
+                    &app_handle,
+                    &session_id,
+                    format!("\r\n本地终端创建失败：{error}\r\n"),
+                );
+                return;
+            }
+        };
+
+        let mut command = build_local_terminal_command(&shell_path, &profile.command);
+        command.cwd(&profile.cwd);
+        // AI CLI 通常会根据 TERM/COLORTERM 决定颜色和交互 UI，显式声明现代终端能力。
+        command.env("TERM", "xterm-256color");
+        command.env("COLORTERM", "truecolor");
+
+        let mut child = match pair.slave.spawn_command(command) {
+            Ok(child) => child,
+            Err(error) => {
+                queue_session_status(&output_queue, &app_handle, &session_id, "error");
+                queue_output(
+                    &output_queue,
+                    &app_handle,
+                    &session_id,
+                    format!("\r\n本地终端启动失败：{error}\r\n"),
+                );
+                return;
+            }
+        };
+        drop(pair.slave);
+
+        let mut reader = match pair.master.try_clone_reader() {
+            Ok(reader) => reader,
+            Err(error) => {
+                let _ = child.kill();
+                queue_session_status(&output_queue, &app_handle, &session_id, "error");
+                queue_output(
+                    &output_queue,
+                    &app_handle,
+                    &session_id,
+                    format!("\r\n本地终端读取失败：{error}\r\n"),
+                );
+                return;
+            }
+        };
+        let mut writer = match pair.master.take_writer() {
+            Ok(writer) => writer,
+            Err(error) => {
+                let _ = child.kill();
+                queue_session_status(&output_queue, &app_handle, &session_id, "error");
+                queue_output(
+                    &output_queue,
+                    &app_handle,
+                    &session_id,
+                    format!("\r\n本地终端写入失败：{error}\r\n"),
+                );
+                return;
+            }
+        };
+
+        queue_session_status(&output_queue, &app_handle, &session_id, "connected");
+
+        let reader_queue = Arc::clone(&output_queue);
+        let reader_app_handle = app_handle.clone();
+        let reader_session_id = session_id.clone();
+        let (reader_done_tx, reader_done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut buffer = [0_u8; 16384];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(size) => {
+                        let content = String::from_utf8_lossy(&buffer[..size]).into_owned();
+                        if !content.is_empty() {
+                            queue_output(&reader_queue, &reader_app_handle, &reader_session_id, content);
+                        }
+                    }
+                    Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+            let _ = reader_done_tx.send(());
+        });
+
+        loop {
+            if reader_done_rx.try_recv().is_ok() {
+                break;
+            }
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                break;
+            }
+
+            match control_rx.recv_timeout(Duration::from_millis(8)) {
+                Ok(SessionControl::Input(data)) => {
+                    if writer.write_all(data.as_bytes()).and_then(|_| writer.flush()).is_err() {
+                        break;
+                    }
+                }
+                Ok(SessionControl::Resize { cols, rows }) => {
+                    let _ = pair.master.resize(PtySize {
+                        rows,
+                        cols,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    });
+                }
+                Ok(SessionControl::Close) => {
+                    let _ = child.kill();
+                    break;
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    let _ = child.kill();
+                    break;
+                }
+            }
+        }
+
+        drop(writer);
+        let _ = child.try_wait().or_else(|_| child.wait().map(Some));
+        queue_session_status(&output_queue, &app_handle, &session_id, "closed");
+    });
+}
+
 fn normalize_remote_path(path: &str) -> String {
     let normalized = path.trim().replace('\\', "/");
     if normalized.is_empty() {
@@ -3221,6 +3427,7 @@ fn bootstrap_from_storage(state: &AppState) -> Result<BootstrapState, AppError> 
 
     Ok(BootstrapState {
         settings: state.storage.load_settings(&state.crypto)?,
+        local_terminals: state.storage.load_local_terminals()?,
         connections: state.storage.load_connections(&state.crypto)?,
         history: state.storage.load_history()?,
         sessions,
@@ -3260,6 +3467,23 @@ pub fn save_app_settings(
         &settings.agent_bridge,
     )?;
     Ok(settings)
+}
+
+#[tauri::command]
+pub fn load_local_terminal_settings(
+    state: State<'_, AppState>,
+) -> Result<LocalTerminalSettings, String> {
+    Ok(state.storage.load_local_terminals()?)
+}
+
+#[tauri::command]
+pub fn save_local_terminal_settings(
+    state: State<'_, AppState>,
+    settings: LocalTerminalSettings,
+) -> Result<LocalTerminalSettings, String> {
+    // 本地终端配置包含本机目录和 shell 路径，只写入 local-terminals.json，不进入 WebDAV 同步包。
+    state.storage.save_local_terminals(&settings)?;
+    Ok(state.storage.load_local_terminals()?)
 }
 
 #[tauri::command]
@@ -3462,7 +3686,9 @@ pub fn open_ssh_session(
     let runtime = RuntimeSession {
         session: TerminalSession {
             id: session_id.clone(),
+            kind: "ssh".into(),
             connection_id: connection.id.clone(),
+            local_profile_id: None,
             title: format!("{}@{}", connection.username, connection.host),
             status: "connecting".into(),
             cwd: Some("~".into()),
@@ -3523,6 +3749,82 @@ pub fn open_ssh_session(
         }
     });
 
+    Ok(session)
+}
+
+#[tauri::command]
+pub fn open_local_terminal_session(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    profile: LocalTerminalProfile,
+) -> Result<TerminalSession, String> {
+    let cwd = profile.cwd.trim();
+    if cwd.is_empty() {
+        return Err(AppError::Validation("local terminal directory is required".into()).into());
+    }
+    if !Path::new(cwd).is_dir() {
+        return Err(AppError::Validation(format!("local terminal directory not found: {cwd}")).into());
+    }
+    let command = profile.command.trim();
+
+    let mut settings = state.storage.load_local_terminals()?;
+    let now = Utc::now().to_rfc3339();
+    let mut next_profile = profile.clone();
+    if next_profile.id.trim().is_empty() {
+        next_profile.id = uuid::Uuid::new_v4().to_string();
+    }
+    next_profile.cwd = cwd.to_string();
+    next_profile.command = command.to_string();
+    next_profile.last_used_at = now;
+    if next_profile.title.trim().is_empty() {
+        next_profile.title = if next_profile.command.is_empty() {
+            next_profile.cwd.clone()
+        } else {
+            format!("{} · {}", next_profile.command, next_profile.cwd)
+        };
+    }
+
+    // 历史目录以目录为主，重新打开同一路径时只更新最近命令并移动到列表顶部。
+    settings.profiles.retain(|item| {
+        !item.cwd.eq_ignore_ascii_case(&next_profile.cwd) && item.id != next_profile.id
+    });
+    settings.profiles.insert(0, next_profile.clone());
+    state.storage.save_local_terminals(&settings)?;
+    let settings = state.storage.load_local_terminals()?;
+
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let output_queue = Arc::new(std::sync::Mutex::new(Vec::<TerminalOutputChunk>::new()));
+    let (control_tx, control_rx) = mpsc::channel();
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let runtime = RuntimeSession {
+        session: TerminalSession {
+            id: session_id.clone(),
+            kind: "local".into(),
+            connection_id: String::new(),
+            local_profile_id: Some(next_profile.id.clone()),
+            title: next_profile.title.clone(),
+            status: "connecting".into(),
+            cwd: Some(next_profile.cwd.clone()),
+        },
+        cols: 120,
+        rows: 32,
+        output_queue: Arc::clone(&output_queue),
+        control_tx: control_tx.clone(),
+        stop_flag: Arc::clone(&stop_flag),
+    };
+
+    let session = runtime.session.clone();
+    lock_sessions(&state)?.insert(session.id.clone(), runtime);
+    spawn_local_terminal_thread(
+        session_id,
+        settings,
+        next_profile,
+        120,
+        32,
+        output_queue,
+        control_rx,
+        app_handle,
+    );
     Ok(session)
 }
 

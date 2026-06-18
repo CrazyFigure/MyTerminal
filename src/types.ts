@@ -4,6 +4,7 @@ export type SshAuthMethod = 'password' | 'privateKey';
 export type SshProxyType = 'http' | 'socks5';
 export type WorkspacePanel = 'files' | 'editor' | 'tunnels' | 'sync' | 'settings' | 'history';
 export type SessionStatus = 'idle' | 'connecting' | 'connected' | 'stub' | 'error' | 'closed';
+export type TerminalSessionKind = 'ssh' | 'local';
 export type TerminalRightClickBehavior = 'paste' | 'menu';
 
 export interface SshJumpHost {
@@ -108,7 +109,11 @@ export interface AppSettings {
 
 export interface TerminalSession {
   id: string;
+  /** 会话来源决定是否启用 SSH 文件、运行状态和隧道面板。 */
+  kind: TerminalSessionKind;
   connectionId: string;
+  /** 本地终端启动项 id 用于重开和复制信息，SSH 会话为空。 */
+  localProfileId?: string;
   title: string;
   status: SessionStatus;
   cwd?: string;
@@ -227,8 +232,31 @@ export interface UpdateCheckResult {
   installerSize?: number;
 }
 
+export interface LocalTerminalCommand {
+  id: string;
+  name: string;
+  command: string;
+  /** 内置命令固定包含 claude/codex/opencode，允许排序但不允许删除。 */
+  builtIn: boolean;
+}
+
+export interface LocalTerminalProfile {
+  id: string;
+  title: string;
+  cwd: string;
+  command: string;
+  lastUsedAt: string;
+}
+
+export interface LocalTerminalSettings {
+  shellPath: string;
+  commands: LocalTerminalCommand[];
+  profiles: LocalTerminalProfile[];
+}
+
 export interface BootstrapState {
   settings: AppSettings;
+  localTerminals: LocalTerminalSettings;
   connections: ConnectionProfile[];
   history: HistoryEntry[];
   sessions: TerminalSession[];

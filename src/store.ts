@@ -8,6 +8,8 @@ import type {
   ConnectionProfile,
   EditorDocument,
   HistoryEntry,
+  LocalTerminalProfile,
+  LocalTerminalSettings,
   RemoteFileEntry,
   RuntimeOverview,
   SessionStatus,
@@ -58,6 +60,21 @@ const defaultSettings: AppSettings = {
     maxOutputBytes: 200000,
   },
 };
+
+// 本地终端默认提供“纯 shell”和常见 AI CLI，空命令由后端解释为打开系统 shell。
+const defaultLocalTerminals: LocalTerminalSettings = {
+  shellPath: '',
+  commands: [
+    { id: 'shell', name: '本地终端', command: '', builtIn: true },
+    { id: 'claude', name: 'claude', command: 'claude', builtIn: true },
+    { id: 'codex', name: 'codex', command: 'codex', builtIn: true },
+    { id: 'opencode', name: 'opencode', command: 'opencode', builtIn: true },
+  ],
+  profiles: [],
+};
+
+// 状态栏展示命令名时把空命令转成可读名称，避免用户看到空白提示。
+const localTerminalCommandLabel = (command: string) => command.trim() || '本地终端';
 
 const emptyConnectionDraft = (): ConnectionDraft => ({
   id: '',
@@ -267,7 +284,10 @@ const guessNextRemotePath = (currentPath: string, commandText: string) => {
 const terminalOutputEventName = 'myterminal-terminal-output';
 
 // 只有可交互远端会话才允许驱动文件、历史和运行状态刷新，异常/关闭会话只保留终端残留输出用于排查。
-const isUsableRemoteSession = (status?: SessionStatus) => status === 'connected' || status === 'stub';
+const isUsableRemoteSession = (session?: TerminalSession) =>
+  session?.kind !== 'local' && (session?.status === 'connected' || session?.status === 'stub');
+const isUsableTerminalSession = (session?: TerminalSession) =>
+  Boolean(session && !['closed', 'error'].includes(session.status));
 
 // 终端输出走浏览器事件直达 xterm，避免高频输出通过 React 状态触发整页重渲染。
 const emitTerminalOutput = (chunk: TerminalOutputChunk) => {
@@ -526,6 +546,7 @@ type StoreState = {
   loading: boolean;
   statusMessage: string;
   settings: AppSettings;
+  localTerminals: LocalTerminalSettings;
   connections: ConnectionProfile[];
   history: HistoryEntry[];
   sessions: TerminalSession[];
@@ -567,6 +588,8 @@ type StoreState = {
   reorderConnections: (connectionIds: string[]) => Promise<void>;
   moveConnectionToGroup: (connectionId: string, groupPath?: string) => Promise<void>;
   openSession: (connectionId: string) => Promise<void>;
+  saveLocalTerminals: (settings: LocalTerminalSettings) => Promise<LocalTerminalSettings>;
+  openLocalTerminal: (profile: LocalTerminalProfile) => Promise<void>;
   reconnectSession: (sessionId: string) => Promise<void>;
   reorderSessions: (sessionIds: string[]) => void;
   closeSession: (sessionId: string) => Promise<void>;
@@ -617,6 +640,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
   loading: false,
   statusMessage: statusText(defaultSettings, 'ready'),
   settings: defaultSettings,
+  localTerminals: defaultLocalTerminals,
   connections: [],
   history: [],
   sessions: [],
@@ -640,12 +664,13 @@ export const useAppStore = create<StoreState>((set, get) => ({
     set({ loading: true, statusMessage: statusText(get().settings, 'statusLoadingWorkspace') });
     const state = await backend.bootstrap();
     const activeSessionId = state.sessions[0]?.id;
-    const activeConnectionId = state.sessions[0]?.connectionId;
+    const activeConnectionId = state.sessions[0]?.kind === 'local' ? undefined : state.sessions[0]?.connectionId;
     set({
       bootstrapped: true,
       loading: false,
       statusMessage: statusText(state.settings, 'statusWorkspaceLoaded'),
       settings: state.settings,
+      localTerminals: state.localTerminals,
       connections: state.connections.map((connection) => normalizeLoadedConnection(connection)),
       history: state.history,
       sessions: state.sessions,
@@ -653,7 +678,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
       activeConnectionId,
       activeSessionId,
       files: [],
-      currentRemotePath: activeSessionId ? '~' : '',
+      currentRemotePath: activeConnectionId ? '~' : '',
       runtimeOverview: undefined,
     });
   },
@@ -681,14 +706,14 @@ export const useAppStore = create<StoreState>((set, get) => ({
       const matchedSession = activeSessionId
         ? state.sessions.find((item) => item.id === activeSessionId)
         : undefined;
-      const keepCurrentFiles = Boolean(matchedSession && matchedSession.connectionId === state.activeConnectionId);
+      const keepCurrentFiles = Boolean(matchedSession && matchedSession.kind !== 'local' && matchedSession.connectionId === state.activeConnectionId);
 
       return {
         activeSessionId,
-        activeConnectionId: matchedSession?.connectionId,
+        activeConnectionId: matchedSession?.kind === 'local' ? undefined : matchedSession?.connectionId,
         runtimeOverview: undefined,
         files: keepCurrentFiles ? state.files : [],
-        currentRemotePath: matchedSession?.cwd ?? '',
+        currentRemotePath: matchedSession?.kind === 'local' ? '' : matchedSession?.cwd ?? '',
       };
     }),
 
@@ -1177,10 +1202,99 @@ export const useAppStore = create<StoreState>((set, get) => ({
     }
   },
 
+  saveLocalTerminals: async (settings) => {
+    const saved = await backend.saveLocalTerminals(settings);
+    set((state) => ({
+      localTerminals: saved,
+      statusMessage: statusText(state.settings, 'statusSettingsSaved'),
+    }));
+    return saved;
+  },
+
+  openLocalTerminal: async (profile) => {
+    try {
+      set({
+        loading: true,
+        statusMessage: `正在打开本地终端：${localTerminalCommandLabel(profile.command)}`,
+      });
+      const session = await backend.openLocalTerminal(profile);
+      const localTerminals = await backend.loadLocalTerminals();
+      set((state) => ({
+        loading: false,
+        localTerminals,
+        sessions: [...state.sessions.filter((item) => item.id !== session.id), session],
+        activeSessionId: session.id,
+        activeConnectionId: undefined,
+        files: [],
+        currentRemotePath: '',
+        runtimeOverview: undefined,
+        statusMessage: `本地终端已打开：${session.title}`,
+      }));
+      void get().pollTerminalOutputs(session.id);
+    } catch (error) {
+      set({
+        loading: false,
+        statusMessage: error instanceof Error ? error.message : String(error),
+      });
+    }
+  },
+
   reconnectSession: async (sessionId) => {
     const state = get();
     const session = state.sessions.find((item) => item.id === sessionId);
     if (!session) {
+      return;
+    }
+
+    if (session.kind === 'local') {
+      const profile = state.localTerminals.profiles.find((item) => item.id === session.localProfileId) ?? {
+        id: session.localProfileId ?? crypto.randomUUID(),
+        title: session.title,
+        cwd: session.cwd ?? '',
+        command: '',
+        lastUsedAt: '',
+      };
+      const previousIndex = Math.max(0, state.sessions.findIndex((item) => item.id === sessionId));
+      clearQueuedTerminalInput(sessionId);
+      set({ loading: true, statusMessage: `正在重新打开本地终端：${localTerminalCommandLabel(profile.command)}` });
+
+      try {
+        await backend.closeSession(sessionId).catch(() => undefined);
+        const openedSession = await backend.openLocalTerminal(profile);
+        const localTerminals = await backend.loadLocalTerminals();
+        set((current) => {
+          const filteredSessions = current.sessions.filter((item) => item.id !== sessionId && item.id !== openedSession.id);
+          const insertIndex = Math.min(previousIndex, filteredSessions.length);
+          const nextCommandBuffers = { ...current.commandBuffers };
+          const nextSuggestions = { ...current.suggestions };
+          delete nextCommandBuffers[sessionId];
+          delete nextSuggestions[sessionId];
+
+          return {
+            loading: false,
+            localTerminals,
+            sessions: [
+              ...filteredSessions.slice(0, insertIndex),
+              openedSession,
+              ...filteredSessions.slice(insertIndex),
+            ],
+            activeSessionId: openedSession.id,
+            activeConnectionId: undefined,
+            commandBuffers: nextCommandBuffers,
+            suggestions: nextSuggestions,
+            files: [],
+            currentRemotePath: '',
+            runtimeOverview: undefined,
+            statusMessage: `本地终端已打开：${openedSession.title}`,
+          };
+        });
+        void get().pollTerminalOutputs(openedSession.id);
+      } catch (error) {
+        set({
+          loading: false,
+          statusMessage: error instanceof Error ? error.message : String(error),
+        });
+      }
       return;
     }
 
@@ -1266,13 +1380,11 @@ export const useAppStore = create<StoreState>((set, get) => ({
     set((state) => {
       const nextSessions = state.sessions.filter((item) => item.id !== sessionId);
       const nextActiveSessionId = state.activeSessionId === sessionId ? nextSessions[0]?.id : state.activeSessionId;
-      const nextActiveConnectionId = nextActiveSessionId
-        ? nextSessions.find((item) => item.id === nextActiveSessionId)?.connectionId
-        : undefined;
-      const closedActiveSession = state.activeSessionId === sessionId;
       const nextActiveSession = nextActiveSessionId
         ? nextSessions.find((item) => item.id === nextActiveSessionId)
         : undefined;
+      const nextActiveConnectionId = nextActiveSession?.kind === 'local' ? undefined : nextActiveSession?.connectionId;
+      const closedActiveSession = state.activeSessionId === sessionId;
       const nextCommandBuffers = { ...state.commandBuffers };
       const nextSuggestions = { ...state.suggestions };
       delete nextCommandBuffers[sessionId];
@@ -1283,8 +1395,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
         activeSessionId: nextActiveSessionId,
         activeConnectionId: nextActiveConnectionId,
         runtimeOverview: nextActiveConnectionId ? state.runtimeOverview : undefined,
-        files: closedActiveSession ? [] : state.files,
-        currentRemotePath: closedActiveSession ? nextActiveSession?.cwd ?? '' : state.currentRemotePath,
+        files: closedActiveSession && !nextActiveConnectionId ? [] : state.files,
+        currentRemotePath: closedActiveSession ? (nextActiveConnectionId ? nextActiveSession?.cwd ?? '' : '') : state.currentRemotePath,
         commandBuffers: nextCommandBuffers,
         suggestions: nextSuggestions,
         statusMessage: statusText(state.settings, 'statusSessionClosed'),
@@ -1336,10 +1448,10 @@ export const useAppStore = create<StoreState>((set, get) => ({
     }
 
     const session = state.sessions.find((item) => item.id === sessionId);
-    if (!isUsableRemoteSession(session?.status)) {
+    if (!isUsableTerminalSession(session)) {
       return;
     }
-    const nextRemotePath = session?.connectionId === state.activeConnectionId
+    const nextRemotePath = isUsableRemoteSession(session) && session?.connectionId === state.activeConnectionId
       ? guessNextRemotePath(state.currentRemotePath, rawCommand)
       : undefined;
 
@@ -1353,7 +1465,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
     }));
 
     void get().pollTerminalOutputs();
-    if (session?.connectionId) {
+    if (isUsableRemoteSession(session) && session?.connectionId) {
       void get().refreshRemoteHistory(session.connectionId);
     }
     if (nextRemotePath) {
@@ -1363,7 +1475,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
 
   sendTerminalData: async (sessionId, data) => {
     const session = get().sessions.find((item) => item.id === sessionId);
-    if (!isUsableRemoteSession(session?.status)) {
+    if (!isUsableTerminalSession(session)) {
       return;
     }
 
@@ -1468,7 +1580,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
           cwd &&
           session.id === state.activeSessionId &&
           session.connectionId === state.activeConnectionId &&
-          isUsableRemoteSession(nextSession.status) &&
+          isUsableRemoteSession(nextSession) &&
           state.currentRemotePath !== cwd
         ) {
           activeCwdToRefresh = cwd;
@@ -1478,7 +1590,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
       });
 
       const activeSession = nextSessions.find((session) => session.id === state.activeSessionId);
-      const activeSessionBecameUnavailable = activeSession ? !isUsableRemoteSession(activeSession.status) : false;
+      const activeSessionBecameUnavailable = activeSession ? !isUsableRemoteSession(activeSession) : false;
       const shouldClearActiveRemoteData = activeSessionBecameUnavailable
         && (state.files.length > 0 || Boolean(state.runtimeOverview) || Boolean(state.currentRemotePath));
 
@@ -1504,7 +1616,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
   refreshRemoteHistory: async (connectionId) => {
     const { activeSessionId, sessions } = get();
     const activeSession = sessions.find((item) => item.id === activeSessionId);
-    const activeRemoteConnectionId = isUsableRemoteSession(activeSession?.status) ? activeSession?.connectionId : undefined;
+    const activeRemoteConnectionId = isUsableRemoteSession(activeSession) ? activeSession?.connectionId : undefined;
     const targetConnectionId = connectionId ?? activeRemoteConnectionId;
     // 历史刷新只允许针对已打开的当前会话，避免仅选中连接时主动访问远端。
     if (!targetConnectionId || targetConnectionId !== activeRemoteConnectionId) {
@@ -1543,7 +1655,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
     const resolveRefreshRequest = () => {
       const { activeConnectionId, activeSessionId, currentRemotePath, sessions } = get();
       const activeSession = sessions.find((item) => item.id === activeSessionId);
-      const activeRemoteConnectionId = isUsableRemoteSession(activeSession?.status) ? activeSession?.connectionId : undefined;
+      const activeRemoteConnectionId = isUsableRemoteSession(activeSession) ? activeSession?.connectionId : undefined;
       // 文件管理必须绑定已打开的终端会话；只选中连接时不展示也不刷新远端文件。
       if (!activeConnectionId || activeConnectionId !== activeRemoteConnectionId) {
         return undefined;
@@ -1793,7 +1905,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
   refreshRuntimeOverview: async () => {
     const { activeConnectionId, activeSessionId, sessions } = get();
     const activeSession = sessions.find((item) => item.id === activeSessionId);
-    const activeRemoteConnectionId = isUsableRemoteSession(activeSession?.status) ? activeSession?.connectionId : undefined;
+    const activeRemoteConnectionId = isUsableRemoteSession(activeSession) ? activeSession?.connectionId : undefined;
     // 运行状态只跟随已打开会话刷新，刷新完成后一次性替换旧数据，不显示中间“刷新中”状态。
     if (!activeConnectionId || activeConnectionId !== activeRemoteConnectionId) {
       set({ runtimeOverview: undefined });
