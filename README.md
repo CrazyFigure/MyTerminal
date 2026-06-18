@@ -10,21 +10,29 @@
 
 A modern desktop SSH terminal manager built with Rust, Tauri 2, and React.
 
-MyTerminal brings terminal tabs, SSH profiles, SFTP file management, remote file editing, local port forwarding, and WebDAV backup into one clean desktop app. It is designed for developers and operators who want a lightweight, open, and hackable alternative to heavyweight remote terminal suites.
+MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP file management, remote file editing, local port forwarding, and WebDAV backup into one clean desktop app. It is designed for developers and operators who want a lightweight, open, and hackable alternative to heavyweight remote terminal suites.
 
 ![MyTerminal preview](img.png)
 
+## What's New in 0.2.0
+
+- **Multi-hop SSH routing** - Configure ordered SSH jump hosts and first-hop SOCKS5 or HTTP CONNECT proxies for direct sessions, file operations, tunnels, and MCP Bridge sessions.
+- **Stronger file transfers** - Drag local files or folders into the SFTP browser, upload folders recursively, download multiple selected remote files or folders, and use matching MCP/CLI upload and download tools.
+- **Smarter AI approvals** - New pending AI execution requests automatically open the AI execution panel, show the SSH machine and command or target summary, and can raise desktop notifications that jump back to the approval list.
+- **Bridge reliability fixes** - Restarting MCP Bridge settings preserves logical AI sessions, app shutdown cleans SSH sessions and CLI backends, and stale waiting requests are handled more predictably.
+
 ## Highlights
 
-- **SSH profile manager** - Create, edit, group, duplicate, move, sort, and test SSH connections before opening a session.
+- **SSH profile manager** - Create, edit, group, duplicate, move, sort, and test SSH connections before opening a session, including jump-host and proxy routing.
 - **Password and private-key auth** - Connect with passwords or private keys, including passphrase visibility toggles where needed.
 - **Tabbed terminal workspace** - Open multiple PTY sessions, reorder tabs, reconnect in place, and use right-click actions for common session operations.
-- **SFTP file browser** - Browse remote directories, upload, download, delete, rename, read, and write files through real SFTP operations.
+- **SFTP file browser** - Browse remote directories, drag-drop upload files or folders, batch download selected remote items, delete, rename, read, and write files through real SFTP operations.
 - **Remote file editor** - Edit remote files with the built-in Monaco editor, with local cache fallback when saving or loading needs recovery.
 - **Path-aware terminal + files** - When the shell changes directory, the file manager can follow the terminal's current remote path.
 - **SSH tunnels** - Create, edit, start, and stop local port forwarding rules with custom bind addresses and targets.
 - **Manual WebDAV sync** - Upload and download app settings and SSH profiles separately when you want to move between machines.
-- **MCP Bridge for AI coding tools** - Let Claude Code, Codex, and other MCP clients list SSH profiles, open bridge sessions, run remote commands, and read/write remote files through a local GUI-approved broker.
+- **MCP Bridge for AI coding tools** - Let Claude Code, Codex, and other MCP clients list SSH profiles, open bridge sessions, run remote commands, upload/download remote files, and read/write remote files through a local GUI-approved broker.
+- **AI approval notifications** - Pending AI execution requests can expand automatically, show compact execution summaries, and use desktop notifications to bring you back to the approval panel.
 - **Local import/export** - Export JSON configuration packages and restore them later, with automatic local backups before import.
 - **Desktop update flow** - Check GitHub Releases, download installers, and launch the installer from inside the app.
 - **Personalized terminal UI** - Switch between Chinese and English, light and dark themes, terminal fonts, compact sidebar, and background images.
@@ -78,8 +86,9 @@ MyTerminal can expose your saved SSH connections to Claude Code, Codex, and othe
 - MyTerminal starts a local Broker bound to `127.0.0.1` and writes a discovery file with the current port and token.
 - MCP clients start the local package with `npx`; the package launches `myterminal-cli mcp --stdio`.
 - Read-only tools, such as listing connections and reading remote files, can run directly.
-- Command execution and write operations are shown in the MyTerminal AI request panel for approval by default.
-- Auto-execution can be enabled per SSH connection from the MCP settings page.
+- Command execution, local uploads, remote downloads, and write operations are shown in the MyTerminal AI request panel for approval by default.
+- New pending approval requests can automatically open the AI execution panel and send a desktop notification; clicking the notification focuses the approval list.
+- Auto-execution can be enabled globally, or allowed for selected SSH connections from the MCP settings page.
 
 ### MCP client config
 
@@ -109,6 +118,8 @@ Copy the JSON from **Settings > MCP > Usage**. In development it looks like this
 - `myterminal_file_list`
 - `myterminal_file_read`
 - `myterminal_file_write`
+- `myterminal_file_upload`
+- `myterminal_file_download`
 - `myterminal_file_delete`
 - `myterminal_file_rename`
 - `myterminal_file_mkdir`
