@@ -97,6 +97,14 @@ fn default_ssh_port() -> u16 {
     22
 }
 
+fn default_proxy_port() -> u16 {
+    1080
+}
+
+fn default_proxy_type() -> String {
+    "socks5".into()
+}
+
 fn default_local_tunnel_port() -> u16 {
     15432
 }
@@ -167,10 +175,10 @@ pub struct AgentBridgeSettings {
     /// AI Bridge 默认关闭，只有用户在设置页明确启用后才暴露本地 Broker。
     #[serde(default)]
     pub enabled: bool,
-    /// 自动执行只对用户选择的连接生效；关闭时命令和写操作都必须由 GUI 审批。
+    /// 自动执行开启时全部连接跳过 GUI 审批；关闭时仅连接白名单仍自动执行。
     #[serde(default)]
     pub auto_execute: bool,
-    /// 允许自动执行的连接白名单；为空时不自动执行任何连接。
+    /// 自动执行关闭时仍允许自动执行的连接白名单。
     #[serde(default)]
     pub allowed_connection_ids: Vec<String>,
     /// 远端命令默认超时，避免 agent 发起的命令长期占用 SSH channel。
@@ -299,10 +307,71 @@ pub struct ConnectionProfile {
     pub private_key_text: Option<String>,
     #[serde(default)]
     pub passphrase: Option<String>,
+    /// 多级跳板按数组顺序串接，最终一级再连接目标 SSH 主机。
+    #[serde(default)]
+    pub jump_hosts: Vec<SshJumpHost>,
+    /// 代理只作用于第一跳，后续跳板通过 SSH direct-tcpip 继续转发。
+    #[serde(default)]
+    pub proxy: SshProxyConfig,
     #[serde(default)]
     pub note: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshJumpHost {
+    #[serde(default = "new_id")]
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default = "default_auth_method")]
+    pub auth_method: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub private_key_path: Option<String>,
+    #[serde(default)]
+    pub private_key_text: Option<String>,
+    #[serde(default)]
+    pub passphrase: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshProxyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_proxy_type", rename = "type")]
+    pub proxy_type: String,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default = "default_proxy_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+impl Default for SshProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            proxy_type: default_proxy_type(),
+            host: String::new(),
+            port: default_proxy_port(),
+            username: None,
+            password: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -610,7 +679,64 @@ pub struct StoredConnectionProfile {
     #[serde(default)]
     pub passphrase_encrypted: String,
     #[serde(default)]
+    pub jump_hosts: Vec<StoredSshJumpHost>,
+    #[serde(default)]
+    pub proxy: StoredSshProxyConfig,
+    #[serde(default)]
     pub note: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredSshJumpHost {
+    #[serde(default = "new_id")]
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default = "default_auth_method")]
+    pub auth_method: String,
+    #[serde(default)]
+    pub password_encrypted: String,
+    #[serde(default)]
+    pub private_key_path: Option<String>,
+    #[serde(default)]
+    pub private_key_text_encrypted: String,
+    #[serde(default)]
+    pub passphrase_encrypted: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredSshProxyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_proxy_type", rename = "type")]
+    pub proxy_type: String,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default = "default_proxy_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password_encrypted: String,
+}
+
+impl Default for StoredSshProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            proxy_type: default_proxy_type(),
+            host: String::new(),
+            port: default_proxy_port(),
+            username: None,
+            password_encrypted: String::new(),
+        }
+    }
 }

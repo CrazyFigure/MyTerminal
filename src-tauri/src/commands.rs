@@ -1,8 +1,8 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env, fs,
     io::{ErrorKind, Read, Write},
-    net::{TcpListener, TcpStream, ToSocketAddrs},
+    net::{IpAddr, Shutdown, TcpListener, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -26,8 +26,8 @@ use crate::{
     models::{
         AppSettings, BootstrapState, ConnectionProfile, EditorDocument, HistoryEntry,
         HistoryEntryInput, LocalConfigBundle, RemoteFileEntry, RuntimeCpuCore, RuntimeOverview,
-        TerminalOutputChunk, TerminalSession, TunnelOpenRequest, TunnelRecord, TunnelUpdateRequest,
-        UpdateCheckResult, WebDavSettings,
+        SshJumpHost, SshProxyConfig, TerminalOutputChunk, TerminalSession, TunnelOpenRequest,
+        TunnelRecord, TunnelUpdateRequest, UpdateCheckResult, WebDavSettings,
     },
     state::{AppState, RuntimeSession, SessionControl, TunnelRuntime},
 };
@@ -47,6 +47,16 @@ struct GitHubReleaseAsset {
     name: String,
     browser_download_url: String,
     size: Option<u64>,
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileTransferSummary {
+    // 批量传输按普通文件计数，目录本身单独计入 directories，便于前端给出简洁完成提示。
+    files: usize,
+    directories: usize,
+    bytes: u64,
+    destinations: Vec<String>,
 }
 
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
@@ -116,6 +126,109 @@ fn validate_tunnel_fields(tunnel: &TunnelRecord) -> Result<(), AppError> {
         return Err(AppError::Validation(
             "tunnel remote host is required".into(),
         ));
+    }
+
+    Ok(())
+}
+
+fn validate_ssh_auth_fields(
+    label: &str,
+    username: &str,
+    auth_method: &str,
+    password: &str,
+    private_key_path: Option<&str>,
+    private_key_text: Option<&str>,
+) -> Result<(), AppError> {
+    // 主机和每级跳板机都复用同一套认证约束，避免 IPC 或旧配置绕过前端校验后保存出不可连接的链路。
+    if username.trim().is_empty() {
+        return Err(AppError::Validation(format!(
+            "{label} username is required"
+        )));
+    }
+
+    if auth_method.trim().eq_ignore_ascii_case("privateKey") {
+        if non_empty_trimmed(private_key_path).is_none()
+            && non_empty_trimmed(private_key_text).is_none()
+        {
+            return Err(AppError::Validation(format!(
+                "{label} private key authentication requires a key path or pasted key content"
+            )));
+        }
+    } else if password.trim().is_empty() {
+        return Err(AppError::Validation(format!(
+            "{label} password authentication requires a password"
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_connection_profile(connection: &ConnectionProfile) -> Result<(), AppError> {
+    // 连接配置会被前端、MCP/CLI 和历史数据共同使用；后端保存前必须做最终兜底校验。
+    if connection.name.trim().is_empty() {
+        return Err(AppError::Validation("connection name is required".into()));
+    }
+    if connection.host.trim().is_empty() {
+        return Err(AppError::Validation("connection host is required".into()));
+    }
+    if connection.port == 0 {
+        return Err(AppError::Validation(
+            "connection port must be between 1 and 65535".into(),
+        ));
+    }
+    validate_ssh_auth_fields(
+        "connection",
+        &connection.username,
+        &connection.auth_method,
+        &connection.password,
+        connection.private_key_path.as_deref(),
+        connection.private_key_text.as_deref(),
+    )?;
+
+    for (index, jump_host) in connection.jump_hosts.iter().enumerate() {
+        let label = format!("jump host {}", index + 1);
+        if jump_host.host.trim().is_empty() {
+            return Err(AppError::Validation(format!("{label} host is required")));
+        }
+        if jump_host.port == 0 {
+            return Err(AppError::Validation(format!(
+                "{label} port must be between 1 and 65535"
+            )));
+        }
+        validate_ssh_auth_fields(
+            &label,
+            &jump_host.username,
+            &jump_host.auth_method,
+            &jump_host.password,
+            jump_host.private_key_path.as_deref(),
+            jump_host.private_key_text.as_deref(),
+        )?;
+    }
+
+    if connection.proxy.enabled {
+        if connection.proxy.host.trim().is_empty() {
+            return Err(AppError::Validation("proxy host is required".into()));
+        }
+        if connection.proxy.port == 0 {
+            return Err(AppError::Validation(
+                "proxy port must be between 1 and 65535".into(),
+            ));
+        }
+
+        match connection
+            .proxy
+            .proxy_type
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "http" | "https" | "http-connect" | "socks5" | "socks" => {}
+            value => {
+                return Err(AppError::Validation(format!(
+                    "unsupported proxy type: {value}"
+                )))
+            }
+        }
     }
 
     Ok(())
@@ -525,24 +638,55 @@ fn expand_home_path(raw_path: &str) -> PathBuf {
     PathBuf::from(trimmed)
 }
 
-fn authenticate_ssh_session(
-    session: &Session,
-    connection: &ConnectionProfile,
-) -> Result<(), AppError> {
-    let auth_method = connection.auth_method.trim();
+struct SshAuthConfig<'a> {
+    username: &'a str,
+    auth_method: &'a str,
+    password: &'a str,
+    private_key_path: Option<&'a str>,
+    private_key_text: Option<&'a str>,
+    passphrase: Option<&'a str>,
+}
+
+impl<'a> SshAuthConfig<'a> {
+    fn from_connection(connection: &'a ConnectionProfile) -> Self {
+        Self {
+            username: &connection.username,
+            auth_method: &connection.auth_method,
+            password: &connection.password,
+            private_key_path: connection.private_key_path.as_deref(),
+            private_key_text: connection.private_key_text.as_deref(),
+            passphrase: connection.passphrase.as_deref(),
+        }
+    }
+
+    fn from_jump_host(jump_host: &'a SshJumpHost) -> Self {
+        Self {
+            username: &jump_host.username,
+            auth_method: &jump_host.auth_method,
+            password: &jump_host.password,
+            private_key_path: jump_host.private_key_path.as_deref(),
+            private_key_text: jump_host.private_key_text.as_deref(),
+            passphrase: jump_host.passphrase.as_deref(),
+        }
+    }
+}
+
+fn authenticate_ssh_session(session: &Session, auth: &SshAuthConfig<'_>) -> Result<(), AppError> {
+    let auth_method = auth.auth_method.trim();
+    let username = auth.username.trim();
 
     if auth_method.eq_ignore_ascii_case("privateKey") {
-        let passphrase = non_empty_trimmed(connection.passphrase.as_deref());
+        let passphrase = non_empty_trimmed(auth.passphrase);
 
-        if let Some(private_key_text) = non_empty_trimmed(connection.private_key_text.as_deref()) {
+        if let Some(private_key_text) = non_empty_trimmed(auth.private_key_text) {
             session
-                .userauth_pubkey_memory(&connection.username, None, private_key_text, passphrase)
+                .userauth_pubkey_memory(username, None, private_key_text, passphrase)
                 .map_err(ssh_error)?;
             return Ok(());
         }
 
-        let private_key_path = non_empty_trimmed(connection.private_key_path.as_deref())
-            .ok_or_else(|| {
+        let private_key_path =
+            non_empty_trimmed(auth.private_key_path).ok_or_else(|| {
                 AppError::Validation(
                     "private key authentication requires a key path or pasted key content".into(),
                 )
@@ -550,7 +694,7 @@ fn authenticate_ssh_session(
 
         session
             .userauth_pubkey_file(
-                &connection.username,
+                username,
                 None,
                 &expand_home_path(private_key_path),
                 passphrase,
@@ -560,7 +704,7 @@ fn authenticate_ssh_session(
         return Ok(());
     }
 
-    let password = connection.password.trim();
+    let password = auth.password.trim();
     if password.is_empty() {
         return Err(AppError::Validation(
             "password authentication requires a password".into(),
@@ -568,7 +712,7 @@ fn authenticate_ssh_session(
     }
 
     session
-        .userauth_password(&connection.username, password)
+        .userauth_password(username, password)
         .map_err(ssh_error)?;
 
     Ok(())
@@ -619,54 +763,337 @@ fn configure_ssh_compatibility_preferences(session: &Session) -> Result<(), AppE
     Ok(())
 }
 
-fn connect_ssh_once(
-    connection: &ConnectionProfile,
-    compatibility_mode: bool,
-) -> Result<Session, AppError> {
-    let address = format!("{}:{}", connection.host, connection.port);
-    // SSH/SFTP 辅助连接必须有明确超时，避免文件管理刷新卡在握手阶段并拖慢终端交互。
+fn format_tcp_endpoint(host: &str, port: u16) -> String {
+    let trimmed = host.trim();
+    // IPv6 字面量作为 host:port 使用时必须加方括号；普通域名、IPv4 和已带括号的 IPv6 保持原样。
+    if trimmed.contains(':') && !trimmed.starts_with('[') {
+        format!("[{trimmed}]:{port}")
+    } else {
+        format!("{trimmed}:{port}")
+    }
+}
+
+fn strip_ipv6_brackets(host: &str) -> &str {
+    let trimmed = host.trim();
+    // 表单里允许用户按 URI 习惯填写 [::1]；SOCKS5 地址字段需要裸 IPv6 字节，不能保留方括号。
+    trimmed
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(trimmed)
+}
+
+fn resolve_tcp_address(host: &str, port: u16) -> Result<Vec<std::net::SocketAddr>, AppError> {
+    let address = format_tcp_endpoint(host, port);
+    let addresses = address.to_socket_addrs()?.collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            format!("no resolved address for {address}"),
+        )));
+    }
+    Ok(addresses)
+}
+
+fn connect_tcp_direct(host: &str, port: u16) -> Result<TcpStream, AppError> {
+    // 所有 SSH 辅助连接都共享固定连接超时，避免不可达地址拖住 UI 刷新和测试连接。
     let mut last_error = None;
-    let addresses = address.to_socket_addrs()?;
-    let mut tcp = None;
-    for socket_address in addresses {
+    for socket_address in resolve_tcp_address(host, port)? {
         match TcpStream::connect_timeout(&socket_address, SSH_CONNECT_TIMEOUT) {
-            Ok(stream) => {
-                tcp = Some(stream);
-                break;
-            }
+            Ok(stream) => return Ok(stream),
             Err(error) => last_error = Some(error),
         }
     }
-    let tcp = tcp.ok_or_else(|| {
-        AppError::Io(last_error.unwrap_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::AddrNotAvailable,
-                "no resolved SSH address",
-            )
-        }))
-    })?;
+
+    Err(AppError::Io(last_error.unwrap_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "no reachable TCP address")
+    })))
+}
+
+fn read_http_proxy_response(stream: &mut TcpStream) -> Result<String, AppError> {
+    let mut response = Vec::new();
+    let mut buffer = [0_u8; 1];
+    while response.len() < 16 * 1024 {
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        response.push(buffer[0]);
+        if response.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+
+    String::from_utf8(response)
+        .map_err(|error| AppError::Validation(format!("invalid HTTP proxy response: {error}")))
+}
+
+fn connect_http_proxy(
+    proxy: &SshProxyConfig,
+    target_host: &str,
+    target_port: u16,
+) -> Result<TcpStream, AppError> {
+    let mut stream = connect_tcp_direct(&proxy.host, proxy.port)?;
+    stream.set_read_timeout(Some(SSH_CONNECT_TIMEOUT))?;
+    stream.set_write_timeout(Some(SSH_CONNECT_TIMEOUT))?;
+
+    let target = format_tcp_endpoint(target_host, target_port);
+    let mut request = format!(
+        "CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nProxy-Connection: Keep-Alive\r\n"
+    );
+    if let Some(username) = non_empty_trimmed(proxy.username.as_deref()) {
+        let password = proxy.password.as_deref().unwrap_or("");
+        let credentials = STANDARD.encode(format!("{username}:{password}"));
+        request.push_str(&format!("Proxy-Authorization: Basic {credentials}\r\n"));
+    }
+    request.push_str("\r\n");
+    stream.write_all(request.as_bytes())?;
+    stream.flush()?;
+
+    let response = read_http_proxy_response(&mut stream)?;
+    let status_line = response.lines().next().unwrap_or("");
+    let status_ok = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|status| status.parse::<u16>().ok())
+        .is_some_and(|status| (200..300).contains(&status));
+    if !status_ok {
+        return Err(AppError::Ssh(format!(
+            "HTTP proxy CONNECT failed: {}",
+            status_line.trim()
+        )));
+    }
+
+    stream.set_read_timeout(None)?;
+    stream.set_write_timeout(None)?;
+    Ok(stream)
+}
+
+fn socks5_write_address(
+    stream: &mut TcpStream,
+    host: &str,
+    port: u16,
+) -> Result<(), AppError> {
+    let normalized_host = strip_ipv6_brackets(host);
+    if let Ok(ip) = normalized_host.parse::<IpAddr>() {
+        match ip {
+            IpAddr::V4(value) => {
+                stream.write_all(&[0x01])?;
+                stream.write_all(&value.octets())?;
+            }
+            IpAddr::V6(value) => {
+                stream.write_all(&[0x04])?;
+                stream.write_all(&value.octets())?;
+            }
+        }
+    } else {
+        let bytes = normalized_host.as_bytes();
+        if bytes.len() > u8::MAX as usize {
+            return Err(AppError::Validation(
+                "SOCKS5 target host is too long".into(),
+            ));
+        }
+        stream.write_all(&[0x03, bytes.len() as u8])?;
+        stream.write_all(bytes)?;
+    }
+
+    stream.write_all(&port.to_be_bytes())?;
+    Ok(())
+}
+
+fn socks5_read_address(stream: &mut TcpStream, atyp: u8) -> Result<(), AppError> {
+    match atyp {
+        0x01 => {
+            let mut addr = [0_u8; 4];
+            stream.read_exact(&mut addr)?;
+        }
+        0x03 => {
+            let mut len = [0_u8; 1];
+            stream.read_exact(&mut len)?;
+            let mut addr = vec![0_u8; len[0] as usize];
+            stream.read_exact(&mut addr)?;
+        }
+        0x04 => {
+            let mut addr = [0_u8; 16];
+            stream.read_exact(&mut addr)?;
+        }
+        value => {
+            return Err(AppError::Ssh(format!(
+                "SOCKS5 proxy returned unsupported address type {value}"
+            )))
+        }
+    }
+
+    let mut port = [0_u8; 2];
+    stream.read_exact(&mut port)?;
+    Ok(())
+}
+
+fn connect_socks5_proxy(
+    proxy: &SshProxyConfig,
+    target_host: &str,
+    target_port: u16,
+) -> Result<TcpStream, AppError> {
+    let mut stream = connect_tcp_direct(&proxy.host, proxy.port)?;
+    stream.set_read_timeout(Some(SSH_CONNECT_TIMEOUT))?;
+    stream.set_write_timeout(Some(SSH_CONNECT_TIMEOUT))?;
+
+    let has_credentials = non_empty_trimmed(proxy.username.as_deref()).is_some();
+    let methods: &[u8] = if has_credentials { &[0x00, 0x02] } else { &[0x00] };
+    stream.write_all(&[0x05, methods.len() as u8])?;
+    stream.write_all(methods)?;
+    stream.flush()?;
+
+    let mut selection = [0_u8; 2];
+    stream.read_exact(&mut selection)?;
+    if selection[0] != 0x05 {
+        return Err(AppError::Ssh("SOCKS5 proxy returned invalid version".into()));
+    }
+
+    if selection[1] == 0x02 {
+        let username = proxy.username.as_deref().unwrap_or("");
+        let password = proxy.password.as_deref().unwrap_or("");
+        if username.len() > u8::MAX as usize || password.len() > u8::MAX as usize {
+            return Err(AppError::Validation(
+                "SOCKS5 username or password is too long".into(),
+            ));
+        }
+        stream.write_all(&[0x01, username.len() as u8])?;
+        stream.write_all(username.as_bytes())?;
+        stream.write_all(&[password.len() as u8])?;
+        stream.write_all(password.as_bytes())?;
+        stream.flush()?;
+        let mut auth_response = [0_u8; 2];
+        stream.read_exact(&mut auth_response)?;
+        if auth_response != [0x01, 0x00] {
+            return Err(AppError::Ssh(
+                "SOCKS5 proxy username/password authentication failed".into(),
+            ));
+        }
+    } else if selection[1] != 0x00 {
+        return Err(AppError::Ssh(format!(
+            "SOCKS5 proxy did not accept supported authentication method: {}",
+            selection[1]
+        )));
+    }
+
+    stream.write_all(&[0x05, 0x01, 0x00])?;
+    socks5_write_address(&mut stream, target_host, target_port)?;
+    stream.flush()?;
+
+    let mut header = [0_u8; 4];
+    stream.read_exact(&mut header)?;
+    if header[0] != 0x05 || header[1] != 0x00 {
+        return Err(AppError::Ssh(format!(
+            "SOCKS5 proxy CONNECT failed with reply code {}",
+            header[1]
+        )));
+    }
+    socks5_read_address(&mut stream, header[3])?;
+
+    stream.set_read_timeout(None)?;
+    stream.set_write_timeout(None)?;
+    Ok(stream)
+}
+
+fn connect_first_hop(
+    proxy: &SshProxyConfig,
+    target_host: &str,
+    target_port: u16,
+) -> Result<TcpStream, AppError> {
+    if !proxy.enabled {
+        return connect_tcp_direct(target_host, target_port);
+    }
+    if proxy.host.trim().is_empty() {
+        return Err(AppError::Validation("proxy host is required".into()));
+    }
+
+    match proxy.proxy_type.trim().to_ascii_lowercase().as_str() {
+        "http" | "https" | "http-connect" => connect_http_proxy(proxy, target_host, target_port),
+        "socks5" | "socks" => connect_socks5_proxy(proxy, target_host, target_port),
+        value => Err(AppError::Validation(format!(
+            "unsupported proxy type: {value}"
+        ))),
+    }
+}
+
+fn prepare_ssh_tcp_stream(tcp: &TcpStream) -> Result<(), AppError> {
     // 交互终端输入是大量小包，必须关闭 Nagle，避免连续字符/退格被 TCP 合并后成批回显。
     tcp.set_nodelay(true)?;
+    // 底层 socket 必须先切到 OS 非阻塞：libssh2 的阻塞 API 会自行 wait_socket，
+    // 交互 Shell 的非阻塞 API 才能稳定收到 EAGAIN/WouldBlock，而不是 transport read。
+    tcp.set_nonblocking(true)?;
+    Ok(())
+}
+
+struct JumpBridge {
+    local_host: String,
+    local_port: u16,
+    stop_flag: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for JumpBridge {
+    fn drop(&mut self) {
+        self.stop_flag.store(true, Ordering::SeqCst);
+        // 唤醒非阻塞 accept 循环，让会话结束时临时本地监听能及时退出。
+        let _ = TcpStream::connect((self.local_host.as_str(), self.local_port));
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+struct SshTransport {
+    stream: TcpStream,
+    // 跳板桥接守卫必须跟随最终 SSH Session 生命周期，否则本地 loopback 转发会提前释放。
+    _bridges: Vec<JumpBridge>,
+}
+
+impl Drop for SshTransport {
+    fn drop(&mut self) {
+        // 最终 SSH 会话释放时先关闭本地 socket，再释放跳板监听守卫，确保代理转发线程尽快收到 EOF。
+        let _ = self.stream.shutdown(Shutdown::Both);
+    }
+}
+
+#[cfg(unix)]
+impl std::os::fd::AsRawFd for SshTransport {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        self.stream.as_raw_fd()
+    }
+}
+
+#[cfg(windows)]
+impl std::os::windows::io::AsRawSocket for SshTransport {
+    fn as_raw_socket(&self) -> std::os::windows::io::RawSocket {
+        self.stream.as_raw_socket()
+    }
+}
+
+fn establish_ssh_session(
+    transport: SshTransport,
+    auth: &SshAuthConfig<'_>,
+    auth_host_label: &str,
+    compatibility_mode: bool,
+) -> Result<Session, AppError> {
     // 不在 TCP socket 上设 SO_RCVTIMEO/SO_SNDTIMEO：
     // Windows 上 socket timeout 与非阻塞模式冲突，recv()/send() 超时后返回 WSAETIMEDOUT，
     // libssh2 不认识这个错误码，包装成 "transport read" 错误导致非阻塞会话卡死。
     // 改用 libssh2 自身的 session.set_timeout() 控制阻塞操作（握手/认证）超时。
-    // 底层 socket 必须先切到 OS 非阻塞：libssh2 的阻塞 API 会自行 wait_socket，
-    // 交互 Shell 的非阻塞 API 才能稳定收到 EAGAIN/WouldBlock，而不是 transport read。
-    tcp.set_nonblocking(true)?;
+    prepare_ssh_tcp_stream(&transport.stream)?;
     let mut session = Session::new().map_err(ssh_error)?;
     session.set_timeout(SSH_IO_TIMEOUT.as_millis() as u32);
-    session.set_tcp_stream(tcp);
+    session.set_tcp_stream(transport);
     if compatibility_mode {
         configure_ssh_compatibility_preferences(&session)?;
     }
     session.handshake().map_err(ssh_error)?;
-    authenticate_ssh_session(&session, connection)?;
+    authenticate_ssh_session(&session, auth)?;
 
     if !session.authenticated() {
         return Err(AppError::Validation(format!(
             "authentication failed for {}@{}",
-            connection.username, connection.host
+            auth.username.trim(), auth_host_label
         )));
     }
 
@@ -676,7 +1103,145 @@ fn connect_ssh_once(
     Ok(session)
 }
 
+fn proxy_tcp_stream(mut left: TcpStream, mut right: Channel) -> Result<(), AppError> {
+    let mut left_to_right = left.try_clone()?;
+    let mut right_to_left = right.clone();
+    let copy_to_right = thread::spawn(move || {
+        let _ = std::io::copy(&mut left_to_right, &mut right);
+        let _ = left_to_right.shutdown(Shutdown::Both);
+    });
+
+    let _ = std::io::copy(&mut right_to_left, &mut left);
+    let _ = left.shutdown(Shutdown::Both);
+    let _ = copy_to_right.join();
+    Ok(())
+}
+
+fn spawn_jump_bridge(
+    session: Session,
+    target_host: String,
+    target_port: u16,
+) -> Result<JumpBridge, AppError> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    listener.set_nonblocking(true)?;
+    let local_port = listener.local_addr()?.port();
+    let local_host = "127.0.0.1".to_string();
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let thread_stop_flag = Arc::clone(&stop_flag);
+
+    let handle = thread::spawn(move || {
+        while !thread_stop_flag.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((local_stream, _)) => {
+                    if thread_stop_flag.load(Ordering::SeqCst) {
+                        let _ = local_stream.shutdown(Shutdown::Both);
+                        break;
+                    }
+                    let Ok(channel) =
+                        session.channel_direct_tcpip(&target_host, target_port, None)
+                    else {
+                        let _ = local_stream.shutdown(Shutdown::Both);
+                        continue;
+                    };
+                    thread::spawn(move || {
+                        let _ = proxy_tcp_stream(local_stream, channel);
+                    });
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    Ok(JumpBridge {
+        local_host,
+        local_port,
+        stop_flag,
+        handle: Some(handle),
+    })
+}
+
+fn jump_host_label(jump_host: &SshJumpHost) -> String {
+    jump_host
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&jump_host.host)
+        .to_string()
+}
+
+fn connect_ssh_once(
+    connection: &ConnectionProfile,
+    compatibility_mode: bool,
+) -> Result<Session, AppError> {
+    if connection.jump_hosts.is_empty() {
+        let tcp = connect_first_hop(&connection.proxy, &connection.host, connection.port)?;
+        return establish_ssh_session(
+            SshTransport {
+                stream: tcp,
+                _bridges: Vec::new(),
+            },
+            &SshAuthConfig::from_connection(connection),
+            &connection.host,
+            compatibility_mode,
+        );
+    }
+
+    let first_jump = &connection.jump_hosts[0];
+    let first_tcp = connect_first_hop(&connection.proxy, &first_jump.host, first_jump.port)?;
+    let first_label = jump_host_label(first_jump);
+    let mut current_session = establish_ssh_session(
+        SshTransport {
+            stream: first_tcp,
+            _bridges: Vec::new(),
+        },
+        &SshAuthConfig::from_jump_host(first_jump),
+        &first_label,
+        compatibility_mode,
+    )?;
+
+    let mut bridges = Vec::new();
+    for jump_host in connection.jump_hosts.iter().skip(1) {
+        let bridge = spawn_jump_bridge(current_session, jump_host.host.clone(), jump_host.port)?;
+        let local_host = bridge.local_host.clone();
+        let local_port = bridge.local_port;
+        bridges.push(bridge);
+        let tcp = connect_tcp_direct(&local_host, local_port)?;
+        let jump_label = jump_host_label(jump_host);
+        current_session = establish_ssh_session(
+            SshTransport {
+                stream: tcp,
+                _bridges: Vec::new(),
+            },
+            &SshAuthConfig::from_jump_host(jump_host),
+            &jump_label,
+            compatibility_mode,
+        )?;
+    }
+
+    let target_bridge =
+        spawn_jump_bridge(current_session, connection.host.clone(), connection.port)?;
+    let target_host = target_bridge.local_host.clone();
+    let target_port = target_bridge.local_port;
+    bridges.push(target_bridge);
+    let tcp = connect_tcp_direct(&target_host, target_port)?;
+
+    establish_ssh_session(
+        SshTransport {
+            stream: tcp,
+            _bridges: bridges,
+        },
+        &SshAuthConfig::from_connection(connection),
+        &connection.host,
+        compatibility_mode,
+    )
+}
+
 pub(crate) fn connect_ssh(connection: &ConnectionProfile) -> Result<Session, AppError> {
+    validate_connection_profile(connection)?;
     match connect_ssh_once(connection, false) {
         Ok(session) => Ok(session),
         Err(error) if is_key_exchange_error(&error) => connect_ssh_once(connection, true),
@@ -980,7 +1545,8 @@ fn spawn_shell_thread(
             }
 
             // 写入成功后立即回到 read 阶段等待远端 echo；读到输出或处理控制事件时也不额外睡眠。
-            if written_input_bytes > 0 || resized_pty || read_made_progress || handled_control_event {
+            if written_input_bytes > 0 || resized_pty || read_made_progress || handled_control_event
+            {
                 thread::yield_now();
                 continue;
             }
@@ -1027,6 +1593,53 @@ fn remote_file_name(path: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn sanitize_local_file_name(name: &str, fallback: &str) -> String {
+    let sanitized = name
+        .chars()
+        .map(|character| {
+            // Windows 本地下载路径不能包含这些保留字符；远端文件名遇到它们时用下划线保留可落盘性。
+            if character.is_control()
+                || matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                )
+            {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .trim_matches(|character| matches!(character, ' ' | '.'))
+        .to_string();
+
+    if sanitized.is_empty() {
+        fallback.to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn normalize_remote_relative_path(path: &str) -> Result<String, AppError> {
+    let normalized = normalize_remote_path(path).trim_matches('/').to_string();
+    if normalized.is_empty() {
+        return Err(AppError::Validation("remote file name is required".into()));
+    }
+
+    // 上传相对路径只能表达目录结构，不能携带 . 或 .. 跳转，避免文件夹上传写出当前目标目录。
+    let parts = normalized.split('/').collect::<Vec<_>>();
+    if parts
+        .iter()
+        .any(|part| part.is_empty() || *part == "." || *part == "..")
+    {
+        return Err(AppError::Validation(
+            "remote upload path contains invalid segments".into(),
+        ));
+    }
+
+    Ok(parts.join("/"))
+}
+
 fn join_remote_path(remote_dir: &str, file_name: &str) -> String {
     let base = normalize_remote_path(remote_dir);
     let name = normalize_remote_path(file_name)
@@ -1039,6 +1652,82 @@ fn join_remote_path(remote_dir: &str, file_name: &str) -> String {
     } else {
         format!("{}/{}", base.trim_end_matches('/'), name)
     }
+}
+
+fn remote_parent_path(path: &str) -> Option<String> {
+    let normalized = normalize_remote_path(path);
+    let trimmed = normalized.trim_end_matches('/');
+    let (parent, _) = trimmed.rsplit_once('/')?;
+    if parent.is_empty() && trimmed.starts_with('/') {
+        Some("/".into())
+    } else if parent.is_empty() {
+        Some(".".into())
+    } else {
+        Some(parent.to_string())
+    }
+}
+
+fn ensure_remote_directory(sftp: &Sftp, path: &str) -> Result<(), AppError> {
+    let normalized = normalize_remote_path(path);
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() || trimmed == "." || trimmed == "/" {
+        return Ok(());
+    }
+
+    let mut current = if trimmed.starts_with('/') {
+        "/".to_string()
+    } else {
+        String::new()
+    };
+    for part in trimmed
+        .trim_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+    {
+        if part == "." {
+            continue;
+        }
+        if part == ".." {
+            return Err(AppError::Validation(
+                "remote directory cannot contain ..".into(),
+            ));
+        }
+
+        current = if current.is_empty() {
+            part.to_string()
+        } else if current == "/" {
+            format!("/{part}")
+        } else {
+            format!("{current}/{part}")
+        };
+
+        match sftp.stat(Path::new(&current)) {
+            Ok(stat) if stat_is_dir(&stat) => continue,
+            Ok(_) => {
+                return Err(AppError::Validation(format!(
+                    "remote path {current} exists and is not a directory"
+                )))
+            }
+            Err(_) => sftp.mkdir(Path::new(&current), 0o755).map_err(ssh_error)?,
+        }
+    }
+
+    Ok(())
+}
+
+fn write_remote_file_with_sftp(
+    sftp: &Sftp,
+    remote_path: &str,
+    bytes: &[u8],
+) -> Result<(), AppError> {
+    if let Some(parent) = remote_parent_path(remote_path) {
+        ensure_remote_directory(sftp, &parent)?;
+    }
+
+    let mut remote_file = sftp.create(Path::new(remote_path)).map_err(ssh_error)?;
+    remote_file.write_all(bytes).map_err(AppError::from)?;
+    remote_file.flush().map_err(AppError::from)?;
+    Ok(())
 }
 
 fn resolve_remote_dir(sftp: &Sftp, requested_path: &str) -> Result<String, AppError> {
@@ -1567,10 +2256,175 @@ fn write_remote_file_bytes(
     let session = connect_ssh(connection)?;
     let sftp = session.sftp().map_err(ssh_error)?;
     let remote_path = normalize_remote_path(path);
-    let mut remote_file = sftp.create(Path::new(&remote_path)).map_err(ssh_error)?;
-    remote_file.write_all(bytes)?;
+    write_remote_file_with_sftp(&sftp, &remote_path, bytes)
+}
+
+fn upload_local_file_to_remote(
+    sftp: &Sftp,
+    local_path: &Path,
+    remote_path: &str,
+    summary: &mut FileTransferSummary,
+) -> Result<(), AppError> {
+    if let Some(parent) = remote_parent_path(remote_path) {
+        ensure_remote_directory(sftp, &parent)?;
+    }
+
+    let mut local_file = fs::File::open(local_path)?;
+    let mut remote_file = sftp.create(Path::new(remote_path)).map_err(ssh_error)?;
+    let copied = std::io::copy(&mut local_file, &mut remote_file)?;
     remote_file.flush()?;
+    summary.files += 1;
+    summary.bytes = summary.bytes.saturating_add(copied);
     Ok(())
+}
+
+fn upload_local_directory_to_remote(
+    sftp: &Sftp,
+    local_dir: &Path,
+    remote_dir: &str,
+    summary: &mut FileTransferSummary,
+) -> Result<(), AppError> {
+    ensure_remote_directory(sftp, remote_dir)?;
+    summary.directories += 1;
+
+    for entry in fs::read_dir(local_dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let child_name = entry.file_name().to_string_lossy().to_string();
+        let remote_child =
+            join_remote_path(remote_dir, &normalize_remote_relative_path(&child_name)?);
+        let local_child = entry.path();
+
+        if file_type.is_dir() {
+            upload_local_directory_to_remote(sftp, &local_child, &remote_child, summary)?;
+        } else if file_type.is_file() {
+            upload_local_file_to_remote(sftp, &local_child, &remote_child, summary)?;
+        }
+        // 本地符号链接和设备等特殊文件不上传，避免把未知目标或不可复制内容写到远端。
+    }
+
+    Ok(())
+}
+
+fn upload_local_path_to_remote(
+    sftp: &Sftp,
+    local_path: &Path,
+    remote_path: &str,
+    summary: &mut FileTransferSummary,
+) -> Result<(), AppError> {
+    let metadata = fs::symlink_metadata(local_path)?;
+    if metadata.is_dir() {
+        upload_local_directory_to_remote(sftp, local_path, remote_path, summary)
+    } else if metadata.is_file() {
+        upload_local_file_to_remote(sftp, local_path, remote_path, summary)
+    } else {
+        Err(AppError::Validation(format!(
+            "local path {} is not a regular file or directory",
+            local_path.to_string_lossy()
+        )))
+    }
+}
+
+fn download_remote_file_to_local(
+    sftp: &Sftp,
+    remote_path: &str,
+    local_path: &Path,
+    summary: &mut FileTransferSummary,
+) -> Result<(), AppError> {
+    if let Some(parent) = local_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut remote_file = sftp.open(Path::new(remote_path)).map_err(ssh_error)?;
+    let mut local_file = fs::File::create(local_path)?;
+    let copied = std::io::copy(&mut remote_file, &mut local_file)?;
+    local_file.flush()?;
+    summary.files += 1;
+    summary.bytes = summary.bytes.saturating_add(copied);
+    Ok(())
+}
+
+fn download_remote_directory_to_local(
+    sftp: &Sftp,
+    remote_dir: &str,
+    local_dir: &Path,
+    summary: &mut FileTransferSummary,
+) -> Result<(), AppError> {
+    fs::create_dir_all(local_dir)?;
+    summary.directories += 1;
+    let entries = sftp.readdir(Path::new(remote_dir)).map_err(ssh_error)?;
+    for (entry_path, stat) in entries {
+        let Some(name) = entry_path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if name == "." || name == ".." {
+            continue;
+        }
+
+        let remote_child = entry_path.to_string_lossy().replace('\\', "/");
+        let local_child = local_dir.join(sanitize_local_file_name(name, "item"));
+        let target_stat = if stat_is_symlink(&stat) {
+            sftp.stat(&entry_path).ok()
+        } else {
+            None
+        };
+        let is_directory = target_stat
+            .as_ref()
+            .map(stat_is_dir)
+            .unwrap_or_else(|| stat_is_dir(&stat));
+
+        if is_directory && !stat_is_symlink(&stat) {
+            download_remote_directory_to_local(sftp, &remote_child, &local_child, summary)?;
+        } else if !(stat_is_symlink(&stat) && is_directory) {
+            // 符号链接目录不递归跟随，避免远端循环链接导致下载无限展开；普通文件和文件链接按目标内容下载。
+            download_remote_file_to_local(sftp, &remote_child, &local_child, summary)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn unique_local_destination(destination: PathBuf, used: &mut HashSet<PathBuf>) -> PathBuf {
+    if !destination.exists() && used.insert(destination.clone()) {
+        return destination;
+    }
+
+    let parent = destination
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(PathBuf::new);
+    let stem = destination
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("download");
+    let extension = destination.extension().and_then(|value| value.to_str());
+
+    for index in 1..10_000 {
+        let file_name = if let Some(extension) = extension {
+            format!("{stem} ({index}).{extension}")
+        } else {
+            format!("{stem} ({index})")
+        };
+        let candidate = parent.join(file_name);
+        if !candidate.exists() && used.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+
+    destination
+}
+
+fn download_remote_path_to_local(
+    sftp: &Sftp,
+    remote_path: &str,
+    destination: &Path,
+    summary: &mut FileTransferSummary,
+) -> Result<(), AppError> {
+    let remote_stat = sftp.stat(Path::new(remote_path)).map_err(ssh_error)?;
+    if stat_is_dir(&remote_stat) {
+        download_remote_directory_to_local(sftp, remote_path, destination, summary)
+    } else {
+        download_remote_file_to_local(sftp, remote_path, destination, summary)
+    }
 }
 
 fn forward_single_connection(
@@ -1699,6 +2553,61 @@ fn stop_all_runtimes(state: &AppState) -> Result<(), AppError> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn terminate_myterminal_cli_processes() -> Result<(), AppError> {
+    let mut cli_path = env::current_exe()?;
+    cli_path.set_file_name("myterminal-cli.exe");
+    let target = cli_path.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        "$target = '{target}'; \
+         Get-CimInstance Win32_Process -Filter \"name = 'myterminal-cli.exe'\" | \
+         Where-Object {{ $_.ExecutablePath -eq $target }} | \
+         ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
+    );
+
+    // 只清理当前安装/开发目录旁边的 CLI，避免误杀其他 MyTerminal 副本或同名调试程序。
+    Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .status()
+        .map(|_| ())
+        .map_err(AppError::from)
+}
+
+#[cfg(not(windows))]
+fn terminate_myterminal_cli_processes() -> Result<(), AppError> {
+    // 非 Windows 平台暂不主动扫进程；MCP stdio 客户端正常关闭 stdin 时 CLI 会自然退出。
+    Ok(())
+}
+
+pub fn prepare_agent_bridge_startup() -> Result<(), AppError> {
+    // 每次启用 MCP Bridge 前先关闭旧 stdio 后端，确保客户端重新连接到新编译/新配置的 CLI。
+    terminate_myterminal_cli_processes()
+}
+
+pub fn shutdown_app_backends(state: &AppState) -> Result<(), AppError> {
+    // 退出清理先停 MyTerminal 自己的 SSH 会话和隧道，再停 MCP Bridge 和外部 CLI 后端。
+    let mut first_error: Option<AppError> = None;
+    if let Err(error) = stop_all_runtimes(state) {
+        first_error = Some(error);
+    }
+    if let Err(error) = agent_bridge::stop_server(&state.agent_bridge, &state.storage) {
+        if first_error.is_none() {
+            first_error = Some(error);
+        }
+    }
+    if let Err(error) = terminate_myterminal_cli_processes() {
+        if first_error.is_none() {
+            first_error = Some(error);
+        }
+    }
+
+    if let Some(error) = first_error {
+        Err(error)
+    } else {
+        Ok(())
+    }
+}
+
 fn bootstrap_from_storage(state: &AppState) -> Result<BootstrapState, AppError> {
     let sessions = lock_sessions(state)?
         .values()
@@ -1803,6 +2712,9 @@ pub fn set_agent_bridge_enabled(
     let mut settings = state.storage.load_settings(&state.crypto)?;
     settings.agent_bridge.enabled = enabled;
     state.storage.save_settings(&settings, &state.crypto)?;
+    if enabled {
+        prepare_agent_bridge_startup()?;
+    }
     agent_bridge::sync_server(
         &state.agent_bridge,
         &state.storage,
@@ -1823,6 +2735,9 @@ pub fn reset_agent_bridge_token(
     let settings = state.storage.load_settings(&state.crypto)?;
     agent_bridge::stop_server(&state.agent_bridge, &state.storage)?;
     agent_bridge::reset_agent_bridge_token(&state.storage)?;
+    if settings.agent_bridge.enabled {
+        prepare_agent_bridge_startup()?;
+    }
     agent_bridge::sync_server(
         &state.agent_bridge,
         &state.storage,
@@ -1847,6 +2762,7 @@ pub fn create_connection(
     state: State<'_, AppState>,
     connection: ConnectionProfile,
 ) -> Result<ConnectionProfile, String> {
+    validate_connection_profile(&connection)?;
     let mut connections = state.storage.load_connections(&state.crypto)?;
     connections.retain(|item| item.id != connection.id);
     connections.insert(0, connection.clone());
@@ -2044,15 +2960,47 @@ pub fn upload_remote_file(
     let session = connect_ssh(&connection)?;
     let sftp = session.sftp().map_err(ssh_error)?;
     let directory = resolve_remote_dir(&sftp, &remote_dir)?;
-    let remote_path = join_remote_path(&directory, &file_name);
+    let remote_name = normalize_remote_relative_path(&file_name)?;
+    let remote_path = join_remote_path(&directory, &remote_name);
     let bytes = STANDARD
         .decode(content_base64)
         .map_err(|error| AppError::Validation(format!("invalid upload payload: {error}")))?;
     // 上传已持有当前 SFTP 连接，直接在该连接上写入，避免一次上传重复建立 SSH/SFTP 导致远端连接抖动。
-    let mut remote_file = sftp.create(Path::new(&remote_path)).map_err(ssh_error)?;
-    remote_file.write_all(&bytes).map_err(AppError::from)?;
-    remote_file.flush().map_err(AppError::from)?;
+    write_remote_file_with_sftp(&sftp, &remote_path, &bytes)?;
     Ok(true)
+}
+
+#[tauri::command]
+pub fn upload_local_paths(
+    state: State<'_, AppState>,
+    connection_id: String,
+    remote_dir: String,
+    local_paths: Vec<String>,
+) -> Result<FileTransferSummary, String> {
+    let connection = ensure_connection_exists(&state, &connection_id)?;
+    let session = connect_ssh(&connection)?;
+    let sftp = session.sftp().map_err(ssh_error)?;
+    let directory = resolve_remote_dir(&sftp, &remote_dir)?;
+    let mut summary = FileTransferSummary::default();
+
+    // 桌面拖放会直接给本机路径；批量上传复用同一条 SFTP 连接，逐项创建远端根目录或文件。
+    for local_path in local_paths
+        .iter()
+        .map(|path| path.trim())
+        .filter(|path| !path.is_empty())
+    {
+        let source = PathBuf::from(local_path);
+        let source_name = source
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| AppError::Validation(format!("invalid local path: {local_path}")))?;
+        let remote_name = normalize_remote_relative_path(source_name)?;
+        let remote_path = join_remote_path(&directory, &remote_name);
+        upload_local_path_to_remote(&sftp, &source, &remote_path, &mut summary)?;
+        summary.destinations.push(remote_path);
+    }
+
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -2062,16 +3010,67 @@ pub fn download_remote_file(
     path: String,
 ) -> Result<String, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
-    let bytes = read_remote_file_bytes(&connection, &path)?;
+    let session = connect_ssh(&connection)?;
+    let sftp = session.sftp().map_err(ssh_error)?;
+    let remote_path = normalize_remote_path(&path);
+    let remote_stat = sftp.stat(Path::new(&remote_path)).map_err(ssh_error)?;
 
     let downloads_dir = state.storage.downloads_dir_path();
     fs::create_dir_all(&downloads_dir).map_err(|error| AppError::from(error).to_string())?;
 
-    let file_name = remote_file_name(&path).unwrap_or_else(|| "download.bin".into());
-    let destination = downloads_dir.join(file_name);
-    fs::write(&destination, bytes).map_err(|error| AppError::from(error).to_string())?;
+    let file_name = remote_file_name(&remote_path).unwrap_or_else(|| "download".into());
+    let destination = downloads_dir.join(sanitize_local_file_name(&file_name, "download"));
+    let mut summary = FileTransferSummary::default();
+    if stat_is_dir(&remote_stat) {
+        download_remote_directory_to_local(&sftp, &remote_path, &destination, &mut summary)
+            .map_err(|error| error.to_string())?;
+    } else {
+        download_remote_file_to_local(&sftp, &remote_path, &destination, &mut summary)
+            .map_err(|error| error.to_string())?;
+    }
 
     Ok(destination.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn download_remote_paths(
+    state: State<'_, AppState>,
+    connection_id: String,
+    paths: Vec<String>,
+    local_dir: Option<String>,
+) -> Result<FileTransferSummary, String> {
+    let connection = ensure_connection_exists(&state, &connection_id)?;
+    let session = connect_ssh(&connection)?;
+    let sftp = session.sftp().map_err(ssh_error)?;
+    let base_dir = local_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.storage.downloads_dir_path());
+    fs::create_dir_all(&base_dir).map_err(|error| AppError::from(error).to_string())?;
+
+    let mut used_destinations = HashSet::new();
+    let mut summary = FileTransferSummary::default();
+    // 多路径下载只建立一次 SFTP 会话；同名文件自动追加序号，避免后下载项覆盖先下载项。
+    for path in paths
+        .iter()
+        .map(|path| path.trim())
+        .filter(|path| !path.is_empty())
+    {
+        let remote_path = normalize_remote_path(path);
+        let file_name = remote_file_name(&remote_path).unwrap_or_else(|| "download".into());
+        let destination = unique_local_destination(
+            base_dir.join(sanitize_local_file_name(&file_name, "download")),
+            &mut used_destinations,
+        );
+        download_remote_path_to_local(&sftp, &remote_path, &destination, &mut summary)?;
+        summary
+            .destinations
+            .push(destination.to_string_lossy().to_string());
+    }
+
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -2090,8 +3089,22 @@ pub fn delete_remote_path(
 // 单路径删除复用传入的 SFTP 句柄，供单删和批量删除共用同一套目录/文件判断规则。
 fn delete_remote_path_with_sftp(sftp: &Sftp, path: &str) -> Result<(), AppError> {
     let remote_path = normalize_remote_path(path);
-    let stat = sftp.stat(Path::new(&remote_path)).map_err(ssh_error)?;
-    if stat_is_dir(&stat) {
+    let stat = sftp.lstat(Path::new(&remote_path)).map_err(ssh_error)?;
+    if stat_is_symlink(&stat) {
+        sftp.unlink(Path::new(&remote_path)).map_err(ssh_error)?;
+    } else if stat_is_dir(&stat) {
+        // SFTP rmdir 只能删除空目录；文件管理删除目录时先递归清空子项，再删除目录本身。
+        for (entry_path, _entry_stat) in sftp.readdir(Path::new(&remote_path)).map_err(ssh_error)? {
+            let Some(name) = entry_path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if name == "." || name == ".." {
+                continue;
+            }
+
+            let child_path = entry_path.to_string_lossy().replace('\\', "/");
+            delete_remote_path_with_sftp(sftp, &child_path)?;
+        }
         sftp.rmdir(Path::new(&remote_path)).map_err(ssh_error)?;
     } else {
         sftp.unlink(Path::new(&remote_path)).map_err(ssh_error)?;

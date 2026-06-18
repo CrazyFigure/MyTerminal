@@ -11,8 +11,9 @@ use crate::{
     crypto::CryptoService,
     error::AppError,
     models::{
-        AppSettings, ConnectionProfile, EditorDocument, HistoryEntry, StoredAppSettings,
-        StoredConnectionProfile, TunnelRecord, WebDavSettings,
+        AppSettings, ConnectionProfile, EditorDocument, HistoryEntry, SshJumpHost, SshProxyConfig,
+        StoredAppSettings, StoredConnectionProfile, StoredSshJumpHost, StoredSshProxyConfig,
+        TunnelRecord, WebDavSettings,
     },
 };
 
@@ -235,6 +236,28 @@ impl StorageService {
             .map(|item| {
                 let private_key_text = crypto.decrypt_local(&item.private_key_text_encrypted)?;
                 let passphrase = crypto.decrypt_local(&item.passphrase_encrypted)?;
+                let jump_hosts = item
+                    .jump_hosts
+                    .into_iter()
+                    .map(|jump_host| {
+                        let private_key_text =
+                            crypto.decrypt_local(&jump_host.private_key_text_encrypted)?;
+                        let passphrase = crypto.decrypt_local(&jump_host.passphrase_encrypted)?;
+                        Ok(SshJumpHost {
+                            id: jump_host.id,
+                            name: jump_host.name,
+                            host: jump_host.host,
+                            port: jump_host.port,
+                            username: jump_host.username,
+                            auth_method: jump_host.auth_method,
+                            password: crypto.decrypt_local(&jump_host.password_encrypted)?,
+                            private_key_path: jump_host.private_key_path,
+                            private_key_text: (!private_key_text.is_empty()).then_some(private_key_text),
+                            passphrase: (!passphrase.is_empty()).then_some(passphrase),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, AppError>>()?;
+                let proxy_password = crypto.decrypt_local(&item.proxy.password_encrypted)?;
                 Ok(ConnectionProfile {
                     id: item.id,
                     name: item.name,
@@ -247,6 +270,15 @@ impl StorageService {
                     private_key_path: item.private_key_path,
                     private_key_text: (!private_key_text.is_empty()).then_some(private_key_text),
                     passphrase: (!passphrase.is_empty()).then_some(passphrase),
+                    jump_hosts,
+                    proxy: SshProxyConfig {
+                        enabled: item.proxy.enabled,
+                        proxy_type: item.proxy.proxy_type,
+                        host: item.proxy.host,
+                        port: item.proxy.port,
+                        username: item.proxy.username,
+                        password: (!proxy_password.is_empty()).then_some(proxy_password),
+                    },
                     note: item.note,
                     tags: item.tags,
                 })
@@ -262,6 +294,26 @@ impl StorageService {
         let stored: Result<Vec<_>, AppError> = connections
             .iter()
             .map(|item| {
+                let jump_hosts: Result<Vec<_>, AppError> = item
+                    .jump_hosts
+                    .iter()
+                    .map(|jump_host| {
+                        Ok(StoredSshJumpHost {
+                            id: jump_host.id.clone(),
+                            name: jump_host.name.clone(),
+                            host: jump_host.host.clone(),
+                            port: jump_host.port,
+                            username: jump_host.username.clone(),
+                            auth_method: jump_host.auth_method.clone(),
+                            password_encrypted: crypto.encrypt_local(&jump_host.password)?,
+                            private_key_path: jump_host.private_key_path.clone(),
+                            private_key_text_encrypted: crypto
+                                .encrypt_local(jump_host.private_key_text.as_deref().unwrap_or(""))?,
+                            passphrase_encrypted: crypto
+                                .encrypt_local(jump_host.passphrase.as_deref().unwrap_or(""))?,
+                        })
+                    })
+                    .collect();
                 Ok(StoredConnectionProfile {
                     id: item.id.clone(),
                     name: item.name.clone(),
@@ -276,6 +328,15 @@ impl StorageService {
                         .encrypt_local(item.private_key_text.as_deref().unwrap_or(""))?,
                     passphrase_encrypted: crypto
                         .encrypt_local(item.passphrase.as_deref().unwrap_or(""))?,
+                    jump_hosts: jump_hosts?,
+                    proxy: StoredSshProxyConfig {
+                        enabled: item.proxy.enabled,
+                        proxy_type: item.proxy.proxy_type.clone(),
+                        host: item.proxy.host.clone(),
+                        port: item.proxy.port,
+                        username: item.proxy.username.clone(),
+                        password_encrypted: crypto.encrypt_local(item.proxy.password.as_deref().unwrap_or(""))?,
+                    },
                     note: item.note.clone(),
                     tags: item.tags.clone(),
                 })

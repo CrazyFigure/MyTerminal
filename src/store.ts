@@ -11,6 +11,8 @@ import type {
   RemoteFileEntry,
   RuntimeOverview,
   SessionStatus,
+  SshJumpHost,
+  SshProxyConfig,
   TerminalSession,
   TerminalOutputChunk,
   TunnelDraft,
@@ -69,6 +71,15 @@ const emptyConnectionDraft = (): ConnectionDraft => ({
   privateKeyPath: '',
   privateKeyText: '',
   passphrase: '',
+  jumpHosts: [],
+  proxy: {
+    enabled: false,
+    type: 'socks5',
+    host: '',
+    port: 1080,
+    username: '',
+    password: '',
+  },
   note: '',
   tags: [],
 });
@@ -92,6 +103,41 @@ const toBase64 = async (file: File) => {
   return btoa(binary);
 };
 
+const uploadRemoteName = (file: File) => {
+  // 目录上传依赖浏览器提供的 webkitRelativePath 保留根目录和子目录；单文件上传没有该字段时退回文件名。
+  const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+  const normalized = relativePath
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter((part) => part && part !== '.' && part !== '..')
+    .join('/');
+  return normalized || file.name;
+};
+
+// 跳板机草稿默认用独立 id 保持增删排序稳定；认证字段按主机独立保存，支持多级链路不同账号。
+const emptyJumpHostDraft = (): SshJumpHost => ({
+  id: crypto.randomUUID(),
+  name: '',
+  host: '',
+  port: 22,
+  username: '',
+  authMethod: 'password',
+  password: '',
+  privateKeyPath: '',
+  privateKeyText: '',
+  passphrase: '',
+});
+
+// 代理草稿允许临时关闭但保留输入值，默认 SOCKS5/1080 更贴近常见本地代理习惯。
+const emptyProxyDraft = (): SshProxyConfig => ({
+  enabled: false,
+  type: 'socks5',
+  host: '',
+  port: 1080,
+  username: '',
+  password: '',
+});
+
 const parentRemotePath = (path: string) => {
   const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
   const parts = normalized.split('/').filter(Boolean);
@@ -106,6 +152,65 @@ const normalizeConnectionGroupPath = (value?: string) =>
     .replace(/\\/g, '/')
     .replace(/^\/+|\/+$/g, '')
     .replace(/\/+/g, '/');
+
+const clampPort = (value: number | undefined, fallback = 22) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(65535, Math.max(1, Math.trunc(value)));
+};
+
+const trimToUndefined = (value?: string) => {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+};
+
+const keepTextIfPresent = (value?: string) => {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  return value.trim() ? value : undefined;
+};
+
+const normalizeAuthMethod = (authMethod?: string) => (authMethod === 'privateKey' ? 'privateKey' : 'password');
+
+// 连接保存前统一清洗跳板机字段：空敏感字段不落到无意义字符串，端口不合法时回退 SSH 默认端口。
+const normalizeJumpHost = (jumpHost: SshJumpHost): SshJumpHost => {
+  const authMethod = normalizeAuthMethod(jumpHost.authMethod);
+  return {
+    id: jumpHost.id || crypto.randomUUID(),
+    name: trimToUndefined(jumpHost.name),
+    host: jumpHost.host.trim(),
+    port: clampPort(jumpHost.port),
+    username: jumpHost.username.trim(),
+    authMethod,
+    password: authMethod === 'password' ? jumpHost.password ?? '' : undefined,
+    privateKeyPath: authMethod === 'privateKey' ? trimToUndefined(jumpHost.privateKeyPath) : undefined,
+    privateKeyText: authMethod === 'privateKey' ? keepTextIfPresent(jumpHost.privateKeyText) : undefined,
+    passphrase: authMethod === 'privateKey' ? keepTextIfPresent(jumpHost.passphrase) : undefined,
+  };
+};
+
+// 代理只作用于第一跳；关闭时仍保留配置，方便用户临时启停。
+const normalizeProxyConfig = (proxy?: SshProxyConfig): SshProxyConfig => ({
+  enabled: Boolean(proxy?.enabled),
+  type: proxy?.type === 'http' ? 'http' : 'socks5',
+  host: proxy?.host?.trim() ?? '',
+  port: clampPort(proxy?.port, 1080),
+  username: trimToUndefined(proxy?.username),
+  password: keepTextIfPresent(proxy?.password),
+});
+
+// 旧连接没有 jumpHosts/proxy 字段，加载到前端状态时补齐默认值，避免编辑旧连接时报 undefined。
+const normalizeLoadedConnection = (connection: ConnectionProfile): ConnectionProfile => ({
+  ...connection,
+  jumpHosts: Array.isArray(connection.jumpHosts) ? connection.jumpHosts : [],
+  proxy: normalizeProxyConfig(connection.proxy),
+  tags: Array.isArray(connection.tags) ? connection.tags : [],
+});
 
 // 删除、重命名分组都需要同时处理子分组，路径前缀判断必须只命中完整层级。
 const isGroupOrChildPath = (value: string | undefined, groupPath: string) => {
@@ -344,6 +449,34 @@ const getConnectionDraftValidationKey = (draft: ConnectionDraft) => {
     return 'validationPasswordRequired' as const;
   }
 
+  for (const jumpHost of draft.jumpHosts) {
+    if (!jumpHost.host.trim()) {
+      return 'validationJumpHostRequired' as const;
+    }
+    if (!jumpHost.username.trim()) {
+      return 'validationJumpUsernameRequired' as const;
+    }
+    if (!isValidPort(jumpHost.port)) {
+      return 'validationPortInvalid' as const;
+    }
+    if (jumpHost.authMethod === 'privateKey') {
+      if (!jumpHost.privateKeyPath?.trim() && !jumpHost.privateKeyText?.trim()) {
+        return 'validationJumpPrivateKeyRequired' as const;
+      }
+    } else if (!jumpHost.password?.trim()) {
+      return 'validationJumpPasswordRequired' as const;
+    }
+  }
+
+  if (draft.proxy.enabled) {
+    if (!draft.proxy.host.trim()) {
+      return 'validationProxyHostRequired' as const;
+    }
+    if (!isValidPort(draft.proxy.port)) {
+      return 'validationPortInvalid' as const;
+    }
+  }
+
   return undefined;
 };
 
@@ -362,6 +495,8 @@ const buildConnectionProfile = (draft: ConnectionDraft): ConnectionProfile => {
     privateKeyPath: authMethod === 'privateKey' ? draft.privateKeyPath : undefined,
     privateKeyText: authMethod === 'privateKey' ? draft.privateKeyText : undefined,
     passphrase: authMethod === 'privateKey' ? draft.passphrase : undefined,
+    jumpHosts: draft.jumpHosts.map((jumpHost) => normalizeJumpHost(jumpHost)),
+    proxy: normalizeProxyConfig(draft.proxy),
     note: draft.note?.trim() || undefined,
     tags: Array.isArray(draft.tags)
       ? draft.tags
@@ -408,7 +543,7 @@ type StoreState = {
   selectSession: (sessionId?: string) => void;
   openConnectionForm: (connection?: ConnectionProfile, groupPath?: string) => void;
   closeConnectionForm: () => void;
-  updateConnectionDraft: (key: keyof ConnectionDraft, value: string | number | string[]) => void;
+  updateConnectionDraft: <K extends keyof ConnectionDraft>(key: K, value: ConnectionDraft[K]) => void;
   saveConnectionDraft: () => Promise<void>;
   testConnectionDraft: () => Promise<void>;
   closeTunnelForm: () => void;
@@ -437,7 +572,10 @@ type StoreState = {
   refreshRemoteHistory: (connectionId?: string) => Promise<void>;
   refreshFiles: (path?: string) => Promise<void>;
   uploadLocalFile: (file: File) => Promise<void>;
+  uploadLocalFiles: (files: File[]) => Promise<void>;
+  uploadLocalPaths: (localPaths: string[]) => Promise<void>;
   downloadRemoteFile: (path: string) => Promise<void>;
+  downloadRemotePaths: (paths: string[], localDir?: string) => Promise<void>;
   deleteRemotePath: (path: string) => Promise<void>;
   deleteRemotePaths: (paths: string[]) => Promise<void>;
   renameRemotePath: (path: string, newName: string) => Promise<void>;
@@ -454,7 +592,8 @@ type StoreState = {
   exportLocalConfig: (targetPath: string) => Promise<void>;
   importLocalConfig: (file: File) => Promise<void>;
   checkForUpdates: () => Promise<UpdateCheckResult>;
-  installUpdate: (result: UpdateCheckResult) => Promise<void>;
+  // 更新安装必须返回后端落盘路径，并把异常继续抛给设置页，避免按钮恢复后没有可见反馈。
+  installUpdate: (result: UpdateCheckResult) => Promise<string>;
   openTunnel: () => Promise<void>;
   // 隧道编辑复用新增弹窗，草稿中的 id 用来决定保存时走新增还是更新。
   editTunnel: (tunnel: TunnelRecord) => void;
@@ -498,7 +637,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
       loading: false,
       statusMessage: statusText(state.settings, 'statusWorkspaceLoaded'),
       settings: state.settings,
-      connections: state.connections,
+      connections: state.connections.map((connection) => normalizeLoadedConnection(connection)),
       history: state.history,
       sessions: state.sessions,
       tunnels: state.tunnels,
@@ -557,6 +696,10 @@ export const useAppStore = create<StoreState>((set, get) => ({
             privateKeyPath: connection.privateKeyPath ?? '',
             privateKeyText: connection.privateKeyText ?? '',
             passphrase: connection.passphrase ?? '',
+            jumpHosts: Array.isArray(connection.jumpHosts)
+              ? connection.jumpHosts.map((jumpHost) => ({ ...emptyJumpHostDraft(), ...jumpHost }))
+              : [],
+            proxy: connection.proxy ? { ...emptyProxyDraft(), ...connection.proxy } : emptyProxyDraft(),
             note: connection.note ?? '',
             tags: [...connection.tags],
           }
@@ -613,8 +756,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
         return {
           settings: nextSettings,
           connections: exists
-            ? state.connections.map((item) => (item.id === saved.id ? saved : item))
-            : [saved, ...state.connections],
+            ? state.connections.map((item) => (item.id === saved.id ? normalizeLoadedConnection(saved) : item))
+            : [normalizeLoadedConnection(saved), ...state.connections],
           activeConnectionId: saved.id,
           showConnectionForm: false,
           connectionDraft: emptyConnectionDraft(),
@@ -814,7 +957,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
 
     set((state) => ({
       settings: nextSettings,
-      connections: [saved, ...state.connections.filter((item) => item.id !== saved.id)],
+      connections: [normalizeLoadedConnection(saved), ...state.connections.filter((item) => item.id !== saved.id)],
       activeConnectionId: saved.id,
       statusMessage: statusText(nextSettings, 'statusConnectionDuplicated', { name: saved.name }),
     }));
@@ -985,7 +1128,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
 
     set((state) => ({
       settings: nextSettings,
-      connections: state.connections.map((item) => (item.id === saved.id ? saved : item)),
+      connections: state.connections.map((item) => (item.id === saved.id ? normalizeLoadedConnection(saved) : item)),
       statusMessage: statusText(nextSettings, 'statusSavedConnection', { name: saved.name }),
     }));
   },
@@ -1473,6 +1616,61 @@ export const useAppStore = create<StoreState>((set, get) => ({
     }
   },
 
+  uploadLocalFiles: async (files) => {
+    const { activeConnectionId, currentRemotePath } = get();
+    const uploadFiles = files.filter((file) => file.name);
+    if (!activeConnectionId || !uploadFiles.length) {
+      return;
+    }
+
+    try {
+      // 文件夹上传按文件顺序串行写入，避免大量并发 base64 编码和 SFTP create 同时挤占前端内存与远端连接。
+      for (const file of uploadFiles) {
+        const contentBase64 = await toBase64(file);
+        await backend.uploadRemoteFile(activeConnectionId, currentRemotePath, uploadRemoteName(file), contentBase64);
+      }
+      await get().refreshFiles(currentRemotePath);
+      set({
+        statusMessage: uploadFiles.length === 1
+          ? statusText(get().settings, 'statusUploadedFile', { name: uploadFiles[0].name })
+          : statusText(get().settings, 'statusUploadedFiles', { count: uploadFiles.length }),
+      });
+    } catch (error) {
+      set((state) => ({
+        statusMessage: statusText(state.settings, 'statusFileOperationFailed', {
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      }));
+      throw error;
+    }
+  },
+
+  uploadLocalPaths: async (localPaths) => {
+    const { activeConnectionId, currentRemotePath } = get();
+    const uploadPaths = Array.from(new Set(localPaths.map((path) => path.trim()).filter(Boolean)));
+    if (!activeConnectionId || !uploadPaths.length) {
+      return;
+    }
+
+    try {
+      // 桌面拖放上传直接把本机路径交给后端递归读取，避免大文件和目录树经过前端 base64 中转。
+      await backend.uploadLocalPaths(activeConnectionId, currentRemotePath, uploadPaths);
+      await get().refreshFiles(currentRemotePath);
+      set({
+        statusMessage: uploadPaths.length === 1
+          ? statusText(get().settings, 'statusUploadedFile', { name: uploadPaths[0].split(/[\\/]/).pop() ?? uploadPaths[0] })
+          : statusText(get().settings, 'statusUploadedPaths', { count: uploadPaths.length }),
+      });
+    } catch (error) {
+      set((state) => ({
+        statusMessage: statusText(state.settings, 'statusFileOperationFailed', {
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      }));
+      throw error;
+    }
+  },
+
   downloadRemoteFile: async (path) => {
     const { activeConnectionId } = get();
     if (!activeConnectionId) {
@@ -1482,6 +1680,33 @@ export const useAppStore = create<StoreState>((set, get) => ({
     try {
       const localPath = await backend.downloadRemoteFile(activeConnectionId, path);
       set({ statusMessage: statusText(get().settings, 'statusDownloadedFile', { path: localPath }) });
+    } catch (error) {
+      set((state) => ({
+        statusMessage: statusText(state.settings, 'statusFileOperationFailed', {
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      }));
+      throw error;
+    }
+  },
+
+  downloadRemotePaths: async (paths, localDir) => {
+    const { activeConnectionId } = get();
+    const normalizedPaths = Array.from(new Set(paths.filter(Boolean)));
+    if (!activeConnectionId || !normalizedPaths.length) {
+      return;
+    }
+
+    try {
+      const summary = await backend.downloadRemotePaths(activeConnectionId, normalizedPaths, localDir);
+      set({
+        statusMessage: normalizedPaths.length === 1
+          ? statusText(get().settings, 'statusDownloadedFile', { path: summary.destinations[0] ?? normalizedPaths[0] })
+          : statusText(get().settings, 'statusDownloadedPaths', {
+              count: normalizedPaths.length,
+              path: summary.destinations[0] ?? localDir ?? '',
+            }),
+      });
     } catch (error) {
       set((state) => ({
         statusMessage: statusText(state.settings, 'statusFileOperationFailed', {
@@ -1671,7 +1896,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
     const nextActiveConnectionId = nextState.sessions[0]?.connectionId;
     set({
       settings: nextState.settings,
-      connections: nextState.connections,
+      connections: nextState.connections.map((connection) => normalizeLoadedConnection(connection)),
       history: nextState.history,
       sessions: nextState.sessions,
       tunnels: nextState.tunnels,
@@ -1699,7 +1924,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
     const nextActiveConnectionId = nextState.sessions[0]?.connectionId;
     set({
       settings: nextState.settings,
-      connections: nextState.connections,
+      connections: nextState.connections.map((connection) => normalizeLoadedConnection(connection)),
       history: nextState.history,
       sessions: nextState.sessions,
       tunnels: nextState.tunnels,
@@ -1729,8 +1954,9 @@ export const useAppStore = create<StoreState>((set, get) => ({
 
   installUpdate: async (result) => {
     if (!result.installerDownloadUrl || !result.installerAssetName) {
-      set((state) => ({ statusMessage: statusText(state.settings, 'statusUpdateInstallerMissing') }));
-      return;
+      const message = statusText(get().settings, 'statusUpdateInstallerMissing');
+      set({ statusMessage: message });
+      throw new Error(message);
     }
 
     try {
@@ -1738,18 +1964,22 @@ export const useAppStore = create<StoreState>((set, get) => ({
         loading: true,
         statusMessage: statusText(state.settings, 'statusUpdateDownloading'),
       }));
-      await backend.installUpdate(result);
+      // 后端返回下载后的安装包路径，设置页用它给用户一个可追踪的成功提示。
+      const installerPath = await backend.installUpdate(result);
       set((state) => ({
         loading: false,
         statusMessage: statusText(state.settings, 'statusUpdateInstallStarted'),
       }));
+      return installerPath;
     } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
       set((state) => ({
         loading: false,
         statusMessage: statusText(state.settings, 'statusUpdateInstallFailed', {
-          reason: error instanceof Error ? error.message : String(error),
+          reason,
         }),
       }));
+      throw error instanceof Error ? error : new Error(reason);
     }
   },
 

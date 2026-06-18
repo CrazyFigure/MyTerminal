@@ -9,6 +9,7 @@ import {
   useState,
   type CSSProperties,
   type DependencyList,
+  type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -57,12 +58,13 @@ import { TerminalWorkspace } from './TerminalWorkspace';
 import { backend } from './backend';
 import { writeClipboardText } from './clipboard';
 import { useAppStore } from './store';
-import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, RemoteFileEntry, SessionStatus, TerminalSession, UiLanguage, UpdateCheckResult } from './types';
+import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, RemoteFileEntry, SessionStatus, SshJumpHost, TerminalSession, UiLanguage, UpdateCheckResult } from './types';
 
 const MonacoEditor = lazy(() => import('./MonacoEditor'));
 
 type BottomPanelTab = 'commands' | 'tunnels' | 'history' | 'agent';
 type SettingsTab = 'appearance' | 'sync' | 'agent' | 'about';
+type ConnectionFormTab = 'basic' | 'jumpHosts' | 'proxy';
 type FileContextMenuState = {
   file: RemoteFileEntry;
   x: number;
@@ -114,6 +116,10 @@ const ungroupedGroupPath = '__ungrouped__';
 
 // 文件管理列宽保持紧凑默认值，同时给名称列更多可扩展空间，方便长文件名场景手动拉宽。
 const explorerDefaultColumnWidths = [220, 70, 62, 132, 92, 118];
+// 文件管理列表使用固定行高做虚拟滚动，目录文件很多时也只渲染视口附近的行。
+const explorerRowHeight = 27;
+// 视口上下各多渲染少量缓冲行，避免快速滚动时出现空白闪烁。
+const explorerOverscanRows = 10;
 const explorerColumnLimits = [
   { min: 150, max: 680 },
   { min: 58, max: 140 },
@@ -270,8 +276,50 @@ const getConnectionValidationKey = (draft: ConnectionDraft) => {
     return 'validationPasswordRequired' as const;
   }
 
+  for (const jumpHost of draft.jumpHosts) {
+    if (!jumpHost.host.trim()) {
+      return 'validationJumpHostRequired' as const;
+    }
+    if (!jumpHost.username.trim()) {
+      return 'validationJumpUsernameRequired' as const;
+    }
+    if (!Number.isInteger(jumpHost.port) || jumpHost.port < 1 || jumpHost.port > 65535) {
+      return 'validationPortInvalid' as const;
+    }
+    if (jumpHost.authMethod === 'privateKey') {
+      if (!jumpHost.privateKeyPath?.trim() && !jumpHost.privateKeyText?.trim()) {
+        return 'validationJumpPrivateKeyRequired' as const;
+      }
+    } else if (!jumpHost.password?.trim()) {
+      return 'validationJumpPasswordRequired' as const;
+    }
+  }
+
+  if (draft.proxy.enabled) {
+    if (!draft.proxy.host.trim()) {
+      return 'validationProxyHostRequired' as const;
+    }
+    if (!Number.isInteger(draft.proxy.port) || draft.proxy.port < 1 || draft.proxy.port > 65535) {
+      return 'validationPortInvalid' as const;
+    }
+  }
+
   return undefined;
 };
+
+// 跳板机默认按 SSH 常用端口和密码认证初始化；每一级都能再切换到私钥认证。
+const createEmptyJumpHost = (): SshJumpHost => ({
+  id: crypto.randomUUID(),
+  name: '',
+  host: '',
+  port: 22,
+  username: '',
+  authMethod: 'password',
+  password: '',
+  privateKeyPath: '',
+  privateKeyText: '',
+  passphrase: '',
+});
 
 const beginResize = (
   event: ReactPointerEvent<HTMLElement>,
@@ -792,6 +840,7 @@ function ConnectionFormModal() {
   const [revealPassword, setRevealPassword] = useState(false);
   const [revealPassphrase, setRevealPassphrase] = useState(false);
   const [groupPickerOpen, setGroupPickerOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<ConnectionFormTab>('basic');
   const {
     showConnectionForm,
     connectionDraft,
@@ -812,6 +861,38 @@ function ConnectionFormModal() {
   const passphraseToggleLabel = revealPassphrase ? t('hideSecret') : t('showSecret');
   const validationKey = getConnectionValidationKey(connectionDraft);
   const canSubmit = !validationKey && !loading;
+  const connectionTabs: Array<{ id: ConnectionFormTab; label: string }> = [
+    { id: 'basic', label: t('connectionTabBasic') },
+    { id: 'jumpHosts', label: t('connectionTabJumpHosts') },
+    { id: 'proxy', label: t('connectionTabProxy') },
+  ];
+  const updateJumpHost = (id: string, patch: Partial<SshJumpHost>) => {
+    // 跳板机按数组顺序执行，更新时仅替换命中的一级，避免重排破坏用户配置的跳转链。
+    updateConnectionDraft('jumpHosts', connectionDraft.jumpHosts.map((jumpHost) => (
+      jumpHost.id === id ? { ...jumpHost, ...patch } : jumpHost
+    )));
+  };
+  const moveJumpHost = (id: string, direction: -1 | 1) => {
+    const currentIndex = connectionDraft.jumpHosts.findIndex((jumpHost) => jumpHost.id === id);
+    const nextIndex = currentIndex + direction;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= connectionDraft.jumpHosts.length) {
+      return;
+    }
+    const nextJumpHosts = [...connectionDraft.jumpHosts];
+    const [item] = nextJumpHosts.splice(currentIndex, 1);
+    nextJumpHosts.splice(nextIndex, 0, item);
+    updateConnectionDraft('jumpHosts', nextJumpHosts);
+  };
+  const addJumpHost = () => {
+    updateConnectionDraft('jumpHosts', [...connectionDraft.jumpHosts, createEmptyJumpHost()]);
+  };
+  const deleteJumpHost = (id: string) => {
+    updateConnectionDraft('jumpHosts', connectionDraft.jumpHosts.filter((jumpHost) => jumpHost.id !== id));
+  };
+  const updateProxy = (patch: Partial<ConnectionDraft['proxy']>) => {
+    // 代理开关和认证信息都保留在同一个对象里，关闭代理时不清空已填地址，便于临时切换。
+    updateConnectionDraft('proxy', { ...connectionDraft.proxy, ...patch });
+  };
   // 分组输入使用自定义下拉，避免浏览器 datalist 在输入前缀时把可选父分组直接过滤掉。
   const groupOptions = useMemo(() => collectOrderedGroupPaths(settings.connectionGroups, connections), [connections, settings.connectionGroups]);
   const sortedGroupOptions = useMemo(() => {
@@ -832,6 +913,17 @@ function ConnectionFormModal() {
       return groupOptions.indexOf(left) - groupOptions.indexOf(right);
     });
   }, [connectionDraft.groupPath, groupOptions]);
+  useEffect(() => {
+    if (!showConnectionForm) {
+      return;
+    }
+
+    // 每次打开新增/编辑弹窗都回到基础页，避免上一次停留在跳板机或代理页造成误以为基础信息丢失。
+    setActiveTab('basic');
+    setGroupPickerOpen(false);
+    setRevealPassword(false);
+    setRevealPassphrase(false);
+  }, [showConnectionForm]);
 
   if (!showConnectionForm) {
     return null;
@@ -839,7 +931,7 @@ function ConnectionFormModal() {
 
   return (
     <div className="modal-backdrop">
-      <div className="modal card">
+      <div className="modal card connection-form-modal">
         <div className="modal-header">
           <div>
             <h3>{connectionDraft.id ? t('connectionModalEditTitle') : t('connectionModalNewTitle')}</h3>
@@ -849,148 +941,346 @@ function ConnectionFormModal() {
           </button>
         </div>
 
-        <div className="form-grid">
-          <label>
-            <span>{t('fieldName')}</span>
-            <input value={connectionDraft.name} onChange={(event) => updateConnectionDraft('name', event.target.value)} />
-          </label>
-          <label>
-            <span>{t('fieldGroupPath')}</span>
-            <div className="group-combobox">
-              <input
-                aria-expanded={groupPickerOpen}
-                placeholder={t('groupPathPlaceholder')}
-                value={connectionDraft.groupPath}
-                onBlur={() => window.setTimeout(() => setGroupPickerOpen(false), 120)}
-                onChange={(event) => {
-                  updateConnectionDraft('groupPath', event.target.value);
-                  setGroupPickerOpen(true);
-                }}
-                onFocus={() => setGroupPickerOpen(true)}
-              />
-              {groupPickerOpen && sortedGroupOptions.length ? (
-                <div className="group-options-menu">
-                  {sortedGroupOptions.map((groupPath) => (
-                    <button
-                      key={groupPath}
-                      className="group-option-button"
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => {
-                        updateConnectionDraft('groupPath', groupPath);
-                        setGroupPickerOpen(false);
-                      }}
-                      type="button"
-                    >
-                      <Folder size={14} />
-                      <span>{groupPath}</span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          </label>
-          <label>
-            <span>{t('fieldHost')}</span>
-            <input value={connectionDraft.host} onChange={(event) => updateConnectionDraft('host', event.target.value)} />
-          </label>
-          <label>
-            <span>{t('fieldPort')}</span>
-            <input type="number" value={connectionDraft.port} onChange={(event) => updateConnectionDraft('port', Number(event.target.value) || 22)} />
-          </label>
-          <label>
-            <span>{t('fieldUsername')}</span>
-            <input value={connectionDraft.username} onChange={(event) => updateConnectionDraft('username', event.target.value)} />
-          </label>
-          <label>
-            <span>{t('fieldAuthMethod')}</span>
-            <select value={connectionDraft.authMethod} onChange={(event) => updateConnectionDraft('authMethod', event.target.value)}>
-              <option value="password">{t('authMethodPassword')}</option>
-              <option value="privateKey">{t('authMethodPrivateKey')}</option>
-            </select>
-          </label>
-          {isPrivateKeyMode ? (
-            <>
-              <label className="span-2">
-                <span>{t('fieldPrivateKeyPath')}</span>
-                <input
-                  placeholder={t('privateKeyPathPlaceholder')}
-                  value={connectionDraft.privateKeyPath}
-                  onChange={(event) => updateConnectionDraft('privateKeyPath', event.target.value)}
-                />
-              </label>
-              <label className="span-2">
-                <span>{t('fieldPrivateKeyText')}</span>
-                <textarea
-                  placeholder={t('privateKeyTextPlaceholder')}
-                  rows={6}
-                  value={connectionDraft.privateKeyText}
-                  onChange={(event) => updateConnectionDraft('privateKeyText', event.target.value)}
-                />
-              </label>
-              <label className="span-2">
-                <span>{t('fieldPassphrase')}</span>
-                <div className="password-field">
-                  <input
-                    type={revealPassphrase ? 'text' : 'password'}
-                    value={connectionDraft.passphrase}
-                    onChange={(event) => updateConnectionDraft('passphrase', event.target.value)}
-                  />
-                  <button
-                    aria-label={passphraseToggleLabel}
-                    className="secondary-button slim password-toggle-button"
-                    onClick={() => setRevealPassphrase((value) => !value)}
-                    title={passphraseToggleLabel}
-                    type="button"
-                  >
-                    {revealPassphrase ? <EyeOff size={16} /> : <Eye size={16} />}
-                    <span>{passphraseToggleLabel}</span>
-                  </button>
-                </div>
-              </label>
-              <p className="field-hint span-2">{t('privateKeyHint')}</p>
-            </>
-          ) : (
-            <label className="span-2">
-              <span>{t('fieldPassword')}</span>
-              <div className="password-field">
-                <input
-                  type={revealPassword ? 'text' : 'password'}
-                  value={connectionDraft.password}
-                  onChange={(event) => updateConnectionDraft('password', event.target.value)}
-                />
-                <button
-                  aria-label={passwordToggleLabel}
-                  className="secondary-button slim password-toggle-button"
-                  onClick={() => setRevealPassword((value) => !value)}
-                  title={passwordToggleLabel}
-                  type="button"
-                >
-                  {revealPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                  <span>{passwordToggleLabel}</span>
-                </button>
-              </div>
-            </label>
-          )}
-          <label className="span-2">
-            <span>{t('fieldTags')}</span>
-            <input
-              value={Array.isArray(connectionDraft.tags) ? connectionDraft.tags.join(', ') : connectionDraft.tags}
-              onChange={(event) => updateConnectionDraft('tags', event.target.value)}
-              placeholder={t('tagsPlaceholder')}
-            />
-          </label>
-          <label className="span-2">
-            <span>{t('fieldNote')}</span>
-            <textarea value={connectionDraft.note ?? ''} onChange={(event) => updateConnectionDraft('note', event.target.value)} rows={4} />
-          </label>
+        <div className="tab-list connection-form-tabs">
+          {connectionTabs.map((tab) => (
+            <button
+              key={tab.id}
+              className={`panel-tab ${activeTab === tab.id ? 'is-active' : ''}`}
+              onClick={() => setActiveTab(tab.id)}
+              type="button"
+            >
+              <span>{tab.label}</span>
+            </button>
+          ))}
         </div>
 
-        {validationKey ? <p className="field-hint validation-hint">{t(validationKey)}</p> : null}
-        {connectionTestResult ? (
-          <p className={`field-hint connection-test-result ${connectionTestResult.kind === 'error' ? 'is-error' : 'is-success'}`}>
-            {connectionTestResult.message}
-          </p>
-        ) : null}
+        <div className="connection-form-panels">
+          <div className={`connection-form-panel ${activeTab === 'basic' ? 'is-active' : ''}`}>
+            <div className="form-grid">
+              <label>
+                <span>{t('fieldName')}</span>
+                <input value={connectionDraft.name} onChange={(event) => updateConnectionDraft('name', event.target.value)} />
+              </label>
+              <label>
+                <span>{t('fieldGroupPath')}</span>
+                <div className="group-combobox">
+                  <input
+                    aria-expanded={groupPickerOpen}
+                    placeholder={t('groupPathPlaceholder')}
+                    value={connectionDraft.groupPath}
+                    onBlur={() => window.setTimeout(() => setGroupPickerOpen(false), 120)}
+                    onChange={(event) => {
+                      updateConnectionDraft('groupPath', event.target.value);
+                      setGroupPickerOpen(true);
+                    }}
+                    onFocus={() => setGroupPickerOpen(true)}
+                  />
+                  {groupPickerOpen && sortedGroupOptions.length ? (
+                    <div className="group-options-menu">
+                      {sortedGroupOptions.map((groupPath) => (
+                        <button
+                          key={groupPath}
+                          className="group-option-button"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => {
+                            updateConnectionDraft('groupPath', groupPath);
+                            setGroupPickerOpen(false);
+                          }}
+                          type="button"
+                        >
+                          <Folder size={14} />
+                          <span>{groupPath}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </label>
+              <label>
+                <span>{t('fieldHost')}</span>
+                <input value={connectionDraft.host} onChange={(event) => updateConnectionDraft('host', event.target.value)} />
+              </label>
+              <label>
+                <span>{t('fieldPort')}</span>
+                <input type="number" value={connectionDraft.port} onChange={(event) => updateConnectionDraft('port', Number(event.target.value) || 22)} />
+              </label>
+              <label>
+                <span>{t('fieldUsername')}</span>
+                <input value={connectionDraft.username} onChange={(event) => updateConnectionDraft('username', event.target.value)} />
+              </label>
+              <label>
+                <span>{t('fieldAuthMethod')}</span>
+                <select
+                  value={connectionDraft.authMethod}
+                  onChange={(event) => updateConnectionDraft('authMethod', event.target.value === 'privateKey' ? 'privateKey' : 'password')}
+                >
+                  <option value="password">{t('authMethodPassword')}</option>
+                  <option value="privateKey">{t('authMethodPrivateKey')}</option>
+                </select>
+              </label>
+              {isPrivateKeyMode ? (
+                <>
+                  <label className="span-2">
+                    <span>{t('fieldPrivateKeyPath')}</span>
+                    <input
+                      placeholder={t('privateKeyPathPlaceholder')}
+                      value={connectionDraft.privateKeyPath}
+                      onChange={(event) => updateConnectionDraft('privateKeyPath', event.target.value)}
+                    />
+                  </label>
+                  <label className="span-2">
+                    <span>{t('fieldPrivateKeyText')}</span>
+                    <textarea
+                      placeholder={t('privateKeyTextPlaceholder')}
+                      rows={6}
+                      value={connectionDraft.privateKeyText}
+                      onChange={(event) => updateConnectionDraft('privateKeyText', event.target.value)}
+                    />
+                  </label>
+                  <label className="span-2">
+                    <span>{t('fieldPassphrase')}</span>
+                    <div className="password-field">
+                      <input
+                        type={revealPassphrase ? 'text' : 'password'}
+                        value={connectionDraft.passphrase}
+                        onChange={(event) => updateConnectionDraft('passphrase', event.target.value)}
+                      />
+                      <button
+                        aria-label={passphraseToggleLabel}
+                        className="secondary-button slim password-toggle-button"
+                        onClick={() => setRevealPassphrase((value) => !value)}
+                        title={passphraseToggleLabel}
+                        type="button"
+                      >
+                        {revealPassphrase ? <EyeOff size={16} /> : <Eye size={16} />}
+                        <span>{passphraseToggleLabel}</span>
+                      </button>
+                    </div>
+                  </label>
+                  <p className="field-hint span-2">{t('privateKeyHint')}</p>
+                </>
+              ) : (
+                <label className="span-2">
+                  <span>{t('fieldPassword')}</span>
+                  <div className="password-field">
+                    <input
+                      type={revealPassword ? 'text' : 'password'}
+                      value={connectionDraft.password}
+                      onChange={(event) => updateConnectionDraft('password', event.target.value)}
+                    />
+                    <button
+                      aria-label={passwordToggleLabel}
+                      className="secondary-button slim password-toggle-button"
+                      onClick={() => setRevealPassword((value) => !value)}
+                      title={passwordToggleLabel}
+                      type="button"
+                    >
+                      {revealPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      <span>{passwordToggleLabel}</span>
+                    </button>
+                  </div>
+                </label>
+              )}
+              <label className="span-2">
+                <span>{t('fieldTags')}</span>
+                <input
+                  value={Array.isArray(connectionDraft.tags) ? connectionDraft.tags.join(', ') : connectionDraft.tags}
+                  onChange={(event) => updateConnectionDraft('tags', event.target.value)}
+                  placeholder={t('tagsPlaceholder')}
+                />
+              </label>
+              <label className="span-2">
+                <span>{t('fieldNote')}</span>
+                <textarea value={connectionDraft.note ?? ''} onChange={(event) => updateConnectionDraft('note', event.target.value)} rows={4} />
+              </label>
+            </div>
+          </div>
+
+          <div className={`connection-form-panel ${activeTab === 'jumpHosts' ? 'is-active' : ''}`}>
+            <div className="connection-jump-hosts-toolbar">
+              <div>
+                <h4>{t('connectionTabJumpHosts')}</h4>
+                <p>{t('connectionTabJumpHostsDesc')}</p>
+              </div>
+              <button className="secondary-button slim" onClick={addJumpHost} type="button">
+                <Plus size={14} /> {t('addJumpHost')}
+              </button>
+            </div>
+            {connectionDraft.jumpHosts.length ? (
+              <div className="connection-jump-host-list">
+                {connectionDraft.jumpHosts.map((jumpHost, index) => {
+                  const isPrivateKeyModeForJump = jumpHost.authMethod === 'privateKey';
+                  return (
+                    <section key={jumpHost.id} className="connection-jump-host-card">
+                      <div className="connection-jump-host-card-header">
+                        <strong>{t('jumpHostTitle', { index: index + 1 })}</strong>
+                        <div className="connection-jump-host-card-actions">
+                          <button className="ghost-button slim" disabled={index === 0} onClick={() => moveJumpHost(jumpHost.id, -1)} type="button">
+                            <ChevronUp size={14} />
+                          </button>
+                          <button className="ghost-button slim" disabled={index === connectionDraft.jumpHosts.length - 1} onClick={() => moveJumpHost(jumpHost.id, 1)} type="button">
+                            <ChevronDown size={14} />
+                          </button>
+                          <button className="ghost-button slim danger-button" onClick={() => deleteJumpHost(jumpHost.id)} type="button">
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="form-grid connection-jump-host-grid">
+                        <label>
+                          <span>{t('fieldName')}</span>
+                          <input value={jumpHost.name ?? ''} onChange={(event) => updateJumpHost(jumpHost.id, { name: event.target.value })} />
+                        </label>
+                        <label>
+                          <span>{t('fieldHost')}</span>
+                          <input value={jumpHost.host} onChange={(event) => updateJumpHost(jumpHost.id, { host: event.target.value })} />
+                        </label>
+                        <label>
+                          <span>{t('fieldPort')}</span>
+                          <input
+                            type="number"
+                            value={jumpHost.port}
+                            onChange={(event) => updateJumpHost(jumpHost.id, { port: Number(event.target.value) || 22 })}
+                          />
+                        </label>
+                        <label>
+                          <span>{t('fieldUsername')}</span>
+                          <input value={jumpHost.username} onChange={(event) => updateJumpHost(jumpHost.id, { username: event.target.value })} />
+                        </label>
+                        <label>
+                          <span>{t('fieldAuthMethod')}</span>
+                          <select
+                            value={jumpHost.authMethod}
+                            onChange={(event) => updateJumpHost(jumpHost.id, {
+                              authMethod: event.target.value === 'privateKey' ? 'privateKey' : 'password',
+                            })}
+                          >
+                            <option value="password">{t('authMethodPassword')}</option>
+                            <option value="privateKey">{t('authMethodPrivateKey')}</option>
+                          </select>
+                        </label>
+                        {isPrivateKeyModeForJump ? (
+                          <>
+                            <label className="span-2">
+                              <span>{t('fieldPrivateKeyPath')}</span>
+                              <input
+                                placeholder={t('privateKeyPathPlaceholder')}
+                                value={jumpHost.privateKeyPath ?? ''}
+                                onChange={(event) => updateJumpHost(jumpHost.id, { privateKeyPath: event.target.value })}
+                              />
+                            </label>
+                            <label className="span-2">
+                              <span>{t('fieldPrivateKeyText')}</span>
+                              <textarea
+                                placeholder={t('privateKeyTextPlaceholder')}
+                                rows={4}
+                                value={jumpHost.privateKeyText ?? ''}
+                                onChange={(event) => updateJumpHost(jumpHost.id, { privateKeyText: event.target.value })}
+                              />
+                            </label>
+                            <label className="span-2">
+                              <span>{t('fieldPassphrase')}</span>
+                              <input
+                                type="password"
+                                value={jumpHost.passphrase ?? ''}
+                                onChange={(event) => updateJumpHost(jumpHost.id, { passphrase: event.target.value })}
+                              />
+                            </label>
+                          </>
+                        ) : (
+                          <label className="span-2">
+                            <span>{t('fieldPassword')}</span>
+                            <input
+                              type="password"
+                              value={jumpHost.password ?? ''}
+                              onChange={(event) => updateJumpHost(jumpHost.id, { password: event.target.value })}
+                            />
+                          </label>
+                        )}
+                      </div>
+                    </section>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="empty-state">{t('connectionTabJumpHostsEmpty')}</div>
+            )}
+          </div>
+
+          <div className={`connection-form-panel ${activeTab === 'proxy' ? 'is-active' : ''}`}>
+            <div className="connection-proxy-toolbar">
+              <div>
+                <h4>{t('connectionTabProxy')}</h4>
+                <p>{t('connectionTabProxyDesc')}</p>
+              </div>
+              <label className="toggle-row connection-proxy-toggle">
+                <span>{t('enabled')}</span>
+                <input
+                  checked={connectionDraft.proxy.enabled}
+                  type="checkbox"
+                  onChange={(event) => updateProxy({ enabled: event.target.checked })}
+                />
+              </label>
+            </div>
+            <div className="form-grid">
+              <label>
+                <span>{t('fieldProxyType')}</span>
+                <select
+                  disabled={!connectionDraft.proxy.enabled}
+                  value={connectionDraft.proxy.type}
+                  onChange={(event) => updateProxy({ type: event.target.value === 'http' ? 'http' : 'socks5' })}
+                >
+                  <option value="socks5">{t('proxyTypeSocks5')}</option>
+                  <option value="http">{t('proxyTypeHttp')}</option>
+                </select>
+              </label>
+              <label>
+                <span>{t('fieldHost')}</span>
+                <input
+                  disabled={!connectionDraft.proxy.enabled}
+                  value={connectionDraft.proxy.host}
+                  onChange={(event) => updateProxy({ host: event.target.value })}
+                />
+              </label>
+              <label>
+                <span>{t('fieldPort')}</span>
+                <input
+                  disabled={!connectionDraft.proxy.enabled}
+                  type="number"
+                  value={connectionDraft.proxy.port}
+                  onChange={(event) => updateProxy({ port: Number(event.target.value) || 1080 })}
+                />
+              </label>
+              <label>
+                <span>{t('fieldUsername')}</span>
+                <input
+                  disabled={!connectionDraft.proxy.enabled}
+                  value={connectionDraft.proxy.username ?? ''}
+                  onChange={(event) => updateProxy({ username: event.target.value })}
+                />
+              </label>
+              <label className="span-2">
+                <span>{t('fieldPassword')}</span>
+                <input
+                  disabled={!connectionDraft.proxy.enabled}
+                  type="password"
+                  value={connectionDraft.proxy.password ?? ''}
+                  onChange={(event) => updateProxy({ password: event.target.value })}
+                />
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div className="connection-form-feedback">
+          {/* 校验和测试结果固定在同一个反馈行里，避免提示数量变化时打乱弹窗网格高度。 */}
+          {validationKey ? <p className="field-hint validation-hint">{t(validationKey)}</p> : null}
+          {connectionTestResult ? (
+            <p className={`field-hint connection-test-result ${connectionTestResult.kind === 'error' ? 'is-error' : 'is-success'}`}>
+              {connectionTestResult.message}
+            </p>
+          ) : null}
+        </div>
 
         <div className="modal-actions">
           <button className="secondary-button" onClick={closeConnectionForm} type="button">
@@ -1675,7 +1965,7 @@ function SettingsModal({
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [updateCheckResult, setUpdateCheckResult] = useState<UpdateCheckResult | null>(null);
-  const [updateCheckError, setUpdateCheckError] = useState('');
+  const [updateFeedback, setUpdateFeedback] = useState<{ kind: 'is-success' | 'is-error'; message: string } | null>(null);
   const [agentBridgeStatus, setAgentBridgeStatus] = useState<AgentBridgeStatus | null>(null);
   const [agentBridgeTransition, setAgentBridgeTransition] = useState<'starting' | 'stopping' | ''>('');
   const settingsSaveTimerRef = useRef<number | null>(null);
@@ -1879,7 +2169,7 @@ function SettingsModal({
   };
   const handleCheckForUpdates = async () => {
     setUpdateChecking(true);
-    setUpdateCheckError('');
+    setUpdateFeedback(null);
     setUpdateCheckResult(null);
     try {
       // 更新检测只读取 GitHub Release 元数据，用户确认后再通过 Release 页面下载新版安装包。
@@ -1887,7 +2177,7 @@ function SettingsModal({
       setUpdateCheckResult(result);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      setUpdateCheckError(t('statusUpdateCheckFailed', { reason }));
+      setUpdateFeedback({ kind: 'is-error', message: t('statusUpdateCheckFailed', { reason }) });
     } finally {
       setUpdateChecking(false);
     }
@@ -1898,15 +2188,15 @@ function SettingsModal({
     }
 
     setUpdateInstalling(true);
-    setUpdateCheckError('');
+    setUpdateFeedback(null);
     try {
       // 安装动作只在用户点击后触发；后端会下载 Release 安装包并启动安装程序。
       const installerPath = await installUpdate(updateCheckResult);
-      // 成功启动安装器后，显示明确提示
-      alert(`安装器已启动！\n\n请在弹出的安装窗口中完成安装。\n\n如果没有看到安装窗口，请检查任务栏或访问：\n${installerPath}`);
+      // 桌面 WebView 弹窗可能被安装器抢焦点，设置页内也保留可见成功信息和本地路径。
+      setUpdateFeedback({ kind: 'is-success', message: t('statusUpdateInstallStartedWithPath', { path: installerPath }) });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      setUpdateCheckError(t('statusUpdateInstallFailed', { reason }));
+      setUpdateFeedback({ kind: 'is-error', message: t('statusUpdateInstallFailed', { reason }) });
     } finally {
       setUpdateInstalling(false);
     }
@@ -2401,6 +2691,28 @@ function SettingsModal({
                       />
                     </label>
                   </div>
+
+                  {!draftSettings.agentBridge.autoExecute ? (
+                    <div className="agent-auto-connections-panel">
+                      <div>
+                        <h4>{t('agentBridgeAutoConnections')}</h4>
+                        <p>{t('agentBridgeAutoConnectionsDesc')}</p>
+                      </div>
+                      <div className="agent-connection-list">
+                        {connections.length ? (
+                          <AgentAutoConnectionTree
+                            allowedConnectionIds={draftSettings.agentBridge.allowedConnectionIds}
+                            nodes={agentAutoGroups}
+                            ungroupedConnections={agentAutoUngroupedConnections}
+                            ungroupedLabel={t('ungroupedConnections')}
+                            onToggleConnection={toggleAgentAutoConnection}
+                          />
+                        ) : (
+                          <div className="empty-state">{t('connectionManagerEmpty')}</div>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
                 </section>
 
                 <section className="settings-section-block">
@@ -2419,26 +2731,6 @@ function SettingsModal({
                       <span>{t('agentBridgeMcpConfig')}</span>
                       <textarea readOnly rows={9} spellCheck={false} value={buildAgentMcpConfig(agentBridgeStatus?.discoveryPath)} />
                     </label>
-                  </div>
-                </section>
-
-                <section className="settings-section-block">
-                  <div>
-                    <h3>{t('agentBridgeAutoConnections')}</h3>
-                    <p>{t('agentBridgeAutoConnectionsDesc')}</p>
-                  </div>
-                  <div className="agent-connection-list">
-                    {connections.length ? (
-                      <AgentAutoConnectionTree
-                        allowedConnectionIds={draftSettings.agentBridge.allowedConnectionIds}
-                        nodes={agentAutoGroups}
-                        ungroupedConnections={agentAutoUngroupedConnections}
-                        ungroupedLabel={t('ungroupedConnections')}
-                        onToggleConnection={toggleAgentAutoConnection}
-                      />
-                    ) : (
-                      <div className="empty-state">{t('connectionManagerEmpty')}</div>
-                    )}
                   </div>
                 </section>
               </div>
@@ -2496,7 +2788,11 @@ function SettingsModal({
                         : t('statusUpdateNotAvailable')}
                     </div>
                   ) : null}
-                  {updateCheckError ? <div className="update-check-result is-error">{updateCheckError}</div> : null}
+                  {updateFeedback ? (
+                    <div className={`update-check-result ${updateFeedback.kind === 'is-success' ? 'is-success' : 'is-error'}`}>
+                      {updateFeedback.message}
+                    </div>
+                  ) : null}
                 </section>
               </div>
             ) : null}
@@ -2550,6 +2846,8 @@ export default function App() {
   const [sessionTabDropTarget, setSessionTabDropTarget] = useState<SessionTabDropTarget>(null);
   const [selectedFilePath, setSelectedFilePath] = useState('');
   const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
+  const [localFileDropActive, setLocalFileDropActive] = useState(false);
+  const [remoteDownloadDragPaths, setRemoteDownloadDragPaths] = useState<string[]>([]);
   const [cpuCoresExpanded, setCpuCoresExpanded] = useState(false);
   const [bottomDockCollapsed, setBottomDockCollapsed] = useState(false);
   const [transferProgressItems, setTransferProgressItems] = useState<TransferProgressItem[]>([]);
@@ -2561,6 +2859,10 @@ export default function App() {
   const sessionTabDragStateRef = useRef<SessionTabDragState>(null);
   const sessionTabDropTargetRef = useRef<SessionTabDropTarget>(null);
   const sessionTabListRef = useRef<HTMLDivElement | null>(null);
+  const explorerListRef = useRef<HTMLDivElement | null>(null);
+  const explorerScrollRafRef = useRef<number | null>(null);
+  const explorerPanelRef = useRef<HTMLElement | null>(null);
+  const [explorerViewport, setExplorerViewport] = useState({ height: 0, scrollTop: 0 });
 
   const {
     activeConnectionId,
@@ -2573,7 +2875,7 @@ export default function App() {
     connections,
     currentRemotePath,
     deleteRemotePaths,
-    downloadRemoteFile,
+    downloadRemotePaths,
     editTunnel,
     files,
     history,
@@ -2600,11 +2902,12 @@ export default function App() {
     startTunnel,
     stopAllTunnels,
     tunnels,
-    uploadLocalFile,
+    uploadLocalFiles,
+    uploadLocalPaths,
   } = useAppStore();
 
-  const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
-    translate(settings.uiLanguage, key, replacements);
+  const t = useCallback((key: TranslationKey, replacements?: Record<string, string | number>) =>
+    translate(settings.uiLanguage, key, replacements), [settings.uiLanguage]);
 
   const refreshAgentBridgeRequests = useCallback(async () => {
     try {
@@ -2996,6 +3299,64 @@ export default function App() {
     () => ({ gridTemplateColumns: explorerGridTemplate, minWidth: explorerGridMinWidth }),
     [explorerGridMinWidth, explorerGridTemplate],
   );
+  const selectedFilePathSet = useMemo(() => new Set(selectedFilePaths), [selectedFilePaths]);
+  const explorerVirtualRange = useMemo(() => {
+    const total = files.length;
+    if (!total) {
+      return { start: 0, end: 0, entries: [] as Array<{ file: RemoteFileEntry; index: number }> };
+    }
+
+    const viewportHeight = explorerViewport.height || 360;
+    const visibleCount = Math.ceil(viewportHeight / explorerRowHeight) + explorerOverscanRows * 2;
+    const start = Math.max(0, Math.floor(explorerViewport.scrollTop / explorerRowHeight) - explorerOverscanRows);
+    const end = Math.min(total, start + visibleCount);
+    return {
+      start,
+      end,
+      entries: files.slice(start, end).map((file, offset) => ({ file, index: start + offset })),
+    };
+  }, [explorerViewport.height, explorerViewport.scrollTop, files]);
+  const updateExplorerViewport = useCallback(() => {
+    const list = explorerListRef.current;
+    if (!list) {
+      return;
+    }
+
+    const nextViewport = { height: list.clientHeight, scrollTop: list.scrollTop };
+    setExplorerViewport((current) => (
+      current.height === nextViewport.height && current.scrollTop === nextViewport.scrollTop
+        ? current
+        : nextViewport
+    ));
+  }, []);
+  const handleExplorerScroll = useCallback(() => {
+    if (explorerScrollRafRef.current !== null) {
+      return;
+    }
+
+    // 滚动事件可能一帧内触发多次，合并到下一帧再刷新可视行，避免 React 跟着滚轮高频重绘。
+    explorerScrollRafRef.current = window.requestAnimationFrame(() => {
+      explorerScrollRafRef.current = null;
+      updateExplorerViewport();
+    });
+  }, [updateExplorerViewport]);
+  useEffect(() => {
+    updateExplorerViewport();
+    const list = explorerListRef.current;
+    if (!list || typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateExplorerViewport);
+      return () => window.removeEventListener('resize', updateExplorerViewport);
+    }
+
+    const observer = new ResizeObserver(updateExplorerViewport);
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [files.length, sidebarWidth, runtimePanelHeight, updateExplorerViewport]);
+  useEffect(() => () => {
+    if (explorerScrollRafRef.current !== null) {
+      window.cancelAnimationFrame(explorerScrollRafRef.current);
+    }
+  }, []);
   const beginExplorerColumnResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>, columnIndex: number) => {
     const startWidth = explorerColumnWidths[columnIndex] ?? explorerDefaultColumnWidths[columnIndex] ?? 100;
     const limits = explorerColumnLimits[columnIndex] ?? { min: 60, max: 240 };
@@ -3057,6 +3418,15 @@ export default function App() {
   ];
   const selectExplorerFile = useCallback((file: RemoteFileEntry, event?: ReactMouseEvent<HTMLElement>) => {
     const filePath = file.path;
+    if (event?.ctrlKey || event?.metaKey) {
+      const nextPaths = selectedFilePathSet.has(filePath)
+        ? selectedFilePaths.filter((path) => path !== filePath)
+        : [...selectedFilePaths, filePath];
+      setSelectedFilePath(nextPaths.at(-1) ?? '');
+      setSelectedFilePaths(nextPaths);
+      return;
+    }
+
     if (event?.shiftKey && selectedFilePath) {
       const anchorIndex = files.findIndex((item) => item.path === selectedFilePath);
       const targetIndex = files.findIndex((item) => item.path === filePath);
@@ -3071,22 +3441,175 @@ export default function App() {
 
     setSelectedFilePath(filePath);
     setSelectedFilePaths([filePath]);
-  }, [files, selectedFilePath]);
-  const uploadFileWithProgress = useCallback((file: File) => {
-    void runTransferProgress(`${t('upload')} ${file.name}`, async (setPercent) => {
+  }, [files, selectedFilePath, selectedFilePathSet, selectedFilePaths]);
+  const uploadFilesWithProgress = useCallback((uploadFiles: File[]) => {
+    const filesToUpload = uploadFiles.filter((file) => file.name);
+    if (!filesToUpload.length) {
+      return;
+    }
+
+    const title = filesToUpload.length === 1
+      ? `${t('upload')} ${filesToUpload[0].name}`
+      : `${t('upload')} ${filesToUpload.length}`;
+    void runTransferProgress(title, async (setPercent) => {
       setPercent(24);
-      await uploadLocalFile(file);
+      await uploadLocalFiles(filesToUpload);
       setPercent(92);
     });
-  }, [runTransferProgress, t, uploadLocalFile]);
+  }, [runTransferProgress, t, uploadLocalFiles]);
+  const uploadFolderWithProgress = useCallback((folderFiles: File[]) => {
+    const uploadFiles = folderFiles.filter((file) => file.name);
+    if (!uploadFiles.length) {
+      return;
+    }
+
+    // 浏览器目录选择会把根目录名放在 webkitRelativePath 第一段；没有该字段时用数量兜底，避免进度标题为空。
+    const firstRelativePath = (uploadFiles[0] as File & { webkitRelativePath?: string }).webkitRelativePath ?? '';
+    const folderName = firstRelativePath.split('/').filter(Boolean)[0] ?? `${uploadFiles.length} ${t('fileLabel')}`;
+    void runTransferProgress(`${t('uploadFolder')} ${folderName}`, async (setPercent) => {
+      setPercent(18);
+      await uploadLocalFiles(uploadFiles);
+      setPercent(92);
+    });
+  }, [runTransferProgress, t, uploadLocalFiles]);
+  const uploadLocalPathsWithProgress = useCallback((localPaths: string[]) => {
+    const uploadPaths = Array.from(new Set(localPaths.map((path) => path.trim()).filter(Boolean)));
+    if (!uploadPaths.length) {
+      return;
+    }
+
+    const title = uploadPaths.length === 1
+      ? `${t('upload')} ${uploadPaths[0].split(/[\\/]/).pop() ?? uploadPaths[0]}`
+      : `${t('upload')} ${uploadPaths.length}`;
+    void runTransferProgress(title, async (setPercent) => {
+      setPercent(18);
+      await uploadLocalPaths(uploadPaths);
+      setPercent(92);
+    });
+  }, [runTransferProgress, t, uploadLocalPaths]);
+  const selectDownloadDirectory = useCallback(async () => {
+    // 下载文件和文件夹前必须让用户明确选择本地目录，避免内容静默落到默认下载目录里找不到。
+    const selected = await openFileDialog({
+      directory: true,
+      multiple: false,
+      title: t('selectDownloadDirectory'),
+    });
+    return Array.isArray(selected) ? selected[0] : selected ?? undefined;
+  }, [t]);
+  const downloadPathsWithProgress = useCallback((paths: string[]) => {
+    const downloadPaths = Array.from(new Set(paths.filter(Boolean)));
+    if (!downloadPaths.length) {
+      return;
+    }
+
+    void (async () => {
+      const localDir = await selectDownloadDirectory();
+      if (!localDir) {
+        return;
+      }
+
+      const title = downloadPaths.length === 1
+        ? `${t('download')} ${downloadPaths[0].split('/').filter(Boolean).at(-1) ?? downloadPaths[0]}`
+        : `${t('download')} ${downloadPaths.length}`;
+      void runTransferProgress(title, async (setPercent) => {
+        setPercent(22);
+        await downloadRemotePaths(downloadPaths, localDir);
+        setPercent(92);
+      });
+    })().catch((error) => {
+      setStatusMessage(error instanceof Error ? error.message : String(error));
+    });
+  }, [downloadRemotePaths, runTransferProgress, selectDownloadDirectory, setStatusMessage, t]);
   const downloadFileWithProgress = useCallback((path: string) => {
-    const fileName = path.split('/').filter(Boolean).at(-1) ?? path;
-    void runTransferProgress(`${t('download')} ${fileName}`, async (setPercent) => {
-      setPercent(22);
-      await downloadRemoteFile(path);
-      setPercent(92);
+    downloadPathsWithProgress([path]);
+  }, [downloadPathsWithProgress]);
+  const isDragPositionInsideExplorer = useCallback((position: { x: number; y: number }) => {
+    const rect = explorerPanelRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return false;
+    }
+
+    const isInside = (clientX: number, clientY: number) =>
+      clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+    // 不同平台/缩放下 Tauri 拖放坐标可能表现为物理像素或 CSS 像素；两种坐标都接受，避免拖入文件区后松开无反应。
+    const scale = window.devicePixelRatio || 1;
+    return isInside(position.x, position.y) || isInside(position.x / scale, position.y / scale);
+  }, []);
+  const startRemoteDownloadDrag = useCallback((file: RemoteFileEntry, event: ReactDragEvent<HTMLElement>) => {
+    const dragPaths = selectedFilePathSet.has(file.path) ? selectedFilePaths : [file.path];
+    if (!selectedFilePathSet.has(file.path)) {
+      setSelectedFilePath(file.path);
+      setSelectedFilePaths([file.path]);
+    }
+
+    setRemoteDownloadDragPaths(dragPaths);
+    event.dataTransfer.effectAllowed = 'copy';
+    event.dataTransfer.setData('text/plain', dragPaths.join('\n'));
+  }, [selectedFilePathSet, selectedFilePaths]);
+  const dropRemoteSelectionToDownload = useCallback((event: ReactDragEvent<HTMLElement>) => {
+    event.preventDefault();
+    const textPaths = event.dataTransfer
+      .getData('text/plain')
+      .split(/\r?\n/)
+      .map((path) => path.trim())
+      .filter(Boolean);
+    const paths = remoteDownloadDragPaths.length ? remoteDownloadDragPaths : textPaths;
+    setRemoteDownloadDragPaths([]);
+    downloadPathsWithProgress(paths);
+  }, [downloadPathsWithProgress, remoteDownloadDragPaths]);
+
+  useEffect(() => {
+    if (!hasActiveRemoteSession) {
+      setLocalFileDropActive(false);
+      return;
+    }
+
+    let unlisten: (() => void) | undefined;
+    let isMounted = true;
+    let dropInsideExplorer = false;
+    const updateDropActive = (active: boolean) => {
+      if (dropInsideExplorer === active) {
+        return;
+      }
+      dropInsideExplorer = active;
+      setLocalFileDropActive(active);
+    };
+    void import('@tauri-apps/api/window').then(({ getCurrentWindow }) =>
+      getCurrentWindow().onDragDropEvent((event) => {
+        if (event.payload.type === 'enter') {
+          updateDropActive(isDragPositionInsideExplorer(event.payload.position));
+          return;
+        }
+        if (event.payload.type === 'over') {
+          updateDropActive(isDragPositionInsideExplorer(event.payload.position));
+          return;
+        }
+        if (event.payload.type === 'drop') {
+          const shouldUpload = dropInsideExplorer || isDragPositionInsideExplorer(event.payload.position);
+          updateDropActive(false);
+          if (shouldUpload && event.payload.paths.length) {
+            uploadLocalPathsWithProgress(event.payload.paths);
+          }
+          return;
+        }
+        updateDropActive(false);
+      }),
+    ).then((nextUnlisten) => {
+      if (isMounted) {
+        unlisten = nextUnlisten;
+      } else {
+        nextUnlisten();
+      }
+    }).catch(() => {
+      // Web 预览环境没有 Tauri Webview 拖放 API，保留普通文件选择上传能力即可。
     });
-  }, [downloadRemoteFile, runTransferProgress, t]);
+
+    return () => {
+      isMounted = false;
+      unlisten?.();
+    };
+  }, [hasActiveRemoteSession, isDragPositionInsideExplorer, uploadLocalPathsWithProgress]);
+
   const openRemoteFileWithProgress = useCallback((path: string) => {
     const fileName = path.split('/').filter(Boolean).at(-1) ?? path;
     void runTransferProgress(`SFTP ${fileName}`, async (setPercent) => {
@@ -3266,7 +3789,7 @@ export default function App() {
           }}
         />
 
-        <section className="sidebar-panel explorer-panel">
+        <section ref={explorerPanelRef} className={`sidebar-panel explorer-panel ${localFileDropActive ? 'is-local-drop-active' : ''}`}>
           <div className="explorer-toolbar">
             <div className="explorer-toolbar-actions">
               <label className="secondary-button slim file-upload-button" title={t('upload')}>
@@ -3274,16 +3797,45 @@ export default function App() {
                 <input
                   className="hidden-file-input"
                   disabled={!hasActiveRemoteSession}
+                  multiple
                   type="file"
                   onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file) {
-                      uploadFileWithProgress(file);
-                    }
+                    uploadFilesWithProgress(Array.from(event.currentTarget.files ?? []));
                     event.currentTarget.value = '';
                   }}
                 />
               </label>
+              <label className="secondary-button slim file-upload-button" title={t('uploadFolder')}>
+                <FolderTree size={14} />
+                <input
+                  {...{ directory: '', webkitdirectory: '' }}
+                  className="hidden-file-input"
+                  disabled={!hasActiveRemoteSession}
+                  multiple
+                  type="file"
+                  onChange={(event) => {
+                    const folderFiles = Array.from(event.currentTarget.files ?? []);
+                    uploadFolderWithProgress(folderFiles);
+                    event.currentTarget.value = '';
+                  }}
+                />
+              </label>
+              <button
+                className={`secondary-button slim ${remoteDownloadDragPaths.length ? 'is-drop-target' : ''}`}
+                disabled={!hasActiveRemoteSession}
+                onClick={() => downloadPathsWithProgress(selectedFilePaths)}
+                onDragOver={(event) => {
+                  if (hasActiveRemoteSession) {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = 'copy';
+                  }
+                }}
+                onDrop={dropRemoteSelectionToDownload}
+                title={remoteDownloadDragPaths.length ? t('dropToDownload') : t('download')}
+                type="button"
+              >
+                <Download size={14} />
+              </button>
               <span className="explorer-toolbar-spacer" />
               <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles(parentPath(currentRemotePath))} type="button">
                 {t('up')}
@@ -3314,8 +3866,10 @@ export default function App() {
 
           <div className="explorer-shell explorer-shell-dense">
             <div
+              ref={explorerListRef}
               className="explorer-list"
               onKeyDown={handleExplorerKeyDown}
+              onScroll={handleExplorerScroll}
               tabIndex={hasActiveRemoteSession ? 0 : -1}
             >
               <div className="explorer-list-header" style={explorerGridStyle}>
@@ -3336,42 +3890,52 @@ export default function App() {
               </div>
 
               {files.length ? (
-                files.map((file) => {
-                  const Icon = fileLabelIcon(file);
-                  return (
-                    <div
-                      key={file.path}
-                      className={`explorer-row ${selectedFilePaths.includes(file.path) ? 'is-selected' : ''}`}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        if (!selectedFilePaths.includes(file.path)) {
-                          setSelectedFilePath(file.path);
-                          setSelectedFilePaths([file.path]);
-                        }
-                        setFileContextMenu({ file, x: event.clientX, y: event.clientY });
-                      }}
-                      onDoubleClick={() => openRemoteFileEntry(file)}
-                    >
-                      <button
-                        className="explorer-row-main"
-                        disabled={!hasActiveRemoteSession}
-                        onClick={(event) => selectExplorerFile(file, event)}
-                        style={explorerGridStyle}
-                        type="button"
+                <div
+                  className="explorer-virtual-body"
+                  style={{ height: files.length * explorerRowHeight, minWidth: explorerGridMinWidth }}
+                >
+                  {explorerVirtualRange.entries.map(({ file, index }) => {
+                    const Icon = fileLabelIcon(file);
+                    const isSelected = selectedFilePathSet.has(file.path);
+                    return (
+                      <div
+                        key={file.path}
+                        className={`explorer-row is-virtual ${index % 2 === 0 ? '' : 'is-odd'} ${isSelected ? 'is-selected' : ''}`}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          if (!selectedFilePathSet.has(file.path)) {
+                            setSelectedFilePath(file.path);
+                            setSelectedFilePaths([file.path]);
+                          }
+                          setFileContextMenu({ file, x: event.clientX, y: event.clientY });
+                        }}
+                        onDoubleClick={() => openRemoteFileEntry(file)}
+                        style={{ height: explorerRowHeight, transform: `translateY(${index * explorerRowHeight}px)` }}
                       >
-                        <span className="explorer-name">
-                          <Icon size={16} />
-                          <strong>{file.name}</strong>
-                        </span>
-                        <span>{file.isDir ? '' : formatBytes(file.size)}</span>
-                        <span>{formatFileType(file, t('directoryLabel'), t('symlinkLabel'), t('fileLabel'))}</span>
-                        <span>{formatTimestamp(file.modifiedAt)}</span>
-                        <span>{file.permissions ?? '--'}</span>
-                        <span>{formatOwnerGroup(file)}</span>
-                      </button>
-                    </div>
-                  );
-                })
+                        <button
+                          className="explorer-row-main"
+                          disabled={!hasActiveRemoteSession}
+                          draggable={hasActiveRemoteSession}
+                          onClick={(event) => selectExplorerFile(file, event)}
+                          onDragEnd={() => setRemoteDownloadDragPaths([])}
+                          onDragStart={(event) => startRemoteDownloadDrag(file, event)}
+                          style={explorerGridStyle}
+                          type="button"
+                        >
+                          <span className="explorer-name">
+                            <Icon size={16} />
+                            <strong>{file.name}</strong>
+                          </span>
+                          <span>{file.isDir ? '' : formatBytes(file.size)}</span>
+                          <span>{formatFileType(file, t('directoryLabel'), t('symlinkLabel'), t('fileLabel'))}</span>
+                          <span>{formatTimestamp(file.modifiedAt)}</span>
+                          <span>{file.permissions ?? '--'}</span>
+                          <span>{formatOwnerGroup(file)}</span>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
               ) : (
                 <div className="empty-state">{t('remoteFilesEmpty')}</div>
               )}
@@ -3383,10 +3947,18 @@ export default function App() {
 
       {fileContextMenu ? (
           <div className="context-menu file-context-menu" style={{ left: fileContextMenu.x, top: fileContextMenu.y }} onClick={(event) => event.stopPropagation()}>
-            {selectedFilePaths.includes(fileContextMenu.file.path) && selectedFilePaths.length > 1 ? (
-              <button className="context-menu-item danger" onClick={() => deleteSelectedRemotePaths(selectedFilePaths)} type="button">
-                {t('fileMenuDeleteSelected')} ({selectedFilePaths.length})
-              </button>
+            {selectedFilePathSet.has(fileContextMenu.file.path) && selectedFilePaths.length > 1 ? (
+              <>
+                <button className="context-menu-item" onClick={() => {
+                  downloadPathsWithProgress(selectedFilePaths);
+                  setFileContextMenu(null);
+                }} type="button">
+                  {t('fileMenuDownloadSelected')} ({selectedFilePaths.length})
+                </button>
+                <button className="context-menu-item danger" onClick={() => deleteSelectedRemotePaths(selectedFilePaths)} type="button">
+                  {t('fileMenuDeleteSelected')} ({selectedFilePaths.length})
+                </button>
+              </>
             ) : null}
             {fileContextMenu.file.isDir ? (
               <button className="context-menu-item" onClick={() => {
@@ -3400,12 +3972,10 @@ export default function App() {
                 setFileContextMenu(null);
               }} type="button">{t('fileMenuEdit')}</button>
             ) : null}
-            {!fileContextMenu.file.isDir ? (
-              <button className="context-menu-item" onClick={() => {
-                downloadFileWithProgress(fileContextMenu.file.path);
-                setFileContextMenu(null);
-              }} type="button">{t('fileMenuDownload')}</button>
-            ) : null}
+            <button className="context-menu-item" onClick={() => {
+              downloadFileWithProgress(fileContextMenu.file.path);
+              setFileContextMenu(null);
+            }} type="button">{t('fileMenuDownload')}</button>
             <button className="context-menu-item" onClick={() => {
               const nextName = window.prompt(t('rename'), fileContextMenu.file.name);
               if (nextName) {
@@ -3414,7 +3984,7 @@ export default function App() {
               setFileContextMenu(null);
             }} type="button">{t('fileMenuRename')}</button>
             <button className="context-menu-item danger" onClick={() => {
-              const paths = selectedFilePaths.includes(fileContextMenu.file.path) ? selectedFilePaths : [fileContextMenu.file.path];
+              const paths = selectedFilePathSet.has(fileContextMenu.file.path) ? selectedFilePaths : [fileContextMenu.file.path];
               deleteSelectedRemotePaths(paths);
             }} type="button">{t('fileMenuDelete')}</button>
           </div>

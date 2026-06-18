@@ -7,9 +7,12 @@ import type {
   BootstrapState,
   ConnectionProfile,
   EditorDocument,
+  FileTransferSummary,
   HistoryEntry,
   RemoteFileEntry,
   RuntimeOverview,
+  SshJumpHost,
+  SshProxyConfig,
   TerminalOutputChunk,
   TerminalSession,
   TunnelOpenRequest,
@@ -83,6 +86,33 @@ const keepTextIfPresent = (value?: string) => {
   return value.trim() ? value : undefined;
 };
 
+// 跳板机作为连接链路的一部分，保存和测试前必须按主连接同一规则整理认证与端口。
+const normalizeJumpHost = (jumpHost: SshJumpHost): SshJumpHost => {
+  const authMethod = jumpHost.authMethod === 'privateKey' ? 'privateKey' : 'password';
+  return {
+    id: jumpHost.id,
+    name: trimToUndefined(jumpHost.name),
+    host: jumpHost.host.trim(),
+    port: clampPort(jumpHost.port),
+    username: jumpHost.username.trim(),
+    authMethod,
+    password: authMethod === 'password' ? jumpHost.password ?? '' : undefined,
+    privateKeyPath: authMethod === 'privateKey' ? trimToUndefined(jumpHost.privateKeyPath) : undefined,
+    privateKeyText: authMethod === 'privateKey' ? keepTextIfPresent(jumpHost.privateKeyText) : undefined,
+    passphrase: authMethod === 'privateKey' ? keepTextIfPresent(jumpHost.passphrase) : undefined,
+  };
+};
+
+// 代理配置只作用在第一跳，关闭时仍随连接保存，便于用户临时启停。
+const normalizeProxyConfig = (proxy?: SshProxyConfig): SshProxyConfig => ({
+  enabled: Boolean(proxy?.enabled),
+  type: proxy?.type === 'http' ? 'http' : 'socks5',
+  host: proxy?.host?.trim() ?? '',
+  port: clampPort(proxy?.port ?? 1080, 1080),
+  username: trimToUndefined(proxy?.username),
+  password: keepTextIfPresent(proxy?.password),
+});
+
 const normalizeSettings = (settings: AppSettings): AppSettings => ({
   ...settings,
   ...normalizeFontPair(settings),
@@ -132,6 +162,10 @@ const normalizeConnection = (connection: ConnectionProfile): ConnectionProfile =
     connection.authMethod === 'privateKey' ? keepTextIfPresent(connection.privateKeyText) : undefined,
   passphrase:
     connection.authMethod === 'privateKey' ? keepTextIfPresent(connection.passphrase) : undefined,
+  jumpHosts: Array.isArray(connection.jumpHosts)
+    ? connection.jumpHosts.map((jumpHost) => normalizeJumpHost(jumpHost))
+    : [],
+  proxy: normalizeProxyConfig(connection.proxy),
 });
 
 // 隧道请求在进入 Tauri IPC 前统一清洗端点，避免前后端对空监听地址和端口默认值理解不一致。
@@ -190,6 +224,13 @@ const mockConnections: ConnectionProfile[] = [
     username: 'root',
     authMethod: 'password',
     password: 'password',
+    jumpHosts: [],
+    proxy: {
+      enabled: false,
+      type: 'socks5',
+      host: '',
+      port: 1080,
+    },
     note: 'Stub connection for UI preview.',
     tags: ['demo', 'linux'],
   },
@@ -328,8 +369,22 @@ export const backend = {
     call<RemoteFileEntry[]>('list_remote_files', { connectionId, path }, mockFiles),
   uploadRemoteFile: (connectionId: string, remoteDir: string, fileName: string, contentBase64: string) =>
     call<boolean>('upload_remote_file', { connectionId, remoteDir, fileName, contentBase64 }, true),
+  uploadLocalPaths: (connectionId: string, remoteDir: string, localPaths: string[]) =>
+    call<FileTransferSummary>('upload_local_paths', { connectionId, remoteDir, localPaths }, {
+      files: localPaths.length,
+      directories: 0,
+      bytes: 0,
+      destinations: localPaths.map((path) => `${remoteDir.replace(/\/$/, '')}/${path.split(/[\\/]/).pop() ?? 'upload'}`),
+    }),
   downloadRemoteFile: (connectionId: string, path: string) =>
     call<string>('download_remote_file', { connectionId, path }, `C:/Software/WorkSpace/MyTerminal/.myterminal-data/downloads/${path.split('/').pop() ?? 'download.bin'}`),
+  downloadRemotePaths: (connectionId: string, paths: string[], localDir?: string) =>
+    call<FileTransferSummary>('download_remote_paths', { connectionId, paths, localDir }, {
+      files: paths.length,
+      directories: 0,
+      bytes: 0,
+      destinations: paths.map((path) => `${localDir || 'C:/Software/WorkSpace/MyTerminal/.myterminal-data/downloads'}/${path.split('/').pop() ?? 'download'}`),
+    }),
   deleteRemotePath: (connectionId: string, path: string) =>
     call<boolean>('delete_remote_path', { connectionId, path }, true),
   deleteRemotePaths: (connectionId: string, paths: string[]) =>
