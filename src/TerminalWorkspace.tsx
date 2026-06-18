@@ -191,6 +191,24 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     sessionRef.current = session;
   }, [session]);
 
+  // 终端焦点恢复只面向可输入会话，避免关闭或异常会话重新抢占页面焦点。
+  const focusTerminalInput = () => {
+    const terminal = terminalRef.current;
+    if (!terminal || !canAcceptTerminalInput(sessionRef.current)) {
+      return;
+    }
+
+    terminal.focus();
+  };
+
+  // 右键菜单动作完成后延后一帧恢复焦点，确保 React 已经卸载菜单按钮。
+  const restoreTerminalFocusAfterContextMenuAction = () => {
+    // 右键菜单按钮会短暂拿走焦点；等待菜单卸载后再聚焦 xterm，避免复制/粘贴后键盘输入停在旧光标状态。
+    window.requestAnimationFrame(() => {
+      focusTerminalInput();
+    });
+  };
+
   useEffect(() => {
     const closeTerminalContextMenu = () => setTerminalContextMenu(null);
     window.addEventListener('click', closeTerminalContextMenu);
@@ -201,15 +219,25 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     };
   }, []);
 
-  const pasteClipboardToTerminal = async () => {
+  // 右键粘贴复用终端输入通道，并按调用场景决定是否在粘贴后把键盘焦点交回 xterm。
+  const pasteClipboardToTerminal = async (restoreFocusAfterPaste = false) => {
     if (!canAcceptTerminalInput(sessionRef.current)) {
+      if (restoreFocusAfterPaste) {
+        restoreTerminalFocusAfterContextMenuAction();
+      }
       return;
     }
 
-    // 右键粘贴直接走终端输入通道，保持和键盘粘贴完全一致的后端写入路径。
-    const text = await readClipboardText().catch(() => '');
-    if (text) {
-      onTerminalDataRef.current(text);
+    try {
+      // 右键粘贴直接走终端输入通道，保持和键盘粘贴完全一致的后端写入路径。
+      const text = await readClipboardText().catch(() => '');
+      if (text) {
+        onTerminalDataRef.current(text);
+      }
+    } finally {
+      if (restoreFocusAfterPaste) {
+        restoreTerminalFocusAfterContextMenuAction();
+      }
     }
   };
 
@@ -222,7 +250,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     }
 
     if (settings.terminalRightClickBehavior !== 'menu') {
-      void pasteClipboardToTerminal();
+      void pasteClipboardToTerminal(true);
       return;
     }
 
@@ -392,6 +420,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
             onClick={() => {
               const selectedText = terminalContextMenu.selectedText;
               setTerminalContextMenu(null);
+              restoreTerminalFocusAfterContextMenuAction();
               if (selectedText) {
                 void writeClipboardText(selectedText).catch(() => undefined);
               }
@@ -405,7 +434,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
             disabled={!canAcceptTerminalInput(session)}
             onClick={() => {
               setTerminalContextMenu(null);
-              void pasteClipboardToTerminal();
+              void pasteClipboardToTerminal(true);
             }}
             type="button"
           >
