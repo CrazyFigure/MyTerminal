@@ -18,6 +18,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use ssh2::{Session, Sftp};
+use tauri::{AppHandle, Emitter};
 
 use crate::{
     commands::connect_ssh,
@@ -258,6 +259,7 @@ pub struct AgentBridgeRuntime {
     request_changed: Arc<Condvar>,
     sessions: Arc<Mutex<HashMap<String, AgentSession>>>,
     server: Arc<Mutex<Option<AgentBridgeServer>>>,
+    app_handle: Arc<Mutex<Option<AppHandle>>>,
 }
 
 impl AgentBridgeRuntime {
@@ -267,6 +269,7 @@ impl AgentBridgeRuntime {
             request_changed: Arc::new(Condvar::new()),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             server: Arc::new(Mutex::new(None)),
+            app_handle: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -279,6 +282,24 @@ impl Default for AgentBridgeRuntime {
 
 fn now_rfc3339() -> String {
     Utc::now().to_rfc3339()
+}
+
+pub fn set_app_handle(runtime: &AgentBridgeRuntime, app_handle: AppHandle) -> Result<(), AppError> {
+    *runtime
+        .app_handle
+        .lock()
+        .map_err(|_| AppError::Validation("agent bridge app handle is unavailable".into()))? =
+        Some(app_handle);
+    Ok(())
+}
+
+fn emit_requests_changed(runtime: &AgentBridgeRuntime) {
+    // 请求列表变更后同时唤醒 CLI 等待线程和前端事件订阅，前端不再需要固定 1 秒轮询。
+    if let Ok(app_handle) = runtime.app_handle.lock() {
+        if let Some(app_handle) = app_handle.as_ref() {
+            let _ = app_handle.emit("agent-bridge-requests-changed", ());
+        }
+    }
 }
 
 fn lock_requests<'a>(
@@ -395,7 +416,7 @@ pub fn sync_server(
     if settings.enabled {
         // Broker 线程持有设置快照；保存设置时重启监听，确保自动执行白名单和输出限制立即生效。
         if lock_server(runtime)?.is_some() {
-            stop_server(runtime, storage)?;
+            restart_server(runtime, storage)?;
         }
         start_server(runtime, storage, crypto, settings)?;
     } else {
@@ -473,13 +494,31 @@ pub fn start_server(
 }
 
 pub fn stop_server(runtime: &AgentBridgeRuntime, storage: &StorageService) -> Result<(), AppError> {
+    stop_server_with_policy(runtime, storage, true, true)
+}
+
+fn restart_server(runtime: &AgentBridgeRuntime, storage: &StorageService) -> Result<(), AppError> {
+    // 配置保存只需要替换监听线程和 discovery 文件；AI session 只是逻辑句柄，保留后可避免 agent 突然拿到 session not found。
+    stop_server_with_policy(runtime, storage, false, false)
+}
+
+fn stop_server_with_policy(
+    runtime: &AgentBridgeRuntime,
+    storage: &StorageService,
+    close_sessions: bool,
+    fail_waiting: bool,
+) -> Result<(), AppError> {
     let server = lock_server(runtime)?.take();
     if let Some(server) = server {
         server.stop_flag.store(true, Ordering::Relaxed);
         let _ = TcpStream::connect(("127.0.0.1", server.port));
     }
-    close_all_agent_sessions(runtime)?;
-    fail_waiting_requests(runtime, "MCP Bridge 已停止，请重新打开会话后再执行。")?;
+    if close_sessions {
+        close_all_agent_sessions(runtime)?;
+    }
+    if fail_waiting {
+        fail_waiting_requests(runtime, "MCP Bridge 已停止，请重新打开会话后再执行。")?;
+    }
     remove_discovery(storage);
     Ok(())
 }
@@ -501,6 +540,7 @@ fn fail_waiting_requests(runtime: &AgentBridgeRuntime, reason: &str) -> Result<(
         }
     }
     runtime.request_changed.notify_all();
+    emit_requests_changed(runtime);
     Ok(())
 }
 
@@ -511,6 +551,8 @@ pub fn list_requests(runtime: &AgentBridgeRuntime) -> Result<Vec<AgentBridgeRequ
 pub fn clear_finished_requests(runtime: &AgentBridgeRuntime) -> Result<bool, AppError> {
     let mut requests = lock_requests(runtime)?;
     requests.retain(|request| request.status == "pending" || request.status == "running");
+    runtime.request_changed.notify_all();
+    emit_requests_changed(runtime);
     Ok(true)
 }
 
@@ -529,6 +571,7 @@ pub fn reject_request(
     request.updated_at = now_rfc3339();
     request.logs.push("用户已拒绝执行。".into());
     runtime.request_changed.notify_all();
+    emit_requests_changed(runtime);
     Ok(true)
 }
 
@@ -568,6 +611,8 @@ pub fn approve_request(
         request.updated_at = now_rfc3339();
         request.action.clone()
     };
+    runtime.request_changed.notify_all();
+    emit_requests_changed(runtime);
 
     let runtime_clone = runtime.clone();
     let storage_clone = storage.clone();
@@ -613,6 +658,7 @@ fn complete_request(
         }
     }
     runtime.request_changed.notify_all();
+    emit_requests_changed(runtime);
 }
 
 fn wait_for_request_result(
@@ -816,6 +862,7 @@ fn enqueue_request(
         requests.pop_back();
     }
     runtime.request_changed.notify_all();
+    emit_requests_changed(runtime);
     Ok(id)
 }
 

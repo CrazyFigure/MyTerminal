@@ -2446,6 +2446,68 @@ select:disabled {
   gap: 10px;
 }
 
+.agent-request-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-request-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-request-title strong,
+.agent-request-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-request-title span {
+  color: var(--app-muted);
+  font-size: 12px;
+}
+
+.agent-request-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.agent-request-summary span {
+  color: var(--app-subtle-text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.agent-request-summary strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--app-muted);
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .agent-request-path {
   margin: 0;
   font-family: 'JetBrains Mono', Consolas, monospace;
@@ -2752,6 +2814,24 @@ select:disabled {
 
   .agent-bridge-status-grid {
     grid-template-columns: 1fr;
+  }
+
+  .agent-request-header {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .agent-request-header .status-badge {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .agent-request-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-request-summary span,
+  .agent-request-summary strong {
+    white-space: normal;
   }
 }
 

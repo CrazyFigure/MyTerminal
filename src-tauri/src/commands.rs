@@ -18,7 +18,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{TimeZone, Utc};
 use serde::Deserialize;
 use ssh2::{Channel, ExtendedData, MethodType, Session, Sftp};
-use tauri::{Emitter, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::{
     agent_bridge,
@@ -2624,7 +2624,12 @@ fn bootstrap_from_storage(state: &AppState) -> Result<BootstrapState, AppError> 
 }
 
 #[tauri::command]
-pub fn bootstrap_state(state: State<'_, AppState>) -> Result<BootstrapState, String> {
+pub fn bootstrap_state(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<BootstrapState, String> {
+    // 前端 AI 执行列表改为事件驱动，启动时先登记 AppHandle，后续 broker 线程即可主动通知请求变化。
+    agent_bridge::set_app_handle(&state.agent_bridge, app_handle)?;
     let settings = state.storage.load_settings(&state.crypto)?;
     agent_bridge::sync_server(
         &state.agent_bridge,
@@ -2637,9 +2642,11 @@ pub fn bootstrap_state(state: State<'_, AppState>) -> Result<BootstrapState, Str
 
 #[tauri::command]
 pub fn save_app_settings(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     settings: AppSettings,
 ) -> Result<AppSettings, String> {
+    agent_bridge::set_app_handle(&state.agent_bridge, app_handle)?;
     state.storage.save_settings(&settings, &state.crypto)?;
     agent_bridge::sync_server(
         &state.agent_bridge,
@@ -2706,9 +2713,11 @@ pub fn clear_agent_bridge_requests(state: State<'_, AppState>) -> Result<bool, S
 
 #[tauri::command]
 pub fn set_agent_bridge_enabled(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<agent_bridge::AgentBridgeStatus, String> {
+    agent_bridge::set_app_handle(&state.agent_bridge, app_handle)?;
     let mut settings = state.storage.load_settings(&state.crypto)?;
     settings.agent_bridge.enabled = enabled;
     state.storage.save_settings(&settings, &state.crypto)?;
@@ -2730,8 +2739,10 @@ pub fn set_agent_bridge_enabled(
 
 #[tauri::command]
 pub fn reset_agent_bridge_token(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<agent_bridge::AgentBridgeStatus, String> {
+    agent_bridge::set_app_handle(&state.agent_bridge, app_handle)?;
     let settings = state.storage.load_settings(&state.crypto)?;
     agent_bridge::stop_server(&state.agent_bridge, &state.storage)?;
     agent_bridge::reset_agent_bridge_token(&state.storage)?;

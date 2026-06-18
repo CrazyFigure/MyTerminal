@@ -24,6 +24,7 @@ ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-clipboard-manager = "2.3.0"
 tauri-plugin-dialog = "2.7.1"
+tauri-plugin-notification = "2.3.3"
 thiserror = "1"
 urlencoding = "2"
 uuid = { version = "1", features = ["serde", "v4"] }

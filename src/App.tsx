@@ -138,6 +138,42 @@ const connectionTableColumnLimits = [
   { min: 48, max: 96 },
   { min: 72, max: 220 },
 ];
+// AI 执行通知用稳定 tag 去重，避免 MCP 客户端重试时 Windows 通知中心堆出重复消息。
+const agentBridgeNotificationTagPrefix = 'myterminal-agent-bridge';
+// 通知正文只保留短摘要，防止长命令或长路径把 Windows toast 挤得难以阅读。
+const agentRequestSummaryMaxLength = 160;
+
+const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+const normalizeAgentRequestSummary = (value: string, maxLength = agentRequestSummaryMaxLength) => {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3)}...` : normalized;
+};
+
+const getAgentRequestSummary = (request: AgentBridgeRequest) => {
+  // 审批卡片和系统通知共用同一套摘要规则，保证收起态与通知里看到的是同一个执行目标。
+  if (request.kind === 'run_command' && request.command?.trim()) {
+    return normalizeAgentRequestSummary(request.command);
+  }
+  if (request.path) {
+    const pathSummary = request.newPath ? `${request.path} -> ${request.newPath}` : request.path;
+    return normalizeAgentRequestSummary(pathSummary);
+  }
+  if (request.contentPreview?.trim()) {
+    return normalizeAgentRequestSummary(request.contentPreview);
+  }
+  return normalizeAgentRequestSummary(request.title || request.kind);
+};
+
+const getAgentRequestMachineLabel = (request: AgentBridgeRequest, connections: ConnectionProfile[]) => {
+  const connection = connections.find((item) => item.id === request.connectionId);
+  if (!connection) {
+    return request.connectionId;
+  }
+
+  // SSH 机器信息只展示定位字段，避免把认证材料或备注等敏感配置带入通知和收起态。
+  return `${connection.name} · ${connection.username}@${connection.host}:${connection.port}`;
+};
 const connectionTableActionMinWidth = 220;
 
 const latinFontOptions = [
@@ -2853,6 +2889,7 @@ export default function App() {
   const [transferProgressItems, setTransferProgressItems] = useState<TransferProgressItem[]>([]);
   const [agentBridgeRequests, setAgentBridgeRequests] = useState<AgentBridgeRequest[]>([]);
   const [agentCommandEdits, setAgentCommandEdits] = useState<Record<string, string>>({});
+  const [agentExpandedRequestIds, setAgentExpandedRequestIds] = useState<Record<string, boolean>>({});
   const [explorerColumnWidths, setExplorerColumnWidths] = useState(explorerDefaultColumnWidths);
   const pathByConnectionRef = useRef<Record<string, string>>({});
   const runtimeRefreshInFlightRef = useRef(false);
@@ -2862,6 +2899,9 @@ export default function App() {
   const explorerListRef = useRef<HTMLDivElement | null>(null);
   const explorerScrollRafRef = useRef<number | null>(null);
   const explorerPanelRef = useRef<HTMLElement | null>(null);
+  const agentKnownRequestIdsRef = useRef<Set<string>>(new Set());
+  // 上一轮审批状态用于识别 pending -> running/completed/rejected/error，保证执行后自动折叠一次。
+  const agentRequestStatusRef = useRef<Record<string, string>>({});
   const [explorerViewport, setExplorerViewport] = useState({ height: 0, scrollTop: 0 });
 
   const {
@@ -2909,9 +2949,90 @@ export default function App() {
   const t = useCallback((key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements), [settings.uiLanguage]);
 
+  const activeSession = useMemo(() => sessions.find((item) => item.id === activeSessionId), [activeSessionId, sessions]);
+  // 远端文件、运行状态和历史都必须绑定到已经打开的终端会话，避免仅选中连接时提前拉取远端数据。
+  const hasActiveRemoteSession = isUsableRemoteSession(activeSession?.status);
+  const activeRemoteConnectionId = hasActiveRemoteSession ? activeSession?.connectionId : undefined;
+  const activeRemoteConnection = useMemo(
+    () => connections.find((item) => item.id === activeRemoteConnectionId),
+    [activeRemoteConnectionId, connections],
+  );
+
+  const openAgentRequestPanel = useCallback(async (focusWindow = false) => {
+    setGlobalBottomTab('agent');
+    if (activeRemoteConnectionId) {
+      setBottomTabByConnection((current) => ({ ...current, [activeRemoteConnectionId]: 'agent' }));
+    }
+    setBottomDockCollapsed(false);
+
+    if (!isTauriRuntime()) {
+      return;
+    }
+
+    try {
+      const { getCurrentWindow, UserAttentionType } = await import('@tauri-apps/api/window');
+      const currentWindow = getCurrentWindow();
+      await currentWindow.show();
+      await currentWindow.unminimize();
+      if (focusWindow) {
+        await currentWindow.setFocus();
+      } else {
+        // 未点击通知时只闪烁任务栏，避免外部 agent 请求突然打断用户当前窗口焦点。
+        await currentWindow.requestUserAttention(UserAttentionType.Informational).catch(() => undefined);
+      }
+    } catch {
+      // Web 预览或系统拒绝聚焦时不影响审批列表本身展示。
+    }
+  }, [activeRemoteConnectionId]);
+
+  const showAgentRequestNotification = useCallback(async (request: AgentBridgeRequest) => {
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      return;
+    }
+
+    const machine = getAgentRequestMachineLabel(request, connections);
+    const summary = getAgentRequestSummary(request);
+    const body = t('agentRequestNotificationBody', { machine, summary });
+
+    try {
+      let permissionGranted = window.Notification.permission === 'granted';
+      if (!permissionGranted && window.Notification.permission !== 'denied') {
+        if (isTauriRuntime()) {
+          const { isPermissionGranted, requestPermission } = await import('@tauri-apps/plugin-notification');
+          permissionGranted = await isPermissionGranted();
+          if (!permissionGranted) {
+            permissionGranted = (await requestPermission()) === 'granted';
+          }
+        } else {
+          permissionGranted = (await window.Notification.requestPermission()) === 'granted';
+        }
+      }
+      if (!permissionGranted) {
+        return;
+      }
+
+      const notification = new window.Notification(t('agentRequestNotificationTitle'), {
+        body,
+        data: { source: 'agent-bridge', requestId: request.id },
+        tag: `${agentBridgeNotificationTagPrefix}-${request.id}`,
+      });
+      notification.onclick = () => {
+        notification.close();
+        void openAgentRequestPanel(true);
+      };
+    } catch {
+      // 通知权限、系统策略或 WebView 实现差异都不能阻塞 GUI 审批入口自动展开。
+    }
+  }, [connections, openAgentRequestPanel, t]);
+
   const refreshAgentBridgeRequests = useCallback(async () => {
     try {
       const requests = await backend.listAgentBridgeRequests();
+      const previousRequestStatuses = agentRequestStatusRef.current;
+      const pendingNewRequests = requests.filter((request) =>
+        request.status === 'pending' && !agentKnownRequestIdsRef.current.has(request.id),
+      );
+      agentKnownRequestIdsRef.current = new Set(requests.map((request) => request.id));
       setAgentBridgeRequests(requests);
       setAgentCommandEdits((current) => {
         const activeIds = new Set(requests.map((request) => request.id));
@@ -2928,10 +3049,58 @@ export default function App() {
         });
         return next;
       });
+      setAgentExpandedRequestIds((current) => {
+        const activeIds = new Set(requests.map((request) => request.id));
+        const next: Record<string, boolean> = {};
+        Object.entries(current).forEach(([requestId, value]) => {
+          if (activeIds.has(requestId)) {
+            next[requestId] = value;
+          }
+        });
+        requests.forEach((request) => {
+          if (previousRequestStatuses[request.id] === 'pending' && request.status !== 'pending') {
+            next[request.id] = false;
+          }
+        });
+        return next;
+      });
+      agentRequestStatusRef.current = Object.fromEntries(requests.map((request) => [request.id, request.status]));
+      if (pendingNewRequests.length) {
+        void openAgentRequestPanel(false);
+        void showAgentRequestNotification(pendingNewRequests[0]);
+      }
     } catch {
       setAgentBridgeRequests([]);
+      agentRequestStatusRef.current = {};
     }
-  }, []);
+  }, [openAgentRequestPanel, showAgentRequestNotification]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return undefined;
+    }
+
+    let notificationActionListener: { unregister: () => Promise<void> } | undefined;
+    let isMounted = true;
+    void import('@tauri-apps/plugin-notification').then(({ onAction }) =>
+      onAction(() => {
+        void openAgentRequestPanel(true);
+      }),
+    ).then((unlisten) => {
+      if (isMounted) {
+        notificationActionListener = unlisten;
+      } else {
+        void unlisten.unregister();
+      }
+    }).catch(() => {
+      // 通知点击事件不可用时仍保留 Notification.onclick 兜底。
+    });
+
+    return () => {
+      isMounted = false;
+      void notificationActionListener?.unregister();
+    };
+  }, [openAgentRequestPanel]);
 
   const dismissTransferProgress = useCallback((id: string) => {
     setTransferProgressItems((current) => current.filter((item) => item.id !== id));
@@ -3085,20 +3254,36 @@ export default function App() {
 
   useEffect(() => {
     void refreshAgentBridgeRequests();
-    const timer = window.setInterval(() => {
-      void refreshAgentBridgeRequests();
-    }, 1000);
-    return () => window.clearInterval(timer);
+
+    if (!isTauriRuntime()) {
+      const timer = window.setInterval(() => {
+        void refreshAgentBridgeRequests();
+      }, 1000);
+      return () => window.clearInterval(timer);
+    }
+
+    let unlistenFn: (() => void) | undefined;
+    let isMounted = true;
+    void import('@tauri-apps/api/event').then(({ listen }) =>
+      listen('agent-bridge-requests-changed', () => {
+        void refreshAgentBridgeRequests();
+      }),
+    ).then((unlisten) => {
+      if (isMounted) {
+        unlistenFn = unlisten;
+      } else {
+        unlisten();
+      }
+    }).catch(() => {
+      // 事件监听失败时保留初次刷新结果；下一次界面操作仍会主动刷新请求列表。
+    });
+
+    return () => {
+      isMounted = false;
+      unlistenFn?.();
+    };
   }, [refreshAgentBridgeRequests]);
 
-  const activeSession = useMemo(() => sessions.find((item) => item.id === activeSessionId), [activeSessionId, sessions]);
-  // 远端文件、运行状态和历史都必须绑定到已经打开的终端会话，避免仅选中连接时提前拉取远端数据。
-  const hasActiveRemoteSession = isUsableRemoteSession(activeSession?.status);
-  const activeRemoteConnectionId = hasActiveRemoteSession ? activeSession?.connectionId : undefined;
-  const activeRemoteConnection = useMemo(
-    () => connections.find((item) => item.id === activeRemoteConnectionId),
-    [activeRemoteConnectionId, connections],
-  );
   // 左上运行状态直接以主机 IP 作为标题，减少说明性文字占位，把空间留给终端和文件表格。
   const runtimeHostLabel = runtimeOverview?.host ?? activeRemoteConnection?.host ?? '--';
   const activeCommand = activeSessionId ? commandBuffers[activeSessionId] ?? '' : '';
@@ -3137,6 +3322,12 @@ export default function App() {
       setStatusMessage(error instanceof Error ? error.message : String(error));
     });
   }, [agentCommandEdits, refreshAgentBridgeRequests, setStatusMessage]);
+  const toggleAgentRequestExpanded = useCallback((request: AgentBridgeRequest) => {
+    setAgentExpandedRequestIds((current) => {
+      const defaultExpanded = request.status === 'pending';
+      return { ...current, [request.id]: !(current[request.id] ?? defaultExpanded) };
+    });
+  }, []);
   const rejectAgentBridgeRequest = useCallback((request: AgentBridgeRequest) => {
     void backend.rejectAgentBridgeRequest(request.id, 'rejected by user').then(() => {
       void refreshAgentBridgeRequests();
@@ -4329,52 +4520,74 @@ export default function App() {
               {activeBottomTab === 'agent' ? (
                 <div className="stack panel-stack agent-request-panel">
                   {agentBridgeRequests.length ? (
-                    agentBridgeRequests.map((request) => (
-                      <div key={request.id} className={`agent-request-card status-${request.status}`}>
-                        <div className="section-row">
-                          <div>
-                            <strong>{request.kind}</strong>
-                            <p>{request.title} · {new Date(request.createdAt).toLocaleString()}</p>
+                    agentBridgeRequests.map((request) => {
+                      const isExpanded = agentExpandedRequestIds[request.id] ?? request.status === 'pending';
+                      const machineLabel = getAgentRequestMachineLabel(request, connections);
+                      const summaryLabel = getAgentRequestSummary(request);
+
+                      return (
+                        <div key={request.id} className={`agent-request-card status-${request.status} ${isExpanded ? 'is-expanded' : 'is-collapsed'}`}>
+                          <button
+                            aria-expanded={isExpanded}
+                            className="agent-request-header"
+                            onClick={() => toggleAgentRequestExpanded(request)}
+                            type="button"
+                          >
+                            {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                            <span className="agent-request-title">
+                              <strong>{request.kind}</strong>
+                              <span>{request.title} · {new Date(request.createdAt).toLocaleString()}</span>
+                            </span>
+                            <span className={`status-badge status-${request.status}`}>{request.status}</span>
+                          </button>
+                          <div className="agent-request-summary">
+                            <span>{t('agentRequestMachine')}</span>
+                            <strong>{machineLabel}</strong>
+                            <span>{request.kind === 'run_command' ? t('agentRequestCommand') : t('agentRequestTarget')}</span>
+                            <strong>{summaryLabel}</strong>
                           </div>
-                          <span className={`status-badge status-${request.status}`}>{request.status}</span>
+                          {isExpanded ? (
+                            <>
+                              {request.kind === 'run_command' ? (
+                                <label>
+                                  <span>{t('agentRequestCommand')}</span>
+                                  <textarea
+                                    disabled={request.status !== 'pending'}
+                                    rows={3}
+                                    spellCheck={false}
+                                    value={agentCommandEdits[request.id] ?? request.command ?? ''}
+                                    onChange={(event) => setAgentCommandEdits((current) => ({ ...current, [request.id]: event.target.value }))}
+                                  />
+                                </label>
+                              ) : null}
+                              {request.path ? (
+                                <p className="agent-request-path">
+                                  {request.path}{request.newPath ? ` -> ${request.newPath}` : ''}
+                                </p>
+                              ) : null}
+                              {request.contentPreview ? <pre className="agent-request-output">{request.contentPreview}</pre> : null}
+                              {request.logs.length ? (
+                                <div className="agent-request-logs">
+                                  {request.logs.map((line, index) => <span key={`${request.id}-log-${index}`}>{line}</span>)}
+                                </div>
+                              ) : null}
+                              {request.error ? <div className="sync-action-feedback is-error">{request.error}</div> : null}
+                              {request.result ? <pre className="agent-request-output">{JSON.stringify(request.result, null, 2)}</pre> : null}
+                              {request.status === 'pending' ? (
+                                <div className="section-row compact">
+                                  <button className="primary-button" onClick={() => approveAgentBridgeRequest(request)} type="button">
+                                    <Play size={16} /> {t('approveAgentRequest')}
+                                  </button>
+                                  <button className="secondary-button" onClick={() => rejectAgentBridgeRequest(request)} type="button">
+                                    <X size={16} /> {t('rejectAgentRequest')}
+                                  </button>
+                                </div>
+                              ) : null}
+                            </>
+                          ) : null}
                         </div>
-                        {request.kind === 'run_command' ? (
-                          <label>
-                            <span>{t('agentRequestCommand')}</span>
-                            <textarea
-                              disabled={request.status !== 'pending'}
-                              rows={3}
-                              spellCheck={false}
-                              value={agentCommandEdits[request.id] ?? request.command ?? ''}
-                              onChange={(event) => setAgentCommandEdits((current) => ({ ...current, [request.id]: event.target.value }))}
-                            />
-                          </label>
-                        ) : null}
-                        {request.path ? (
-                          <p className="agent-request-path">
-                            {request.path}{request.newPath ? ` -> ${request.newPath}` : ''}
-                          </p>
-                        ) : null}
-                        {request.contentPreview ? <pre className="agent-request-output">{request.contentPreview}</pre> : null}
-                        {request.logs.length ? (
-                          <div className="agent-request-logs">
-                            {request.logs.map((line, index) => <span key={`${request.id}-log-${index}`}>{line}</span>)}
-                          </div>
-                        ) : null}
-                        {request.error ? <div className="sync-action-feedback is-error">{request.error}</div> : null}
-                        {request.result ? <pre className="agent-request-output">{JSON.stringify(request.result, null, 2)}</pre> : null}
-                        {request.status === 'pending' ? (
-                          <div className="section-row compact">
-                            <button className="primary-button" onClick={() => approveAgentBridgeRequest(request)} type="button">
-                              <Play size={16} /> {t('approveAgentRequest')}
-                            </button>
-                            <button className="secondary-button" onClick={() => rejectAgentBridgeRequest(request)} type="button">
-                              <X size={16} /> {t('rejectAgentRequest')}
-                            </button>
-                          </div>
-                        ) : null}
-                      </div>
-                    ))
+                      );
+                    })
                   ) : (
                     <div className="empty-state">{t('agentBridgeRequestsEmpty')}</div>
                   )}
