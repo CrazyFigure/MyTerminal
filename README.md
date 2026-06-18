@@ -12,30 +12,74 @@ A modern desktop SSH terminal manager built with Rust, Tauri 2, and React.
 
 MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP file management, remote file editing, local port forwarding, and WebDAV backup into one clean desktop app. It is designed for developers and operators who want a lightweight, open, and hackable alternative to heavyweight remote terminal suites.
 
+**Version:** v0.2.2
+
 ![MyTerminal preview](img.png)
 
-## What's New in 0.2.0
+## Features
 
-- **Multi-hop SSH routing** - Configure ordered SSH jump hosts and first-hop SOCKS5 or HTTP CONNECT proxies for direct sessions, file operations, tunnels, and MCP Bridge sessions.
-- **Stronger file transfers** - Drag local files or folders into the SFTP browser, upload folders recursively, download multiple selected remote files or folders, and use matching MCP/CLI upload and download tools.
-- **Smarter AI approvals** - New pending AI execution requests automatically open the AI execution panel, show the SSH machine and command or target summary, and can raise desktop notifications that jump back to the approval list.
-- **Bridge reliability fixes** - Restarting MCP Bridge settings preserves logical AI sessions, app shutdown cleans SSH sessions and CLI backends, and stale waiting requests are handled more predictably.
+### SSH Profiles and Routing
 
-## Highlights
+- **SSH profile manager** - Create, edit, group, duplicate, move, sort, and test SSH connections before opening a session.
+- **Password and private-key authentication** - Connect with passwords, key files, or pasted private-key content, including passphrase and secret visibility toggles where needed.
+- **Jump hosts** - Configure ordered SSH jump-host chains and reuse the same routing model for terminals, file operations, tunnels, and MCP Bridge sessions.
+- **First-hop proxies** - Route the first SSH hop through SOCKS5 or HTTP CONNECT proxies with optional proxy authentication.
+- **Safe connection cleanup** - Closing tabs, deleting profiles, or exiting the app stops related terminal sessions, auxiliary SSH sessions, tunnels, and CLI bridge processes.
 
-- **SSH profile manager** - Create, edit, group, duplicate, move, sort, and test SSH connections before opening a session, including jump-host and proxy routing.
-- **Password and private-key auth** - Connect with passwords or private keys, including passphrase visibility toggles where needed.
-- **Tabbed terminal workspace** - Open multiple PTY sessions, reorder tabs, reconnect in place, and use right-click actions for common session operations.
-- **SFTP file browser** - Browse remote directories, drag-drop upload files or folders, batch download selected remote items, delete, rename, read, and write files through real SFTP operations.
-- **Remote file editor** - Edit remote files with the built-in Monaco editor, with local cache fallback when saving or loading needs recovery.
-- **Path-aware terminal + files** - When the shell changes directory, the file manager can follow the terminal's current remote path.
-- **SSH tunnels** - Create, edit, start, and stop local port forwarding rules with custom bind addresses and targets.
-- **Manual WebDAV sync** - Upload and download app settings and SSH profiles separately when you want to move between machines.
-- **MCP Bridge for AI coding tools** - Let Claude Code, Codex, and other MCP clients list SSH profiles, open bridge sessions, run remote commands, upload/download remote files, and read/write remote files through a local GUI-approved broker.
-- **AI approval notifications** - Pending AI execution requests can expand automatically, show compact execution summaries, and use desktop notifications to bring you back to the approval panel.
+### Terminal Workspace
+
+- **Tabbed SSH terminals** - Open multiple PTY sessions, reorder tabs, reconnect in place, close sessions, and keep the session title tied to the active SSH profile.
+- **Non-blocking connection startup** - New SSH tabs enter a connecting state immediately while SSH handshake and authentication run in the background.
+- **Interactive input handling** - Printable input is lightly batched to reduce WebView-to-Rust IPC load, while Enter, Tab, control sequences, and editing keys are flushed immediately.
+- **Right-click workflows** - Use right-click menu actions for copy and paste, or configure right-click to paste directly; terminal focus is restored after menu actions.
+- **Cursor recovery** - Remote programs that hide the terminal cursor and fail to restore it are handled at prompt boundaries so the input cursor comes back.
+- **Search and fit behavior** - xterm.js powers terminal rendering, sizing, and terminal search support.
+- **Path-aware terminal output** - The shell injects a cwd sync hook so the app can follow remote directory changes made with `cd`, `pushd`, or `popd`.
+- **Child-shell cwd sync** - Bash child shells inherit the cwd sync hook, while non-interactive scripts avoid emitting MyTerminal sync markers.
+- **Remote shell history** - Read remote shell history files for command history features without exposing MyTerminal's internal setup command.
+
+### SFTP Files and Editing
+
+- **Remote file browser** - Browse remote directories, inspect file metadata, create folders, delete, rename, refresh, and navigate through real SFTP operations.
+- **Drag-and-drop upload** - Drop local files or folders into the SFTP browser and upload folders recursively.
+- **Batch transfer operations** - Download multiple remote files or folders, upload multiple local paths, and avoid overwriting same-name local downloads by generating unique destinations.
+- **Connection reuse for files** - File browsing, transfers, remote editing, runtime queries, and history reads reuse auxiliary SSH/SFTP sessions instead of reconnecting for every action.
+- **Stale-session recovery** - Cached auxiliary SSH sessions are discarded and retried when the remote side closes an idle connection.
+- **Remote identity cache** - Remote uid/gid display names are cached per auxiliary session to avoid repeated `/etc/passwd` and `/etc/group` reads during directory refreshes.
+- **Remote file editor** - Edit remote files with the built-in Monaco editor and save back over SFTP.
+- **Editor recovery cache** - Local document cache fallback protects remote edits when loading or saving needs recovery.
+- **MCP/CLI file tools** - AI clients can list, read, write, upload, download, delete, rename, and create remote paths through approved bridge operations.
+
+### Runtime and Tunnels
+
+- **Runtime overview** - Fetch remote OS, CPU, memory, disk, host IP, and uptime information for the active SSH profile.
+- **Local port forwarding** - Create, edit, start, and stop SSH local forwarding rules with custom bind addresses and target hosts.
+- **Tunnel lifecycle management** - Running tunnel records are tracked separately from terminal sessions so they can be stopped cleanly.
+
+### MCP Bridge and AI Approval
+
+- **MCP Bridge for AI coding tools** - Let Claude Code, Codex, and other MCP clients use saved SSH profiles through a local `CLI + MCP + GUI Broker` bridge.
+- **Connection discovery** - MCP clients can list saved SSH profiles as non-secret metadata, including name, group path, host, port, username, tags, and notes.
+- **Bridge sessions** - MCP clients can open and close logical SSH bridge sessions, then run commands or file operations against them.
+- **GUI-approved execution** - Remote commands, uploads, downloads, writes, deletes, renames, and directory creation requests are shown in MyTerminal for approval by default.
+- **Auto-execution controls** - Enable automatic bridge execution globally or allow it only for selected SSH connections.
+- **AI approval notifications** - Pending AI execution requests can expand automatically, show compact SSH/command/target summaries, and raise desktop notifications that return to the approval panel.
+- **Bridge reliability** - Restarting MCP Bridge settings preserves logical AI sessions, stale waiting requests are handled predictably, and app shutdown cleans bridge resources.
+
+### Sync, Backup, and Updates
+
+- **Manual WebDAV sync** - Upload and download app settings and SSH profiles separately when moving between machines.
 - **Local import/export** - Export JSON configuration packages and restore them later, with automatic local backups before import.
-- **Desktop update flow** - Check GitHub Releases, download installers, and launch the installer from inside the app.
-- **Personalized terminal UI** - Switch between Chinese and English, light and dark themes, terminal fonts, compact sidebar, and background images.
+- **Desktop update flow** - Check GitHub Releases, detect installer assets, download installers, and launch the installer from inside the app.
+- **Proxy-aware update checks** - Update HTTP requests respect system proxy settings and use conservative connect, read, and total timeouts.
+- **Installer cache validation** - Downloaded installers are written through temporary files, checked against Release asset size metadata, and reused only when the local cache is complete.
+
+### Desktop Experience
+
+- **Bilingual UI** - Switch between English and Simplified Chinese.
+- **Theme and layout preferences** - Use light or dark mode, compact sidebar, customizable terminal fonts, and terminal background images.
+- **System tray support** - Keep MyTerminal accessible from the desktop shell with a tray icon.
+- **Local-first storage** - Settings and SSH profiles are stored locally, with encrypted secret handling inside the app and plain JSON only when you explicitly export.
 
 ## Download
 
