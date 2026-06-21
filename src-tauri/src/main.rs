@@ -1,6 +1,8 @@
 // 发布版使用 Windows GUI 子系统，避免安装后额外弹出 myterminal.exe 控制台窗口。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::sync::atomic::Ordering;
+
 use myterminal::{commands, state::AppState};
 use tauri::{Manager, WindowEvent};
 
@@ -14,14 +16,23 @@ fn main() {
         .manage(app_state)
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
+                let app_handle = window.app_handle().clone();
+                let state = app_handle.state::<AppState>();
+                if state.is_shutting_down.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+
                 // 关闭窗口时先让界面消失，再后台清理 SSH/MCP 后端，避免远端 close 阻塞用户退出体验。
+                // 清理完成后触发一次真实 close，让 WebView/Chromium 在开发模式下按正常窗口销毁路径退出。
                 api.prevent_close();
                 let _ = window.hide();
-                let app_handle = window.app_handle().clone();
+                let cleanup_window = window.clone();
                 std::thread::spawn(move || {
                     let state = app_handle.state::<AppState>();
                     let _ = commands::shutdown_app_backends(&state);
-                    app_handle.exit(0);
+                    if cleanup_window.close().is_err() {
+                        app_handle.exit(0);
+                    }
                 });
             }
         })
