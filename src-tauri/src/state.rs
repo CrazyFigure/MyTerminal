@@ -65,6 +65,8 @@ pub struct AppState {
     pub webdav: WebDavService,
     pub agent_bridge: AgentBridgeRuntime,
     pub sessions: Mutex<HashMap<String, RuntimeSession>>,
+    /// 关闭流程只允许启动一次；后续 CloseRequested 必须放行，让 WebView 窗口正常销毁。
+    pub is_shutting_down: AtomicBool,
     /// 辅助 SSH 缓存只服务非交互查询，不和终端 PTY 共用连接，避免文件管理阻塞键盘输入。
     pub auxiliary_sessions: Mutex<HashMap<String, Arc<Mutex<AuxiliarySshSession>>>>,
     /// 首次建立辅助连接按连接 ID 串行化，防止文件列表和运行状态同时触发两次 SSH 握手。
@@ -95,6 +97,7 @@ impl AppState {
             webdav: WebDavService::new(),
             agent_bridge: AgentBridgeRuntime::new(),
             sessions: Mutex::new(HashMap::new()),
+            is_shutting_down: AtomicBool::new(false),
             auxiliary_sessions: Mutex::new(HashMap::new()),
             auxiliary_session_locks: Mutex::new(HashMap::new()),
             tunnels: Mutex::new(HashMap::new()),

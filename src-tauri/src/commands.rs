@@ -14,6 +14,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{TimeZone, Utc};
 use portable_pty::{CommandBuilder, PtySize};
@@ -88,6 +91,9 @@ const DEFAULT_LOCAL_SHELL_CANDIDATES: &[&str] = &[
     "pwsh.exe",
     "powershell.exe",
 ];
+
+#[cfg(windows)]
+const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[cfg(not(windows))]
 const DEFAULT_LOCAL_SHELL_CANDIDATES: &[&str] = &["bash", "sh"];
@@ -3371,7 +3377,9 @@ fn terminate_myterminal_cli_processes() -> Result<(), AppError> {
     );
 
     // 只清理当前安装/开发目录旁边的 CLI，避免误杀其他 MyTerminal 副本或同名调试程序。
+    // 发布版主进程没有控制台，关闭应用时启动 PowerShell 必须隐藏窗口，避免退出瞬间闪出黑框。
     Command::new("powershell")
+        .creation_flags(WINDOWS_CREATE_NO_WINDOW)
         .args([
             "-NoProfile",
             "-ExecutionPolicy",
