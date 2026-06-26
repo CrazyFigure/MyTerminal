@@ -4522,19 +4522,24 @@ export default function App() {
             const leftSessionIds = sessions.slice(0, Math.max(0, sessionIndex)).map((session) => session.id);
             const rightSessionIds = sessions.slice(sessionIndex + 1).map((session) => session.id);
             const otherSessionIds = sessions.filter((session) => session.id !== sessionContextSession.id).map((session) => session.id);
+            // 关闭全部需要包含当前右键标签，批量关闭函数会按当前标签顺序逐个释放后端会话。
+            const allSessionIds = sessions.map((session) => session.id);
             return (
               <>
                 <button className="context-menu-item" onClick={() => closeSessionBatch([sessionContextSession.id])} type="button">
                   <X size={14} /> {t('closeSessionAction')}
                 </button>
                 <button className="context-menu-item" disabled={!leftSessionIds.length} onClick={() => closeSessionBatch(leftSessionIds)} type="button">
-                  <X size={14} /> {t('closeSessionsLeft')}
+                  <ChevronLeft size={14} /> {t('closeSessionsLeft')}
                 </button>
                 <button className="context-menu-item" disabled={!rightSessionIds.length} onClick={() => closeSessionBatch(rightSessionIds)} type="button">
-                  <X size={14} /> {t('closeSessionsRight')}
+                  <ChevronRight size={14} /> {t('closeSessionsRight')}
                 </button>
                 <button className="context-menu-item" disabled={!otherSessionIds.length} onClick={() => closeSessionBatch(otherSessionIds)} type="button">
                   <X size={14} /> {t('closeOtherSessions')}
+                </button>
+                <button className="context-menu-item" onClick={() => closeSessionBatch(allSessionIds)} type="button">
+                  <Trash2 size={14} /> {t('closeAllSessions')}
                 </button>
                 <button className="context-menu-item" onClick={() => reconnectSession(sessionContextSession)} type="button">
                   <RotateCcw size={14} /> {t('reconnectSession')}
@@ -4614,7 +4619,7 @@ export default function App() {
                       title={t('closeSessionAction')}
                       type="button"
                     >
-                      <X size={12} />
+                      <X size={10} />
                     </button>
                   </div>
                 );

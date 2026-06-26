@@ -737,6 +737,14 @@ select:disabled {
   opacity: 0.72;
 }
 
+/* 会话标签关闭图标只放大 SVG 和笔画，不改变按钮盒子宽度，避免标签宽度跟着变化。 */
+.session-tab-close svg {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  stroke-width: 2.8;
+}
+
 .session-tab-close:hover {
   background: rgba(148, 163, 184, 0.18);
   opacity: 1;

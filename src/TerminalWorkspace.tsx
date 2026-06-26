@@ -158,6 +158,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   const sessionRef = useRef<TerminalSession | undefined>(session);
   const resizeFrameRef = useRef<number | null>(null);
   const terminalSizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  const pendingFocusSessionIdRef = useRef<string | null>(session?.id ?? null);
   const terminalTheme = useMemo(
     () => buildTerminalTheme(settings),
     [
@@ -200,6 +201,17 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     }
 
     terminal.focus();
+  };
+
+  // 点击顶部会话标签后先记住目标会话，等 SSH 从 connecting 进入可输入状态时再把焦点交回 xterm。
+  const focusPendingTerminalInput = () => {
+    const targetSessionId = pendingFocusSessionIdRef.current;
+    if (!targetSessionId || sessionRef.current?.id !== targetSessionId || !canAcceptTerminalInput(sessionRef.current)) {
+      return;
+    }
+
+    pendingFocusSessionIdRef.current = null;
+    focusTerminalInput();
   };
 
   // 远端命令可能输出隐藏光标控制符；会话切换或缓存重放后只恢复本地 xterm 光标，不把控制符写回 SSH。
@@ -380,6 +392,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
 
     terminal.options.disableStdin = !canAcceptTerminalInput(session);
     restoreLocalCursorVisibility();
+    window.requestAnimationFrame(focusPendingTerminalInput);
   }, [session?.id, session?.status]);
 
   useEffect(() => {
@@ -406,6 +419,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       return;
     }
 
+    pendingFocusSessionIdRef.current = session?.id ?? null;
     terminal.reset();
     if (session?.id) {
       terminal.write(cachedOutputBySessionRef.current[session.id] ?? '');
@@ -413,7 +427,10 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     restoreLocalCursorVisibility();
     // 新会话打开时立刻把当前 xterm 尺寸推给远端 PTY，避免默认 120 列和实际界面列宽不一致。
     terminalSizeRef.current = null;
-    window.requestAnimationFrame(() => syncTerminalSizeToRemote());
+    window.requestAnimationFrame(() => {
+      syncTerminalSizeToRemote();
+      focusPendingTerminalInput();
+    });
   }, [session?.id]);
 
   return (
