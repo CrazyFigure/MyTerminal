@@ -54,8 +54,19 @@ fn run_cli() -> Result<(), AppError> {
             client.get("/connections")?
         }
         [command, subcommand, rest @ ..] if command == "session" && subcommand == "open" => {
-            let connection_id = required_option(rest, "--connection")?;
-            client.post("/sessions/open", &json!({ "connectionId": connection_id }))?
+            // 会话打开既支持稳定连接 id，也支持用户自然语言常说的连接名称，最终都交给 Bridge 使用已保存凭据连接。
+            let connection_id = option_value(rest, "--connection");
+            let connection_name = option_value(rest, "--connection-name");
+            // 两个参数至少提供一个，避免 CLI/MCP agent 把主机 IP 或会话 id 概念混用成空请求。
+            if connection_id.is_none() && connection_name.is_none() {
+                return Err(AppError::Validation(
+                    "session open requires --connection <id> or --connection-name <name>".into(),
+                ));
+            }
+            client.post(
+                "/sessions/open",
+                &json!({ "connectionId": connection_id, "connectionName": connection_name }),
+            )?
         }
         [command, subcommand, rest @ ..] if command == "session" && subcommand == "close" => {
             let session_id = required_option(rest, "--session")?;
@@ -153,7 +164,7 @@ fn run_cli() -> Result<(), AppError> {
         }
         _ => {
             return Err(AppError::Validation(
-                "usage: myterminal-cli bridge status --json | connections list --json | session open/close | exec | file ...".into(),
+                "usage: myterminal-cli bridge status --json | connections list --json | session open --connection <id>|--connection-name <name> | session close | exec | file ...".into(),
             ));
         }
     };
@@ -467,7 +478,8 @@ fn handle_mcp_message(message: Value) -> Result<Option<Value>, AppError> {
                 "result": {
                     "protocolVersion": protocol_version,
                     "capabilities": { "tools": { "listChanged": false } },
-                    "serverInfo": { "name": "myterminal-ai-bridge", "version": env!("CARGO_PKG_VERSION") }
+                    "serverInfo": { "name": "myterminal-ai-bridge", "version": env!("CARGO_PKG_VERSION") },
+                    "instructions": mcp_instructions()
                 }
             })
         }
@@ -509,42 +521,57 @@ fn handle_mcp_message(message: Value) -> Result<Option<Value>, AppError> {
     Ok(Some(response))
 }
 
+/// 返回给 MCP 客户端的全局使用说明，重点约束 sessionId 来源，避免 agent 把 IP、连接名误当 sessionId。
+fn mcp_instructions() -> &'static str {
+    "MyTerminal MCP 使用流程：1. 先调用 myterminal_list_connections 查找连接，使用返回的 id 或 name。2. 调用 myterminal_open_session，传 connectionId 或 connectionName；MyTerminal 会使用已保存的账号密码、密钥、跳板机和代理配置，不需要 agent 自己登录 SSH。3. 后续 myterminal_run_command 和 myterminal_file_* 工具的 sessionId 必须使用 open_session 返回的 id；sessionId 不是 IP、主机名、连接名或用户名，不能猜。4. 同一 session 的命令会按顺序执行；不同 session 可以并发。5. 写文件请直接用 myterminal_file_write，不要用 shell echo 拼接，除非用户明确要求执行命令。"
+}
+
 fn mcp_tools() -> Value {
     json!([
         tool_schema(
             "myterminal_list_connections",
-            "列出 MyTerminal 中的 SSH 分组树和脱敏连接信息。",
+            "第一步调用：列出 MyTerminal 中保存的 SSH 连接和分组。返回的每个连接都有 id、name、host、username；后续打开会话请优先使用 id，也可以用唯一的 name。",
             json!({ "type": "object", "properties": {} })
         ),
         tool_schema(
             "myterminal_open_session",
-            "打开一个 AI Bridge 会话。",
-            json!({ "type": "object", "required": ["connectionId"], "properties": { "connectionId": { "type": "string" } } })
+            "第二步调用：打开一个 AI Bridge 会话并返回 session.id。传 connectionId（推荐，来自 list_connections 的 id）或 connectionName（用户给出如“28开发”时可直接使用）。MyTerminal 会自动使用保存的账号密码/密钥/跳板机/代理配置，不需要 agent 手动 SSH 登录。后续所有 sessionId 必须使用这里返回的 session.id，绝不能用 IP、主机名、连接名或用户名代替。",
+            json!({
+                "type": "object",
+                "anyOf": [
+                    { "required": ["connectionId"] },
+                    { "required": ["connectionName"] }
+                ],
+                "properties": {
+                    "connectionId": { "type": "string", "description": "MyTerminal 连接 id，来自 myterminal_list_connections 返回的 connections[].id。推荐使用，名称重复时必须使用它。" },
+                    "connectionName": { "type": "string", "description": "MyTerminal 连接名称，例如用户说“打开 28开发”时可传“28开发”。如果名称重复，工具会要求改用 connectionId。" }
+                }
+            })
         ),
         tool_schema(
             "myterminal_close_session",
             "关闭一个 AI Bridge 会话。",
-            json!({ "type": "object", "required": ["sessionId"], "properties": { "sessionId": { "type": "string" } } })
+            json!({ "type": "object", "required": ["sessionId"], "properties": { "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id，不是 IP、连接名或连接 id。" } } })
         ),
         tool_schema(
             "myterminal_run_command",
-            "在远端通过独立 SSH exec channel 执行命令，默认需要 GUI 审批。",
-            json!({ "type": "object", "required": ["sessionId", "command"], "properties": { "sessionId": { "type": "string" }, "command": { "type": "string" }, "cwd": { "type": "string" }, "timeoutSec": { "type": "number" } } })
+            "在远端通过独立 SSH exec channel 执行命令，默认需要 GUI 审批。同一 sessionId 的命令会按顺序执行；不同 sessionId 可并发。创建/写入小文件时优先用 myterminal_file_write。",
+            json!({ "type": "object", "required": ["sessionId", "command"], "properties": { "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" }, "command": { "type": "string" }, "cwd": { "type": "string" }, "timeoutSec": { "type": "number" } } })
         ),
         tool_schema(
             "myterminal_file_list",
             "列出远端目录。",
-            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string" }, "path": { "type": "string" } } })
+            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" }, "path": { "type": "string" } } })
         ),
         tool_schema(
             "myterminal_file_read",
             "读取远端文件，UTF-8 返回 content，二进制返回 contentBase64。",
-            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string" }, "path": { "type": "string" } } })
+            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" }, "path": { "type": "string" } } })
         ),
         tool_schema(
             "myterminal_file_write",
-            "写入远端小文件内容，默认需要 GUI 审批。不要用它上传本地大文件或文件夹；本地文件/文件夹请使用 myterminal_file_upload 的 localPath/localPaths。",
-            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string" }, "path": { "type": "string" }, "content": { "type": "string" }, "contentBase64": { "type": "string" } } })
+            "写入远端小文件内容，默认需要 GUI 审批。用户要求“新增 hello.txt”这类任务应直接调用本工具，不需要先执行 echo 命令。不要用它上传本地大文件或文件夹；本地文件/文件夹请使用 myterminal_file_upload 的 localPath/localPaths。",
+            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" }, "path": { "type": "string" }, "content": { "type": "string" }, "contentBase64": { "type": "string" } } })
         ),
         tool_schema(
             "myterminal_file_upload",
@@ -557,7 +584,7 @@ fn mcp_tools() -> Value {
                     { "required": ["localPaths"] }
                 ],
                 "properties": {
-                    "sessionId": { "type": "string" },
+                    "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" },
                     "localPath": { "type": "string", "description": "单个本地文件或文件夹路径。" },
                     "localPaths": { "type": "array", "items": { "type": "string" }, "description": "多个本地文件或文件夹路径。" },
                     "remoteDir": { "type": "string", "description": "远端目标目录；未提供时使用会话 cwd。" },
@@ -576,7 +603,7 @@ fn mcp_tools() -> Value {
                     { "required": ["paths"] }
                 ],
                 "properties": {
-                    "sessionId": { "type": "string" },
+                    "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" },
                     "path": { "type": "string", "description": "单个远端文件或文件夹路径。" },
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "多个远端文件或文件夹路径。" },
                     "localDir": { "type": "string", "description": "本地目标目录。" },
@@ -587,17 +614,17 @@ fn mcp_tools() -> Value {
         tool_schema(
             "myterminal_file_delete",
             "递归删除远端文件或文件夹，默认需要 GUI 审批。",
-            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string" }, "path": { "type": "string" } } })
+            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" }, "path": { "type": "string" } } })
         ),
         tool_schema(
             "myterminal_file_rename",
             "重命名或移动远端路径，默认需要 GUI 审批。",
-            json!({ "type": "object", "required": ["sessionId", "path", "newPath"], "properties": { "sessionId": { "type": "string" }, "path": { "type": "string" }, "newPath": { "type": "string" } } })
+            json!({ "type": "object", "required": ["sessionId", "path", "newPath"], "properties": { "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" }, "path": { "type": "string" }, "newPath": { "type": "string" } } })
         ),
         tool_schema(
             "myterminal_file_mkdir",
             "创建远端目录，默认需要 GUI 审批。",
-            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string" }, "path": { "type": "string" } } })
+            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" }, "path": { "type": "string" } } })
         )
     ])
 }

@@ -152,7 +152,10 @@ pub struct AgentBridgeRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenSessionRequest {
-    pub connection_id: String,
+    /// 优先使用 list_connections 返回的连接 id；为空时可用 connectionName 按保存的连接名称打开。
+    pub connection_id: Option<String>,
+    /// 给 MCP agent 的便捷入口：用户说“打开 28开发”时可直接传连接名称，不需要猜 sessionId。
+    pub connection_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1061,9 +1064,9 @@ pub fn open_agent_session(
     runtime: &AgentBridgeRuntime,
     storage: &StorageService,
     crypto: &CryptoService,
-    connection_id: &str,
+    request: &OpenSessionRequest,
 ) -> Result<AgentSession, AppError> {
-    let connection = find_connection(storage, crypto, connection_id)?;
+    let connection = find_connection_for_open_session(storage, crypto, request)?;
     let session = AgentSession {
         id: uuid::Uuid::new_v4().to_string(),
         connection_id: connection.id.clone(),
@@ -1085,6 +1088,11 @@ pub fn close_agent_session(
     Ok(true)
 }
 
+/// 统一清理 MCP/CLI 传入的可选字符串，空白字符串按未提供处理。
+fn trimmed_non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
 fn find_connection(
     storage: &StorageService,
     crypto: &CryptoService,
@@ -1095,6 +1103,46 @@ fn find_connection(
         .into_iter()
         .find(|connection| connection.id == connection_id)
         .ok_or_else(|| AppError::NotFound(format!("connection {connection_id} not found")))
+}
+
+/// 根据 open_session 请求解析连接；优先使用稳定 id，名称只做自然语言入口，重复时要求 agent 回退到 id。
+fn find_connection_for_open_session(
+    storage: &StorageService,
+    crypto: &CryptoService,
+    request: &OpenSessionRequest,
+) -> Result<ConnectionProfile, AppError> {
+    if let Some(connection_id) = trimmed_non_empty(request.connection_id.as_deref()) {
+        return find_connection(storage, crypto, connection_id);
+    }
+
+    // 允许用户直接说“打开 28开发”，但名称不是稳定主键，所以重复名称必须显式报出候选 id。
+    let connection_name =
+        trimmed_non_empty(request.connection_name.as_deref()).ok_or_else(|| {
+            AppError::Validation(
+                "connectionId or connectionName is required; call myterminal_list_connections first when unsure".into(),
+            )
+        })?;
+    let matches = storage
+        .load_connections(crypto)?
+        .into_iter()
+        .filter(|connection| connection.name == connection_name)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [connection] => Ok(connection.clone()),
+        [] => Err(AppError::NotFound(format!(
+            "connection name {connection_name} not found; call myterminal_list_connections and use connectionId"
+        ))),
+        _ => {
+            let ids = matches
+                .iter()
+                .map(|connection| format!("{} ({})", connection.id, connection.host))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(AppError::Validation(format!(
+                "connection name {connection_name} is ambiguous; use one of these connectionId values: {ids}"
+            )))
+        }
+    }
 }
 
 fn connection_for_session(
@@ -2055,7 +2103,7 @@ fn handle_http_request(
         }
         ("POST", "/sessions/open") => {
             let payload: OpenSessionRequest = decode_request_body(&request.body)?;
-            let session = open_agent_session(runtime, storage, crypto, &payload.connection_id)?;
+            let session = open_agent_session(runtime, storage, crypto, &payload)?;
             serde_json::to_value(session).map_err(AppError::from)
         }
         ("POST", "/sessions/close") => {
