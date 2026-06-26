@@ -16,6 +16,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # 发布说明需要读取完整 tag 历史，用当前 tag 对比上一个 tag 生成本次变更。
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -29,6 +32,64 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Generate release notes
+        id: release_notes
+        shell: pwsh
+        run: |
+          # 发布说明只统计当前 tag 相对上一个可达 tag 的提交，避免新版本复用旧版本内容。
+          $previousTag = ''
+          $previousTagOutput = git describe --tags --abbrev=0 "HEAD^" 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $previousTag = $previousTagOutput
+          }
+
+          $range = if ($previousTag) { "$previousTag..HEAD" } else { "HEAD" }
+          $subjects = git log --format=%s $range
+
+          $groups = [ordered]@{
+            '新增' = [System.Collections.Generic.List[string]]::new()
+            '修复' = [System.Collections.Generic.List[string]]::new()
+            '优化' = [System.Collections.Generic.List[string]]::new()
+          }
+
+          foreach ($subject in $subjects) {
+            # 发布整理提交只服务版本流程，不作为用户可见变更写入 Release。
+            if ($subject -match '^(docs|chore)\(release\):') {
+              continue
+            }
+
+            $text = $subject -replace '^(feat|fix|docs|refactor|perf|style|chore|test|build|ci)(\([^)]+\))?:\s*', ''
+            if ([string]::IsNullOrWhiteSpace($text)) {
+              $text = $subject
+            }
+
+            if ($subject -match '^feat(\([^)]+\))?:') {
+              $groups['新增'].Add($text)
+            } elseif ($subject -match '^fix(\([^)]+\))?:') {
+              $groups['修复'].Add($text)
+            } else {
+              $groups['优化'].Add($text)
+            }
+          }
+
+          $lines = [System.Collections.Generic.List[string]]::new()
+          foreach ($heading in $groups.Keys) {
+            $lines.Add("${heading}：")
+            if ($groups[$heading].Count -gt 0) {
+              foreach ($item in $groups[$heading]) {
+                $lines.Add("- $item")
+              }
+            } else {
+              $lines.Add("- 本次暂无${heading}项。")
+            }
+            $lines.Add('')
+          }
+
+          $body = ($lines -join [Environment]::NewLine).TrimEnd()
+          'body<<__MYTERMINAL_RELEASE_BODY__' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $body | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          '__MYTERMINAL_RELEASE_BODY__' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       # 使用 tauri-action 当前公开主版本 v0；上游没有 v1 tag，错误版本会在任务初始化阶段直接失败。
       - name: Build and publish Tauri release
         uses: tauri-apps/tauri-action@v0
@@ -37,21 +98,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: MyTerminal ${{ github.ref_name }}
-          releaseBody: |
-            新增：
-            - 新增 CLI + MCP + GUI Broker 桥接能力，支持 Claude Code、Codex 通过 npx 连接 MyTerminal。
-            - 新增 MCP 设置页、AI 请求审批面板、自动执行连接白名单和连接脱敏输出。
-            - 新增 myterminal-cli 的 MCP stdio、JSON 输出、远程命令和 SFTP 文件工具。
-
-            修复：
-            - 修复多 binary 场景下 Tauri dev 无法确定默认运行程序的问题。
-            - 修复 MCP stdio 握手和分帧兼容性问题，兼容 NDJSON 与 Content-Length。
-            - 修复 MCP Bridge 启停状态同步与重复点击控制。
-
-            优化：
-            - 更新 README 和 README_CN 的 MCP Bridge 使用说明与 npx 配置示例。
-            - 优化 MCP 设置页布局、保存反馈、开关状态和自动执行连接树展示。
-            - 升级版本号到 0.1.8。
+          releaseBody: ${{ steps.release_notes.outputs.body }}
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           # 使用 action.yml 支持的资产命名参数，让 Release 附件名称稳定可识别。
