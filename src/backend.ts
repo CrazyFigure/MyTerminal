@@ -411,6 +411,14 @@ export const backend = {
   rejectAgentBridgeRequest: (requestId: string, reason?: string) =>
     call<boolean>('reject_agent_bridge_request', { requestId, reason }, true),
   clearAgentBridgeRequests: () => call<boolean>('clear_agent_bridge_requests', undefined, true),
+  // MCP 审批通知走 Rust 命令创建带动作按钮的系统 toast，按钮结果再通过 Tauri 事件回到前端。
+  showAgentBridgeNotification: (request: {
+    requestId: string;
+    title: string;
+    body: string;
+    approveLabel: string;
+    rejectLabel: string;
+  }) => call<boolean>('show_agent_bridge_notification', { request }, true),
   resetAgentBridgeToken: () => call<AgentBridgeStatus>('reset_agent_bridge_token', undefined, mockAgentBridgeStatus),
   setAgentBridgeEnabled: (enabled: boolean) => call<AgentBridgeStatus>('set_agent_bridge_enabled', { enabled }, mockAgentBridgeStatus),
   testConnection: (connection: ConnectionProfile) => {

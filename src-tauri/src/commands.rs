@@ -20,7 +20,7 @@ use std::os::windows::process::CommandExt;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{TimeZone, Utc};
 use portable_pty::{CommandBuilder, PtySize};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use ssh2::{Channel, ExtendedData, MethodType, Session, Sftp};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -31,8 +31,8 @@ use crate::{
         AppSettings, BootstrapState, ConnectionProfile, EditorDocument, HistoryEntry,
         HistoryEntryInput, LocalConfigBundle, LocalTerminalProfile, LocalTerminalSettings,
         RemoteFileEntry, RuntimeCpuCore, RuntimeOverview, SshJumpHost, SshProxyConfig,
-        TerminalOutputChunk, TerminalSession, TunnelOpenRequest, TunnelRecord,
-        TunnelUpdateRequest, UpdateCheckResult, WebDavSettings,
+        TerminalOutputChunk, TerminalSession, TunnelOpenRequest, TunnelRecord, TunnelUpdateRequest,
+        UpdateCheckResult, WebDavSettings,
     },
     state::{AppState, AuxiliarySshSession, RuntimeSession, SessionControl, TunnelRuntime},
 };
@@ -63,6 +63,29 @@ pub struct FileTransferSummary {
     bytes: u64,
     destinations: Vec<String>,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentBridgeNotificationRequest {
+    // 通知动作回传只带请求 id，前端收到后再调用现有审批接口，避免 toast 线程直接操作业务状态。
+    request_id: String,
+    title: String,
+    body: String,
+    approve_label: String,
+    reject_label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentBridgeNotificationActionEvent {
+    // 前端监听该事件后按 action_id 分派“接受/拒绝/打开面板”。
+    request_id: String,
+    action_id: String,
+}
+
+const AGENT_BRIDGE_NOTIFICATION_ACTION_EVENT: &str = "agent-bridge-notification-action";
+const AGENT_BRIDGE_NOTIFICATION_APPROVE_ACTION_ID: &str = "approve-agent-request";
+const AGENT_BRIDGE_NOTIFICATION_REJECT_ACTION_ID: &str = "reject-agent-request";
 
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
 const SSH_IO_TIMEOUT: Duration = Duration::from_secs(20);
@@ -2142,7 +2165,12 @@ fn spawn_local_terminal_thread(
                     Ok(size) => {
                         let content = String::from_utf8_lossy(&buffer[..size]).into_owned();
                         if !content.is_empty() {
-                            queue_output(&reader_queue, &reader_app_handle, &reader_session_id, content);
+                            queue_output(
+                                &reader_queue,
+                                &reader_app_handle,
+                                &reader_session_id,
+                                content,
+                            );
                         }
                     }
                     Err(error) if error.kind() == ErrorKind::Interrupted => continue,
@@ -2162,7 +2190,11 @@ fn spawn_local_terminal_thread(
 
             match control_rx.recv_timeout(Duration::from_millis(8)) {
                 Ok(SessionControl::Input(data)) => {
-                    if writer.write_all(data.as_bytes()).and_then(|_| writer.flush()).is_err() {
+                    if writer
+                        .write_all(data.as_bytes())
+                        .and_then(|_| writer.flush())
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -3548,6 +3580,54 @@ pub fn clear_agent_bridge_requests(state: State<'_, AppState>) -> Result<bool, S
     Ok(agent_bridge::clear_finished_requests(&state.agent_bridge)?)
 }
 
+/// 创建带动作按钮的 MCP 审批系统通知；按钮回调只发送前端事件，审批状态仍由现有审批接口处理。
+#[tauri::command]
+pub fn show_agent_bridge_notification(
+    app_handle: AppHandle,
+    request: AgentBridgeNotificationRequest,
+) -> Result<bool, String> {
+    // 系统通知只负责展示 Windows toast 与捕获动作按钮，实际审批仍统一回到前端调用既有 MCP 审批命令。
+    let mut notification = notify_rust::Notification::new();
+    notification
+        .summary(&request.title)
+        .body(&request.body)
+        .action(
+            AGENT_BRIDGE_NOTIFICATION_APPROVE_ACTION_ID,
+            &request.approve_label,
+        )
+        .action(
+            AGENT_BRIDGE_NOTIFICATION_REJECT_ACTION_ID,
+            &request.reject_label,
+        );
+
+    #[cfg(windows)]
+    {
+        // Windows toast 需要稳定的 AppUserModelID；沿用 Tauri 配置里的应用标识，和系统通知中心归属保持一致。
+        notification.app_id(&app_handle.config().identifier);
+    }
+
+    let request_id = request.request_id;
+    let event_app_handle = app_handle.clone();
+    let handle = notification
+        .show()
+        .map_err(|error| format!("notification error: {error}"))?;
+
+    thread::spawn(move || {
+        // notify-rust 的动作等待是阻塞式；单独线程只负责把系统按钮动作转成前端事件。
+        handle.wait_for_action(|action_id| {
+            let _ = event_app_handle.emit(
+                AGENT_BRIDGE_NOTIFICATION_ACTION_EVENT,
+                AgentBridgeNotificationActionEvent {
+                    request_id: request_id.clone(),
+                    action_id: action_id.to_string(),
+                },
+            );
+        });
+    });
+
+    Ok(true)
+}
+
 #[tauri::command]
 pub fn set_agent_bridge_enabled(
     app_handle: AppHandle,
@@ -3771,7 +3851,9 @@ pub fn open_local_terminal_session(
         return Err(AppError::Validation("local terminal directory is required".into()).into());
     }
     if !Path::new(cwd).is_dir() {
-        return Err(AppError::Validation(format!("local terminal directory not found: {cwd}")).into());
+        return Err(
+            AppError::Validation(format!("local terminal directory not found: {cwd}")).into(),
+        );
     }
     let command = profile.command.trim();
 

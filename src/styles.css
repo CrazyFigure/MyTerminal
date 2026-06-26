@@ -61,7 +61,7 @@ select:disabled {
   --app-chip-text: #3730a3;
   position: relative;
   display: grid;
-  grid-template-columns: auto 4px minmax(0, 1fr);
+  grid-template-columns: var(--app-grid-columns, auto 4px minmax(0, 1fr));
   gap: 0;
   width: 100%;
   height: 100vh;
@@ -70,7 +70,7 @@ select:disabled {
 }
 
 .app-shell.sidebar-collapsed {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: var(--app-grid-columns, minmax(0, 1fr));
 }
 
 .app-shell.theme-dark {
@@ -102,6 +102,8 @@ select:disabled {
 .workspace,
 .terminal-area,
 .bottom-dock,
+.agent-sidebar,
+.agent-sidebar-body,
 .sidebar-panel,
 .explorer-panel,
 .explorer-shell,
@@ -133,6 +135,42 @@ select:disabled {
   border-radius: 8px;
   background: var(--app-item-bg);
   overflow: hidden;
+}
+
+.agent-sidebar {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 4px;
+  padding: 4px;
+  overflow: hidden;
+}
+
+.agent-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 6px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.agent-sidebar-title {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.agent-sidebar-title span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-sidebar-body {
+  overflow: auto;
+  padding: 6px;
+  scrollbar-width: thin;
 }
 
 .runtime-header {
@@ -1880,6 +1918,10 @@ select:disabled {
   cursor: col-resize;
 }
 
+.resize-handle-agent-sidebar {
+  cursor: col-resize;
+}
+
 .resize-handle-main.is-hidden {
   display: none;
 }
@@ -2006,6 +2048,11 @@ select:disabled {
 }
 
 .resize-handle-main::before {
+  width: 4px;
+  height: 64px;
+}
+
+.resize-handle-agent-sidebar::before {
   width: 4px;
   height: 64px;
 }
@@ -2932,6 +2979,10 @@ select:disabled {
   }
 
   .sidebar {
+    display: none;
+  }
+
+  .agent-sidebar {
     display: none;
   }
 
