@@ -46,6 +46,7 @@ fn main() {
             commands::approve_agent_bridge_request,
             commands::reject_agent_bridge_request,
             commands::clear_agent_bridge_requests,
+            commands::show_agent_bridge_notification,
             commands::reset_agent_bridge_token,
             commands::set_agent_bridge_enabled,
             commands::test_connection,

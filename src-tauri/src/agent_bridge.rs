@@ -258,6 +258,7 @@ pub struct AgentBridgeRuntime {
     requests: Arc<Mutex<VecDeque<AgentBridgeRequest>>>,
     request_changed: Arc<Condvar>,
     sessions: Arc<Mutex<HashMap<String, AgentSession>>>,
+    command_lanes: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     server: Arc<Mutex<Option<AgentBridgeServer>>>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
 }
@@ -268,6 +269,7 @@ impl AgentBridgeRuntime {
             requests: Arc::new(Mutex::new(VecDeque::new())),
             request_changed: Arc::new(Condvar::new()),
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            command_lanes: Arc::new(Mutex::new(HashMap::new())),
             server: Arc::new(Mutex::new(None)),
             app_handle: Arc::new(Mutex::new(None)),
         }
@@ -318,6 +320,27 @@ fn lock_sessions<'a>(
         .sessions
         .lock()
         .map_err(|_| AppError::Validation("agent bridge session registry is unavailable".into()))
+}
+
+fn lock_command_lanes<'a>(
+    runtime: &'a AgentBridgeRuntime,
+) -> Result<MutexGuard<'a, HashMap<String, Arc<Mutex<()>>>>, AppError> {
+    runtime
+        .command_lanes
+        .lock()
+        .map_err(|_| AppError::Validation("agent bridge command lanes are unavailable".into()))
+}
+
+fn command_lane_for_session(
+    runtime: &AgentBridgeRuntime,
+    session_id: &str,
+) -> Result<Arc<Mutex<()>>, AppError> {
+    let mut lanes = lock_command_lanes(runtime)?;
+    // 命令串行粒度是 AI 会话；同一 agent 对同一机器的 session 顺序执行，不同 agent/session 仍可并行。
+    Ok(lanes
+        .entry(session_id.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone())
 }
 
 fn lock_server<'a>(
@@ -525,6 +548,8 @@ fn stop_server_with_policy(
 
 pub fn close_all_agent_sessions(runtime: &AgentBridgeRuntime) -> Result<bool, AppError> {
     lock_sessions(runtime)?.clear();
+    // 关闭全部 AI 会话时同步清理命令串行 lane；正在执行的命令仍持有自己的 Arc，不会被中途打断。
+    lock_command_lanes(runtime)?.clear();
     Ok(true)
 }
 
@@ -1055,6 +1080,8 @@ pub fn close_agent_session(
     session_id: &str,
 ) -> Result<bool, AppError> {
     lock_sessions(runtime)?.remove(session_id);
+    // 单个 AI 会话关闭后移除对应串行 lane，后续同名旧 session 请求会先被 session 校验拦截。
+    lock_command_lanes(runtime)?.remove(session_id);
     Ok(true)
 }
 
@@ -1091,6 +1118,11 @@ pub fn run_agent_command(
     settings: &AgentBridgeSettings,
     payload: &RunCommandRequest,
 ) -> Result<AgentCommandResult, AppError> {
+    let command_lane = command_lane_for_session(runtime, &payload.session_id)?;
+    // 同一 AI 会话的命令必须串行，避免多个 SSH exec 同时修改同一 cwd/文件状态造成 agent 侧顺序错乱。
+    let _command_order_guard = command_lane
+        .lock()
+        .map_err(|_| AppError::Validation("agent bridge command lane is unavailable".into()))?;
     let (session, connection) =
         connection_for_session(runtime, storage, crypto, &payload.session_id)?;
     let ssh_session = connect_ssh(&connection)?;
@@ -2290,5 +2322,23 @@ mod tests {
         };
         assert!(should_auto_execute(&settings, "safe"));
         assert!(!should_auto_execute(&settings, "prod"));
+    }
+
+    #[test]
+    fn command_lanes_are_scoped_to_agent_session() {
+        let runtime = AgentBridgeRuntime::new();
+        // 同一个 AI session 必须复用同一条命令 lane，确保并发命令按进入 lane 的顺序串行。
+        let first = command_lane_for_session(&runtime, "session-a").unwrap();
+        let second = command_lane_for_session(&runtime, "session-a").unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+
+        // 不同 AI session 即使指向同一台机器，也会使用不同 lane，允许不同 agent 并发执行。
+        let other = command_lane_for_session(&runtime, "session-b").unwrap();
+        assert!(!Arc::ptr_eq(&first, &other));
+
+        // session 关闭后清理 lane，避免长时间运行的 MCP Bridge 积累已失效 session 锁。
+        close_agent_session(&runtime, "session-a").unwrap();
+        let replacement = command_lane_for_session(&runtime, "session-a").unwrap();
+        assert!(!Arc::ptr_eq(&first, &replacement));
     }
 }
