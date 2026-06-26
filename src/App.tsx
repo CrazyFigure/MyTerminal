@@ -2682,146 +2682,180 @@ function SettingsModal({
           <div className="settings-content">
             {activeTab === 'appearance' ? (
               <div className="stack gap-16">
-                <div>
-                  <h3>{t('appearanceTitle')}</h3>
-                </div>
-
-                <div className="form-grid">
-                  <label>
-                    <span>{t('fieldTheme')}</span>
-                    <select value={draftSettings.themeMode} onChange={(event) => updateDraftSettings((current) => ({ ...current, themeMode: event.target.value as 'light' | 'dark' }))}>
-                      <option value="light">{t('light')}</option>
-                      <option value="dark">{t('dark')}</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>{t('fieldLanguage')}</span>
-                    <select value={draftSettings.uiLanguage} onChange={(event) => updateDraftSettings((current) => ({ ...current, uiLanguage: event.target.value as UiLanguage }))}>
-                      <option value="zh-CN">{t('languageZhCn')}</option>
-                      <option value="en-US">{t('languageEnUs')}</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>{t('fieldLatinFontFamily')}</span>
-                    <select value={selectedLatinFontFamily} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellLatinFontFamily: event.target.value }))}>
-                      {latinOptions.map((fontFamily) => (
-                        <option key={fontFamily} value={fontFamily}>
-                          {fontFamily}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>{t('fieldCjkFontFamily')}</span>
-                    <select value={selectedCjkFontFamily} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellCjkFontFamily: event.target.value }))}>
-                      {cjkOptions.map((fontFamily) => (
-                        <option key={fontFamily} value={fontFamily}>
-                          {fontFamily}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>{t('fieldFontSize')}</span>
-                    <input type="number" value={draftSettings.shellFontSize} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellFontSize: Number(event.target.value) || 15 }))} />
-                  </label>
-                  <div className="font-preview-panel span-2" style={terminalPreviewStyle}>
-                    <span>0123456789 abcdefghABCDEFGH</span>
-                    <strong>终端中文字体预览</strong>
+                {/* 外观页按用户认知路径分块：先配置应用偏好，再调整终端视觉与交互。 */}
+                <section className="settings-section-block">
+                  <div>
+                    <h3>{t('appearanceBaseTitle')}</h3>
+                    <p>{t('appearanceBaseDesc')}</p>
                   </div>
-                  <label>
-                    <span>{t('fieldRuntimeRefreshInterval')}</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={60}
-                      value={draftSettings.runtimeRefreshIntervalSec}
-                      onChange={(event) =>
-                        updateDraftSettings((current) => ({
-                          ...current,
-                          runtimeRefreshIntervalSec: Number(event.target.value) || 1,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label className="span-2">
-                    <span>{t('fieldTerminalBackgroundImage')}</span>
-                    <div className="background-image-field">
-                      <input
-                        placeholder="C:\\Pictures\\terminal.png 或 https://example.com/bg.png"
-                        value={draftSettings.backgroundImage ?? ''}
-                        onChange={(event) => updateDraftSettings((current) => ({ ...current, backgroundImage: event.target.value }))}
-                      />
-                      <button
-                        className="secondary-button slim"
-                        onClick={() => void handleLocalBackgroundImage()}
-                        type="button"
+
+                  <div className="form-grid">
+                    <label>
+                      <span>{t('fieldTheme')}</span>
+                      <select value={draftSettings.themeMode} onChange={(event) => updateDraftSettings((current) => ({ ...current, themeMode: event.target.value as 'light' | 'dark' }))}>
+                        <option value="light">{t('light')}</option>
+                        <option value="dark">{t('dark')}</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t('fieldLanguage')}</span>
+                      <select value={draftSettings.uiLanguage} onChange={(event) => updateDraftSettings((current) => ({ ...current, uiLanguage: event.target.value as UiLanguage }))}>
+                        <option value="zh-CN">{t('languageZhCn')}</option>
+                        <option value="en-US">{t('languageEnUs')}</option>
+                      </select>
+                    </label>
+                  </div>
+                </section>
+
+                <section className="settings-section-block">
+                  <div>
+                    <h3>{t('appearanceFontTitle')}</h3>
+                    <p>{t('appearanceFontDesc')}</p>
+                  </div>
+
+                  <div className="form-grid">
+                    <label>
+                      <span>{t('fieldLatinFontFamily')}</span>
+                      <select value={selectedLatinFontFamily} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellLatinFontFamily: event.target.value }))}>
+                        {latinOptions.map((fontFamily) => (
+                          <option key={fontFamily} value={fontFamily}>
+                            {fontFamily}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t('fieldCjkFontFamily')}</span>
+                      <select value={selectedCjkFontFamily} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellCjkFontFamily: event.target.value }))}>
+                        {cjkOptions.map((fontFamily) => (
+                          <option key={fontFamily} value={fontFamily}>
+                            {fontFamily}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t('fieldFontSize')}</span>
+                      <input type="number" value={draftSettings.shellFontSize} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellFontSize: Number(event.target.value) || 15 }))} />
+                    </label>
+                    <div className="font-preview-panel span-2" style={terminalPreviewStyle}>
+                      <span>0123456789 abcdefghABCDEFGH</span>
+                      <strong>终端中文字体预览</strong>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="settings-section-block">
+                  <div>
+                    <h3>{t('appearanceBackgroundTitle')}</h3>
+                    <p>{t('appearanceBackgroundDesc')}</p>
+                  </div>
+
+                  <div className="form-grid">
+                    <label className="span-2">
+                      <span>{t('fieldTerminalBackgroundImage')}</span>
+                      <div className="background-image-field">
+                        <input
+                          placeholder="C:\\Pictures\\terminal.png 或 https://example.com/bg.png"
+                          value={draftSettings.backgroundImage ?? ''}
+                          onChange={(event) => updateDraftSettings((current) => ({ ...current, backgroundImage: event.target.value }))}
+                        />
+                        <button
+                          className="secondary-button slim"
+                          onClick={() => void handleLocalBackgroundImage()}
+                          type="button"
+                        >
+                          <Upload size={14} /> {t('chooseLocalImage')}
+                        </button>
+                      </div>
+                    </label>
+                    <label>
+                      <span>{t('fieldTerminalBackgroundImageOpacity')}</span>
+                      <div className="opacity-control">
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={draftSettings.terminalBackgroundImageOpacity ?? 0.18}
+                          onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalBackgroundImageOpacity: Number(event.target.value) }))}
+                        />
+                        <input
+                          aria-label={t('fieldTerminalBackgroundImageOpacity')}
+                          type="number"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={Math.round((draftSettings.terminalBackgroundImageOpacity ?? 0.18) * 100)}
+                          onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalBackgroundImageOpacity: clamp(Number(event.target.value) || 0, 0, 100) / 100 }))}
+                        />
+                      </div>
+                    </label>
+                    <label>
+                      <span>{t('fieldTerminalBackgroundImageFit')}</span>
+                      <select
+                        value={draftSettings.terminalBackgroundImageFit ?? 'cover'}
+                        onChange={(event) =>
+                          updateDraftSettings((current) => ({
+                            ...current,
+                            terminalBackgroundImageFit: event.target.value as NonNullable<AppSettings['terminalBackgroundImageFit']>,
+                          }))
+                        }
                       >
-                        <Upload size={14} /> {t('chooseLocalImage')}
-                      </button>
-                    </div>
-                  </label>
-                  <label>
-                    <span>{t('fieldTerminalBackgroundImageOpacity')}</span>
-                    <div className="opacity-control">
+                        {terminalBackgroundFitOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {t(option.labelKey)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                </section>
+
+                <section className="settings-section-block">
+                  <div>
+                    <h3>{t('appearanceBehaviorTitle')}</h3>
+                    <p>{t('appearanceBehaviorDesc')}</p>
+                  </div>
+
+                  <div className="form-grid">
+                    <label>
+                      <span>{t('fieldRuntimeRefreshInterval')}</span>
                       <input
-                        type="range"
-                        min={0}
-                        max={1}
-                        step={0.05}
-                        value={draftSettings.terminalBackgroundImageOpacity ?? 0.18}
-                        onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalBackgroundImageOpacity: Number(event.target.value) }))}
-                      />
-                      <input
-                        aria-label={t('fieldTerminalBackgroundImageOpacity')}
                         type="number"
-                        min={0}
-                        max={100}
-                        step={1}
-                        value={Math.round((draftSettings.terminalBackgroundImageOpacity ?? 0.18) * 100)}
-                        onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalBackgroundImageOpacity: clamp(Number(event.target.value) || 0, 0, 100) / 100 }))}
+                        min={1}
+                        max={60}
+                        value={draftSettings.runtimeRefreshIntervalSec}
+                        onChange={(event) =>
+                          updateDraftSettings((current) => ({
+                            ...current,
+                            runtimeRefreshIntervalSec: Number(event.target.value) || 1,
+                          }))
+                        }
                       />
-                    </div>
-                  </label>
-                  <label>
-                    <span>{t('fieldTerminalBackgroundImageFit')}</span>
-                    <select
-                      value={draftSettings.terminalBackgroundImageFit ?? 'cover'}
-                      onChange={(event) =>
-                        updateDraftSettings((current) => ({
-                          ...current,
-                          terminalBackgroundImageFit: event.target.value as NonNullable<AppSettings['terminalBackgroundImageFit']>,
-                        }))
-                      }
-                    >
-                      {terminalBackgroundFitOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {t(option.labelKey)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>{t('fieldTerminalRightClickBehavior')}</span>
-                    <select
-                      value={draftSettings.terminalRightClickBehavior}
-                      onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalRightClickBehavior: event.target.value as AppSettings['terminalRightClickBehavior'] }))}
-                    >
-                      <option value="paste">{t('rightClickPaste')}</option>
-                      <option value="menu">{t('rightClickMenu')}</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>{t('fieldTerminalLineWrapMode')}</span>
-                    <select
-                      value={draftSettings.terminalLineWrapMode ?? 'wrap'}
-                      onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalLineWrapMode: event.target.value as AppSettings['terminalLineWrapMode'] }))}
-                    >
-                      <option value="wrap">{t('terminalLineWrapModeWrap')}</option>
-                      <option value="horizontal">{t('terminalLineWrapModeHorizontal')}</option>
-                    </select>
-                  </label>
-                </div>
+                    </label>
+                    <label>
+                      <span>{t('fieldTerminalRightClickBehavior')}</span>
+                      <select
+                        value={draftSettings.terminalRightClickBehavior}
+                        onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalRightClickBehavior: event.target.value as AppSettings['terminalRightClickBehavior'] }))}
+                      >
+                        <option value="paste">{t('rightClickPaste')}</option>
+                        <option value="menu">{t('rightClickMenu')}</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t('fieldTerminalLineWrapMode')}</span>
+                      <select
+                        value={draftSettings.terminalLineWrapMode ?? 'wrap'}
+                        onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalLineWrapMode: event.target.value as AppSettings['terminalLineWrapMode'] }))}
+                      >
+                        <option value="wrap">{t('terminalLineWrapModeWrap')}</option>
+                        <option value="horizontal">{t('terminalLineWrapModeHorizontal')}</option>
+                      </select>
+                    </label>
+                  </div>
+                </section>
 
                 <div className="modal-actions">
                   {settingsSaveMessage ? <span className="inline-save-feedback">{settingsSaveMessage}</span> : null}
