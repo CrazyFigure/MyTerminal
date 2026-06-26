@@ -2281,6 +2281,7 @@ function EditorModal({
               fontSize={settings.shellFontSize}
               language={editorDocument.language}
               onChange={(value) => setEditorContent(value ?? '')}
+              onSave={handleSaveEditorDocument}
               theme={editorTheme}
               value={editorDocument.content}
             />

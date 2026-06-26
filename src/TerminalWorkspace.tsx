@@ -211,6 +211,7 @@ const buildTerminalTheme = (settings: AppSettings) => {
 
 export function TerminalWorkspace({ session, settings, onTerminalData }: Props) {
   const [terminalContextMenu, setTerminalContextMenu] = useState<{ x: number; y: number; selectedText: string } | null>(null);
+  const [terminalHasHorizontalOverflow, setTerminalHasHorizontalOverflow] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -223,7 +224,6 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   const pendingFocusSessionIdRef = useRef<string | null>(session?.id ?? null);
   const terminalLineWrapMode = settings.terminalLineWrapMode ?? 'wrap';
   const terminalLineWrapModeRef = useRef<AppSettings['terminalLineWrapMode']>(terminalLineWrapMode);
-  const terminalUsesHorizontalScroll = terminalLineWrapMode === 'horizontal';
   const terminalTheme = useMemo(
     () => buildTerminalTheme(settings),
     [
@@ -298,7 +298,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     });
   };
 
-  // 横向滚动模式下 xterm 元素必须比可视容器更宽，外层容器才会出现底部滚动条。
+  // 横向滚动模式只有在目标列数真正超过可视列数时才扩宽 xterm 元素，避免空会话也出现底部滑块。
   const applyTerminalElementWidth = (targetCols: number, visibleCols: number) => {
     const container = containerRef.current;
     const terminal = terminalRef.current;
@@ -307,7 +307,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       return;
     }
 
-    if (terminalLineWrapModeRef.current !== 'horizontal') {
+    const hasHorizontalOverflow = terminalLineWrapModeRef.current === 'horizontal' && targetCols > visibleCols;
+    if (!hasHorizontalOverflow) {
       terminalElement.style.width = '100%';
       container.scrollLeft = 0;
       return;
@@ -502,7 +503,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   };
 
   const handleTerminalWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    if (!terminalUsesHorizontalScroll || !containerRef.current) {
+    if (!terminalHasHorizontalOverflow || !containerRef.current) {
       return;
     }
 
@@ -532,6 +533,9 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       return;
     }
 
+    const hasHorizontalOverflow = terminalLineWrapModeRef.current === 'horizontal' && nextLayoutSize.cols > nextLayoutSize.visibleCols;
+    // 底部滑块和底部留白只在确实有横向溢出时启用，空会话和普通短输出保持干净画面。
+    setTerminalHasHorizontalOverflow((current) => current === hasHorizontalOverflow ? current : hasHorizontalOverflow);
     applyTerminalElementWidth(nextLayoutSize.cols, nextLayoutSize.visibleCols);
     if (terminal.cols !== nextLayoutSize.cols || terminal.rows !== nextLayoutSize.rows) {
       terminal.resize(nextLayoutSize.cols, nextLayoutSize.rows);
@@ -706,7 +710,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     <section className="terminal-workspace card" style={{ background: settings.terminalBackground }}>
       {backgroundImageStyle ? <div className="terminal-background-image" style={backgroundImageStyle} /> : null}
       <div
-        className={`terminal-surface ${terminalUsesHorizontalScroll ? 'is-horizontal-scroll' : 'is-wrapped'}`}
+        className={`terminal-surface ${terminalHasHorizontalOverflow ? 'is-horizontal-scroll' : 'is-wrapped'}`}
         ref={containerRef}
         onContextMenu={handleTerminalContextMenu}
         onWheel={handleTerminalWheel}

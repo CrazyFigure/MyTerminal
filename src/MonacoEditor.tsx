@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useRef } from 'react';
 import Editor, { loader } from '@monaco-editor/react';
 import * as monaco from 'monaco-editor';
 import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker';
@@ -37,6 +38,7 @@ type MonacoEditorProps = {
   fontSize: number;
   language: string;
   onChange: (value: string | undefined) => void;
+  onSave?: () => void;
   theme: 'vs-dark' | 'vs-light';
   value: string;
 };
@@ -46,15 +48,31 @@ export default function MonacoEditor({
   fontSize,
   language,
   onChange,
+  onSave,
   theme,
   value,
 }: MonacoEditorProps) {
+  const onSaveRef = useRef(onSave);
+
+  useEffect(() => {
+    // 快捷键命令只在 Monaco 挂载时注册一次，回调用 ref 保持为当前文件的最新保存逻辑。
+    onSaveRef.current = onSave;
+  }, [onSave]);
+
+  const handleEditorMount = useCallback((editor: monaco.editor.IStandaloneCodeEditor) => {
+    // Ctrl/Cmd+S 与编辑器右上角保存按钮共用同一保存入口，避免快捷键和按钮行为分叉。
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+      onSaveRef.current?.();
+    });
+  }, []);
+
   return (
     <Editor
       height="100%"
       language={language}
       loading={null}
       onChange={onChange}
+      onMount={handleEditorMount}
       options={{
         automaticLayout: true,
         fontFamily,
