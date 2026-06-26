@@ -259,12 +259,12 @@ const guessNextRemotePath = (currentPath: string, commandText: string) => {
     return undefined;
   }
 
-  const match = lastLine.match(/^cd(?:\s+(.+))?$/);
+  const match = lastLine.match(/^cd(?:\s+(.+?))?\s*;?$/);
   if (!match) {
     return undefined;
   }
 
-  const rawTarget = stripWrappedQuotes(match[1]?.trim() ?? '');
+  const rawTarget = stripWrappedQuotes((match[1]?.trim() ?? '').replace(/^--\s+/, ''));
   if (!rawTarget || rawTarget === '~') {
     return '~';
   }
@@ -284,9 +284,9 @@ const guessNextRemotePath = (currentPath: string, commandText: string) => {
 const terminalOutputEventName = 'myterminal-terminal-output';
 
 // 只有可交互远端会话才允许驱动文件、历史和运行状态刷新，异常/关闭会话只保留终端残留输出用于排查。
-const isUsableRemoteSession = (session?: TerminalSession) =>
+const isUsableRemoteSession = (session?: TerminalSession): session is TerminalSession =>
   session?.kind !== 'local' && (session?.status === 'connected' || session?.status === 'stub');
-const isUsableTerminalSession = (session?: TerminalSession) =>
+const isUsableTerminalSession = (session?: TerminalSession): session is TerminalSession =>
   Boolean(session && !['closed', 'error'].includes(session.status));
 
 // 终端输出走浏览器事件直达 xterm，避免高频输出通过 React 状态触发整页重渲染。
@@ -305,6 +305,8 @@ const terminalInputFlushPromises = new Map<string, Promise<void>>();
 const terminalInputImmediateFlushSessions = new Set<string>();
 const terminalInputFlushTimers = new Map<string, number>();
 const terminalInputFlushTimerDelays = new Map<string, number>();
+// 终端直接输入不会经过命令面板；按会话记录当前命令行，用于识别回车后的 cd 并兜底刷新文件管理。
+const terminalInputLineBuffers = new Map<string, string>();
 // 大段粘贴保留极短合并窗口，避免一次粘贴拆成大量 IPC；普通按键和编辑键不走这个延迟。
 const terminalBulkInputFlushDelayMs = 8;
 // 普通可打印字符使用单帧级合并，降低 WebView->Rust IPC 频率，同时把体感延迟压在不可感知范围内。
@@ -322,6 +324,7 @@ const clearQueuedTerminalInput = (sessionId: string) => {
   }
   terminalInputImmediateFlushSessions.delete(sessionId);
   terminalInputBuffers.delete(sessionId);
+  terminalInputLineBuffers.delete(sessionId);
 };
 
 // 输入刷新会串行写入后端，避免同一个会话出现并发写入导致字符顺序抖动。
@@ -410,15 +413,62 @@ const queueTerminalInput = (sessionId: string, data: string, flushDelayMs = 0) =
 };
 
 const isTerminalEditingInput = (data: string) => data.includes('\x7f') || data.includes('\b') || data.includes('\x1b[3~');
-// 回车、Tab、控制序列和编辑键必须立即送到远端；普通连续字符允许极短合并以改善输入丝滑度。
+// 回车、Tab、控制序列和编辑键必须立即送到远端；粘贴文本里包含换行时也要立刻刷新，避免命令执行和 cwd 同步滞后。
 const shouldFlushTerminalInputImmediately = (data: string) =>
-  data === '\r' ||
-  data === '\n' ||
+  data.includes('\r') ||
+  data.includes('\n') ||
   data === '\t' ||
   data.includes('\x1b') ||
   isTerminalEditingInput(data);
 // 大段文本不属于逐键交互，允许 8ms 合并；普通字符走 2ms 合并，控制序列仍立即进入远端 PTY。
 const isBulkTerminalInput = (data: string) => data.length > terminalBulkInputThreshold && !isTerminalEditingInput(data);
+
+// 命令行预测只关心用户输入的可见文本；括号粘贴边界和 CSI 控制序列必须先剥离，避免污染 cd 解析。
+const terminalBracketedPasteBoundaryPattern = /\x1b\[(?:200|201)~/g;
+const terminalCsiSequencePattern = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+const terminalShortEscapeSequencePattern = /\x1b./g;
+
+const normalizeTerminalInputForCommandTracking = (data: string) =>
+  data
+    .replace(terminalBracketedPasteBoundaryPattern, '')
+    .replace(terminalCsiSequencePattern, '')
+    .replace(terminalShortEscapeSequencePattern, '');
+
+const extractCompletedTerminalInputLines = (sessionId: string, data: string) => {
+  let currentLine = terminalInputLineBuffers.get(sessionId) ?? '';
+  const completedLines: string[] = [];
+
+  for (const character of normalizeTerminalInputForCommandTracking(data)) {
+    if (character === '\x03' || character === '\x15') {
+      // Ctrl+C / Ctrl+U 会放弃当前命令行，前端预测也必须同步清空，避免下一次回车误判旧 cd。
+      currentLine = '';
+      continue;
+    }
+    if (character === '\x7f' || character === '\b') {
+      currentLine = currentLine.slice(0, -1);
+      continue;
+    }
+    if (character === '\r' || character === '\n') {
+      const completedLine = currentLine.trim();
+      if (completedLine) {
+        completedLines.push(completedLine);
+      }
+      currentLine = '';
+      continue;
+    }
+    if (character === '\t' || character >= ' ') {
+      currentLine += character;
+    }
+  }
+
+  if (currentLine) {
+    terminalInputLineBuffers.set(sessionId, currentLine);
+  } else {
+    terminalInputLineBuffers.delete(sessionId);
+  }
+
+  return completedLines;
+};
 
 // 远端刷新请求可能被快速 cd、目录双击或自动轮询连续触发；序号只允许最后一次结果落到界面。
 let remoteFilesRefreshSeq = 0;
@@ -1474,20 +1524,38 @@ export const useAppStore = create<StoreState>((set, get) => ({
   },
 
   sendTerminalData: async (sessionId, data) => {
-    const session = get().sessions.find((item) => item.id === sessionId);
+    const state = get();
+    const session = state.sessions.find((item) => item.id === sessionId);
     if (!isUsableTerminalSession(session)) {
       return;
     }
 
+    let nextRemotePath: string | undefined;
+    if (isUsableRemoteSession(session) && session.connectionId === state.activeConnectionId) {
+      let pathCursor = state.currentRemotePath || session.cwd || '~';
+      for (const completedLine of extractCompletedTerminalInputLines(sessionId, data)) {
+        const guessedPath = guessNextRemotePath(pathCursor, completedLine);
+        if (guessedPath) {
+          pathCursor = guessedPath;
+          nextRemotePath = guessedPath;
+        }
+      }
+    }
+
+    const submittedInput = data.includes('\r') || data.includes('\n');
     const flushDelayMs = shouldFlushTerminalInputImmediately(data)
       ? 0
       : isBulkTerminalInput(data)
         ? terminalBulkInputFlushDelayMs
         : terminalInteractiveInputFlushDelayMs;
     queueTerminalInput(sessionId, data, flushDelayMs);
-    if (data === '\r' || data === '\n') {
+    if (submittedInput) {
       await flushQueuedTerminalInput(sessionId);
       void get().pollTerminalOutputs();
+      if (nextRemotePath) {
+        // 终端本体里粘贴或手输 cd 不经过命令面板，先用输入侧预测兜底刷新；后端真实 PWD 标记回来后会再次校正。
+        void get().refreshFiles(nextRemotePath);
+      }
       return;
     }
   },
@@ -1583,6 +1651,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
           isUsableRemoteSession(nextSession) &&
           state.currentRemotePath !== cwd
         ) {
+          // cwd 元数据来自交互 Shell 的真实 PWD，先更新路径栏；文件列表随后异步刷新，慢 SFTP 不应挡住路径同步。
           activeCwdToRefresh = cwd;
         }
 
@@ -1596,6 +1665,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
 
       return {
         ...(sessionsChanged ? { sessions: nextSessions } : {}),
+        ...(activeCwdToRefresh ? { currentRemotePath: activeCwdToRefresh } : {}),
         ...(shouldClearActiveRemoteData ? { files: [], runtimeOverview: undefined, currentRemotePath: '' } : {}),
       };
     });
