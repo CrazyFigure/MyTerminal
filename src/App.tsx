@@ -2811,6 +2811,16 @@ function SettingsModal({
                       <option value="menu">{t('rightClickMenu')}</option>
                     </select>
                   </label>
+                  <label>
+                    <span>{t('fieldTerminalLineWrapMode')}</span>
+                    <select
+                      value={draftSettings.terminalLineWrapMode ?? 'wrap'}
+                      onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalLineWrapMode: event.target.value as AppSettings['terminalLineWrapMode'] }))}
+                    >
+                      <option value="wrap">{t('terminalLineWrapModeWrap')}</option>
+                      <option value="horizontal">{t('terminalLineWrapModeHorizontal')}</option>
+                    </select>
+                  </label>
                 </div>
 
                 <div className="modal-actions">

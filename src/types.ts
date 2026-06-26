@@ -6,6 +6,8 @@ export type WorkspacePanel = 'files' | 'editor' | 'tunnels' | 'sync' | 'settings
 export type SessionStatus = 'idle' | 'connecting' | 'connected' | 'stub' | 'error' | 'closed';
 export type TerminalSessionKind = 'ssh' | 'local';
 export type TerminalRightClickBehavior = 'paste' | 'menu';
+/** 终端长行展示模式，horizontal 表示用横向滚动保留同一输出行。 */
+export type TerminalLineWrapMode = 'wrap' | 'horizontal';
 
 export interface SshJumpHost {
   /** 跳板机条目稳定 id，用于表单增删排序时保持 React key 与保存结构稳定。 */
@@ -96,6 +98,8 @@ export interface AppSettings {
   terminalBackgroundImageFit?: 'cover' | 'contain' | 'stretch' | 'tile' | 'center';
   /** 终端区域右键行为：直接粘贴，或弹出复制/粘贴菜单。 */
   terminalRightClickBehavior: TerminalRightClickBehavior;
+  /** 终端长行展示方式：按窗口自动换行，或使用横向滚动保留同一输出行。 */
+  terminalLineWrapMode: TerminalLineWrapMode;
   compactSidebar: boolean;
   showCommandGhost: boolean;
   /** 连接管理中显式维护的分组路径；即使分组下暂无连接，也需要持久保留。 */
