@@ -57,6 +57,11 @@ fn default_terminal_right_click_behavior() -> String {
     "paste".into()
 }
 
+// 旧设置文件没有长行展示模式时保持原有自动换行行为。
+fn default_terminal_line_wrap_mode() -> String {
+    "wrap".into()
+}
+
 fn default_show_command_ghost() -> bool {
     true
 }
@@ -273,6 +278,9 @@ pub struct AppSettings {
     /// 终端右键行为由前端执行，后端负责持久化用户偏好。
     #[serde(default = "default_terminal_right_click_behavior")]
     pub terminal_right_click_behavior: String,
+    /// 终端长行展示方式由前端渲染执行，后端只负责兼容旧配置并持久化。
+    #[serde(default = "default_terminal_line_wrap_mode")]
+    pub terminal_line_wrap_mode: String,
     #[serde(default)]
     pub compact_sidebar: bool,
     #[serde(default = "default_show_command_ghost")]
@@ -308,6 +316,7 @@ impl Default for AppSettings {
             terminal_background_image_opacity: default_terminal_background_image_opacity(),
             terminal_background_image_fit: default_terminal_background_image_fit(),
             terminal_right_click_behavior: default_terminal_right_click_behavior(),
+            terminal_line_wrap_mode: default_terminal_line_wrap_mode(),
             compact_sidebar: false,
             show_command_ghost: true,
             connection_groups: default_connection_groups(),
@@ -721,6 +730,8 @@ pub struct StoredAppSettings {
     pub terminal_background_image_fit: String,
     #[serde(default = "default_terminal_right_click_behavior")]
     pub terminal_right_click_behavior: String,
+    #[serde(default = "default_terminal_line_wrap_mode")]
+    pub terminal_line_wrap_mode: String,
     #[serde(default)]
     pub compact_sidebar: bool,
     #[serde(default = "default_show_command_ghost")]

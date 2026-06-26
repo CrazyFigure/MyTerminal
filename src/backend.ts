@@ -46,6 +46,8 @@ const clampRatio = (value: number | undefined, fallback: number) => {
 };
 
 const terminalBackgroundImageFits = new Set<AppSettings['terminalBackgroundImageFit']>(['cover', 'contain', 'stretch', 'tile', 'center']);
+// 长行展示模式只接受前端枚举值，旧配置或手动编辑错误时回落到自动换行。
+const terminalLineWrapModes = new Set<AppSettings['terminalLineWrapMode']>(['wrap', 'horizontal']);
 
 const normalizeSingleFontFamily = (value: string) => {
   // 旧配置可能保存过一整串 fallback 字体；设置页只展示和保存用户明确选择的单个字体。
@@ -125,6 +127,10 @@ const normalizeSettings = (settings: AppSettings): AppSettings => ({
     ? settings.terminalBackgroundImageFit
     : 'cover',
   terminalRightClickBehavior: settings.terminalRightClickBehavior === 'menu' ? 'menu' : 'paste',
+  // 旧配置没有长行展示字段时保持原来的自动换行，避免升级后突然改变终端布局。
+  terminalLineWrapMode: terminalLineWrapModes.has(settings.terminalLineWrapMode)
+    ? settings.terminalLineWrapMode
+    : 'wrap',
   // 分组和连接排序来自用户拖拽结果，规范化时只去重清洗，不再按字母重新排序。
   connectionGroups: Array.from(
     new Set(
@@ -239,6 +245,7 @@ const mockSettings: AppSettings = {
   terminalBackgroundImageOpacity: 0.18,
   terminalBackgroundImageFit: 'cover',
   terminalRightClickBehavior: 'paste',
+  terminalLineWrapMode: 'wrap',
   compactSidebar: false,
   showCommandGhost: true,
   connectionGroups: ['ology', 'ology/ology-old'],

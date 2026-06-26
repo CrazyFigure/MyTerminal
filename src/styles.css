@@ -2266,6 +2266,42 @@ select:disabled {
   display: none;
 }
 
+/* 横向滚动模式保留 xterm 内部竖向滚动隐藏，只开放外层底部滑块承载长行浏览。 */
+.terminal-surface.is-horizontal-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.65) rgba(148, 163, 184, 0.18);
+  overscroll-behavior: contain;
+}
+
+.terminal-surface.is-horizontal-scroll .xterm {
+  min-width: 100%;
+  padding-bottom: 18px;
+}
+
+.terminal-surface.is-horizontal-scroll .xterm-viewport {
+  bottom: 18px;
+}
+
+.terminal-surface.is-horizontal-scroll::-webkit-scrollbar {
+  width: 10px !important;
+  height: 10px !important;
+  display: block;
+}
+
+.terminal-surface.is-horizontal-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(100, 116, 139, 0.68);
+  background-clip: padding-box;
+}
+
+.terminal-surface.is-horizontal-scroll::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.16);
+}
+
 /* 连接管理拖拽只从抓手启动，避免点击连接、编辑分组时误触拖动或被按钮区域吞掉 dragstart。 */
 .connection-group-row,
 .connection-table-row {

@@ -40,6 +40,7 @@ const defaultSettings: AppSettings = {
   terminalBackgroundImageOpacity: 0.18,
   terminalBackgroundImageFit: 'cover',
   terminalRightClickBehavior: 'paste',
+  terminalLineWrapMode: 'wrap',
   compactSidebar: false,
   showCommandGhost: true,
   connectionGroups: [],
