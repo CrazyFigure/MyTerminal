@@ -12,7 +12,7 @@ A modern desktop SSH terminal manager built with Rust, Tauri 2, and React.
 
 MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP file management, remote file editing, local port forwarding, and WebDAV backup into one clean desktop app. It is designed for developers and operators who want a lightweight, open, and hackable alternative to heavyweight remote terminal suites.
 
-**Version:** v0.2.3
+**Version:** v0.2.5
 
 ![MyTerminal preview](img.png)
 
@@ -35,7 +35,10 @@ MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP 
 - **Cursor recovery** - Remote programs that hide the terminal cursor and fail to restore it are handled at prompt boundaries so the input cursor comes back.
 - **Local cursor fallback** - The frontend restores xterm cursor visibility when switching sessions or replaying cached output, without sending control characters back to SSH.
 - **Search and fit behavior** - xterm.js powers terminal rendering, sizing, and terminal search support.
+- **Focus-aware session switching** - Switching sessions, reconnecting, and delayed SSH startup restore input focus when the target terminal is ready.
+- **Long-line display modes** - Choose automatic wrapping or a horizontal-scroll mode that keeps long output on one line and follows the cursor.
 - **Path-aware terminal output** - The shell injects a cwd sync hook so the app can follow remote directory changes made with `cd`, `pushd`, or `popd`.
+- **Direct-input cwd refresh** - Typed or pasted `cd` commands refresh the file panel early, then backend cwd markers correct the path if needed.
 - **Child-shell cwd sync** - Bash child shells inherit the cwd sync hook, while non-interactive scripts avoid emitting MyTerminal sync markers.
 - **Remote shell history** - Read remote shell history files for command history features without exposing MyTerminal's internal setup command.
 
@@ -56,7 +59,7 @@ MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP 
 - **Connection reuse for files** - File browsing, transfers, remote editing, runtime queries, and history reads reuse auxiliary SSH/SFTP sessions instead of reconnecting for every action.
 - **Stale-session recovery** - Cached auxiliary SSH sessions are discarded and retried when the remote side closes an idle connection.
 - **Remote identity cache** - Remote uid/gid display names are cached per auxiliary session to avoid repeated `/etc/passwd` and `/etc/group` reads during directory refreshes.
-- **Remote file editor** - Edit remote files with the built-in Monaco editor and save back over SFTP.
+- **Remote file editor** - Edit remote files with the built-in Monaco editor, trigger editor save actions, and write back over SFTP.
 - **Editor recovery cache** - Local document cache fallback protects remote edits when loading or saving needs recovery.
 - **MCP/CLI file tools** - AI clients can list, read, write, upload, download, delete, rename, and create remote paths through approved bridge operations.
 
@@ -70,10 +73,13 @@ MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP 
 
 - **MCP Bridge for AI coding tools** - Let Claude Code, Codex, and other MCP clients use saved SSH profiles through a local `CLI + MCP + GUI Broker` bridge.
 - **Connection discovery** - MCP clients can list saved SSH profiles as non-secret metadata, including name, group path, host, port, username, tags, and notes.
-- **Bridge sessions** - MCP clients can open and close logical SSH bridge sessions, then run commands or file operations against them.
+- **Bridge sessions** - MCP clients can open and close logical SSH bridge sessions by connection ID or unique connection name, then run commands or file operations against them.
 - **GUI-approved execution** - Remote commands, uploads, downloads, writes, deletes, renames, and directory creation requests are shown in MyTerminal for approval by default.
+- **Right-side AI execution panel** - Pending and completed AI requests live in a resizable right sidebar so command, file, and history panels remain available.
+- **Serialized session commands** - Commands submitted to the same AI bridge session run in order, while different sessions can still run concurrently.
 - **Auto-execution controls** - Enable automatic bridge execution globally or allow it only for selected SSH connections.
-- **AI approval notifications** - Pending AI execution requests can expand automatically, show compact SSH/command/target summaries, and raise desktop notifications that return to the approval panel.
+- **AI approval notifications** - Pending AI execution requests can expand automatically, show compact SSH/command/target summaries, and raise desktop notifications with approval shortcuts where supported.
+- **Agent usage guidance** - MCP clients receive tool instructions that clarify list/open/use/close flow, session ID rules, and file-write best practices.
 - **Bridge reliability** - Restarting MCP Bridge settings preserves logical AI sessions, stale waiting requests are handled predictably, and app shutdown cleans bridge resources.
 
 ### Sync, Backup, and Updates
@@ -87,7 +93,7 @@ MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP 
 ### Desktop Experience
 
 - **Bilingual UI** - Switch between English and Simplified Chinese.
-- **Theme and layout preferences** - Use light or dark mode, compact sidebar, customizable terminal fonts, and terminal background images.
+- **Theme and layout preferences** - Use light or dark mode, compact sidebar, customizable terminal fonts, terminal background images, right-click behavior, and long-line display mode.
 - **System tray support** - Keep MyTerminal accessible from the desktop shell with a tray icon.
 - **Local-first storage** - Settings and SSH profiles are stored locally, with encrypted secret handling inside the app and plain JSON only when you explicitly export.
 
@@ -139,7 +145,9 @@ MyTerminal can expose your saved SSH connections to Claude Code, Codex, and othe
 - The bridge is disabled by default. Enable it in **Settings > MCP**.
 - MyTerminal starts a local Broker bound to `127.0.0.1` and writes a discovery file with the current port and token.
 - MCP clients start the local package with `npx`; the package launches `myterminal-cli mcp --stdio`.
+- Agents should list connections first, open a bridge session with the returned connection ID or a unique connection name, reuse the returned `sessionId`, and close it when done.
 - Read-only tools, such as listing connections and reading remote files, can run directly.
+- Commands sent to the same bridge session are serialized to keep remote state changes in order; separate sessions can still run concurrently.
 - Command execution, local uploads, remote downloads, and write operations are shown in the MyTerminal AI request panel for approval by default.
 - New pending approval requests can automatically open the AI execution panel and send a desktop notification; clicking the notification focuses the approval list.
 - Auto-execution can be enabled globally, or allowed for selected SSH connections from the MCP settings page.
