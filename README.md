@@ -12,8 +12,6 @@ A modern desktop SSH terminal manager built with Rust, Tauri 2, and React.
 
 MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP file management, remote file editing, local port forwarding, and WebDAV backup into one clean desktop app. It is designed for developers and operators who want a lightweight, open, and hackable alternative to heavyweight remote terminal suites.
 
-**Version:** v0.2.5
-
 ![MyTerminal preview](img.png)
 
 ## Features
