@@ -245,18 +245,18 @@ const localTerminalShellCommand = { id: 'shell', name: '本地终端', command: 
 const normalizeLocalTerminalProfileTitle = (cwd: string, command: string) => command ? `${command} · ${cwd}` : cwd;
 
 // 顶部 tab 宽度有限，本地目录只取最后一级；历史和会话详情仍保留完整路径。
-const getLocalTerminalDirectoryName = (cwd?: string) => {
+const getLocalTerminalDirectoryName = (cwd?: string, fallbackLabel = '本地终端') => {
   const normalized = cwd?.trim().replace(/[\\/]+$/, '');
   if (!normalized) {
-    return '本地终端';
+    return fallbackLabel;
   }
   const parts = normalized.split(/[\\/]+/).filter(Boolean);
   return parts.at(-1) || normalized;
 };
 
 // 本地终端 tab 用短标题展示，命令为空时只显示目录名，避免纯 shell 标签过长。
-const formatLocalTerminalTabLabel = (session: TerminalSession) => {
-  const directoryName = getLocalTerminalDirectoryName(session.cwd);
+const formatLocalTerminalTabLabel = (session: TerminalSession, fallbackLabel = '本地终端') => {
+  const directoryName = getLocalTerminalDirectoryName(session.cwd, fallbackLabel);
   const fullCwd = session.cwd?.trim();
   const command = fullCwd && session.title.endsWith(` · ${fullCwd}`)
     ? session.title.slice(0, -` · ${fullCwd}`.length).trim()
@@ -1954,6 +1954,7 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
     localTerminals,
     openLocalTerminal,
     saveLocalTerminals,
+    settings,
     setStatusMessage,
   } = useAppStore();
   const [draft, setDraft] = useState<LocalTerminalSettings>(localTerminals);
@@ -1974,6 +1975,14 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
     });
     return Array.from(map.values());
   }, [draft.commands]);
+  const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
+    translate(settings.uiLanguage, key, replacements);
+  const getLocalTerminalCommandName = (item: LocalTerminalCommand) => {
+    // 内置 shell 命令的持久化名称可能来自旧配置，展示时跟随当前界面语言。
+    return item.id === localTerminalShellCommand.id || !item.command.trim()
+      ? t('localTerminalTitle')
+      : item.name;
+  };
 
   useEffect(() => {
     if (!open) {
@@ -2021,7 +2030,7 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
     const normalizedCwd = cwd.trim();
     const normalizedCommand = command.trim();
     if (!normalizedCwd) {
-      setStatusMessage('请填写本地目录。');
+      setStatusMessage(t('validationLocalTerminalCwdRequired'));
       return;
     }
     await persistDraft(draft);
@@ -2091,7 +2100,7 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
       <div className="modal card modal-wide local-terminal-modal">
         <div className="modal-header">
           <div>
-            <h3>本地终端</h3>
+            <h3>{t('localTerminalTitle')}</h3>
           </div>
           <button className="icon-button" onClick={onClose} type="button">
             <X size={18} />
@@ -2101,58 +2110,58 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
         <div className="local-terminal-layout">
           <section className="local-terminal-panel local-terminal-command-panel">
             <div className="section-row compact">
-              <strong>打开目录</strong>
+              <strong>{t('localTerminalOpenDirectory')}</strong>
             </div>
             <div className="local-terminal-form-row">
               <input value={cwd} onChange={(event) => setCwd(event.target.value)} />
               <button className="secondary-button" onClick={() => void browseDirectory()} type="button">
-                <FolderOpen size={15} /> 浏览
+                <FolderOpen size={15} /> {t('localTerminalBrowse')}
               </button>
             </div>
 
             <div className="section-row compact">
-              <strong>启动命令</strong>
+              <strong>{t('localTerminalStartupCommand')}</strong>
             </div>
             <div className="local-terminal-form-row">
               <select value={command} onChange={(event) => setCommand(event.target.value)}>
                 {commandOptions.map((item) => (
-                  <option key={item.id} value={item.command}>{item.name}</option>
+                  <option key={item.id} value={item.command}>{getLocalTerminalCommandName(item)}</option>
                 ))}
               </select>
               <button className="primary-button" onClick={() => void openCurrentTerminal()} type="button">
-                <Play size={15} /> 打开终端
+                <Play size={15} /> {t('localTerminalOpenTerminal')}
               </button>
             </div>
 
             <div className="section-row compact">
-              <strong>终端路径</strong>
+              <strong>{t('localTerminalShellPath')}</strong>
               <button
                 className="secondary-button slim"
                 onClick={() => void persistDraft(draft)}
                 type="button"
               >
-                <Save size={14} /> 保存
+                <Save size={14} /> {t('localTerminalSave')}
               </button>
             </div>
             <div className="local-terminal-form-row">
               <input
-                placeholder="留空时自动使用 PowerShell / bash"
+                placeholder={t('localTerminalShellPathPlaceholder')}
                 value={draft.shellPath}
                 onChange={(event) => setDraft((current) => ({ ...current, shellPath: event.target.value }))}
               />
               <button className="secondary-button" onClick={() => void browseShellPath()} type="button">
-                <FolderOpen size={15} /> 浏览
+                <FolderOpen size={15} /> {t('localTerminalBrowse')}
               </button>
             </div>
           </section>
 
           <section className="local-terminal-panel">
             <div className="section-row compact">
-              <strong>命令管理</strong>
+              <strong>{t('localTerminalCommandManagement')}</strong>
             </div>
             <div className="local-terminal-form-row">
               <input
-                placeholder="新增命令，例如 qwen"
+                placeholder={t('localTerminalNewCommandPlaceholder')}
                 value={newCommand}
                 onChange={(event) => setNewCommand(event.target.value)}
                 onKeyDown={(event) => {
@@ -2163,19 +2172,19 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
                 }}
               />
               <button className="secondary-button" onClick={() => void addCommand()} type="button">
-                <Plus size={15} /> 新增
+                <Plus size={15} /> {t('localTerminalAddCommand')}
               </button>
             </div>
             <div className="local-terminal-command-list">
               {draft.commands.map((item) => (
                 <div key={item.id} className="local-terminal-command-row">
-                  <span>{item.name}</span>
+                  <span>{getLocalTerminalCommandName(item)}</span>
                   <code>{item.command || 'shell'}</code>
                   <button
                     className="icon-button"
                     disabled={item.builtIn}
                     onClick={() => void deleteCommand(item.id)}
-                    title={item.builtIn ? '内置命令不可删除' : '删除命令'}
+                    title={item.builtIn ? t('localTerminalBuiltInCommandLocked') : t('localTerminalDeleteCommand')}
                     type="button"
                   >
                     <Trash2 size={14} />
@@ -2187,7 +2196,7 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
 
           <section className="local-terminal-panel local-terminal-history-panel">
             <div className="section-row compact">
-              <strong>历史目录</strong>
+              <strong>{t('localTerminalHistoryTitle')}</strong>
               <span>{draft.profiles.length}</span>
             </div>
             <div className="local-terminal-history-list">
@@ -2195,7 +2204,7 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
                 <div key={profile.id} className="local-terminal-history-row">
                   <div className="local-terminal-history-main">
                     <strong>{profile.cwd}</strong>
-                    <span>{profile.command || '本地终端'}</span>
+                    <span>{profile.command || t('localTerminalTitle')}</span>
                   </div>
                   <select
                     className="local-terminal-history-command"
@@ -2203,7 +2212,7 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
                     onChange={(event) => setProfileCommands((current) => ({ ...current, [profile.id]: event.target.value }))}
                   >
                     {commandOptions.map((item) => (
-                      <option key={item.id} value={item.command}>{item.name}</option>
+                      <option key={item.id} value={item.command}>{getLocalTerminalCommandName(item)}</option>
                     ))}
                   </select>
                   <button
@@ -2211,14 +2220,14 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
                     onClick={() => openProfile(profile, profileCommands[profile.id] ?? profile.command ?? '')}
                     type="button"
                   >
-                    <Play size={14} /> 打开
+                    <Play size={14} /> {t('localTerminalOpen')}
                   </button>
-                  <button className="icon-button" onClick={() => void deleteProfile(profile.id)} title="删除历史" type="button">
+                  <button className="icon-button" onClick={() => void deleteProfile(profile.id)} title={t('localTerminalDeleteHistory')} type="button">
                     <X size={14} />
                   </button>
                 </div>
               )) : (
-                <div className="empty-state">还没有本地终端历史。</div>
+                <div className="empty-state">{t('localTerminalHistoryEmpty')}</div>
               )}
             </div>
           </section>
@@ -3775,7 +3784,7 @@ export default function App() {
       const text = `${session.title} ${session.cwd ?? ''}`.trim();
       setSessionContextMenu(null);
       void writeClipboardText(text).catch(() => undefined);
-      setStatusMessage('已复制本地终端信息。');
+      setStatusMessage(t('statusLocalTerminalInfoCopied'));
       return;
     }
 
@@ -4801,7 +4810,7 @@ export default function App() {
             >
               {sessions.map((session) => {
                 const sessionLabel = session.kind === 'local'
-                  ? formatLocalTerminalTabLabel(session)
+                  ? formatLocalTerminalTabLabel(session, t('localTerminalTitle'))
                   : connections.find((item) => item.id === session.connectionId)?.name ?? session.title;
                 return (
                   <div
@@ -4845,7 +4854,7 @@ export default function App() {
 
           <div className="workspace-toolbar-actions">
             <button className="secondary-button" onClick={() => setLocalTerminalsOpen(true)} type="button">
-              <Laptop size={16} /> 本地终端
+              <Laptop size={16} /> {t('localTerminalTitle')}
             </button>
             <button className="secondary-button" onClick={() => setConnectionsOpen(true)} type="button">
               <FolderTree size={16} /> {t('manageConnections')}
