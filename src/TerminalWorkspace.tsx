@@ -30,6 +30,15 @@ const terminalCursorFollowMarginColumns = 8;
 // xterm 内部竖向滚动区会占用少量宽度，横向宽度估算时预留出来避免最后几列被压住。
 const terminalScrollbarReservePx = 18;
 
+type TerminalLayoutSize = {
+  // renderCols 是前端 xterm 的渲染列数，横向模式可临时扩大用于浏览当前可见长行。
+  renderCols: number;
+  // remoteCols 是远端 PTY 真实列数，必须保持为容器可视列数，避免 scp/top 等程序按虚假宽度布局。
+  remoteCols: number;
+  rows: number;
+  visibleCols: number;
+};
+
 // 只有后端 PTY 已就绪的会话才接收键盘输入，connecting 阶段避免用户输入被前端或后端吞掉。
 const canAcceptTerminalInput = (session?: TerminalSession) => Boolean(session && ['connected', 'stub'].includes(session.status));
 
@@ -220,7 +229,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   const sessionRef = useRef<TerminalSession | undefined>(session);
   const resizeFrameRef = useRef<number | null>(null);
   const cursorFollowFrameRef = useRef<number | null>(null);
-  const terminalSizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  const remoteTerminalSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const pendingFocusSessionIdRef = useRef<string | null>(session?.id ?? null);
   const terminalLineWrapMode = settings.terminalLineWrapMode ?? 'wrap';
   const terminalLineWrapModeRef = useRef<AppSettings['terminalLineWrapMode']>(terminalLineWrapMode);
@@ -323,8 +332,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     terminalElement.style.width = `${targetWidth}px`;
   };
 
-  // 当前缓冲区通过 isWrapped 合并软换行片段，用来判断是否真的需要横向滚动和扩列。
-  const measureTerminalBufferLongestLineColumns = () => {
+  // 当前可视缓冲区通过 isWrapped 合并软换行片段，避免历史里的 Docker 进度长行永久撑大后续终端。
+  const measureVisibleTerminalBufferLongestLineColumns = () => {
     const terminal = terminalRef.current;
     if (!terminal) {
       return 0;
@@ -333,7 +342,10 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     const buffer = terminal.buffer.active;
     let longestColumns = 0;
     let currentLineColumns = 0;
-    for (let lineIndex = 0; lineIndex < buffer.length; lineIndex += 1) {
+    // 横向滚动只服务当前看得见的内容；用户滚回历史时 onScroll 会重新测量对应窗口。
+    const firstVisibleLine = Math.max(0, buffer.viewportY);
+    const lastVisibleLine = Math.min(buffer.length, firstVisibleLine + terminal.rows);
+    for (let lineIndex = firstVisibleLine; lineIndex < lastVisibleLine; lineIndex += 1) {
       const line = buffer.getLine(lineIndex);
       if (!line) {
         continue;
@@ -358,7 +370,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       return visibleCols;
     }
 
-    const longestLineColumns = measureTerminalBufferLongestLineColumns();
+    const longestLineColumns = measureVisibleTerminalBufferLongestLineColumns();
     const cursorRequiredColumns = terminal.buffer.active.cursorX + terminalCursorFollowMarginColumns;
     const requiredColumns = Math.max(
       visibleCols,
@@ -369,7 +381,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   };
 
   // 横向模式不使用 fitAddon.fit 直接改列数，而是按可视行数 + 动态目标列数手动 resize。
-  const resolveTerminalLayoutSize = () => {
+  const resolveTerminalLayoutSize = (): TerminalLayoutSize | undefined => {
     const terminal = terminalRef.current;
     const proposed = fitAddonRef.current?.proposeDimensions();
     if (!terminal || !proposed) {
@@ -378,10 +390,11 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
 
     const visibleCols = Math.max(2, proposed.cols);
     const rows = Math.max(1, proposed.rows);
-    const cols = terminalLineWrapModeRef.current === 'horizontal'
+    // 远端 PTY 只同步真实可视列数；前端横向浏览需要的扩列仅作用于 xterm 渲染层。
+    const renderCols = terminalLineWrapModeRef.current === 'horizontal'
       ? resolveHorizontalTerminalColumns(visibleCols)
       : visibleCols;
-    return { cols, rows, visibleCols };
+    return { renderCols, remoteCols: visibleCols, rows, visibleCols };
   };
 
   // 输入、回显和程序重绘移动光标后，横向模式需要把视口跟到光标并保留右侧余量。
@@ -533,22 +546,22 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       return;
     }
 
-    const hasHorizontalOverflow = terminalLineWrapModeRef.current === 'horizontal' && nextLayoutSize.cols > nextLayoutSize.visibleCols;
+    const hasHorizontalOverflow = terminalLineWrapModeRef.current === 'horizontal' && nextLayoutSize.renderCols > nextLayoutSize.visibleCols;
     // 底部滑块和底部留白只在确实有横向溢出时启用，空会话和普通短输出保持干净画面。
     setTerminalHasHorizontalOverflow((current) => current === hasHorizontalOverflow ? current : hasHorizontalOverflow);
-    applyTerminalElementWidth(nextLayoutSize.cols, nextLayoutSize.visibleCols);
-    if (terminal.cols !== nextLayoutSize.cols || terminal.rows !== nextLayoutSize.rows) {
-      terminal.resize(nextLayoutSize.cols, nextLayoutSize.rows);
+    applyTerminalElementWidth(nextLayoutSize.renderCols, nextLayoutSize.visibleCols);
+    if (terminal.cols !== nextLayoutSize.renderCols || terminal.rows !== nextLayoutSize.rows) {
+      terminal.resize(nextLayoutSize.renderCols, nextLayoutSize.rows);
     }
-    applyTerminalElementWidth(nextLayoutSize.cols, nextLayoutSize.visibleCols);
+    applyTerminalElementWidth(nextLayoutSize.renderCols, nextLayoutSize.visibleCols);
 
     const currentSession = sessionRef.current;
-    const nextSize = { cols: nextLayoutSize.cols, rows: nextLayoutSize.rows };
-    const previousSize = terminalSizeRef.current;
-    terminalSizeRef.current = nextSize;
-    // 远端 readline/zle 按 PTY 列宽重绘长命令；session 切换后也必须同步一次，不能只依赖 ResizeObserver。
+    const nextSize = { cols: nextLayoutSize.remoteCols, rows: nextLayoutSize.rows };
+    const previousSize = remoteTerminalSizeRef.current;
+    remoteTerminalSizeRef.current = nextSize;
+    // 远端程序只能看到真实可视列宽；前端横向扩列不再污染 scp/docker/top 读取到的 PTY 尺寸。
     if (currentSession && (!previousSize || previousSize.cols !== nextSize.cols || previousSize.rows !== nextSize.rows)) {
-      void backend.resizeTerminal(currentSession.id, nextLayoutSize.cols, nextLayoutSize.rows);
+      void backend.resizeTerminal(currentSession.id, nextLayoutSize.remoteCols, nextLayoutSize.rows);
     }
     scheduleTerminalCursorFollow();
   };
@@ -595,6 +608,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       }
     });
     const cursorMoveDisposable = terminal.onCursorMove(scheduleTerminalCursorFollow);
+    const scrollDisposable = terminal.onScroll(scheduleTerminalSizeSync);
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
@@ -607,6 +621,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     return () => {
       dataDisposable.dispose();
       cursorMoveDisposable.dispose();
+      scrollDisposable.dispose();
       observer.disconnect();
       window.removeEventListener('resize', scheduleTerminalSizeSync);
       if (resizeFrameRef.current !== null) {
@@ -685,7 +700,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     pendingFocusSessionIdRef.current = session?.id ?? null;
     replayCurrentSessionOutput();
     // 新会话打开时立刻把当前 xterm 尺寸推给远端 PTY，避免默认 120 列和实际界面列宽不一致。
-    terminalSizeRef.current = null;
+    remoteTerminalSizeRef.current = null;
     window.requestAnimationFrame(() => {
       syncTerminalSizeToRemote();
       focusPendingTerminalInput();
@@ -698,8 +713,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       return;
     }
 
-    // 长行展示模式改变会影响 PTY 列宽，必须先 resize 再重放缓存，保证原有画面也同步切换排版。
-    terminalSizeRef.current = null;
+    // 长行展示模式改变会影响 xterm 渲染列数；远端仍重推真实可视列宽，避免旧扩列残留到 PTY。
+    remoteTerminalSizeRef.current = null;
     window.requestAnimationFrame(() => {
       syncTerminalSizeToRemote();
       replayCurrentSessionOutput();
