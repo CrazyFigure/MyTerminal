@@ -75,7 +75,8 @@ const defaultLocalTerminals: LocalTerminalSettings = {
 };
 
 // 状态栏展示命令名时把空命令转成可读名称，避免用户看到空白提示。
-const localTerminalCommandLabel = (command: string) => command.trim() || '本地终端';
+const localTerminalCommandLabel = (settings: AppSettings, command: string) =>
+  command.trim() || translate(settings.uiLanguage, 'localTerminalTitle');
 
 const emptyConnectionDraft = (): ConnectionDraft => ({
   id: '',
@@ -1264,9 +1265,12 @@ export const useAppStore = create<StoreState>((set, get) => ({
 
   openLocalTerminal: async (profile) => {
     try {
+      const settings = get().settings;
       set({
         loading: true,
-        statusMessage: `正在打开本地终端：${localTerminalCommandLabel(profile.command)}`,
+        statusMessage: statusText(settings, 'statusLocalTerminalOpening', {
+          command: localTerminalCommandLabel(settings, profile.command),
+        }),
       });
       const session = await backend.openLocalTerminal(profile);
       const localTerminals = await backend.loadLocalTerminals();
@@ -1279,7 +1283,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
         files: [],
         currentRemotePath: '',
         runtimeOverview: undefined,
-        statusMessage: `本地终端已打开：${session.title}`,
+        statusMessage: statusText(state.settings, 'statusLocalTerminalOpened', { title: session.title }),
       }));
       void get().pollTerminalOutputs(session.id);
     } catch (error) {
@@ -1307,7 +1311,12 @@ export const useAppStore = create<StoreState>((set, get) => ({
       };
       const previousIndex = Math.max(0, state.sessions.findIndex((item) => item.id === sessionId));
       clearQueuedTerminalInput(sessionId);
-      set({ loading: true, statusMessage: `正在重新打开本地终端：${localTerminalCommandLabel(profile.command)}` });
+      set({
+        loading: true,
+        statusMessage: statusText(state.settings, 'statusLocalTerminalReopening', {
+          command: localTerminalCommandLabel(state.settings, profile.command),
+        }),
+      });
 
       try {
         await backend.closeSession(sessionId).catch(() => undefined);
@@ -1336,7 +1345,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
             files: [],
             currentRemotePath: '',
             runtimeOverview: undefined,
-            statusMessage: `本地终端已打开：${openedSession.title}`,
+            statusMessage: statusText(current.settings, 'statusLocalTerminalOpened', { title: openedSession.title }),
           };
         });
         void get().pollTerminalOutputs(openedSession.id);
