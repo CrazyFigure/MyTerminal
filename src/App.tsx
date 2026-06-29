@@ -1905,16 +1905,17 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
                       <span title={connection.host}>{connection.host}</span>
                       <span title={String(connection.port)}>{connection.port}</span>
                       <span title={connection.username}>{connection.username}</span>
+                      {/* 连接列表操作按钮保留文字，同时补充图标帮助用户更快识别常用动作。 */}
                       <div className="connection-table-actions">
                         <button className="ghost-button slim" onClick={() => {
                           // 管理弹窗先关闭，再启动会话；避免连接建立时的状态刷新和弹窗布局同时竞争渲染。
                           onClose();
                           void openSession(connection.id);
                         }} type="button">
-                          {t('connect')}
+                          <Play size={13} /> {t('connect')}
                         </button>
                         <button className="ghost-button slim" onClick={() => openConnectionForm(connection)} type="button">
-                          {t('edit')}
+                          <Pencil size={13} /> {t('edit')}
                         </button>
                         <button className="ghost-button slim" onClick={() => handleDuplicateConnection(connection.id)} type="button">
                           <Copy size={13} /> {t('copy')}
