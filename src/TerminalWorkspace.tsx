@@ -19,6 +19,7 @@ type Props = {
 const terminalOutputEventName = 'myterminal-terminal-output';
 const maxCachedTerminalOutputLength = 1_000_000;
 const terminalCursorShowSequence = '\x1b[?25h';
+const terminalCursorHideSequence = '\x1b[?25l';
 // 横向滚动模式根据当前缓冲区最长逻辑行动态扩列，上限防止异常长行拖慢渲染。
 const terminalHorizontalMaxColumns = 1000;
 // 横向列数按块增长，避免每输入一个字符都触发一次 PTY resize。
@@ -29,6 +30,12 @@ const terminalHorizontalLinePaddingColumns = 8;
 const terminalCursorFollowMarginColumns = 8;
 // xterm 内部竖向滚动区会占用少量宽度，横向宽度估算时预留出来避免最后几列被压住。
 const terminalScrollbarReservePx = 18;
+// 普通终端保留 xterm 默认滚屏历史，避免影响 SSH 和 Shell 的日常查看习惯。
+const terminalDefaultScrollbackRows = 1000;
+// AI Agent 也保留历史，避免窗口 resize 后把启动警告等一次性输出彻底丢掉；滚轮另行拦截。
+const terminalAiAgentScrollbackRows = terminalDefaultScrollbackRows;
+// 这些命令会以 TUI 方式反复重绘同一屏，必须固定在当前可视列宽内渲染。
+const terminalAiAgentCommandNames = new Set(['claude', 'claude-code', 'codex', 'opencode', 'qwen', 'gemini', 'aider', 'cursor-agent']);
 
 type TerminalLayoutSize = {
   // renderCols 是前端 xterm 的渲染列数，横向模式可临时扩大用于浏览当前可见长行。
@@ -91,6 +98,33 @@ const roundHorizontalColumns = (requiredColumns: number, visibleColumns: number)
   }
   const roundedColumns = Math.ceil(requiredColumns / terminalHorizontalColumnGrowthStep) * terminalHorizontalColumnGrowthStep;
   return Math.min(terminalHorizontalMaxColumns, Math.max(visibleColumns, roundedColumns));
+};
+
+// 本地终端新会话直接带 localCommand；旧会话或旧后端回退到“命令 · 目录”的标签格式解析。
+const resolveLocalSessionCommandText = (session?: TerminalSession) => {
+  if (session?.kind !== 'local') {
+    return '';
+  }
+  if (session.localCommand?.trim()) {
+    return session.localCommand.trim();
+  }
+
+  const titleSeparatorIndex = session.title.indexOf(' · ');
+  return titleSeparatorIndex > 0 ? session.title.slice(0, titleSeparatorIndex).trim() : '';
+};
+
+// 只取命令行第一个可执行文件名，兼容 Windows 路径和 .cmd/.exe/.ps1 后缀。
+const extractTerminalExecutableName = (commandText: string) => {
+  const commandHeadMatch = commandText.match(/^\s*(?:"([^"]+)"|'([^']+)'|(\S+))/);
+  const commandHead = commandHeadMatch?.[1] ?? commandHeadMatch?.[2] ?? commandHeadMatch?.[3] ?? '';
+  const executableName = commandHead.replace(/\\/g, '/').split('/').pop() ?? '';
+  return executableName.replace(/\.(?:cmd|exe|ps1|bat)$/i, '').toLowerCase();
+};
+
+// AI Agent 会话按全屏 TUI 处理，不继承“同一行横向滚动”设置，避免 Claude Code 等界面错位。
+const isTerminalAiAgentSession = (session?: TerminalSession) => {
+  const executableName = extractTerminalExecutableName(resolveLocalSessionCommandText(session));
+  return executableName ? terminalAiAgentCommandNames.has(executableName) : false;
 };
 
 const terminalFontFallbacks = ['Cascadia Mono', 'Consolas', 'Courier New', 'monospace'];
@@ -232,7 +266,15 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   const remoteTerminalSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const pendingFocusSessionIdRef = useRef<string | null>(session?.id ?? null);
   const terminalLineWrapMode = settings.terminalLineWrapMode ?? 'wrap';
-  const terminalLineWrapModeRef = useRef<AppSettings['terminalLineWrapMode']>(terminalLineWrapMode);
+  const isAiAgentTerminalSession = useMemo(
+    () => isTerminalAiAgentSession(session),
+    [session?.kind, session?.localCommand, session?.title],
+  );
+  const effectiveTerminalLineWrapMode: AppSettings['terminalLineWrapMode'] = isAiAgentTerminalSession ? 'wrap' : terminalLineWrapMode;
+  const terminalScrollbackRows = isAiAgentTerminalSession ? terminalAiAgentScrollbackRows : terminalDefaultScrollbackRows;
+  const terminalLineWrapModeRef = useRef<AppSettings['terminalLineWrapMode']>(effectiveTerminalLineWrapMode);
+  const terminalScrollbackRowsRef = useRef(terminalScrollbackRows);
+  const isAiAgentTerminalSessionRef = useRef(isAiAgentTerminalSession);
   const terminalTheme = useMemo(
     () => buildTerminalTheme(settings),
     [
@@ -258,7 +300,9 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     ),
     [settings.shellCjkFontFamily, settings.shellFontFamily, settings.shellLatinFontFamily],
   );
-  terminalLineWrapModeRef.current = terminalLineWrapMode;
+  terminalLineWrapModeRef.current = effectiveTerminalLineWrapMode;
+  terminalScrollbackRowsRef.current = terminalScrollbackRows;
+  isAiAgentTerminalSessionRef.current = isAiAgentTerminalSession;
 
   useEffect(() => {
     onTerminalDataRef.current = onTerminalData;
@@ -289,14 +333,21 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     focusTerminalInput();
   };
 
-  // 远端命令可能输出隐藏光标控制符；会话切换或缓存重放后只恢复本地 xterm 光标，不把控制符写回 SSH。
-  const restoreLocalCursorVisibility = () => {
+  // AI TUI 会自己绘制输入光标，本地 xterm 光标必须隐藏，避免滚轮或重绘后出现黑蓝双光标。
+  const syncLocalCursorVisibility = (restoreNormalCursor = true) => {
     const terminal = terminalRef.current;
     if (!terminal || !canAcceptTerminalInput(sessionRef.current)) {
       return;
     }
 
-    terminal.write(terminalCursorShowSequence);
+    if (isAiAgentTerminalSessionRef.current) {
+      terminal.write(terminalCursorHideSequence);
+      return;
+    }
+
+    if (restoreNormalCursor) {
+      terminal.write(terminalCursorShowSequence);
+    }
   };
 
   // 右键菜单动作完成后延后一帧恢复焦点，确保 React 已经卸载菜单按钮。
@@ -305,6 +356,18 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     window.requestAnimationFrame(() => {
       focusTerminalInput();
     });
+  };
+
+  // 会话级渲染选项必须先于缓存重放生效，保证切换普通终端和 AI TUI 时滚屏历史策略一致。
+  const applyTerminalSessionBehaviorOptions = () => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+
+    if (terminal.options.scrollback !== terminalScrollbackRowsRef.current) {
+      terminal.options.scrollback = terminalScrollbackRowsRef.current;
+    }
   };
 
   // 横向滚动模式只有在目标列数真正超过可视列数时才扩宽 xterm 元素，避免空会话也出现底部滑块。
@@ -397,6 +460,23 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     return { renderCols, remoteCols: visibleCols, rows, visibleCols };
   };
 
+  // 前端渲染尺寸和横向滚动状态集中在这里更新，缓存重放前也可复用以清掉旧宽度。
+  const applyTerminalLayoutSize = (nextLayoutSize: TerminalLayoutSize) => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+
+    const hasHorizontalOverflow = terminalLineWrapModeRef.current === 'horizontal' && nextLayoutSize.renderCols > nextLayoutSize.visibleCols;
+    // 底部滑块和底部留白只在确实有横向溢出时启用，空会话和普通短输出保持干净画面。
+    setTerminalHasHorizontalOverflow((current) => current === hasHorizontalOverflow ? current : hasHorizontalOverflow);
+    applyTerminalElementWidth(nextLayoutSize.renderCols, nextLayoutSize.visibleCols);
+    if (terminal.cols !== nextLayoutSize.renderCols || terminal.rows !== nextLayoutSize.rows) {
+      terminal.resize(nextLayoutSize.renderCols, nextLayoutSize.rows);
+    }
+    applyTerminalElementWidth(nextLayoutSize.renderCols, nextLayoutSize.visibleCols);
+  };
+
   // 输入、回显和程序重绘移动光标后，横向模式需要把视口跟到光标并保留右侧余量。
   const scrollTerminalCursorIntoView = () => {
     const container = containerRef.current;
@@ -447,19 +527,24 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       return;
     }
 
+    applyTerminalSessionBehaviorOptions();
     terminal.reset();
+    const nextLayoutSize = resolveTerminalLayoutSize();
+    if (nextLayoutSize) {
+      applyTerminalLayoutSize(nextLayoutSize);
+    }
     const cachedOutput = sessionRef.current?.id ? cachedOutputBySessionRef.current[sessionRef.current.id] ?? '' : '';
     if (cachedOutput) {
       terminal.write(cachedOutput, () => {
         scheduleTerminalSizeSync();
-        restoreLocalCursorVisibility();
+        syncLocalCursorVisibility();
         scheduleTerminalCursorFollow();
       });
       return;
     }
 
     scheduleTerminalSizeSync();
-    restoreLocalCursorVisibility();
+    syncLocalCursorVisibility();
     scheduleTerminalCursorFollow();
   };
 
@@ -535,6 +620,22 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     event.stopPropagation();
   };
 
+  // AI TUI 的滚轮不能直接滚 xterm 历史，也不映射方向键，避免 Claude 输入区出现双光标。
+  const handleAiAgentTerminalWheel = (event: WheelEvent) => {
+    if (!isAiAgentTerminalSessionRef.current) {
+      return true;
+    }
+
+    if (event.deltaY === 0 || Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+      return true;
+    }
+
+    syncLocalCursorVisibility();
+    event.preventDefault();
+    event.stopPropagation();
+    return false;
+  };
+
   const syncTerminalSizeToRemote = () => {
     const terminal = terminalRef.current;
     if (!terminal) {
@@ -546,14 +647,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       return;
     }
 
-    const hasHorizontalOverflow = terminalLineWrapModeRef.current === 'horizontal' && nextLayoutSize.renderCols > nextLayoutSize.visibleCols;
-    // 底部滑块和底部留白只在确实有横向溢出时启用，空会话和普通短输出保持干净画面。
-    setTerminalHasHorizontalOverflow((current) => current === hasHorizontalOverflow ? current : hasHorizontalOverflow);
-    applyTerminalElementWidth(nextLayoutSize.renderCols, nextLayoutSize.visibleCols);
-    if (terminal.cols !== nextLayoutSize.renderCols || terminal.rows !== nextLayoutSize.rows) {
-      terminal.resize(nextLayoutSize.renderCols, nextLayoutSize.rows);
-    }
-    applyTerminalElementWidth(nextLayoutSize.renderCols, nextLayoutSize.visibleCols);
+    applyTerminalLayoutSize(nextLayoutSize);
 
     const currentSession = sessionRef.current;
     const nextSize = { cols: nextLayoutSize.remoteCols, rows: nextLayoutSize.rows };
@@ -594,12 +688,14 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       fontSize: settings.shellFontSize,
       letterSpacing: 0,
       lineHeight: 1.18,
+      scrollback: terminalScrollbackRows,
       theme: terminalTheme,
     });
 
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(containerRef.current);
+    terminal.attachCustomWheelEventHandler(handleAiAgentTerminalWheel);
 
     const dataDisposable = terminal.onData((data) => {
       if (canAcceptTerminalInput(sessionRef.current)) {
@@ -653,6 +749,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       if (sessionRef.current?.id === chunk.sessionId) {
         terminalRef.current?.write(chunk.content, () => {
           scheduleTerminalSizeSync();
+          syncLocalCursorVisibility(false);
           scheduleTerminalCursorFollow();
         });
       }
@@ -669,9 +766,10 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     }
 
     terminal.options.disableStdin = !canAcceptTerminalInput(session);
-    restoreLocalCursorVisibility();
+    applyTerminalSessionBehaviorOptions();
+    syncLocalCursorVisibility();
     window.requestAnimationFrame(focusPendingTerminalInput);
-  }, [session?.id, session?.status]);
+  }, [session?.id, session?.status, terminalScrollbackRows]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -713,19 +811,19 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       return;
     }
 
-    // 长行展示模式改变会影响 xterm 渲染列数；远端仍重推真实可视列宽，避免旧扩列残留到 PTY。
+    // 长行展示模式改变会影响 xterm 渲染列数；AI Agent 始终使用 wrap，远端仍重推真实可视列宽。
     remoteTerminalSizeRef.current = null;
     window.requestAnimationFrame(() => {
       syncTerminalSizeToRemote();
       replayCurrentSessionOutput();
     });
-  }, [terminalLineWrapMode]);
+  }, [effectiveTerminalLineWrapMode]);
 
   return (
     <section className="terminal-workspace card" style={{ background: settings.terminalBackground }}>
       {backgroundImageStyle ? <div className="terminal-background-image" style={backgroundImageStyle} /> : null}
       <div
-        className={`terminal-surface ${terminalHasHorizontalOverflow ? 'is-horizontal-scroll' : 'is-wrapped'}`}
+        className={`terminal-surface ${terminalHasHorizontalOverflow && effectiveTerminalLineWrapMode === 'horizontal' ? 'is-horizontal-scroll' : 'is-wrapped'}`}
         ref={containerRef}
         onContextMenu={handleTerminalContextMenu}
         onWheel={handleTerminalWheel}

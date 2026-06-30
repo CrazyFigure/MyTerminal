@@ -453,6 +453,8 @@ export const backend = {
         kind: 'local',
         connectionId: '',
         localProfileId: profile.id,
+        // 本地命令回传给终端渲染层，确保 Web mock 也走 AI TUI 专用策略。
+        localCommand: profile.command,
         title: profile.title || (profile.command ? `${profile.command} · ${profile.cwd}` : profile.cwd),
         status: 'stub',
         cwd: profile.cwd,
