@@ -1,7 +1,7 @@
 {
   "name": "myterminal",
   "private": true,
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "A modern Rust + Tauri 2 remote terminal manager inspired by FinalShell.",
   "type": "module",
   "scripts": {
@@ -9,14 +9,19 @@
     "dev:web": "vite --host 0.0.0.0 --port 1420",
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
+    "sync:version": "node scripts/sync-version.mjs",
     "check:web": "npm run build",
+    "precheck:rust": "npm run sync:version",
     "check:perl": "powershell -ExecutionPolicy Bypass -File ./scripts/check-perl.ps1",
     "check:rust": "powershell -ExecutionPolicy Bypass -File ./scripts/check-rust.ps1",
     "check:env": "powershell -ExecutionPolicy Bypass -File ./scripts/check-env.ps1",
     "check": "npm run check:web && npm run check:rust",
     "preview": "vite preview",
+    "pretauri": "npm run sync:version",
     "tauri": "tauri",
+    "pretauri:dev": "npm run sync:version",
     "tauri:dev": "tauri dev",
+    "pretauri:build": "npm run sync:version",
     "tauri:build": "tauri build",
     "package": "npm run tauri:build"
   },
