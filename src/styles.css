@@ -353,13 +353,13 @@ select:disabled {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 4px;
-  min-width: 0;
+  min-width: min(100%, var(--main-workspace-min-width, 0px));
   padding-left: 0;
 }
 
 .workspace-toolbar {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, auto);
   align-items: center;
   gap: 8px;
   overflow: hidden;
@@ -395,16 +395,19 @@ select:disabled {
 
 .workspace-toolbar-actions {
   flex: 0 0 auto;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
+  align-content: center;
   justify-content: flex-end;
-  min-width: max-content;
-  white-space: nowrap;
+  min-width: 0;
+  max-width: 440px;
+  white-space: normal;
 }
 
 .workspace-toolbar-actions .primary-button,
 .workspace-toolbar-actions .secondary-button {
-  flex: 0 0 auto;
-  white-space: nowrap;
+  flex: 0 1 auto;
+  max-width: 132px;
+  white-space: normal;
 }
 
 .workspace-title {
@@ -556,6 +559,7 @@ select:disabled {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 4px 6px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.16);
@@ -564,7 +568,10 @@ select:disabled {
 .panel-tab-actions {
   display: flex;
   align-items: center;
+  align-content: center;
   justify-content: flex-end;
+  flex: 1 1 280px;
+  flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
   padding-left: 8px;
@@ -573,7 +580,9 @@ select:disabled {
 
 .panel-tab-actions .primary-button,
 .panel-tab-actions .secondary-button {
-  white-space: nowrap;
+  flex: 0 1 112px;
+  min-width: 82px;
+  white-space: normal;
 }
 
 .dock-body,
@@ -861,10 +870,29 @@ select:disabled {
 .settings-nav-item {
   justify-content: center;
   gap: 6px;
+  min-width: 0;
   padding: 5px 8px;
   border-radius: 7px;
   color: var(--app-text);
   font-size: 0.8rem;
+}
+
+.primary-button,
+.secondary-button,
+.ghost-button,
+.panel-tab {
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.18;
+  text-align: center;
+  white-space: normal;
+}
+
+.primary-button svg,
+.secondary-button svg,
+.ghost-button svg,
+.panel-tab svg {
+  flex: 0 0 auto;
 }
 
 .primary-button {
@@ -2952,7 +2980,7 @@ select:disabled {
   }
 
   .workspace-toolbar {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, auto);
   }
 
   .workspace-title {
@@ -3073,7 +3101,7 @@ select:disabled {
   }
 }
 
-/* 末尾兜底覆盖前面旧样式：右键菜单需要图标与文字稳定横排，底部功能按钮与 Tab 保持同一行。 */
+/* 末尾兜底覆盖前面旧样式：右键菜单保持横排，底部按钮在窄工作区内允许换行露出完整文案。 */
 .context-menu-item {
   display: flex;
   align-items: center;
@@ -3119,8 +3147,9 @@ select:disabled {
 }
 
 .panel-tab-row .tab-list {
-  flex-wrap: nowrap;
-  overflow-x: auto;
+  flex: 1 1 220px;
+  flex-wrap: wrap;
+  overflow: visible;
   scrollbar-width: none;
 }
 
@@ -3129,9 +3158,10 @@ select:disabled {
 }
 
 .panel-tab-actions {
-  flex: 0 0 auto;
-  max-width: 48%;
-  overflow-x: auto;
+  flex: 1 1 280px;
+  flex-wrap: wrap;
+  max-width: none;
+  overflow: visible;
   scrollbar-width: none;
 }
 

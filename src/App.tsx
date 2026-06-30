@@ -146,6 +146,14 @@ const agentBridgeNotificationApproveActionId = 'approve-agent-request';
 const agentBridgeNotificationRejectActionId = 'reject-agent-request';
 // 通知正文只保留短摘要，防止长命令或长路径把 Windows toast 挤得难以阅读。
 const agentRequestSummaryMaxLength = 160;
+// 左右侧栏允许比旧版 320px 更窄，展开双侧栏时优先把横向空间留给终端和底部操作区。
+const sidePanelMinWidth = 240;
+const sidePanelMaxWidth = 560;
+// 主工作区保底宽度用于反推侧栏最大可拖宽度，避免左右栏继续挤压中间按钮和终端。
+const mainWorkspaceMinWidth = 720;
+// 应用外壳左右 padding 和侧栏拖拽柄宽度参与宽度预算，保证 JS 钳制与 CSS 网格尺寸一致。
+const appShellHorizontalPadding = 8;
+const sidePanelResizeHandleWidth = 4;
 
 const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -321,6 +329,20 @@ const bottomTabs: Array<{ id: BottomPanelTab; labelKey: TranslationKey; icon: ty
 ];
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+// 侧栏最大宽度由当前窗口、另一侧栏宽度和主工作区保底宽度共同决定，避免双侧栏展开时互相抢占中间区域。
+const resolveSidePanelMaxWidth = (oppositePanelVisible: boolean, oppositePanelWidth: number) => {
+  if (typeof window === 'undefined') {
+    return sidePanelMaxWidth;
+  }
+
+  const occupiedByChrome =
+    appShellHorizontalPadding +
+    sidePanelResizeHandleWidth +
+    (oppositePanelVisible ? sidePanelResizeHandleWidth + oppositePanelWidth : 0);
+  const availableWidth = window.innerWidth - occupiedByChrome - mainWorkspaceMinWidth;
+  return Math.max(sidePanelMinWidth, Math.min(sidePanelMaxWidth, Math.floor(availableWidth)));
+};
 
 const parentPath = (path: string) => {
   const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
@@ -3343,6 +3365,32 @@ export default function App() {
     [activeRemoteConnectionId, connections],
   );
 
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const clampExpandedSidebars = () => {
+      // 窗口变化或双侧栏同时展开时，只压缩超出预算的侧栏宽度，保留用户已经调小的宽度选择。
+      setSidebarWidth((current) => {
+        if (sidebarCollapsed) {
+          return current;
+        }
+        return clamp(current, sidePanelMinWidth, resolveSidePanelMaxWidth(!agentSidebarCollapsed, agentSidebarWidth));
+      });
+      setAgentSidebarWidth((current) => {
+        if (agentSidebarCollapsed) {
+          return current;
+        }
+        return clamp(current, sidePanelMinWidth, resolveSidePanelMaxWidth(!sidebarCollapsed, sidebarWidth));
+      });
+    };
+
+    clampExpandedSidebars();
+    window.addEventListener('resize', clampExpandedSidebars);
+    return () => window.removeEventListener('resize', clampExpandedSidebars);
+  }, [agentSidebarCollapsed, agentSidebarWidth, sidebarCollapsed, sidebarWidth]);
+
   const openAgentRequestPanel = useCallback(async (focusWindow = false) => {
     // MCP 审批入口已经迁到右侧栏，新请求只展开右栏，不再改动底部命令/隧道/历史的当前 tab。
     setAgentSidebarCollapsed(false);
@@ -4381,6 +4429,7 @@ export default function App() {
   const appShellStyle = {
     // 主窗口列结构由左右侧栏折叠状态驱动，保证右侧 AI 栏展开时不会挤乱左侧栏和终端主体的顺序。
     '--app-grid-columns': `${sidebarCollapsed ? '' : 'auto 4px '}minmax(0, 1fr)${agentSidebarCollapsed ? '' : ' 4px auto'}`,
+    '--main-workspace-min-width': `${mainWorkspaceMinWidth}px`,
   } as CSSProperties;
   // AI 执行请求面板复用原底部 tab 的审批卡片，统一保持命令编辑、日志查看和审批按钮行为。
   const agentRequestPanel = (
@@ -4463,7 +4512,7 @@ export default function App() {
   return (
     <div className={shellClassName} style={appShellStyle}>
       {!sidebarCollapsed ? (
-      <aside className="sidebar card" style={{ width: sidebarWidth }}>
+      <aside className="sidebar card" style={{ minWidth: sidePanelMinWidth, width: sidebarWidth }}>
         <section className="sidebar-panel runtime-panel" style={{ height: runtimePanelHeight }}>
           <div className="section-row runtime-header">
             <h3>{runtimeHostLabel}</h3>
@@ -4784,7 +4833,11 @@ export default function App() {
           onPointerDown={(event) => {
             const startWidth = sidebarWidth;
             beginResize(event, (moveEvent, startX) => {
-              setSidebarWidth(clamp(startWidth + (moveEvent.clientX - startX), 320, Math.min(window.innerWidth * 0.58, 560)));
+              setSidebarWidth(clamp(
+                startWidth + (moveEvent.clientX - startX),
+                sidePanelMinWidth,
+                resolveSidePanelMaxWidth(!agentSidebarCollapsed, agentSidebarWidth),
+              ));
             });
           }}
         />
@@ -5104,11 +5157,15 @@ export default function App() {
             onPointerDown={(event) => {
               const startWidth = agentSidebarWidth;
               beginResize(event, (moveEvent, startX) => {
-                setAgentSidebarWidth(clamp(startWidth + (startX - moveEvent.clientX), 320, Math.min(window.innerWidth * 0.58, 560)));
+                setAgentSidebarWidth(clamp(
+                  startWidth + (startX - moveEvent.clientX),
+                  sidePanelMinWidth,
+                  resolveSidePanelMaxWidth(!sidebarCollapsed, sidebarWidth),
+                ));
               });
             }}
           />
-          <aside className="agent-sidebar card" style={{ width: agentSidebarWidth }}>
+          <aside className="agent-sidebar card" style={{ minWidth: sidePanelMinWidth, width: agentSidebarWidth }}>
             <header className="agent-sidebar-header">
               <div className="panel-tab is-active agent-sidebar-title">
                 <Bot size={16} />
