@@ -457,6 +457,9 @@ pub struct TerminalSession {
     /// 本地终端启动项 id 只用于重开和展示，不参与 SSH 连接查找。
     #[serde(default)]
     pub local_profile_id: Option<String>,
+    /// 本地终端实际启动命令，前端据此识别 Claude/Codex 等全屏 TUI 并避免横向扩列。
+    #[serde(default)]
+    pub local_command: Option<String>,
     #[serde(default)]
     pub title: String,
     #[serde(default)]

@@ -118,6 +118,8 @@ export interface TerminalSession {
   connectionId: string;
   /** 本地终端启动项 id 用于重开和复制信息，SSH 会话为空。 */
   localProfileId?: string;
+  /** 本地终端实际启动命令，用于前端识别全屏 TUI 类命令并套用专用渲染策略。 */
+  localCommand?: string;
   title: string;
   status: SessionStatus;
   cwd?: string;
