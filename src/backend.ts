@@ -360,8 +360,8 @@ const mockAgentBridgeStatus: AgentBridgeStatus = {
   mcpCommand: 'myterminal-cli mcp --stdio',
 };
 
-// 前端预览环境没有后端版本接口时，沿用构建注入版本作为展示与更新检查兜底。
-const mockAppVersion = import.meta.env.VITE_APP_VERSION ?? '0.1.8';
+// 前端预览环境没有后端版本接口时，沿用 Vite 从 package.json 注入的版本作为展示与更新检查兜底。
+const mockAppVersion = import.meta.env.VITE_APP_VERSION;
 
 const mockUpdateCheckResult: UpdateCheckResult = {
   currentVersion: mockAppVersion,
