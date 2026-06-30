@@ -330,6 +330,95 @@ const bottomTabs: Array<{ id: BottomPanelTab; labelKey: TranslationKey; icon: ty
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
+// 动作按钮紧凑态使用显式分行，中文优先保留业务词组，英文按单词长度均衡切分，避免 CSS 自动断成 3/1 之类的畸形结果。
+const splitActionButtonLabel = (label: string) => {
+  const trimmed = label.trim();
+  if (trimmed.length <= 1) {
+    return [trimmed];
+  }
+
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length > 1 && /^[\x00-\x7F]+$/.test(trimmed)) {
+    if (words.length === 2) {
+      return words;
+    }
+
+    let bestIndex = 1;
+    let bestDelta = Number.POSITIVE_INFINITY;
+    for (let index = 1; index < words.length; index += 1) {
+      const left = words.slice(0, index).join(' ');
+      const right = words.slice(index).join(' ');
+      const delta = Math.abs(left.length - right.length);
+      if (delta < bestDelta) {
+        bestDelta = delta;
+        bestIndex = index;
+      }
+    }
+    return [words.slice(0, bestIndex).join(' '), words.slice(bestIndex).join(' ')];
+  }
+
+  const characters = Array.from(trimmed.replace(/\s+/g, ''));
+  if (characters.length <= 1) {
+    return [trimmed];
+  }
+
+  // “功能栏”是固定业务词组，紧凑态应保留为一行，避免出现“收起功 / 能栏”这种破坏语义的分割。
+  const functionDockSuffix = '功能栏';
+  if (trimmed.endsWith(functionDockSuffix) && characters.length > functionDockSuffix.length) {
+    return [
+      characters.slice(0, characters.length - functionDockSuffix.length).join(''),
+      functionDockSuffix,
+    ];
+  }
+
+  const firstLineLength = Math.ceil(characters.length / 2);
+  return [characters.slice(0, firstLineLength).join(''), characters.slice(firstLineLength).join('')];
+};
+
+// 普通按钮保持自然横排；只有紧凑动作区才使用预切分行，图标和文字宽度互不挤压。
+const renderActionButtonLabel = (label: string, compact = false) => {
+  if (!compact) {
+    return <span className="button-label">{label}</span>;
+  }
+
+  return (
+    <span className="button-label is-compact" aria-label={label}>
+      {splitActionButtonLabel(label).map((line, index) => (
+        <span key={`${line}-${index}`} className="button-label-line">
+          {line}
+        </span>
+      ))}
+    </span>
+  );
+};
+
+// 底部动作区只在自然横排放不下时进入紧凑模式；估算值偏保守，避免空间充足时仍然强制换行。
+const estimateInlineButtonWidth = (label: string) => {
+  const trimmed = label.trim();
+  const asciiOnly = /^[\x00-\x7F]+$/.test(trimmed);
+  const textWidth = asciiOnly ? trimmed.length * 8.5 : Array.from(trimmed).length * 15;
+  return Math.max(64, Math.ceil(textWidth + 48));
+};
+
+// 紧凑态宽度按换行后最长一行计算，让“全部/开启”这类按钮真正变窄，而不是统一占用大宽度。
+const estimateCompactButtonWidth = (label: string) => {
+  const lines = splitActionButtonLabel(label);
+  const asciiOnly = /^[\x00-\x7F]+$/.test(label.trim());
+  const longestLineWidth = lines.reduce((maxWidth, line) => {
+    const lineWidth = asciiOnly ? line.length * 8.5 : Array.from(line).length * 15;
+    return Math.max(maxWidth, lineWidth);
+  }, 0);
+  return Math.max(62, Math.ceil(longestLineWidth + 44));
+};
+
+// 紧凑态按钮宽度写入 CSS 变量，避免统一 flex 宽度把已经换行的短文案又撑宽。
+const buildActionButtonStyle = (label: string, compact: boolean): CSSProperties | undefined => {
+  if (!compact) {
+    return undefined;
+  }
+  return { '--compact-action-button-width': `${estimateCompactButtonWidth(label)}px` } as CSSProperties;
+};
+
 // 侧栏最大宽度由当前窗口、另一侧栏宽度和主工作区保底宽度共同决定，避免双侧栏展开时互相抢占中间区域。
 const resolveSidePanelMaxWidth = (oppositePanelVisible: boolean, oppositePanelWidth: number) => {
   if (typeof window === 'undefined') {
@@ -3302,6 +3391,7 @@ export default function App() {
   const sessionTabDropTargetRef = useRef<SessionTabDropTarget>(null);
   const sessionTabListRef = useRef<HTMLDivElement | null>(null);
   const explorerListRef = useRef<HTMLDivElement | null>(null);
+  const bottomPanelActionsRef = useRef<HTMLDivElement | null>(null);
   const explorerScrollRafRef = useRef<number | null>(null);
   const explorerPanelRef = useRef<HTMLElement | null>(null);
   const agentKnownRequestIdsRef = useRef<Set<string>>(new Set());
@@ -4413,6 +4503,28 @@ export default function App() {
   const newestAgentRequestId = orderedAgentBridgeRequests.length
     ? orderedAgentBridgeRequests[orderedAgentBridgeRequests.length - 1].id
     : '';
+  const bottomActionLabels = useMemo(() => {
+    const labels = [bottomDockCollapsed ? t('expandBottomDock') : t('collapseBottomDock')];
+    if (activeBottomTab === 'commands') {
+      labels.push(t('sendToTerminal'));
+    } else if (activeBottomTab === 'tunnels') {
+      labels.push(t('tunnelStartAll'), t('tunnelStopAll'), t('newTunnel'));
+    } else if (activeBottomTab === 'history') {
+      labels.push(t('refresh'));
+    }
+    return labels;
+  }, [activeBottomTab, bottomDockCollapsed, t]);
+  const [bottomPanelActionsWidth, setBottomPanelActionsWidth] = useState(0);
+  const bottomPanelNeedsCompactActions = useMemo(() => {
+    if (!bottomPanelActionsWidth) {
+      return false;
+    }
+    // 动作区宽度判断包含按钮 gap 和左侧分隔留白，只有自然横排明显放不下时才改为两行文字。
+    const requiredWidth = bottomActionLabels.reduce((total, label) => total + estimateInlineButtonWidth(label), 0)
+      + Math.max(0, bottomActionLabels.length - 1) * 6
+      + 8;
+    return requiredWidth > bottomPanelActionsWidth;
+  }, [bottomActionLabels, bottomPanelActionsWidth]);
 
   useLayoutEffect(() => {
     if (agentSidebarCollapsed || !newestAgentRequestId) {
@@ -4425,6 +4537,25 @@ export default function App() {
     // 新请求显示在底部，侧栏展开时同步滚到底部，避免用户只看到旧审批卡片。
     sidebarBody.scrollTop = sidebarBody.scrollHeight;
   }, [agentSidebarCollapsed, newestAgentRequestId]);
+
+  useLayoutEffect(() => {
+    const actionsElement = bottomPanelActionsRef.current;
+    if (!actionsElement) {
+      return undefined;
+    }
+
+    const updateActionsWidth = () => setBottomPanelActionsWidth(actionsElement.clientWidth);
+    updateActionsWidth();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateActionsWidth);
+      return () => window.removeEventListener('resize', updateActionsWidth);
+    }
+
+    const resizeObserver = new ResizeObserver(updateActionsWidth);
+    resizeObserver.observe(actionsElement);
+    return () => resizeObserver.disconnect();
+  }, [activeBottomTab, agentSidebarCollapsed, sidebarCollapsed]);
 
   const appShellStyle = {
     // 主窗口列结构由左右侧栏折叠状态驱动，保证右侧 AI 栏展开时不会挤乱左侧栏和终端主体的顺序。
@@ -4907,10 +5038,10 @@ export default function App() {
 
           <div className="workspace-toolbar-actions">
             <button className="secondary-button" onClick={() => setLocalTerminalsOpen(true)} type="button">
-              <Laptop size={16} /> {t('localTerminalTitle')}
+              <Laptop size={16} /> {renderActionButtonLabel(t('localTerminalTitle'))}
             </button>
             <button className="secondary-button" onClick={() => setConnectionsOpen(true)} type="button">
-              <FolderTree size={16} /> {t('manageConnections')}
+              <FolderTree size={16} /> {renderActionButtonLabel(t('manageConnections'))}
             </button>
             <button
               className="secondary-button"
@@ -4920,7 +5051,7 @@ export default function App() {
               }}
               type="button"
             >
-              <Settings size={16} /> {t('openSettings')}
+              <Settings size={16} /> {renderActionButtonLabel(t('openSettings'))}
             </button>
             <button
               aria-label={t('newConnection')}
@@ -4991,15 +5122,16 @@ export default function App() {
                   );
                 })}
               </div>
-              <div className="panel-tab-actions">
+              <div ref={bottomPanelActionsRef} className={`panel-tab-actions ${bottomPanelNeedsCompactActions ? 'is-compact-actions' : ''}`}>
                 <button
                   className="secondary-button slim"
                   onClick={() => setBottomDockCollapsed((current) => !current)}
+                  style={buildActionButtonStyle(bottomDockCollapsed ? t('expandBottomDock') : t('collapseBottomDock'), bottomPanelNeedsCompactActions)}
                   title={bottomDockCollapsed ? t('expandBottomDock') : t('collapseBottomDock')}
                   type="button"
                 >
                   {bottomDockCollapsed ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                  <span>{bottomDockCollapsed ? t('expandBottomDock') : t('collapseBottomDock')}</span>
+                  {renderActionButtonLabel(bottomDockCollapsed ? t('expandBottomDock') : t('collapseBottomDock'), bottomPanelNeedsCompactActions)}
                 </button>
                 {activeBottomTab === 'commands' ? (
                   <button
@@ -5010,9 +5142,10 @@ export default function App() {
                         void sendCommand(activeSessionId);
                       }
                     }}
+                    style={buildActionButtonStyle(t('sendToTerminal'), bottomPanelNeedsCompactActions)}
                     type="button"
                   >
-                    <Play size={16} /> {t('sendToTerminal')}
+                    <Play size={16} /> {renderActionButtonLabel(t('sendToTerminal'), bottomPanelNeedsCompactActions)}
                   </button>
                 ) : null}
                 {activeBottomTab === 'tunnels' ? (
@@ -5021,20 +5154,28 @@ export default function App() {
                       className="secondary-button"
                       disabled={!connectionTunnels.some((item) => item.status !== 'running')}
                       onClick={() => void startAllTunnels()}
+                      style={buildActionButtonStyle(t('tunnelStartAll'), bottomPanelNeedsCompactActions)}
                       type="button"
                     >
-                      <Play size={16} /> {t('tunnelStartAll')}
+                      <Play size={16} /> {renderActionButtonLabel(t('tunnelStartAll'), bottomPanelNeedsCompactActions)}
                     </button>
                     <button
                       className="secondary-button"
                       disabled={!connectionTunnels.some((item) => item.status === 'running')}
                       onClick={() => void stopAllTunnels()}
+                      style={buildActionButtonStyle(t('tunnelStopAll'), bottomPanelNeedsCompactActions)}
                       type="button"
                     >
-                      <Square size={16} /> {t('tunnelStopAll')}
+                      <Square size={16} /> {renderActionButtonLabel(t('tunnelStopAll'), bottomPanelNeedsCompactActions)}
                     </button>
-                    <button className="primary-button" disabled={!activeConnectionId} onClick={() => void openTunnel()} type="button">
-                      <Plus size={16} /> {t('newTunnel')}
+                    <button
+                      className="primary-button"
+                      disabled={!activeConnectionId}
+                      onClick={() => void openTunnel()}
+                      style={buildActionButtonStyle(t('newTunnel'), bottomPanelNeedsCompactActions)}
+                      type="button"
+                    >
+                      <Plus size={16} /> {renderActionButtonLabel(t('newTunnel'), bottomPanelNeedsCompactActions)}
                     </button>
                   </>
                 ) : null}
@@ -5047,9 +5188,10 @@ export default function App() {
                         void refreshRemoteHistory(activeRemoteConnectionId);
                       }
                     }}
+                    style={buildActionButtonStyle(t('refresh'), bottomPanelNeedsCompactActions)}
                     type="button"
                   >
-                    <RefreshCw size={14} /> {t('refresh')}
+                    <RefreshCw size={14} /> {renderActionButtonLabel(t('refresh'), bottomPanelNeedsCompactActions)}
                   </button>
                 ) : null}
               </div>

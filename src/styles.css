@@ -395,19 +395,19 @@ select:disabled {
 
 .workspace-toolbar-actions {
   flex: 0 0 auto;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-content: center;
   justify-content: flex-end;
   min-width: 0;
-  max-width: 440px;
-  white-space: normal;
+  max-width: max-content;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .workspace-toolbar-actions .primary-button,
 .workspace-toolbar-actions .secondary-button {
-  flex: 0 1 auto;
-  max-width: 132px;
-  white-space: normal;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .workspace-title {
@@ -559,7 +559,7 @@ select:disabled {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
   padding: 4px 6px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.16);
@@ -571,7 +571,7 @@ select:disabled {
   align-content: center;
   justify-content: flex-end;
   flex: 1 1 280px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
   min-width: 0;
   padding-left: 8px;
@@ -580,8 +580,15 @@ select:disabled {
 
 .panel-tab-actions .primary-button,
 .panel-tab-actions .secondary-button {
-  flex: 0 1 112px;
-  min-width: 82px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.panel-tab-actions.is-compact-actions .primary-button,
+.panel-tab-actions.is-compact-actions .secondary-button {
+  flex: 0 0 var(--compact-action-button-width, 76px);
+  min-width: var(--compact-action-button-width, 76px);
+  max-width: var(--compact-action-button-width, 76px);
   white-space: normal;
 }
 
@@ -770,6 +777,8 @@ select:disabled {
   justify-content: center;
   width: 32px;
   min-width: 32px;
+  max-width: 32px;
+  flex: 0 0 32px;
   padding: 0;
 }
 
@@ -881,7 +890,7 @@ select:disabled {
 .secondary-button,
 .ghost-button,
 .panel-tab {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   overflow-wrap: anywhere;
   line-height: 1.18;
   text-align: center;
@@ -893,6 +902,35 @@ select:disabled {
 .ghost-button svg,
 .panel-tab svg {
   flex: 0 0 auto;
+}
+
+/* 动作按钮用内部文字块承载换行，按钮本体保持在同一行，避免整颗按钮掉到下一行。 */
+.button-label {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: normal;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.workspace-toolbar-actions .button-label,
+.panel-tab-actions .button-label {
+  line-height: 1.12;
+}
+
+.button-label.is-compact {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  min-width: max-content;
+  white-space: nowrap;
+}
+
+.button-label-line {
+  display: block;
+  white-space: nowrap;
 }
 
 .primary-button {
@@ -3101,7 +3139,7 @@ select:disabled {
   }
 }
 
-/* 末尾兜底覆盖前面旧样式：右键菜单保持横排，底部按钮在窄工作区内允许换行露出完整文案。 */
+/* 末尾兜底覆盖前面旧样式：右键菜单保持横排，底部动作区保持一行，按钮文字在按钮内部换行。 */
 .context-menu-item {
   display: flex;
   align-items: center;
@@ -3147,8 +3185,8 @@ select:disabled {
 }
 
 .panel-tab-row .tab-list {
-  flex: 1 1 220px;
-  flex-wrap: wrap;
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
   overflow: visible;
   scrollbar-width: none;
 }
@@ -3158,10 +3196,10 @@ select:disabled {
 }
 
 .panel-tab-actions {
-  flex: 1 1 280px;
-  flex-wrap: wrap;
+  flex: 1 1 360px;
+  flex-wrap: nowrap;
   max-width: none;
-  overflow: visible;
+  overflow: hidden;
   scrollbar-width: none;
 }
 
