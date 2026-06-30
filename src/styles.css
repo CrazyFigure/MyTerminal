@@ -500,6 +500,8 @@ select:disabled {
 }
 
 .terminal-surface .xterm {
+  position: relative;
+  z-index: 3;
   height: 100%;
   background: transparent !important;
 }
@@ -514,6 +516,34 @@ select:disabled {
 
 .terminal-surface .xterm {
   max-height: 100%;
+}
+
+/* 匹配和选区圆角层放在 xterm 文字层下方，只画底色，不覆盖终端字符。 */
+.terminal-match-rounded-overlay,
+.terminal-selection-rounded-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.terminal-match-rounded-overlay {
+  z-index: 1;
+}
+
+.terminal-selection-rounded-overlay {
+  z-index: 2;
+}
+
+.terminal-match-rounded-shape,
+.terminal-selection-rounded-shape {
+  shape-rendering: geometricPrecision;
+}
+
+/* 选区底色始终由 SVG 圆角层接管，拖拽选择中也不显示 xterm 原生矩形背景。 */
+.terminal-surface .xterm-selection div,
+.terminal-surface .xterm-rows .xterm-decoration-top:not(.xterm-cursor) {
+  background-color: transparent !important;
 }
 
 /* xterm 6 的 DOM renderer 需要自管 letter-spacing 来保持列坐标准确；这里只关闭字偶距，避免破坏长行重绘。 */
@@ -2251,6 +2281,19 @@ select:disabled {
   min-height: 34px;
   padding: 0;
   accent-color: var(--app-active-border);
+}
+
+.form-grid .settings-toggle-row {
+  min-height: 34px;
+  padding: 6px 0;
+}
+
+.form-grid .settings-toggle-row input[type="checkbox"] {
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0;
+  accent-color: var(--app-active-text);
 }
 
 .modal-settings .settings-section-block,

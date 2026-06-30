@@ -41,6 +41,7 @@ const defaultSettings: AppSettings = {
   terminalBackgroundImageFit: 'cover',
   terminalRightClickBehavior: 'paste',
   terminalLineWrapMode: 'wrap',
+  terminalMatchSelection: true,
   compactSidebar: false,
   showCommandGhost: true,
   connectionGroups: [],

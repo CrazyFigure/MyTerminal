@@ -131,6 +131,8 @@ const normalizeSettings = (settings: AppSettings): AppSettings => ({
   terminalLineWrapMode: terminalLineWrapModes.has(settings.terminalLineWrapMode)
     ? settings.terminalLineWrapMode
     : 'wrap',
+  // 旧配置没有匹配高亮字段时默认开启，符合新版本的终端阅读体验。
+  terminalMatchSelection: settings.terminalMatchSelection !== false,
   // 分组和连接排序来自用户拖拽结果，规范化时只去重清洗，不再按字母重新排序。
   connectionGroups: Array.from(
     new Set(
@@ -246,6 +248,7 @@ const mockSettings: AppSettings = {
   terminalBackgroundImageFit: 'cover',
   terminalRightClickBehavior: 'paste',
   terminalLineWrapMode: 'wrap',
+  terminalMatchSelection: true,
   compactSidebar: false,
   showCommandGhost: true,
   connectionGroups: ['ology', 'ology/ology-old'],

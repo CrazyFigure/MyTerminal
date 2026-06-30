@@ -2978,6 +2978,14 @@ function SettingsModal({
                         <option value="horizontal">{t('terminalLineWrapModeHorizontal')}</option>
                       </select>
                     </label>
+                    <label className="toggle-row settings-toggle-row">
+                      <span>{t('fieldTerminalMatchSelection')}</span>
+                      <input
+                        checked={draftSettings.terminalMatchSelection ?? true}
+                        type="checkbox"
+                        onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalMatchSelection: event.target.checked }))}
+                      />
+                    </label>
                   </div>
                 </section>
 
@@ -3939,8 +3947,11 @@ export default function App() {
     () => (activeConnectionId ? tunnels.filter((item) => item.connectionId === activeConnectionId) : []),
     [activeConnectionId, tunnels],
   );
+  // 历史命令只属于已打开的远端会话；未连接时保持空列表，避免缓存历史被误认为当前会话内容。
   const connectionHistory = useMemo(
-    () => history.filter((item) => (activeRemoteConnectionId ? item.connectionId === activeRemoteConnectionId : true)),
+    () => activeRemoteConnectionId
+      ? history.filter((item) => item.connectionId === activeRemoteConnectionId)
+      : [],
     [activeRemoteConnectionId, history],
   );
   const shellClassName = [

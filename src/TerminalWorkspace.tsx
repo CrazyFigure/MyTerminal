@@ -36,6 +36,21 @@ const terminalDefaultScrollbackRows = 1000;
 const terminalAiAgentScrollbackRows = terminalDefaultScrollbackRows;
 // 这些命令会以 TUI 方式反复重绘同一屏，必须固定在当前可视列宽内渲染。
 const terminalAiAgentCommandNames = new Set(['claude', 'claude-code', 'codex', 'opencode', 'qwen', 'gemini', 'aider', 'cursor-agent']);
+// 匹配高亮只绘制当前可查看区域，滚动时重算，避免为整个 scrollback 常驻创建大量 DOM。
+const terminalMatchHighlightOverscanRows = 24;
+// 单字符选择可能命中非常多内容，硬上限用于保护 WebView 内存和滚动帧率。
+const terminalMatchHighlightMaxRanges = 1800;
+// 选区和匹配项都用底层 SVG 色块绘制，颜色在文字下方，不覆盖终端字符。
+const terminalSelectionHighlightBackground = '#c7c7fb';
+const terminalSelectionHighlightBorder = '#b8b8f5';
+const terminalMatchHighlightBackground = '#cfcfcf';
+const terminalMatchHighlightBorder = '#bdbdbd';
+const terminalHighlightSvgNamespace = 'http://www.w3.org/2000/svg';
+// 圆角只做柔化，不接近胶囊形；终端行高较小时也保留轻微弧度。
+const terminalHighlightCornerRadiusPx = 4;
+const terminalHighlightBorderWidthPx = 1;
+// 匹配块之间需要有可见间隙；只收缩每个命中块的外边缘，跨行命中内部仍保持连贯。
+const terminalMatchHighlightGapPx = 1.5;
 
 type TerminalLayoutSize = {
   // renderCols 是前端 xterm 的渲染列数，横向模式可临时扩大用于浏览当前可见长行。
@@ -44,6 +59,24 @@ type TerminalLayoutSize = {
   remoteCols: number;
   rows: number;
   visibleCols: number;
+};
+
+type TerminalMatchRange = {
+  row: number;
+  col: number;
+  size: number;
+};
+
+type TerminalHighlightStrip = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+};
+
+type TerminalHighlightPoint = {
+  x: number;
+  y: number;
 };
 
 // 只有后端 PTY 已就绪的会话才接收键盘输入，connecting 阶段避免用户输入被前端或后端吞掉。
@@ -89,6 +122,287 @@ const measureTerminalTextColumns = (value: string, startColumn = 0) => {
     columns += isFullWidthCodePoint(character.codePointAt(0) ?? 0) ? 2 : 1;
   }
   return columns;
+};
+
+const normalizeTerminalMatchSelection = (selection: string) => {
+  const normalized = selection.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (!normalized || !normalized.trim() || normalized.includes('\n')) {
+    return '';
+  }
+  return normalized;
+};
+
+// 复用 xterm search addon 的行合并思路：软换行需要当成同一条逻辑行搜索，硬换行才截断。
+const translateTerminalBufferLineWithWrap = (terminal: Terminal, startRow: number) => {
+  const buffer = terminal.buffer.active;
+  const parts: string[] = [];
+  const offsets = [0];
+  let row = startRow;
+  let line = buffer.getLine(row);
+
+  while (line) {
+    const nextLine = buffer.getLine(row + 1);
+    const wrapsToNextLine = Boolean(nextLine?.isWrapped);
+    let text = line.translateToString(!wrapsToNextLine);
+    if (wrapsToNextLine && nextLine) {
+      const lastCell = line.getCell(line.length - 1);
+      const firstNextCell = nextLine.getCell(0);
+      // 宽字符被软换行拆到下一行时，xterm 会在上一行末尾留下占位空格；搜索文本里需要去掉这个视觉占位。
+      if (lastCell?.getCode() === 0 && lastCell.getWidth() === 1 && firstNextCell?.getWidth() === 2) {
+        text = text.slice(0, -1);
+      }
+    }
+
+    parts.push(text);
+    if (!wrapsToNextLine) {
+      break;
+    }
+    offsets.push(offsets[offsets.length - 1] + text.length);
+    row += 1;
+    line = nextLine;
+  }
+
+  return {
+    text: parts.join(''),
+    offsets,
+    endRowExclusive: startRow + offsets.length,
+  };
+};
+
+// 字符串索引要转换回终端单元格宽度，组合字符和全角字符都不能按 JS length 直接当列数。
+const stringLengthToTerminalBufferSize = (terminal: Terminal, row: number, length: number) => {
+  const line = terminal.buffer.active.getLine(row);
+  if (!line) {
+    return 0;
+  }
+
+  let bufferSize = length;
+  for (let column = 0; column < bufferSize; column += 1) {
+    const cell = line.getCell(column);
+    if (!cell) {
+      break;
+    }
+    const chars = cell.getChars();
+    if (chars.length > 1) {
+      bufferSize -= chars.length - 1;
+    }
+    const nextCell = line.getCell(column + 1);
+    if (nextCell?.getWidth() === 0) {
+      bufferSize += 1;
+    }
+  }
+  return bufferSize;
+};
+
+const resolveTerminalMatchRange = (
+  terminal: Terminal,
+  logicalStartRow: number,
+  offsets: number[],
+  matchIndex: number,
+  matchLength: number,
+): TerminalMatchRange | undefined => {
+  let startSegmentIndex = 0;
+  while (startSegmentIndex < offsets.length - 1 && matchIndex >= offsets[startSegmentIndex + 1]) {
+    startSegmentIndex += 1;
+  }
+
+  const matchEndIndex = matchIndex + matchLength;
+  let endSegmentIndex = startSegmentIndex;
+  while (endSegmentIndex < offsets.length - 1 && matchEndIndex >= offsets[endSegmentIndex + 1]) {
+    endSegmentIndex += 1;
+  }
+
+  const startRow = logicalStartRow + startSegmentIndex;
+  const endRow = logicalStartRow + endSegmentIndex;
+  const startColumn = stringLengthToTerminalBufferSize(terminal, startRow, matchIndex - offsets[startSegmentIndex]);
+  const endColumn = stringLengthToTerminalBufferSize(terminal, endRow, matchEndIndex - offsets[endSegmentIndex]);
+  const size = endColumn - startColumn + terminal.cols * (endSegmentIndex - startSegmentIndex);
+  return size > 0 ? { row: startRow, col: startColumn, size } : undefined;
+};
+
+const collectTerminalMatchRanges = (
+  terminal: Terminal,
+  term: string,
+  firstRow: number,
+  lastRowExclusive: number,
+  maxRanges: number,
+) => {
+  const buffer = terminal.buffer.active;
+  const ranges: TerminalMatchRange[] = [];
+  let row = Math.max(0, firstRow);
+
+  while (row > 0 && buffer.getLine(row)?.isWrapped) {
+    row -= 1;
+  }
+
+  while (row < lastRowExclusive && ranges.length < maxRanges) {
+    const line = buffer.getLine(row);
+    if (!line) {
+      row += 1;
+      continue;
+    }
+    if (line.isWrapped) {
+      row += 1;
+      continue;
+    }
+
+    const logicalLine = translateTerminalBufferLineWithWrap(terminal, row);
+    if (logicalLine.endRowExclusive <= firstRow) {
+      row = logicalLine.endRowExclusive;
+      continue;
+    }
+
+    let matchIndex = logicalLine.text.indexOf(term);
+    while (matchIndex >= 0 && ranges.length < maxRanges) {
+      const range = resolveTerminalMatchRange(terminal, row, logicalLine.offsets, matchIndex, term.length);
+      if (range && range.row < lastRowExclusive && range.row + Math.ceil(range.size / Math.max(terminal.cols, 1)) >= firstRow) {
+        ranges.push(range);
+      }
+      matchIndex = logicalLine.text.indexOf(term, matchIndex + Math.max(term.length, 1));
+    }
+
+    row = logicalLine.endRowExclusive;
+  }
+
+  return ranges;
+};
+
+const formatTerminalHighlightSvgNumber = (value: number) => {
+  if (!Number.isFinite(value)) {
+    return '0';
+  }
+  return value.toFixed(2).replace(/\.?0+$/, '');
+};
+
+const isSameTerminalHighlightPoint = (first: TerminalHighlightPoint, second: TerminalHighlightPoint) =>
+  Math.abs(first.x - second.x) < 0.01 && Math.abs(first.y - second.y) < 0.01;
+
+const isTerminalHighlightPointCollinear = (
+  previous: TerminalHighlightPoint,
+  current: TerminalHighlightPoint,
+  next: TerminalHighlightPoint,
+) => {
+  const cross = (current.x - previous.x) * (next.y - current.y) - (current.y - previous.y) * (next.x - current.x);
+  return Math.abs(cross) < 0.01;
+};
+
+const simplifyTerminalHighlightPolygon = (points: TerminalHighlightPoint[]) => {
+  const withoutDuplicates: TerminalHighlightPoint[] = [];
+  for (const point of points) {
+    if (!withoutDuplicates.length || !isSameTerminalHighlightPoint(withoutDuplicates[withoutDuplicates.length - 1], point)) {
+      withoutDuplicates.push(point);
+    }
+  }
+  if (withoutDuplicates.length > 1 && isSameTerminalHighlightPoint(withoutDuplicates[0], withoutDuplicates[withoutDuplicates.length - 1])) {
+    withoutDuplicates.pop();
+  }
+
+  let simplified = withoutDuplicates;
+  let changed = true;
+  while (changed && simplified.length > 2) {
+    changed = false;
+    simplified = simplified.filter((point, index, list) => {
+      const previous = list[(index - 1 + list.length) % list.length];
+      const next = list[(index + 1) % list.length];
+      const keep = !isTerminalHighlightPointCollinear(previous, point, next);
+      changed ||= !keep;
+      return keep;
+    });
+  }
+  return simplified;
+};
+
+const buildTerminalRoundedPolygonPath = (points: TerminalHighlightPoint[], radius: number) => {
+  const simplified = simplifyTerminalHighlightPolygon(points);
+  if (simplified.length < 3) {
+    return '';
+  }
+
+  const commands: string[] = [];
+  for (let index = 0; index < simplified.length; index += 1) {
+    const previous = simplified[(index - 1 + simplified.length) % simplified.length];
+    const current = simplified[index];
+    const next = simplified[(index + 1) % simplified.length];
+    const previousLength = Math.hypot(previous.x - current.x, previous.y - current.y);
+    const nextLength = Math.hypot(next.x - current.x, next.y - current.y);
+    if (previousLength <= 0.01 || nextLength <= 0.01) {
+      continue;
+    }
+    const cornerRadius = Math.min(radius, previousLength / 2, nextLength / 2);
+    const entry = {
+      x: current.x + ((previous.x - current.x) / previousLength) * cornerRadius,
+      y: current.y + ((previous.y - current.y) / previousLength) * cornerRadius,
+    };
+    const exit = {
+      x: current.x + ((next.x - current.x) / nextLength) * cornerRadius,
+      y: current.y + ((next.y - current.y) / nextLength) * cornerRadius,
+    };
+    const entryPoint = `${formatTerminalHighlightSvgNumber(entry.x)} ${formatTerminalHighlightSvgNumber(entry.y)}`;
+    const exitPoint = `${formatTerminalHighlightSvgNumber(exit.x)} ${formatTerminalHighlightSvgNumber(exit.y)}`;
+    const controlPoint = `${formatTerminalHighlightSvgNumber(current.x)} ${formatTerminalHighlightSvgNumber(current.y)}`;
+    if (index === 0) {
+      commands.push(`M ${entryPoint}`);
+    } else {
+      commands.push(`L ${entryPoint}`);
+    }
+    commands.push(`Q ${controlPoint} ${exitPoint}`);
+  }
+  if (!commands.length) {
+    return '';
+  }
+  commands.push('Z');
+  return commands.join(' ');
+};
+
+const buildTerminalHighlightPath = (strips: TerminalHighlightStrip[], radius: number) => {
+  const orderedStrips = strips
+    .filter((strip) => strip.right > strip.left && strip.bottom > strip.top)
+    .sort((first, second) => first.top - second.top || first.left - second.left);
+  if (!orderedStrips.length) {
+    return '';
+  }
+
+  const firstStrip = orderedStrips[0];
+  const lastStrip = orderedStrips[orderedStrips.length - 1];
+  const points: TerminalHighlightPoint[] = [
+    { x: firstStrip.left, y: firstStrip.top },
+    { x: firstStrip.right, y: firstStrip.top },
+  ];
+
+  for (let index = 0; index < orderedStrips.length - 1; index += 1) {
+    const current = orderedStrips[index];
+    const next = orderedStrips[index + 1];
+    points.push({ x: current.right, y: current.bottom });
+    if (Math.abs(current.right - next.right) > 0.01) {
+      points.push({ x: next.right, y: current.bottom });
+    }
+  }
+
+  points.push({ x: lastStrip.right, y: lastStrip.bottom });
+  points.push({ x: lastStrip.left, y: lastStrip.bottom });
+
+  for (let index = orderedStrips.length - 1; index > 0; index -= 1) {
+    const current = orderedStrips[index];
+    const previous = orderedStrips[index - 1];
+    points.push({ x: current.left, y: current.top });
+    if (Math.abs(current.left - previous.left) > 0.01) {
+      points.push({ x: previous.left, y: current.top });
+    }
+  }
+
+  return buildTerminalRoundedPolygonPath(points, radius);
+};
+
+const createTerminalHighlightPathElement = (className: string, color: string, borderColor: string, pathValue: string) => {
+  const path = document.createElementNS(terminalHighlightSvgNamespace, 'path');
+  path.setAttribute('class', className);
+  path.setAttribute('d', pathValue);
+  path.setAttribute('fill', color);
+  path.setAttribute('stroke', borderColor);
+  path.setAttribute('stroke-width', `${terminalHighlightBorderWidthPx}`);
+  path.setAttribute('stroke-linejoin', 'round');
+  path.setAttribute('vector-effect', 'non-scaling-stroke');
+  return path;
 };
 
 // 横向列数只在确实超过可视宽度时增长，并按固定步长取整来减少后端 resize 抖动。
@@ -232,7 +546,9 @@ const buildTerminalTheme = (settings: AppSettings) => {
     background: hasBackgroundImage ? 'rgba(0, 0, 0, 0)' : settings.terminalBackground,
     foreground: settings.terminalForeground,
     cursor: settings.accentColor,
-    selectionBackground: isDarkTheme ? '#334155' : '#bfdbfe',
+    // 终端选区使用用户指定的柔和紫色，xterm 原生层负责保持文字清晰可读。
+    selectionBackground: '#c7c7fb',
+    selectionInactiveBackground: '#c7c7fb',
     black: isDarkTheme ? '#020617' : '#374151',
     red: '#dc2626',
     green: '#059669',
@@ -259,6 +575,12 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const cachedOutputBySessionRef = useRef<Record<string, string>>({});
+  const terminalMatchOverlayRef = useRef<SVGSVGElement | null>(null);
+  const terminalMatchHighlightFrameRef = useRef<number | null>(null);
+  const terminalSelectionOverlayRef = useRef<SVGSVGElement | null>(null);
+  const terminalSelectionOverlayFrameRef = useRef<number | null>(null);
+  const terminalSelectionDragActiveRef = useRef(false);
+  const terminalSelectionDragFrameRef = useRef<number | null>(null);
   const onTerminalDataRef = useRef(onTerminalData);
   const sessionRef = useRef<TerminalSession | undefined>(session);
   const resizeFrameRef = useRef<number | null>(null);
@@ -275,6 +597,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   const terminalLineWrapModeRef = useRef<AppSettings['terminalLineWrapMode']>(effectiveTerminalLineWrapMode);
   const terminalScrollbackRowsRef = useRef(terminalScrollbackRows);
   const isAiAgentTerminalSessionRef = useRef(isAiAgentTerminalSession);
+  const terminalMatchSelectionRef = useRef(settings.terminalMatchSelection ?? true);
   const terminalTheme = useMemo(
     () => buildTerminalTheme(settings),
     [
@@ -303,6 +626,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   terminalLineWrapModeRef.current = effectiveTerminalLineWrapMode;
   terminalScrollbackRowsRef.current = terminalScrollbackRows;
   isAiAgentTerminalSessionRef.current = isAiAgentTerminalSession;
+  terminalMatchSelectionRef.current = settings.terminalMatchSelection ?? true;
 
   useEffect(() => {
     onTerminalDataRef.current = onTerminalData;
@@ -355,6 +679,275 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     // 右键菜单按钮会短暂拿走焦点；等待菜单卸载后再聚焦 xterm，避免复制/粘贴后键盘输入停在旧光标状态。
     window.requestAnimationFrame(() => {
       focusTerminalInput();
+    });
+  };
+
+  const clearTerminalMatchOverlay = () => {
+    terminalMatchOverlayRef.current?.replaceChildren();
+  };
+
+  const syncTerminalHighlightOverlaySize = (overlay: SVGSVGElement, container: HTMLDivElement) => {
+    const width = Math.max(container.scrollWidth, container.clientWidth);
+    const height = Math.max(container.scrollHeight, container.clientHeight);
+    overlay.setAttribute('width', `${width}`);
+    overlay.setAttribute('height', `${height}`);
+    overlay.style.width = `${width}px`;
+    overlay.style.height = `${height}px`;
+  };
+
+  const clearTerminalSelectionOverlay = () => {
+    const overlay = terminalSelectionOverlayRef.current;
+    if (overlay) {
+      overlay.replaceChildren();
+    }
+  };
+
+  const resolveTerminalHighlightMetrics = () => {
+    const terminal = terminalRef.current;
+    const container = containerRef.current;
+    if (!terminal || !container) {
+      return undefined;
+    }
+    const screen = terminal.element?.querySelector<HTMLElement>('.xterm-screen');
+    if (!screen || terminal.cols <= 0 || terminal.rows <= 0) {
+      return undefined;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const screenRect = screen.getBoundingClientRect();
+    const buffer = terminal.buffer.active;
+    const cellWidth = screenRect.width / terminal.cols;
+    const cellHeight = screenRect.height / terminal.rows;
+    const firstVisibleRow = buffer.viewportY;
+    const lastVisibleRow = firstVisibleRow + terminal.rows - 1;
+    return {
+      terminal,
+      container,
+      cellWidth,
+      cellHeight,
+      firstVisibleRow,
+      lastVisibleRow,
+      leftBase: screenRect.left - containerRect.left + container.scrollLeft,
+      topBase: screenRect.top - containerRect.top + container.scrollTop,
+      cornerRadius: Math.min(terminalHighlightCornerRadiusPx, Math.max(2.5, cellHeight * 0.28)),
+    };
+  };
+
+  const terminalRowsToHighlightStrips = (
+    startRow: number,
+    endRow: number,
+    getColumns: (row: number) => { startColumn: number; endColumn: number },
+  ) => {
+    const metrics = resolveTerminalHighlightMetrics();
+    if (!metrics) {
+      return undefined;
+    }
+
+    const strips: TerminalHighlightStrip[] = [];
+    const firstRow = Math.max(startRow, metrics.firstVisibleRow);
+    const lastRow = Math.min(endRow, metrics.lastVisibleRow);
+    for (let row = firstRow; row <= lastRow; row += 1) {
+      const { startColumn, endColumn } = getColumns(row);
+      const safeStartColumn = Math.min(Math.max(startColumn, 0), metrics.terminal.cols);
+      const safeEndColumn = Math.min(Math.max(endColumn, 0), metrics.terminal.cols);
+      if (safeEndColumn <= safeStartColumn) {
+        continue;
+      }
+      const top = metrics.topBase + (row - metrics.firstVisibleRow) * metrics.cellHeight;
+      strips.push({
+        left: metrics.leftBase + safeStartColumn * metrics.cellWidth,
+        top,
+        right: metrics.leftBase + safeEndColumn * metrics.cellWidth,
+        bottom: top + metrics.cellHeight,
+      });
+    }
+
+    return { metrics, strips };
+  };
+
+  const syncTerminalSelectionOverlay = () => {
+    const terminal = terminalRef.current;
+    const container = containerRef.current;
+    const overlay = terminalSelectionOverlayRef.current;
+    const selectionPosition = terminal?.getSelectionPosition();
+    if (!terminal || !container || !overlay) {
+      clearTerminalSelectionOverlay();
+      return;
+    }
+
+    const metrics = resolveTerminalHighlightMetrics();
+    let resolved: { metrics: NonNullable<ReturnType<typeof resolveTerminalHighlightMetrics>>; strips: TerminalHighlightStrip[] } | undefined;
+    if (selectionPosition && terminal.hasSelection()) {
+      resolved = terminalRowsToHighlightStrips(selectionPosition.start.y, selectionPosition.end.y, (row) => ({
+        startColumn: row === selectionPosition.start.y ? selectionPosition.start.x : 0,
+        endColumn: row === selectionPosition.end.y ? selectionPosition.end.x : terminal.cols,
+      }));
+    } else if (metrics) {
+      const containerRect = container.getBoundingClientRect();
+      const strips = Array.from(terminal.element?.querySelectorAll<HTMLElement>('.xterm-selection div') ?? [])
+        .map((selectionBlock) => {
+          const rect = selectionBlock.getBoundingClientRect();
+          return {
+            left: rect.left - containerRect.left + container.scrollLeft,
+            top: rect.top - containerRect.top + container.scrollTop,
+            right: rect.right - containerRect.left + container.scrollLeft,
+            bottom: rect.bottom - containerRect.top + container.scrollTop,
+          };
+        })
+        .filter((strip) => strip.right > strip.left && strip.bottom > strip.top);
+      resolved = { metrics, strips };
+    }
+    if (!resolved) {
+      clearTerminalSelectionOverlay();
+      return;
+    }
+
+    const pathValue = buildTerminalHighlightPath(resolved.strips, resolved.metrics.cornerRadius);
+    const path = pathValue
+      ? createTerminalHighlightPathElement(
+        'terminal-selection-rounded-shape',
+        terminalSelectionHighlightBackground,
+        terminalSelectionHighlightBorder,
+        pathValue,
+      )
+      : undefined;
+    syncTerminalHighlightOverlaySize(overlay, container);
+    overlay.replaceChildren(...(path ? [path] : []));
+  };
+
+  const scheduleTerminalSelectionOverlaySync = () => {
+    if (terminalSelectionOverlayFrameRef.current !== null) {
+      return;
+    }
+
+    terminalSelectionOverlayFrameRef.current = window.requestAnimationFrame(() => {
+      terminalSelectionOverlayFrameRef.current = null;
+      syncTerminalSelectionOverlay();
+    });
+  };
+
+  const stopTerminalSelectionDragSync = () => {
+    terminalSelectionDragActiveRef.current = false;
+    if (terminalSelectionDragFrameRef.current !== null) {
+      window.cancelAnimationFrame(terminalSelectionDragFrameRef.current);
+      terminalSelectionDragFrameRef.current = null;
+    }
+    syncTerminalSelectionOverlay();
+  };
+
+  const scheduleTerminalSelectionDragSync = () => {
+    if (!terminalSelectionDragActiveRef.current || terminalSelectionDragFrameRef.current !== null) {
+      return;
+    }
+
+    terminalSelectionDragFrameRef.current = window.requestAnimationFrame(() => {
+      terminalSelectionDragFrameRef.current = null;
+      syncTerminalSelectionOverlay();
+      scheduleTerminalSelectionDragSync();
+    });
+  };
+
+  // xterm 的 selection change 在拖拽中不一定逐帧触发；鼠标按住时主动同步圆角层，避免临时露出空背景。
+  const startTerminalSelectionDragSync = (event: MouseEvent) => {
+    if (event.button !== 0) {
+      return;
+    }
+    terminalSelectionDragActiveRef.current = true;
+    scheduleTerminalSelectionDragSync();
+  };
+
+  const terminalMatchRangeToHighlightStrips = (
+    range: TerminalMatchRange,
+    metrics: NonNullable<ReturnType<typeof resolveTerminalHighlightMetrics>>,
+  ) => {
+    const strips: TerminalHighlightStrip[] = [];
+    let row = range.row;
+    let column = range.col;
+    let remainingSize = range.size;
+    while (remainingSize > 0) {
+      const width = Math.min(Math.max(metrics.terminal.cols - column, 0), remainingSize);
+      if (width > 0 && row >= metrics.firstVisibleRow && row <= metrics.lastVisibleRow) {
+        const top = metrics.topBase + (row - metrics.firstVisibleRow) * metrics.cellHeight;
+        const horizontalGap = Math.min(terminalMatchHighlightGapPx, (width * metrics.cellWidth) / 3);
+        const verticalGap = Math.min(terminalMatchHighlightGapPx, metrics.cellHeight / 4);
+        const isFirstRangeRow = row === range.row;
+        const isLastRangeRow = remainingSize <= width;
+        strips.push({
+          left: metrics.leftBase + column * metrics.cellWidth + horizontalGap,
+          top: top + (isFirstRangeRow ? verticalGap : 0),
+          right: metrics.leftBase + (column + width) * metrics.cellWidth - horizontalGap,
+          bottom: top + metrics.cellHeight - (isLastRangeRow ? verticalGap : 0),
+        });
+      }
+      remainingSize -= width;
+      row += 1;
+      column = 0;
+      if (width <= 0) {
+        break;
+      }
+    }
+    return { metrics, strips };
+  };
+
+  const refreshTerminalMatchHighlights = () => {
+    const terminal = terminalRef.current;
+    const container = containerRef.current;
+    const overlay = terminalMatchOverlayRef.current;
+    const metrics = resolveTerminalHighlightMetrics();
+    if (!terminal || !container || !overlay || !metrics || !terminalMatchSelectionRef.current || !terminal.hasSelection()) {
+      clearTerminalMatchOverlay();
+      return;
+    }
+
+    const term = normalizeTerminalMatchSelection(terminal.getSelection());
+    if (!term) {
+      clearTerminalMatchOverlay();
+      return;
+    }
+
+    const buffer = terminal.buffer.active;
+    const firstHighlightedRow = Math.max(0, buffer.viewportY - terminalMatchHighlightOverscanRows);
+    const lastHighlightedRowExclusive = Math.min(
+      buffer.length,
+      buffer.viewportY + terminal.rows + terminalMatchHighlightOverscanRows,
+    );
+    const ranges = collectTerminalMatchRanges(
+      terminal,
+      term,
+      firstHighlightedRow,
+      lastHighlightedRowExclusive,
+      terminalMatchHighlightMaxRanges,
+    );
+
+    const paths: SVGPathElement[] = [];
+    for (const range of ranges) {
+      const resolved = terminalMatchRangeToHighlightStrips(range, metrics);
+      if (!resolved.strips.length) {
+        continue;
+      }
+      const pathValue = buildTerminalHighlightPath(resolved.strips, resolved.metrics.cornerRadius);
+      if (pathValue) {
+        paths.push(createTerminalHighlightPathElement(
+          'terminal-match-rounded-shape',
+          terminalMatchHighlightBackground,
+          terminalMatchHighlightBorder,
+          pathValue,
+        ));
+      }
+    }
+
+    syncTerminalHighlightOverlaySize(overlay, container);
+    overlay.replaceChildren(...paths);
+  };
+
+  const scheduleTerminalMatchHighlightRefresh = () => {
+    if (terminalMatchHighlightFrameRef.current !== null) {
+      return;
+    }
+
+    terminalMatchHighlightFrameRef.current = window.requestAnimationFrame(() => {
+      terminalMatchHighlightFrameRef.current = null;
+      refreshTerminalMatchHighlights();
     });
   };
 
@@ -527,6 +1120,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       return;
     }
 
+    clearTerminalMatchOverlay();
+    clearTerminalSelectionOverlay();
     applyTerminalSessionBehaviorOptions();
     terminal.reset();
     const nextLayoutSize = resolveTerminalLayoutSize();
@@ -539,6 +1134,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
         scheduleTerminalSizeSync();
         syncLocalCursorVisibility();
         scheduleTerminalCursorFollow();
+        scheduleTerminalMatchHighlightRefresh();
+        scheduleTerminalSelectionOverlaySync();
       });
       return;
     }
@@ -546,6 +1143,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     scheduleTerminalSizeSync();
     syncLocalCursorVisibility();
     scheduleTerminalCursorFollow();
+    scheduleTerminalMatchHighlightRefresh();
+    scheduleTerminalSelectionOverlaySync();
   };
 
   useEffect(() => {
@@ -658,6 +1257,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       void backend.resizeTerminal(currentSession.id, nextLayoutSize.remoteCols, nextLayoutSize.rows);
     }
     scheduleTerminalCursorFollow();
+    scheduleTerminalSelectionOverlaySync();
   };
 
   // 终端尺寸同步统一合并到动画帧，避免连续输出、拖拽窗口和输入回显造成密集 resize。
@@ -695,6 +1295,14 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(containerRef.current);
+    const matchOverlay = document.createElementNS(terminalHighlightSvgNamespace, 'svg');
+    matchOverlay.classList.add('terminal-match-rounded-overlay');
+    containerRef.current.appendChild(matchOverlay);
+    terminalMatchOverlayRef.current = matchOverlay;
+    const selectionOverlay = document.createElementNS(terminalHighlightSvgNamespace, 'svg');
+    selectionOverlay.classList.add('terminal-selection-rounded-overlay');
+    containerRef.current.appendChild(selectionOverlay);
+    terminalSelectionOverlayRef.current = selectionOverlay;
     terminal.attachCustomWheelEventHandler(handleAiAgentTerminalWheel);
 
     const dataDisposable = terminal.onData((data) => {
@@ -704,7 +1312,23 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       }
     });
     const cursorMoveDisposable = terminal.onCursorMove(scheduleTerminalCursorFollow);
-    const scrollDisposable = terminal.onScroll(scheduleTerminalSizeSync);
+    const scrollDisposable = terminal.onScroll(() => {
+      scheduleTerminalSizeSync();
+      scheduleTerminalMatchHighlightRefresh();
+      scheduleTerminalSelectionOverlaySync();
+    });
+    const selectionDisposable = terminal.onSelectionChange(() => {
+      scheduleTerminalMatchHighlightRefresh();
+      syncTerminalSelectionOverlay();
+    });
+    const resizeDisposable = terminal.onResize(() => {
+      scheduleTerminalMatchHighlightRefresh();
+      scheduleTerminalSelectionOverlaySync();
+    });
+    const handleTerminalSurfaceScroll = () => {
+      scheduleTerminalMatchHighlightRefresh();
+      scheduleTerminalSelectionOverlaySync();
+    };
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
@@ -713,13 +1337,23 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     const observer = new ResizeObserver(scheduleTerminalSizeSync);
     observer.observe(containerRef.current);
     window.addEventListener('resize', scheduleTerminalSizeSync);
+    window.addEventListener('mouseup', stopTerminalSelectionDragSync, true);
+    window.addEventListener('blur', stopTerminalSelectionDragSync);
+    containerRef.current.addEventListener('mousedown', startTerminalSelectionDragSync, true);
+    containerRef.current.addEventListener('scroll', handleTerminalSurfaceScroll);
 
     return () => {
       dataDisposable.dispose();
       cursorMoveDisposable.dispose();
       scrollDisposable.dispose();
+      selectionDisposable.dispose();
+      resizeDisposable.dispose();
       observer.disconnect();
       window.removeEventListener('resize', scheduleTerminalSizeSync);
+      window.removeEventListener('mouseup', stopTerminalSelectionDragSync, true);
+      window.removeEventListener('blur', stopTerminalSelectionDragSync);
+      containerRef.current?.removeEventListener('mousedown', startTerminalSelectionDragSync, true);
+      containerRef.current?.removeEventListener('scroll', handleTerminalSurfaceScroll);
       if (resizeFrameRef.current !== null) {
         window.cancelAnimationFrame(resizeFrameRef.current);
         resizeFrameRef.current = null;
@@ -728,6 +1362,24 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
         window.cancelAnimationFrame(cursorFollowFrameRef.current);
         cursorFollowFrameRef.current = null;
       }
+      if (terminalMatchHighlightFrameRef.current !== null) {
+        window.cancelAnimationFrame(terminalMatchHighlightFrameRef.current);
+        terminalMatchHighlightFrameRef.current = null;
+      }
+      if (terminalSelectionOverlayFrameRef.current !== null) {
+        window.cancelAnimationFrame(terminalSelectionOverlayFrameRef.current);
+        terminalSelectionOverlayFrameRef.current = null;
+      }
+      if (terminalSelectionDragFrameRef.current !== null) {
+        window.cancelAnimationFrame(terminalSelectionDragFrameRef.current);
+        terminalSelectionDragFrameRef.current = null;
+      }
+      terminalSelectionDragActiveRef.current = false;
+      clearTerminalMatchOverlay();
+      matchOverlay.remove();
+      selectionOverlay.remove();
+      terminalMatchOverlayRef.current = null;
+      terminalSelectionOverlayRef.current = null;
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
@@ -751,6 +1403,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
           scheduleTerminalSizeSync();
           syncLocalCursorVisibility(false);
           scheduleTerminalCursorFollow();
+          scheduleTerminalMatchHighlightRefresh();
+          scheduleTerminalSelectionOverlaySync();
         });
       }
     };
@@ -786,8 +1440,19 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
 
     window.requestAnimationFrame(() => {
       syncTerminalSizeToRemote();
+      scheduleTerminalMatchHighlightRefresh();
+      scheduleTerminalSelectionOverlaySync();
     });
   }, [settings.shellFontSize, terminalFontFamily, terminalTheme]);
+
+  useEffect(() => {
+    if (settings.terminalMatchSelection ?? true) {
+      scheduleTerminalMatchHighlightRefresh();
+      return;
+    }
+
+    clearTerminalMatchOverlay();
+  }, [settings.terminalMatchSelection]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
