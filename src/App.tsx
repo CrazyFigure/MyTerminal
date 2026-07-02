@@ -3729,6 +3729,19 @@ export default function App() {
     }
   }, [bootstrap, bootstrapped]);
 
+  // 主题切换时同步 Tauri 窗口主题和 document 颜色方案，确保标题栏、表单控件立即跟随。
+  useEffect(() => {
+    const isDark = settings.themeMode === 'dark';
+    document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
+    document.body.classList.toggle('theme-dark', isDark);
+    if (isTauriRuntime()) {
+      void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+        const currentWindow = getCurrentWindow();
+        void currentWindow.setTheme(isDark ? 'dark' : 'light');
+      }).catch(() => undefined);
+    }
+  }, [settings.themeMode]);
+
   useEffect(() => {
     const disableContextMenu = (event: MouseEvent) => event.preventDefault();
     window.addEventListener('contextmenu', disableContextMenu);
