@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from 'react';
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
-import { Terminal } from '@xterm/xterm';
+import { Terminal, type IBufferLine } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 
 import { backend } from './backend';
@@ -28,6 +28,8 @@ const terminalHorizontalColumnGrowthStep = 40;
 const terminalHorizontalLinePaddingColumns = 8;
 // 光标跟随时右侧预留多个字符宽度，避免输入到边界时视觉上贴住容器。
 const terminalCursorFollowMarginColumns = 8;
+// 只有本地输入后的短时间内才自动跟随光标，避免 top、htop 等远端 TUI 定时重绘把横向视口推走。
+const terminalCursorFollowAfterInputMs = 1800;
 // xterm 内部竖向滚动区会占用少量宽度，横向宽度估算时预留出来避免最后几列被压住。
 const terminalScrollbarReservePx = 18;
 // 普通终端保留 xterm 默认滚屏历史，避免影响 SSH 和 Shell 的日常查看习惯。
@@ -82,46 +84,24 @@ type TerminalHighlightPoint = {
 // 只有后端 PTY 已就绪的会话才接收键盘输入，connecting 阶段避免用户输入被前端或后端吞掉。
 const canAcceptTerminalInput = (session?: TerminalSession) => Boolean(session && ['connected', 'stub'].includes(session.status));
 
-// 列宽估算只看可见字符，先剥离常见 ANSI/OSC 控制序列，避免颜色和标题控制码被算成文本宽度。
-const terminalOscSequencePattern = /\x1b\][\s\S]*?(?:\x07|\x1b\\)/g;
-const terminalCsiSequencePattern = /\x1b\[[0-?]*[ -/]*[@-~]/g;
-const terminalShortEscapeSequencePattern = /\x1b[@-Z\\-_]/g;
-const terminalTabStopColumns = 8;
+// 横向宽度只看当前列范围内的真实文本单元格；带反色背景的行尾空格不能把 TUI 标题栏算成长行内容。
+const measureTerminalBufferLineContentColumns = (line: IBufferLine, maxColumns: number) => {
+  let lastContentColumn = 0;
+  const lineColumns = Math.min(line.length, Math.max(0, maxColumns));
+  for (let column = 0; column < lineColumns; column += 1) {
+    const cell = line.getCell(column);
+    if (!cell) {
+      break;
+    }
 
-// CJK、全角符号和常见 emoji 在终端里通常占两列，这里用于动态横向列宽的近似估算。
-const isFullWidthCodePoint = (codePoint: number) =>
-  (codePoint >= 0x1100 && codePoint <= 0x115f) ||
-  codePoint === 0x2329 ||
-  codePoint === 0x232a ||
-  (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
-  (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
-  (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
-  (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
-  (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
-  (codePoint >= 0xff00 && codePoint <= 0xff60) ||
-  (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
-  (codePoint >= 0x1f300 && codePoint <= 0x1faff);
-
-const stripTerminalControlSequences = (value: string) =>
-  value
-    .replace(terminalOscSequencePattern, '')
-    .replace(terminalCsiSequencePattern, '')
-    .replace(terminalShortEscapeSequencePattern, '');
-
-// 按终端单元格而不是字符串长度估算文本宽度，保证中文文件名不会低估横向空间。
-const measureTerminalTextColumns = (value: string, startColumn = 0) => {
-  let columns = startColumn;
-  for (const character of stripTerminalControlSequences(value)) {
-    if (character === '\t') {
-      columns += terminalTabStopColumns - (columns % terminalTabStopColumns);
+    const text = cell.getChars();
+    const width = cell.getWidth();
+    if (width <= 0 || !text || text === ' ') {
       continue;
     }
-    if (character < ' ') {
-      continue;
-    }
-    columns += isFullWidthCodePoint(character.codePointAt(0) ?? 0) ? 2 : 1;
+    lastContentColumn = column + width;
   }
-  return columns;
+  return lastContentColumn;
 };
 
 const normalizeTerminalMatchSelection = (selection: string) => {
@@ -631,6 +611,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   const sessionRef = useRef<TerminalSession | undefined>(session);
   const resizeFrameRef = useRef<number | null>(null);
   const cursorFollowFrameRef = useRef<number | null>(null);
+  const lastLocalTerminalInputAtRef = useRef(0);
   const remoteTerminalSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const pendingFocusSessionIdRef = useRef<string | null>(session?.id ?? null);
   const terminalLineWrapMode = settings.terminalLineWrapMode ?? 'wrap';
@@ -1001,6 +982,15 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     });
   };
 
+  // 本地键盘输入和粘贴会触发行编辑回显；记录时间后，后续短时间内的光标移动才允许自动横向跟随。
+  const markLocalTerminalInputForCursorFollow = () => {
+    lastLocalTerminalInputAtRef.current = performance.now();
+  };
+
+  // 远端程序定时刷新也会移动 xterm 光标；超过本地输入窗口后不再把它视为需要跟随的编辑光标。
+  const hasRecentLocalTerminalInputForCursorFollow = () =>
+    performance.now() - lastLocalTerminalInputAtRef.current <= terminalCursorFollowAfterInputMs;
+
   // 会话级渲染选项必须先于缓存重放生效，保证切换普通终端和 AI TUI 时滚屏历史策略一致。
   const applyTerminalSessionBehaviorOptions = () => {
     const terminal = terminalRef.current;
@@ -1057,7 +1047,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
         continue;
       }
 
-      const lineColumns = measureTerminalTextColumns(line.translateToString(true));
+      const lineColumns = measureTerminalBufferLineContentColumns(line, terminal.cols);
       if (line.isWrapped) {
         currentLineColumns += lineColumns;
       } else {
@@ -1077,7 +1067,10 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     }
 
     const longestLineColumns = measureVisibleTerminalBufferLongestLineColumns();
-    const cursorRequiredColumns = terminal.buffer.active.cursorX + terminalCursorFollowMarginColumns;
+    // 远端 TUI 的重绘光标只负责定位绘制，不代表用户正在编辑；只有近期本地输入才按光标列扩宽画布。
+    const cursorRequiredColumns = hasRecentLocalTerminalInputForCursorFollow()
+      ? terminal.buffer.active.cursorX + terminalCursorFollowMarginColumns
+      : visibleCols;
     const requiredColumns = Math.max(
       visibleCols,
       longestLineColumns + terminalHorizontalLinePaddingColumns,
@@ -1124,7 +1117,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   const scrollTerminalCursorIntoView = () => {
     const container = containerRef.current;
     const terminal = terminalRef.current;
-    if (!container || !terminal || terminalLineWrapModeRef.current !== 'horizontal') {
+    if (!container || !terminal || terminalLineWrapModeRef.current !== 'horizontal' || !hasRecentLocalTerminalInputForCursorFollow()) {
       return;
     }
 
@@ -1153,7 +1146,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
 
   // 光标跟随合并到下一帧执行，避免大段输出时每个字符移动都触发布局计算。
   const scheduleTerminalCursorFollow = () => {
-    if (terminalLineWrapModeRef.current !== 'horizontal' || cursorFollowFrameRef.current !== null) {
+    if (terminalLineWrapModeRef.current !== 'horizontal' || cursorFollowFrameRef.current !== null || !hasRecentLocalTerminalInputForCursorFollow()) {
       return;
     }
 
@@ -1220,6 +1213,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       // 右键粘贴直接走终端输入通道，保持和键盘粘贴完全一致的后端写入路径。
       const text = await readClipboardText().catch(() => '');
       if (text) {
+        markLocalTerminalInputForCursorFollow();
         onTerminalDataRef.current(text);
       }
     } finally {
@@ -1357,6 +1351,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
 
     const dataDisposable = terminal.onData((data) => {
       if (canAcceptTerminalInput(sessionRef.current)) {
+        markLocalTerminalInputForCursorFollow();
         onTerminalDataRef.current(data);
         scheduleTerminalCursorFollow();
       }
@@ -1511,6 +1506,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     }
 
     pendingFocusSessionIdRef.current = session?.id ?? null;
+    // 会话切换后重放缓存属于历史画面恢复，不能继承上一会话的本地输入跟随状态。
+    lastLocalTerminalInputAtRef.current = 0;
     replayCurrentSessionOutput();
     // 新会话打开时立刻把当前 xterm 尺寸推给远端 PTY，避免默认 120 列和实际界面列宽不一致。
     remoteTerminalSizeRef.current = null;
@@ -1528,6 +1525,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
 
     // 长行展示模式改变会影响 xterm 渲染列数；AI Agent 始终使用 wrap，远端仍重推真实可视列宽。
     remoteTerminalSizeRef.current = null;
+    // 模式切换触发的是缓存重排，不是用户正在编辑命令，避免切换后按旧光标位置自动横移。
+    lastLocalTerminalInputAtRef.current = 0;
     window.requestAnimationFrame(() => {
       syncTerminalSizeToRemote();
       replayCurrentSessionOutput();
