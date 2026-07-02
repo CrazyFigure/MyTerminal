@@ -537,14 +537,38 @@ const buildTerminalBackgroundImageStyle = (settings: AppSettings): CSSProperties
   return { ...baseStyle, backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundSize: 'cover' };
 };
 
+// 浅色模式的默认终端配色；深色模式使用暗底亮字避免白屏刺眼。
+const defaultLightTerminalBackground = '#f7f7f7';
+const defaultLightTerminalForeground = '#111111';
+const defaultDarkTerminalBackground = '#1e1e2e';
+const defaultDarkTerminalForeground = '#e0e0e0';
+
+// 根据主题自动选择终端背景/前景色：如果用户仍为默认值则跟随主题切换，自定义过的保持不变。
+const resolveTerminalColors = (settings: AppSettings) => {
+  const isDarkTheme = settings.themeMode === 'dark';
+  const isDefaultLightBg = settings.terminalBackground === defaultLightTerminalBackground;
+  const isDefaultLightFg = settings.terminalForeground === defaultLightTerminalForeground;
+  const isDefaultDarkBg = settings.terminalBackground === defaultDarkTerminalBackground;
+  const isDefaultDarkFg = settings.terminalForeground === defaultDarkTerminalForeground;
+  const background = isDarkTheme
+    ? (isDefaultLightBg ? defaultDarkTerminalBackground : settings.terminalBackground)
+    : (isDefaultDarkBg ? defaultLightTerminalBackground : settings.terminalBackground);
+  const foreground = isDarkTheme
+    ? (isDefaultLightFg ? defaultDarkTerminalForeground : settings.terminalForeground)
+    : (isDefaultDarkFg ? defaultLightTerminalForeground : settings.terminalForeground);
+  return { background, foreground };
+};
+
 // 终端彩色文本使用清晰的 ANSI 调色板；浅色终端里 ANSI white 也要落到深灰，避免 ls 高亮发白发虚。
+// xterm theme background 始终设为透明，让选区 SVG 覆盖层可以从 canvas 后面透出来。
 const buildTerminalTheme = (settings: AppSettings) => {
   const isDarkTheme = settings.themeMode === 'dark';
-  const hasBackgroundImage = Boolean(settings.backgroundImage?.trim());
+  const { foreground } = resolveTerminalColors(settings);
 
   return {
-    background: hasBackgroundImage ? 'rgba(0, 0, 0, 0)' : settings.terminalBackground,
-    foreground: settings.terminalForeground,
+    // canvas 背景透明，实际背景色由外层 .terminal-workspace 提供，选区覆盖层才能从下方显示出来。
+    background: 'rgba(0, 0, 0, 0)',
+    foreground,
     cursor: settings.accentColor,
     // 终端选区使用用户指定的柔和紫色，xterm 原生层负责保持文字清晰可读。
     selectionBackground: '#c7c7fb',
@@ -602,8 +626,6 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     () => buildTerminalTheme(settings),
     [
       settings.accentColor,
-      settings.backgroundImage,
-      settings.terminalBackground,
       settings.terminalForeground,
       settings.themeMode,
     ],
@@ -615,6 +637,11 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       settings.terminalBackgroundImageFit,
       settings.terminalBackgroundImageOpacity,
     ],
+  );
+  // 外层容器的实际背景色：跟随主题自动切换，xterm canvas 始终透明以便选区覆盖层透出。
+  const terminalBackgroundColor = useMemo(
+    () => resolveTerminalColors(settings).background,
+    [settings.terminalBackground, settings.themeMode],
   );
   const terminalFontFamily = useMemo(
     () => buildTerminalFontFamily(
@@ -1485,7 +1512,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   }, [effectiveTerminalLineWrapMode]);
 
   return (
-    <section className="terminal-workspace card" style={{ background: settings.terminalBackground }}>
+    <section className="terminal-workspace card" style={{ background: terminalBackgroundColor }}>
       {backgroundImageStyle ? <div className="terminal-background-image" style={backgroundImageStyle} /> : null}
       <div
         className={`terminal-surface ${terminalHasHorizontalOverflow && effectiveTerminalLineWrapMode === 'horizontal' ? 'is-horizontal-scroll' : 'is-wrapped'}`}
