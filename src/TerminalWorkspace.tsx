@@ -559,15 +559,37 @@ const resolveTerminalColors = (settings: AppSettings) => {
   return { background, foreground };
 };
 
+// xterm 反色属性会用默认背景的 RGB 作为反色前景；背景仍需 alpha=0，避免遮住终端背景图和选区 SVG。
+const buildTransparentTerminalThemeBackground = (background: string) => {
+  const trimmed = background.trim();
+  const shortHexMatch = trimmed.match(/^#([\da-f])([\da-f])([\da-f])(?:[\da-f])?$/i);
+  if (shortHexMatch) {
+    return `#${shortHexMatch[1]}${shortHexMatch[2]}${shortHexMatch[3]}0`;
+  }
+
+  const hexMatch = trimmed.match(/^#([\da-f]{6})(?:[\da-f]{2})?$/i);
+  if (hexMatch) {
+    return `#${hexMatch[1]}00`;
+  }
+
+  const rgbMatch = trimmed.match(/^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,\s*(?:0|1|\d?\.\d+)\s*)?\)$/i);
+  if (rgbMatch) {
+    return `rgba(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]}, 0)`;
+  }
+
+  // 非常规 CSS 颜色无法可靠保留色相并透明化；保留原有透明兜底，避免意外遮挡背景图。
+  return 'rgba(0, 0, 0, 0)';
+};
+
 // 终端彩色文本使用清晰的 ANSI 调色板；浅色终端里 ANSI white 也要落到深灰，避免 ls 高亮发白发虚。
 // xterm theme background 始终设为透明，让选区 SVG 覆盖层可以从 canvas 后面透出来。
 const buildTerminalTheme = (settings: AppSettings) => {
   const isDarkTheme = settings.themeMode === 'dark';
-  const { foreground } = resolveTerminalColors(settings);
+  const { background, foreground } = resolveTerminalColors(settings);
 
   return {
-    // canvas 背景透明，实际背景色由外层 .terminal-workspace 提供，选区覆盖层才能从下方显示出来。
-    background: 'rgba(0, 0, 0, 0)',
+    // canvas 背景透明，但 RGB 取真实背景色，保证 top 等反色行在浅色模式下不会变成黑底黑字。
+    background: buildTransparentTerminalThemeBackground(background),
     foreground,
     cursor: settings.accentColor,
     // 终端选区使用用户指定的柔和紫色，xterm 原生层负责保持文字清晰可读。
@@ -626,6 +648,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     () => buildTerminalTheme(settings),
     [
       settings.accentColor,
+      settings.terminalBackground,
       settings.terminalForeground,
       settings.themeMode,
     ],
