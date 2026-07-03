@@ -1,13 +1,13 @@
 use std::{
     collections::HashMap,
-    sync::{atomic::AtomicBool, mpsc::Sender, Arc, Mutex},
+    sync::{atomic::AtomicBool, mpsc::Sender, Arc, Condvar, Mutex},
 };
 
 use crate::{
     agent_bridge::AgentBridgeRuntime,
     crypto::CryptoService,
     error::AppError,
-    models::{TerminalOutputChunk, TerminalSession},
+    models::{ConnectionProfile, TerminalOutputChunk, TerminalSession},
     storage::StorageService,
     webdav::WebDavService,
 };
@@ -33,7 +33,56 @@ pub struct RuntimeSession {
 
 #[derive(Debug, Clone)]
 pub struct TunnelRuntime {
+    /// 隧道所属连接 ID，用于同一 SSH 配置的多个本地监听共享会话池并在停止时清理空闲连接。
+    pub connection_id: String,
     pub stop_flag: Arc<AtomicBool>,
+    /// 保持共享会话池存活；最后一个隧道停止后由命令层关闭并移除池。
+    pub pool: Arc<TunnelSshPool>,
+}
+
+#[derive(Debug)]
+pub struct TunnelSshPool {
+    /// 隧道会话池只保存 SSH 连接配置快照；连接配置更新时必须关闭旧池，避免继续使用旧主机或旧凭据。
+    pub connection: ConnectionProfile,
+    /// 池状态受互斥锁保护，避免网页并发请求同时创建过多 SSH 握手。
+    pub inner: Mutex<TunnelSshPoolState>,
+    /// 并发请求在池满或正在建连时等待该条件变量，连接归还或新连接可用时唤醒。
+    pub available: Condvar,
+}
+
+#[derive(Debug)]
+pub struct TunnelSshPoolState {
+    /// 可承载隧道 channel 的 SSH session 列表；每个 session 可在非阻塞模式下跑多个 direct-tcpip channel。
+    pub sessions: Vec<TunnelSshPoolSession>,
+    /// 正在建立的 SSH session 数量，用于抑制冷启动时的握手风暴。
+    pub connecting_sessions: usize,
+    /// session ID 只在当前池内递增，用于 channel 结束后准确归还活跃计数。
+    pub next_session_id: u64,
+    /// 池关闭后不再接收新 channel，空闲 session 会立即释放。
+    pub closed: bool,
+}
+
+#[derive(Clone)]
+pub struct TunnelSshPoolSession {
+    /// 池内 session 标识，避免 Vec 下标变化导致归还到错误 session。
+    pub id: u64,
+    /// 真实 SSH session；ssh2 内部有锁，非阻塞模式下可安全跨线程轮询多个 channel。
+    pub session: Session,
+    /// 当前 session 上正在转发的 direct-tcpip channel 数量。
+    pub active_channels: usize,
+    /// 出现 transport 级错误后不再分配新 channel，等现有 channel 退出后移除。
+    pub failed: bool,
+}
+
+impl std::fmt::Debug for TunnelSshPoolSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TunnelSshPoolSession")
+            .field("id", &self.id)
+            .field("active_channels", &self.active_channels)
+            .field("failed", &self.failed)
+            .finish()
+    }
 }
 
 pub struct AuxiliarySshSession {
@@ -72,6 +121,8 @@ pub struct AppState {
     /// 首次建立辅助连接按连接 ID 串行化，防止文件列表和运行状态同时触发两次 SSH 握手。
     pub auxiliary_session_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     pub tunnels: Mutex<HashMap<String, TunnelRuntime>>,
+    /// SSH 隧道专用会话池按连接配置共享，避免每个网页请求都重新握手。
+    pub tunnel_ssh_pools: Mutex<HashMap<String, Arc<TunnelSshPool>>>,
 }
 
 impl AppState {
@@ -101,6 +152,7 @@ impl AppState {
             auxiliary_sessions: Mutex::new(HashMap::new()),
             auxiliary_session_locks: Mutex::new(HashMap::new()),
             tunnels: Mutex::new(HashMap::new()),
+            tunnel_ssh_pools: Mutex::new(HashMap::new()),
         })
     }
 }
