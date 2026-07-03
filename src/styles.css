@@ -2573,7 +2573,7 @@ select:disabled {
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: thin;
-  scrollbar-color: rgba(100, 116, 139, 0.65) rgba(148, 163, 184, 0.18);
+  scrollbar-color: rgba(203, 213, 225, 0.42) rgba(226, 232, 240, 0.2);
   overscroll-behavior: contain;
 }
 
@@ -2595,13 +2595,24 @@ select:disabled {
 .terminal-surface.is-horizontal-scroll::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 999px;
-  background: rgba(100, 116, 139, 0.68);
+  background-color: rgba(203, 213, 225, 0.42) !important;
+  background-clip: padding-box;
+}
+
+.terminal-surface.is-horizontal-scroll::-webkit-scrollbar-thumb:hover {
+  /* 滑块本体悬停和按下保持同一深色；不使用容器 hover，避免鼠标仍在终端内时一直保持深色。 */
+  background-color: rgba(15, 23, 42, 0.94) !important;
+  background-clip: padding-box;
+}
+
+.terminal-surface.is-horizontal-scroll::-webkit-scrollbar-thumb:active {
+  background-color: rgba(15, 23, 42, 0.94) !important;
   background-clip: padding-box;
 }
 
 .terminal-surface.is-horizontal-scroll::-webkit-scrollbar-track {
   border-radius: 999px;
-  background: rgba(148, 163, 184, 0.16);
+  background: rgba(226, 232, 240, 0.2);
 }
 
 /* 连接管理拖拽只从抓手启动，避免点击连接、编辑分组时误触拖动或被按钮区域吞掉 dragstart。 */
