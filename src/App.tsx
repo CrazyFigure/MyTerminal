@@ -1288,7 +1288,7 @@ function ConnectionFormModal() {
               </label>
               <label className="span-2">
                 <span>{t('fieldNote')}</span>
-                <textarea value={connectionDraft.note ?? ''} onChange={(event) => updateConnectionDraft('note', event.target.value)} rows={4} />
+                <textarea value={connectionDraft.note ?? ''} onChange={(event) => updateConnectionDraft('note', event.target.value)} rows={2} />
               </label>
             </div>
           </div>
@@ -1514,7 +1514,7 @@ function TunnelFormModal() {
 
   return (
     <div className="modal-backdrop">
-      <div className="modal card">
+      <div className="modal card tunnel-form-modal">
         <div className="modal-header">
           <div>
             {/* 隧道新增和编辑共用表单，草稿 id 决定当前标题和保存分支。 */}
@@ -2948,7 +2948,7 @@ function SettingsModal({
                     <p>{t('appearanceBehaviorDesc')}</p>
                   </div>
 
-                  <div className="form-grid">
+                  <div className="form-grid settings-single-column-grid">
                     <label>
                       <span>{t('fieldRuntimeRefreshInterval')}</span>
                       <input
@@ -2984,14 +2984,15 @@ function SettingsModal({
                         <option value="horizontal">{t('terminalLineWrapModeHorizontal')}</option>
                       </select>
                     </label>
-                    <label className="toggle-row settings-toggle-row">
-                      <span>{t('fieldTerminalMatchSelection')}</span>
+                    <div className="toggle-row settings-toggle-row">
+                      <span id="terminal-match-selection-label">{t('fieldTerminalMatchSelection')}</span>
                       <input
+                        aria-labelledby="terminal-match-selection-label"
                         checked={draftSettings.terminalMatchSelection ?? true}
                         type="checkbox"
                         onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalMatchSelection: event.target.checked }))}
                       />
-                    </label>
+                    </div>
                   </div>
                 </section>
 
@@ -3185,7 +3186,7 @@ function SettingsModal({
                   </div>
                   {actionFeedbackMap['save-agent-settings'] ? <div className={`sync-action-feedback ${actionFeedbackMap['save-agent-settings'].kind}`}>{actionFeedbackMap['save-agent-settings'].message}</div> : null}
 
-                  <div className="form-grid">
+                  <div className="form-grid settings-single-column-grid">
                     <label className="agent-toggle-field">
                       <span>{t('fieldAgentBridgeAutoExecute')}</span>
                       <input
