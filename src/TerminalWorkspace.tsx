@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from 'react';
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
-import { Terminal, type IBufferLine } from '@xterm/xterm';
+import { Terminal, type IBufferCell, type IBufferLine } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 
 import { backend } from './backend';
@@ -36,8 +36,24 @@ const terminalScrollbarReservePx = 18;
 const terminalDefaultScrollbackRows = 1000;
 // AI Agent 也保留历史，避免窗口 resize 后把启动警告等一次性输出彻底丢掉；滚轮另行拦截。
 const terminalAiAgentScrollbackRows = terminalDefaultScrollbackRows;
+// xterm 对 CLI 自绘颜色做逐格对比度兜底，覆盖浅色主题里的浅灰字和深色输入条上的默认黑字。
+const terminalMinimumContrastRatio = 7;
+// Claude Code 用浅蓝/浅紫表达菜单选中态，使用 AA 级别兜底增强可读性，同时避免高亮色被压成黑色。
+const terminalClaudeMinimumContrastRatio = 4.5;
 // 这些命令会以 TUI 方式反复重绘同一屏，必须固定在当前可视列宽内渲染。
 const terminalAiAgentCommandNames = new Set(['claude', 'claude-code', 'codex', 'opencode', 'qwen', 'gemini', 'aider', 'cursor-agent']);
+// Claude/Codex 会自绘输入光标，必须隐藏 xterm 光标，避免额外出现第二个光标。
+const terminalHideLocalCursorCommandNames = new Set(['claude', 'claude-code', 'codex', 'qwen', 'gemini', 'aider', 'cursor-agent']);
+// 浅色模式下 Codex 会用 ANSI black 或反色块表示输入区，映射成柔和底色避免黑块过重。
+const terminalSoftDarkBlockCommandNames = new Set(['codex']);
+const terminalLowerContrastCommandNames = new Set(['claude', 'claude-code']);
+// 这些 TUI 不会稳定自绘光标，输出重绘后也要把 xterm 光标恢复出来。
+const terminalForceShowLocalCursorCommandNames = new Set(['opencode']);
+const terminalSoftDarkBlockLightBackground = '#e0e7ff';
+// Claude 自绘输入框时 xterm 真实 cursor 可能停在状态栏；中文输入法候选框需要锚到可见输入行。
+const terminalImeAnchorCommandNames = new Set(['claude', 'claude-code']);
+// Codex 的真实 xterm cursor 会停在状态栏，需要用前端受控光标锚到输入行。
+const terminalControlledInputCursorCommandNames = new Set(['codex']);
 // 匹配高亮只绘制当前可查看区域，滚动时重算，避免为整个 scrollback 常驻创建大量 DOM。
 const terminalMatchHighlightOverscanRows = 24;
 // 单字符选择可能命中非常多内容，硬上限用于保护 WebView 内存和滚动帧率。
@@ -79,6 +95,17 @@ type TerminalHighlightStrip = {
 type TerminalHighlightPoint = {
   x: number;
   y: number;
+};
+
+type TerminalPromptAnchor = {
+  row: number;
+  column: number;
+  screenLeft: number;
+  screenTop: number;
+  containerLeft: number;
+  containerTop: number;
+  cellWidth: number;
+  cellHeight: number;
 };
 
 // 只有后端 PTY 已就绪的会话才接收键盘输入，connecting 阶段避免用户输入被前端或后端吞掉。
@@ -421,6 +448,44 @@ const isTerminalAiAgentSession = (session?: TerminalSession) => {
   return executableName ? terminalAiAgentCommandNames.has(executableName) : false;
 };
 
+// 部分 AI TUI 自绘输入光标，隐藏 xterm 光标可避免双光标；依赖终端光标的程序需排除。
+const shouldHideLocalTerminalCursor = (session?: TerminalSession) => {
+  const executableName = extractTerminalExecutableName(resolveLocalSessionCommandText(session));
+  return executableName ? terminalHideLocalCursorCommandNames.has(executableName) : false;
+};
+
+// 只在浅色 AI TUI 内软化黑色背景块，避免影响普通终端里 top/htop 等标准 ANSI 表现。
+const shouldUseSoftDarkBlocks = (session?: TerminalSession) => {
+  const executableName = extractTerminalExecutableName(resolveLocalSessionCommandText(session));
+  return executableName ? terminalSoftDarkBlockCommandNames.has(executableName) : false;
+};
+
+// Claude 菜单高亮依赖低对比浅色调，单独降低兜底强度以保留原始高亮语义。
+const resolveTerminalMinimumContrastRatio = (session?: TerminalSession) => {
+  const executableName = extractTerminalExecutableName(resolveLocalSessionCommandText(session));
+  return executableName && terminalLowerContrastCommandNames.has(executableName)
+    ? terminalClaudeMinimumContrastRatio
+    : terminalMinimumContrastRatio;
+};
+
+// 某些 TUI 依赖 xterm 自己的输入光标，不能只靠程序输出的光标状态。
+const shouldForceShowLocalTerminalCursor = (session?: TerminalSession) => {
+  const executableName = extractTerminalExecutableName(resolveLocalSessionCommandText(session));
+  return executableName ? terminalForceShowLocalCursorCommandNames.has(executableName) : false;
+};
+
+// 只有自绘输入框且 xterm cursor 与可见输入框分离的 CLI 需要重定位中文输入法锚点。
+const shouldAnchorTerminalImeToPrompt = (session?: TerminalSession) => {
+  const executableName = extractTerminalExecutableName(resolveLocalSessionCommandText(session));
+  return executableName ? terminalImeAnchorCommandNames.has(executableName) : false;
+};
+
+// Codex 输入框位置由 CLI 自绘，前端光标需要跟随该输入行，而不是跟随 xterm 内部状态栏 cursor。
+const shouldUseControlledInputCursor = (session?: TerminalSession) => {
+  const executableName = extractTerminalExecutableName(resolveLocalSessionCommandText(session));
+  return executableName ? terminalControlledInputCursorCommandNames.has(executableName) : false;
+};
+
 const terminalFontFallbacks = ['Cascadia Mono', 'Consolas', 'Courier New', 'monospace'];
 
 const quoteFontFamily = (fontFamily: string) => {
@@ -523,6 +588,47 @@ const defaultLightTerminalForeground = '#111111';
 const defaultDarkTerminalBackground = '#1e1e2e';
 const defaultDarkTerminalForeground = '#e0e0e0';
 
+type TerminalRgbColor = {
+  red: number;
+  green: number;
+  blue: number;
+};
+
+// 主题色来自颜色选择器时通常是 hex，这里额外兼容 rgb/rgba，供透明背景和光标对比度共用。
+const parseTerminalRgbColor = (value: string): TerminalRgbColor | undefined => {
+  const trimmed = value.trim();
+  const shortHexMatch = trimmed.match(/^#([\da-f])([\da-f])([\da-f])(?:[\da-f])?$/i);
+  if (shortHexMatch) {
+    return {
+      red: parseInt(shortHexMatch[1].repeat(2), 16),
+      green: parseInt(shortHexMatch[2].repeat(2), 16),
+      blue: parseInt(shortHexMatch[3].repeat(2), 16),
+    };
+  }
+
+  const hexMatch = trimmed.match(/^#([\da-f]{2})([\da-f]{2})([\da-f]{2})(?:[\da-f]{2})?$/i);
+  if (hexMatch) {
+    return {
+      red: parseInt(hexMatch[1], 16),
+      green: parseInt(hexMatch[2], 16),
+      blue: parseInt(hexMatch[3], 16),
+    };
+  }
+
+  const rgbMatch = trimmed.match(/^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,\s*(?:0|1|\d?\.\d+)\s*)?\)$/i);
+  if (!rgbMatch) {
+    return undefined;
+  }
+
+  const red = Number(rgbMatch[1]);
+  const green = Number(rgbMatch[2]);
+  const blue = Number(rgbMatch[3]);
+  if ([red, green, blue].some((channel) => !Number.isInteger(channel) || channel < 0 || channel > 255)) {
+    return undefined;
+  }
+  return { red, green, blue };
+};
+
 // 根据主题自动选择终端背景/前景色：如果用户仍为默认值则跟随主题切换，自定义过的保持不变。
 const resolveTerminalColors = (settings: AppSettings) => {
   const isDarkTheme = settings.themeMode === 'dark';
@@ -541,57 +647,158 @@ const resolveTerminalColors = (settings: AppSettings) => {
 
 // xterm 反色属性会用默认背景的 RGB 作为反色前景；背景仍需 alpha=0，避免遮住终端背景图和选区 SVG。
 const buildTransparentTerminalThemeBackground = (background: string) => {
-  const trimmed = background.trim();
-  const shortHexMatch = trimmed.match(/^#([\da-f])([\da-f])([\da-f])(?:[\da-f])?$/i);
-  if (shortHexMatch) {
-    return `#${shortHexMatch[1]}${shortHexMatch[2]}${shortHexMatch[3]}0`;
-  }
-
-  const hexMatch = trimmed.match(/^#([\da-f]{6})(?:[\da-f]{2})?$/i);
-  if (hexMatch) {
-    return `#${hexMatch[1]}00`;
-  }
-
-  const rgbMatch = trimmed.match(/^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,\s*(?:0|1|\d?\.\d+)\s*)?\)$/i);
-  if (rgbMatch) {
-    return `rgba(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]}, 0)`;
+  const rgb = parseTerminalRgbColor(background);
+  if (rgb) {
+    return `rgba(${rgb.red}, ${rgb.green}, ${rgb.blue}, 0)`;
   }
 
   // 非常规 CSS 颜色无法可靠保留色相并透明化；保留原有透明兜底，避免意外遮挡背景图。
   return 'rgba(0, 0, 0, 0)';
 };
 
+// 光标颜色只跟随应用主题：浅色模式黑色，深色模式白色，避免不同 TUI 之间切换时颜色跳变。
+const resolveTerminalCursorTheme = (isDarkTheme: boolean) =>
+  isDarkTheme
+    ? { cursor: '#f8fafc', cursorAccent: '#111827' }
+    : { cursor: '#111827', cursorAccent: '#f8fafc' };
+
+type TerminalThemeOptions = {
+  softenDarkBlocks?: boolean;
+};
+
 // 终端彩色文本使用清晰的 ANSI 调色板；浅色终端里 ANSI white 也要落到深灰，避免 ls 高亮发白发虚。
 // xterm theme background 始终设为透明，让选区 SVG 覆盖层可以从 canvas 后面透出来。
-const buildTerminalTheme = (settings: AppSettings) => {
+const buildTerminalTheme = (settings: AppSettings, options: TerminalThemeOptions = {}) => {
   const isDarkTheme = settings.themeMode === 'dark';
   const { background, foreground } = resolveTerminalColors(settings);
+  const cursorTheme = resolveTerminalCursorTheme(isDarkTheme);
+  const shouldSoftenDarkBlocks = !isDarkTheme && Boolean(options.softenDarkBlocks);
+  const resolvedForeground = shouldSoftenDarkBlocks ? terminalSoftDarkBlockLightBackground : foreground;
+  const resolvedAnsiBlack = shouldSoftenDarkBlocks ? terminalSoftDarkBlockLightBackground : (isDarkTheme ? '#020617' : '#111827');
 
   return {
     // canvas 背景透明，但 RGB 取真实背景色，保证 top 等反色行在浅色模式下不会变成黑底黑字。
     background: buildTransparentTerminalThemeBackground(background),
-    foreground,
-    cursor: settings.accentColor,
+    foreground: resolvedForeground,
+    cursor: cursorTheme.cursor,
+    cursorAccent: cursorTheme.cursorAccent,
     // 终端选区使用用户指定的柔和紫色，xterm 原生层负责保持文字清晰可读。
     selectionBackground: '#c7c7fb',
     selectionInactiveBackground: '#c7c7fb',
-    black: isDarkTheme ? '#020617' : '#374151',
-    red: '#dc2626',
-    green: '#059669',
-    yellow: isDarkTheme ? '#f59e0b' : '#b45309',
-    blue: '#2563eb',
-    magenta: '#9333ea',
-    cyan: '#0891b2',
+    black: resolvedAnsiBlack,
+    red: isDarkTheme ? '#dc2626' : '#b91c1c',
+    green: isDarkTheme ? '#059669' : '#047857',
+    yellow: isDarkTheme ? '#f59e0b' : '#92400e',
+    blue: isDarkTheme ? '#2563eb' : '#1d4ed8',
+    magenta: isDarkTheme ? '#9333ea' : '#7e22ce',
+    cyan: isDarkTheme ? '#0891b2' : '#0e7490',
     white: isDarkTheme ? '#e5e7eb' : '#374151',
-    brightBlack: isDarkTheme ? '#64748b' : '#6b7280',
-    brightRed: '#ef4444',
-    brightGreen: '#10b981',
-    brightYellow: isDarkTheme ? '#fbbf24' : '#d97706',
-    brightBlue: '#3b82f6',
-    brightMagenta: '#a855f7',
-    brightCyan: '#06b6d4',
+    brightBlack: isDarkTheme ? '#64748b' : '#4b5563',
+    brightRed: isDarkTheme ? '#ef4444' : '#991b1b',
+    brightGreen: isDarkTheme ? '#10b981' : '#065f46',
+    brightYellow: isDarkTheme ? '#fbbf24' : '#78350f',
+    brightBlue: isDarkTheme ? '#3b82f6' : '#1e40af',
+    brightMagenta: isDarkTheme ? '#a855f7' : '#6b21a8',
+    brightCyan: isDarkTheme ? '#06b6d4' : '#155e75',
     brightWhite: isDarkTheme ? '#f9fafb' : '#111827',
   };
+};
+
+type TerminalTheme = ReturnType<typeof buildTerminalTheme>;
+
+// 覆盖光标需要避开 Codex 深浅混合输入行；按单元格实际背景选择反差最大的黑/白色。
+const resolveTerminalPaletteRgbColor = (paletteIndex: number, theme: TerminalTheme) => {
+  const ansiPalette = [
+    theme.black,
+    theme.red,
+    theme.green,
+    theme.yellow,
+    theme.blue,
+    theme.magenta,
+    theme.cyan,
+    theme.white,
+    theme.brightBlack,
+    theme.brightRed,
+    theme.brightGreen,
+    theme.brightYellow,
+    theme.brightBlue,
+    theme.brightMagenta,
+    theme.brightCyan,
+    theme.brightWhite,
+  ];
+  const ansiColor = ansiPalette[paletteIndex];
+  if (ansiColor) {
+    return parseTerminalRgbColor(ansiColor);
+  }
+
+  if (paletteIndex >= 16 && paletteIndex <= 231) {
+    const colorIndex = paletteIndex - 16;
+    const redLevel = Math.floor(colorIndex / 36);
+    const greenLevel = Math.floor((colorIndex % 36) / 6);
+    const blueLevel = colorIndex % 6;
+    const resolveLevel = (level: number) => level === 0 ? 0 : 55 + level * 40;
+    return {
+      red: resolveLevel(redLevel),
+      green: resolveLevel(greenLevel),
+      blue: resolveLevel(blueLevel),
+    };
+  }
+
+  if (paletteIndex >= 232 && paletteIndex <= 255) {
+    const level = 8 + (paletteIndex - 232) * 10;
+    return { red: level, green: level, blue: level };
+  }
+
+  return undefined;
+};
+
+const resolveTerminalTrueColorRgb = (color: number): TerminalRgbColor => ({
+  red: (color >> 16) & 0xff,
+  green: (color >> 8) & 0xff,
+  blue: color & 0xff,
+});
+
+const resolveTerminalCellColorRgb = (
+  cell: IBufferCell,
+  colorType: 'foreground' | 'background',
+  theme: TerminalTheme,
+  fallbackBackground: string,
+) => {
+  const isForeground = colorType === 'foreground';
+  if (isForeground ? cell.isFgRGB() : cell.isBgRGB()) {
+    return resolveTerminalTrueColorRgb(isForeground ? cell.getFgColor() : cell.getBgColor());
+  }
+
+  if (isForeground ? cell.isFgPalette() : cell.isBgPalette()) {
+    return resolveTerminalPaletteRgbColor(isForeground ? cell.getFgColor() : cell.getBgColor(), theme);
+  }
+
+  return parseTerminalRgbColor(isForeground ? theme.foreground : fallbackBackground);
+};
+
+const resolveTerminalCellVisualBackgroundRgb = (
+  cell: IBufferCell | undefined,
+  theme: TerminalTheme,
+  fallbackBackground: string,
+) => {
+  if (!cell) {
+    return parseTerminalRgbColor(fallbackBackground);
+  }
+
+  // 反色单元格的视觉背景来自前景色；Codex 输入框经常用这种方式画当前编辑区。
+  return cell.isInverse()
+    ? resolveTerminalCellColorRgb(cell, 'foreground', theme, fallbackBackground)
+    : resolveTerminalCellColorRgb(cell, 'background', theme, fallbackBackground);
+};
+
+const resolveTerminalRelativeLuminance = (color: TerminalRgbColor) => {
+  const channels = [color.red, color.green, color.blue].map((channel) => {
+    const normalized = channel / 255;
+    return normalized <= 0.03928
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4;
+  });
+  return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
 };
 
 export function TerminalWorkspace({ session, settings, onTerminalData }: Props) {
@@ -605,12 +812,16 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   const terminalMatchHighlightFrameRef = useRef<number | null>(null);
   const terminalSelectionOverlayRef = useRef<SVGSVGElement | null>(null);
   const terminalSelectionOverlayFrameRef = useRef<number | null>(null);
+  const terminalControlledCursorRef = useRef<HTMLDivElement | null>(null);
+  const terminalControlledCursorFrameRef = useRef<number | null>(null);
   const terminalSelectionDragActiveRef = useRef(false);
   const terminalSelectionDragFrameRef = useRef<number | null>(null);
   const onTerminalDataRef = useRef(onTerminalData);
   const sessionRef = useRef<TerminalSession | undefined>(session);
   const resizeFrameRef = useRef<number | null>(null);
   const cursorFollowFrameRef = useRef<number | null>(null);
+  const terminalImeCompositionFrameRef = useRef<number | null>(null);
+  const terminalImeComposingRef = useRef(false);
   const lastLocalTerminalInputAtRef = useRef(0);
   const remoteTerminalSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const pendingFocusSessionIdRef = useRef<string | null>(session?.id ?? null);
@@ -619,21 +830,53 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     () => isTerminalAiAgentSession(session),
     [session?.kind, session?.localCommand, session?.title],
   );
+  const hideLocalCursorForSession = useMemo(
+    () => shouldHideLocalTerminalCursor(session),
+    [session?.kind, session?.localCommand, session?.title],
+  );
+  const useSoftDarkBlocksForSession = useMemo(
+    () => shouldUseSoftDarkBlocks(session),
+    [session?.kind, session?.localCommand, session?.title],
+  );
+  const minimumContrastRatioForSession = useMemo(
+    () => resolveTerminalMinimumContrastRatio(session),
+    [session?.kind, session?.localCommand, session?.title],
+  );
+  const forceShowLocalCursorForSession = useMemo(
+    () => shouldForceShowLocalTerminalCursor(session),
+    [session?.kind, session?.localCommand, session?.title],
+  );
+  const anchorImeToPromptForSession = useMemo(
+    () => shouldAnchorTerminalImeToPrompt(session),
+    [session?.kind, session?.localCommand, session?.title],
+  );
+  const useControlledInputCursorForSession = useMemo(
+    () => shouldUseControlledInputCursor(session),
+    [session?.kind, session?.localCommand, session?.title],
+  );
   const effectiveTerminalLineWrapMode: AppSettings['terminalLineWrapMode'] = isAiAgentTerminalSession ? 'wrap' : terminalLineWrapMode;
   const terminalScrollbackRows = isAiAgentTerminalSession ? terminalAiAgentScrollbackRows : terminalDefaultScrollbackRows;
   const terminalLineWrapModeRef = useRef<AppSettings['terminalLineWrapMode']>(effectiveTerminalLineWrapMode);
   const terminalScrollbackRowsRef = useRef(terminalScrollbackRows);
+  const terminalMinimumContrastRatioRef = useRef(minimumContrastRatioForSession);
   const isAiAgentTerminalSessionRef = useRef(isAiAgentTerminalSession);
+  const hideLocalCursorForSessionRef = useRef(hideLocalCursorForSession);
+  const forceShowLocalCursorForSessionRef = useRef(forceShowLocalCursorForSession);
+  const anchorImeToPromptForSessionRef = useRef(anchorImeToPromptForSession);
+  const useControlledInputCursorForSessionRef = useRef(useControlledInputCursorForSession);
   const terminalMatchSelectionRef = useRef(settings.terminalMatchSelection ?? true);
   const terminalTheme = useMemo(
-    () => buildTerminalTheme(settings),
+    () => buildTerminalTheme(settings, {
+      softenDarkBlocks: useSoftDarkBlocksForSession,
+    }),
     [
-      settings.accentColor,
       settings.terminalBackground,
       settings.terminalForeground,
       settings.themeMode,
+      useSoftDarkBlocksForSession,
     ],
   );
+  const terminalThemeRef = useRef(terminalTheme);
   const backgroundImageStyle = useMemo(
     () => buildTerminalBackgroundImageStyle(settings),
     [
@@ -647,6 +890,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     () => resolveTerminalColors(settings).background,
     [settings.terminalBackground, settings.themeMode],
   );
+  const terminalBackgroundColorRef = useRef(terminalBackgroundColor);
   const terminalFontFamily = useMemo(
     () => buildTerminalFontFamily(
       settings.shellLatinFontFamily ?? settings.shellFontFamily,
@@ -656,7 +900,14 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   );
   terminalLineWrapModeRef.current = effectiveTerminalLineWrapMode;
   terminalScrollbackRowsRef.current = terminalScrollbackRows;
+  terminalMinimumContrastRatioRef.current = minimumContrastRatioForSession;
+  terminalThemeRef.current = terminalTheme;
+  terminalBackgroundColorRef.current = terminalBackgroundColor;
   isAiAgentTerminalSessionRef.current = isAiAgentTerminalSession;
+  hideLocalCursorForSessionRef.current = hideLocalCursorForSession;
+  forceShowLocalCursorForSessionRef.current = forceShowLocalCursorForSession;
+  anchorImeToPromptForSessionRef.current = anchorImeToPromptForSession;
+  useControlledInputCursorForSessionRef.current = useControlledInputCursorForSession;
   terminalMatchSelectionRef.current = settings.terminalMatchSelection ?? true;
 
   useEffect(() => {
@@ -695,14 +946,184 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       return;
     }
 
-    if (isAiAgentTerminalSessionRef.current) {
+    if (hideLocalCursorForSessionRef.current) {
       terminal.write(terminalCursorHideSequence);
       return;
     }
 
-    if (restoreNormalCursor) {
+    // 部分 CLI 会通过 OSC 修改光标色；每次恢复光标时重新应用主题色，确保浅色黑、深色白。
+    terminal.options.theme = { ...terminalThemeRef.current };
+
+    if (restoreNormalCursor || forceShowLocalCursorForSessionRef.current) {
       terminal.write(terminalCursorShowSequence);
     }
+  };
+
+  // Claude/Codex 自绘输入框时，真实 xterm cursor 可能停在状态栏；用可见的 `› ...` 输入行作为锚点。
+  const resolveTerminalPromptAnchor = (): TerminalPromptAnchor | undefined => {
+    const terminal = terminalRef.current;
+    const container = containerRef.current;
+    const screen = terminal?.element?.querySelector<HTMLElement>('.xterm-screen');
+    if (!terminal || !container || !screen || terminal.cols <= 0 || terminal.rows <= 0) {
+      return undefined;
+    }
+
+    const buffer = terminal.buffer.active;
+    const firstVisibleRow = buffer.viewportY;
+    const lastVisibleRow = Math.min(buffer.length - 1, firstVisibleRow + terminal.rows - 1);
+    let promptRow = -1;
+    let promptColumn = 0;
+
+    for (let row = lastVisibleRow; row >= firstVisibleRow; row -= 1) {
+      const line = buffer.getLine(row);
+      const text = line?.translateToString(true) ?? '';
+      if (!line || !text.trimStart().startsWith('›')) {
+        continue;
+      }
+
+      promptRow = row;
+      promptColumn = Math.min(
+        terminal.cols - 1,
+        Math.max(0, measureTerminalBufferLineContentColumns(line, terminal.cols)),
+      );
+      break;
+    }
+
+    if (promptRow < firstVisibleRow) {
+      return undefined;
+    }
+
+    const screenRect = screen.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    const cellWidth = screenRect.width / terminal.cols;
+    const cellHeight = screenRect.height / terminal.rows;
+    const screenLeft = promptColumn * cellWidth;
+    const screenTop = (promptRow - firstVisibleRow) * cellHeight;
+    return {
+      row: promptRow,
+      column: promptColumn,
+      screenLeft,
+      screenTop,
+      containerLeft: screenRect.left - containerRect.left + container.scrollLeft + screenLeft,
+      containerTop: screenRect.top - containerRect.top + container.scrollTop + screenTop,
+      cellWidth,
+      cellHeight,
+    };
+  };
+
+  const resolveTerminalImePromptAnchor = () => {
+    const anchor = resolveTerminalPromptAnchor();
+    return anchor
+      ? {
+        left: anchor.screenLeft,
+        top: anchor.screenTop,
+        cellWidth: anchor.cellWidth,
+        cellHeight: anchor.cellHeight,
+      }
+      : undefined;
+  };
+
+  // 输入法候选框跟随隐藏 textarea；组合输入期间把 textarea 和 composition-view 同步到可见输入框。
+  const syncTerminalImeCompositionAnchor = () => {
+    if (!anchorImeToPromptForSessionRef.current || !terminalImeComposingRef.current) {
+      return;
+    }
+
+    const terminal = terminalRef.current;
+    const textarea = terminal?.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
+    const compositionView = terminal?.element?.querySelector<HTMLElement>('.composition-view');
+    const anchor = resolveTerminalImePromptAnchor();
+    if (!terminal || !textarea || !compositionView || !anchor) {
+      return;
+    }
+
+    const left = `${anchor.left}px`;
+    const top = `${anchor.top}px`;
+    const height = `${anchor.cellHeight}px`;
+    textarea.style.left = left;
+    textarea.style.top = top;
+    textarea.style.width = `${Math.max(anchor.cellWidth, compositionView.getBoundingClientRect().width || 1)}px`;
+    textarea.style.height = height;
+    textarea.style.lineHeight = height;
+    compositionView.style.left = left;
+    compositionView.style.top = top;
+    compositionView.style.height = height;
+    compositionView.style.lineHeight = height;
+    compositionView.style.fontFamily = terminal.options.fontFamily ?? terminalFontFamily;
+    compositionView.style.fontSize = `${terminal.options.fontSize ?? settings.shellFontSize}px`;
+  };
+
+  const scheduleTerminalImeCompositionAnchorSync = () => {
+    if (terminalImeCompositionFrameRef.current !== null) {
+      return;
+    }
+
+    terminalImeCompositionFrameRef.current = window.requestAnimationFrame(() => {
+      terminalImeCompositionFrameRef.current = null;
+      syncTerminalImeCompositionAnchor();
+    });
+  };
+
+  const hideTerminalControlledInputCursor = () => {
+    const cursor = terminalControlledCursorRef.current;
+    if (cursor) {
+      cursor.style.display = 'none';
+    }
+  };
+
+  // Codex 的真实 xterm cursor 会落在状态栏；这里只在可见输入行绘制一个不参与选区的前端光标。
+  const syncTerminalControlledInputCursor = () => {
+    const terminal = terminalRef.current;
+    const cursor = terminalControlledCursorRef.current;
+    if (
+      !terminal ||
+      !cursor ||
+      !useControlledInputCursorForSessionRef.current ||
+      !canAcceptTerminalInput(sessionRef.current)
+    ) {
+      hideTerminalControlledInputCursor();
+      return;
+    }
+
+    const anchor = resolveTerminalPromptAnchor();
+    if (!anchor) {
+      hideTerminalControlledInputCursor();
+      return;
+    }
+
+    const line = terminal.buffer.active.getLine(anchor.row);
+    const cursorCell = line?.getCell(Math.min(Math.max(anchor.column, 0), terminal.cols - 1));
+    const background = resolveTerminalCellVisualBackgroundRgb(
+      cursorCell,
+      terminalThemeRef.current,
+      terminalBackgroundColorRef.current,
+    );
+    const useDarkCursor = !background || resolveTerminalRelativeLuminance(background) > 0.45;
+    const cursorColor = useDarkCursor ? '#111827' : '#f8fafc';
+    const outlineColor = useDarkCursor ? 'rgba(248, 250, 252, 0.9)' : 'rgba(17, 24, 39, 0.9)';
+    const cursorWidth = Math.max(2, Math.min(3, anchor.cellWidth * 0.18));
+    const cursorHeight = Math.max(10, anchor.cellHeight * 0.78);
+    const container = containerRef.current;
+    const maxLeft = container ? Math.max(0, container.scrollWidth - cursorWidth) : anchor.containerLeft;
+
+    cursor.style.display = 'block';
+    cursor.style.left = `${Math.min(anchor.containerLeft, maxLeft)}px`;
+    cursor.style.top = `${anchor.containerTop + (anchor.cellHeight - cursorHeight) / 2}px`;
+    cursor.style.width = `${cursorWidth}px`;
+    cursor.style.height = `${cursorHeight}px`;
+    cursor.style.background = cursorColor;
+    cursor.style.boxShadow = `0 0 0 1px ${outlineColor}`;
+  };
+
+  const scheduleTerminalControlledInputCursorSync = () => {
+    if (terminalControlledCursorFrameRef.current !== null) {
+      return;
+    }
+
+    terminalControlledCursorFrameRef.current = window.requestAnimationFrame(() => {
+      terminalControlledCursorFrameRef.current = null;
+      syncTerminalControlledInputCursor();
+    });
   };
 
   // 右键菜单动作完成后延后一帧恢复焦点，确保 React 已经卸载菜单按钮。
@@ -1001,6 +1422,9 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     if (terminal.options.scrollback !== terminalScrollbackRowsRef.current) {
       terminal.options.scrollback = terminalScrollbackRowsRef.current;
     }
+    if (terminal.options.minimumContrastRatio !== terminalMinimumContrastRatioRef.current) {
+      terminal.options.minimumContrastRatio = terminalMinimumContrastRatioRef.current;
+    }
   };
 
   // 横向滚动模式只有在目标列数真正超过可视列数时才扩宽 xterm 元素，避免空会话也出现底部滑块。
@@ -1179,6 +1603,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
         scheduleTerminalCursorFollow();
         scheduleTerminalMatchHighlightRefresh();
         scheduleTerminalSelectionOverlaySync();
+        scheduleTerminalControlledInputCursorSync();
       });
       return;
     }
@@ -1188,6 +1613,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     scheduleTerminalCursorFollow();
     scheduleTerminalMatchHighlightRefresh();
     scheduleTerminalSelectionOverlaySync();
+    scheduleTerminalControlledInputCursorSync();
   };
 
   useEffect(() => {
@@ -1302,6 +1728,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     }
     scheduleTerminalCursorFollow();
     scheduleTerminalSelectionOverlaySync();
+    scheduleTerminalControlledInputCursorSync();
   };
 
   // 终端尺寸同步统一合并到动画帧，避免连续输出、拖拽窗口和输入回显造成密集 resize。
@@ -1332,6 +1759,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       fontSize: settings.shellFontSize,
       letterSpacing: 0,
       lineHeight: 1.18,
+      minimumContrastRatio: terminalMinimumContrastRatioRef.current,
       scrollback: terminalScrollbackRows,
       theme: terminalTheme,
     });
@@ -1347,20 +1775,49 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     selectionOverlay.classList.add('terminal-selection-rounded-overlay');
     containerRef.current.appendChild(selectionOverlay);
     terminalSelectionOverlayRef.current = selectionOverlay;
+    const controlledCursor = document.createElement('div');
+    controlledCursor.classList.add('terminal-controlled-input-cursor');
+    containerRef.current.appendChild(controlledCursor);
+    terminalControlledCursorRef.current = controlledCursor;
     terminal.attachCustomWheelEventHandler(handleAiAgentTerminalWheel);
+    const textarea = terminal.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
+    const handleTerminalCompositionStart = () => {
+      terminalImeComposingRef.current = true;
+      scheduleTerminalImeCompositionAnchorSync();
+    };
+    const handleTerminalCompositionUpdate = () => {
+      terminalImeComposingRef.current = true;
+      scheduleTerminalImeCompositionAnchorSync();
+    };
+    const handleTerminalCompositionEnd = () => {
+      terminalImeComposingRef.current = false;
+    };
+    textarea?.addEventListener('compositionstart', handleTerminalCompositionStart);
+    textarea?.addEventListener('compositionupdate', handleTerminalCompositionUpdate);
+    textarea?.addEventListener('compositionend', handleTerminalCompositionEnd);
 
     const dataDisposable = terminal.onData((data) => {
       if (canAcceptTerminalInput(sessionRef.current)) {
         markLocalTerminalInputForCursorFollow();
         onTerminalDataRef.current(data);
         scheduleTerminalCursorFollow();
+        scheduleTerminalControlledInputCursorSync();
       }
     });
-    const cursorMoveDisposable = terminal.onCursorMove(scheduleTerminalCursorFollow);
+    const cursorMoveDisposable = terminal.onCursorMove(() => {
+      scheduleTerminalCursorFollow();
+      scheduleTerminalControlledInputCursorSync();
+    });
+    const renderDisposable = terminal.onRender(() => {
+      scheduleTerminalImeCompositionAnchorSync();
+      scheduleTerminalControlledInputCursorSync();
+    });
     const scrollDisposable = terminal.onScroll(() => {
       scheduleTerminalSizeSync();
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
+      scheduleTerminalImeCompositionAnchorSync();
+      scheduleTerminalControlledInputCursorSync();
     });
     const selectionDisposable = terminal.onSelectionChange(() => {
       scheduleTerminalMatchHighlightRefresh();
@@ -1369,10 +1826,12 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     const resizeDisposable = terminal.onResize(() => {
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
+      scheduleTerminalControlledInputCursorSync();
     });
     const handleTerminalSurfaceScroll = () => {
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
+      scheduleTerminalControlledInputCursorSync();
     };
 
     terminalRef.current = terminal;
@@ -1390,9 +1849,13 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     return () => {
       dataDisposable.dispose();
       cursorMoveDisposable.dispose();
+      renderDisposable.dispose();
       scrollDisposable.dispose();
       selectionDisposable.dispose();
       resizeDisposable.dispose();
+      textarea?.removeEventListener('compositionstart', handleTerminalCompositionStart);
+      textarea?.removeEventListener('compositionupdate', handleTerminalCompositionUpdate);
+      textarea?.removeEventListener('compositionend', handleTerminalCompositionEnd);
       observer.disconnect();
       window.removeEventListener('resize', scheduleTerminalSizeSync);
       window.removeEventListener('mouseup', stopTerminalSelectionDragSync, true);
@@ -1419,12 +1882,24 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
         window.cancelAnimationFrame(terminalSelectionDragFrameRef.current);
         terminalSelectionDragFrameRef.current = null;
       }
+      if (terminalImeCompositionFrameRef.current !== null) {
+        window.cancelAnimationFrame(terminalImeCompositionFrameRef.current);
+        terminalImeCompositionFrameRef.current = null;
+      }
+      if (terminalControlledCursorFrameRef.current !== null) {
+        window.cancelAnimationFrame(terminalControlledCursorFrameRef.current);
+        terminalControlledCursorFrameRef.current = null;
+      }
+      terminalImeComposingRef.current = false;
       terminalSelectionDragActiveRef.current = false;
       clearTerminalMatchOverlay();
+      hideTerminalControlledInputCursor();
       matchOverlay.remove();
       selectionOverlay.remove();
+      controlledCursor.remove();
       terminalMatchOverlayRef.current = null;
       terminalSelectionOverlayRef.current = null;
+      terminalControlledCursorRef.current = null;
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
@@ -1450,6 +1925,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
           scheduleTerminalCursorFollow();
           scheduleTerminalMatchHighlightRefresh();
           scheduleTerminalSelectionOverlaySync();
+          scheduleTerminalImeCompositionAnchorSync();
+          scheduleTerminalControlledInputCursorSync();
         });
       }
     };
@@ -1467,8 +1944,9 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     terminal.options.disableStdin = !canAcceptTerminalInput(session);
     applyTerminalSessionBehaviorOptions();
     syncLocalCursorVisibility();
+    scheduleTerminalControlledInputCursorSync();
     window.requestAnimationFrame(focusPendingTerminalInput);
-  }, [session?.id, session?.status, terminalScrollbackRows]);
+  }, [minimumContrastRatioForSession, session?.id, session?.status, terminalScrollbackRows, useControlledInputCursorForSession]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -1487,6 +1965,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       syncTerminalSizeToRemote();
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
+      scheduleTerminalControlledInputCursorSync();
     });
   }, [settings.shellFontSize, terminalFontFamily, terminalTheme]);
 
@@ -1508,12 +1987,15 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     pendingFocusSessionIdRef.current = session?.id ?? null;
     // 会话切换后重放缓存属于历史画面恢复，不能继承上一会话的本地输入跟随状态。
     lastLocalTerminalInputAtRef.current = 0;
+    terminalImeComposingRef.current = false;
+    hideTerminalControlledInputCursor();
     replayCurrentSessionOutput();
     // 新会话打开时立刻把当前 xterm 尺寸推给远端 PTY，避免默认 120 列和实际界面列宽不一致。
     remoteTerminalSizeRef.current = null;
     window.requestAnimationFrame(() => {
       syncTerminalSizeToRemote();
       focusPendingTerminalInput();
+      scheduleTerminalControlledInputCursorSync();
     });
   }, [session?.id]);
 
@@ -1530,6 +2012,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     window.requestAnimationFrame(() => {
       syncTerminalSizeToRemote();
       replayCurrentSessionOutput();
+      scheduleTerminalControlledInputCursorSync();
     });
   }, [effectiveTerminalLineWrapMode]);
 

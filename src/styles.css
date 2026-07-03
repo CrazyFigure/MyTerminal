@@ -546,6 +546,28 @@ select:disabled {
   z-index: 2;
 }
 
+/* Codex 输入区使用独立细光标，放在字符层上方但不接管鼠标事件和选区背景。 */
+.terminal-controlled-input-cursor {
+  position: absolute;
+  z-index: 4;
+  display: none;
+  pointer-events: none;
+  border-radius: 1px;
+  animation: terminal-controlled-input-cursor-blink 1s steps(2, start) infinite;
+}
+
+@keyframes terminal-controlled-input-cursor-blink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+
+  46%,
+  100% {
+    opacity: 0;
+  }
+}
+
 .terminal-match-rounded-shape,
 .terminal-selection-rounded-shape {
   shape-rendering: geometricPrecision;
