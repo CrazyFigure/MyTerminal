@@ -435,11 +435,23 @@ select:disabled {
 }
 
 .session-strip {
+  align-self: stretch;
   flex: 1 1 auto;
   gap: 4px;
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
+  align-items: center;
   justify-content: flex-start;
+}
+
+.session-tab-scroll-shell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 34px;
+  min-width: 0;
 }
 
 .tab-list {
@@ -752,8 +764,8 @@ select:disabled {
 .session-tab {
   /* 终端会话标签使用与工具栏按钮一致的小圆角，并压缩横向占位以容纳更多连接。 */
   gap: 3px;
-  min-height: 24px;
-  padding: 2px 5px;
+  min-height: 30px;
+  padding: 4px 5px;
   border-radius: 7px;
   font-size: 0.76rem;
   position: relative;
@@ -795,11 +807,46 @@ select:disabled {
   position: relative;
   flex: 1 1 auto;
   flex-wrap: nowrap;
+  align-items: center;
   overflow-x: auto;
   overflow-y: hidden;
   padding-left: 4px;
   padding-right: 4px;
-  scrollbar-width: thin;
+  scrollbar-width: none;
+}
+
+/* 原生横向滚动条在 WebView2 中会保持系统高度，这里隐藏后改用下方自绘细滑块。 */
+.session-tab-list::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.session-tab-scrollbar {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  /* 自绘滚动条向下贴近工具栏白色边框底边，不参与高度计算，保证 tab 仍在中间。 */
+  bottom: -3px;
+  display: flex;
+  align-items: flex-end;
+  height: 7px;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.session-tab-scrollbar-thumb {
+  height: 3px;
+  border-radius: 999px;
+  background-color: rgba(100, 116, 139, 0.46);
+  transition: background-color 120ms ease, height 120ms ease;
+  will-change: transform;
+}
+
+.session-tab-scrollbar:hover .session-tab-scrollbar-thumb {
+  height: 6px;
+  background-color: rgba(100, 116, 139, 0.58);
 }
 
 .session-tab-list.is-drop-end::after {
