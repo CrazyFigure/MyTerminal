@@ -2275,7 +2275,7 @@ fn flush_pending_shell_input(
 }
 
 #[cfg(windows)]
-fn ssh_socket_error_hint(session: &Session) -> String {
+fn ssh_socket_error_code(session: &Session) -> Option<libc::c_int> {
     use std::os::windows::io::AsRawSocket;
 
     // Windows 版 libc 未公开 WinSock 的 SOL_SOCKET/SO_ERROR 常量；这里使用 WinSock 固定值读取底层 socket 状态。
@@ -2295,14 +2295,14 @@ fn ssh_socket_error_hint(session: &Session) -> String {
     };
 
     if result == 0 {
-        format!("so_error={error_code}")
+        Some(error_code)
     } else {
-        format!("so_error_unavailable={}", std::io::Error::last_os_error())
+        None
     }
 }
 
 #[cfg(unix)]
-fn ssh_socket_error_hint(session: &Session) -> String {
+fn ssh_socket_error_code(session: &Session) -> Option<libc::c_int> {
     use std::os::fd::AsRawFd;
 
     let mut error_code = 0 as libc::c_int;
@@ -2318,15 +2318,22 @@ fn ssh_socket_error_hint(session: &Session) -> String {
     };
 
     if result == 0 {
-        format!("so_error={error_code}")
+        Some(error_code)
     } else {
-        format!("so_error_unavailable={}", std::io::Error::last_os_error())
+        None
     }
 }
 
 #[cfg(not(any(unix, windows)))]
+fn ssh_socket_error_code(_session: &Session) -> Option<libc::c_int> {
+    None
+}
+
 fn ssh_socket_error_hint(_session: &Session) -> String {
-    "so_error=unsupported_platform".into()
+    match ssh_socket_error_code(_session) {
+        Some(error_code) => format!("so_error={error_code}"),
+        None => format!("so_error_unavailable={}", std::io::Error::last_os_error()),
+    }
 }
 
 fn spawn_shell_thread(
@@ -2438,28 +2445,41 @@ fn spawn_shell_thread(
                             ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
                         ) =>
                     {
+                        transient_read_errors = 0;
+                        transient_error_started_at = None;
                         break;
                     }
                     Err(error) if is_transient_transport_read_error(&error) && !channel.eof() => {
-                        read_transport_error = true;
                         transient_read_errors += 1;
+                        let socket_error_code = ssh_socket_error_code(&ssh_session);
+                        // so_error=0 时通常只是 libssh2 非阻塞读暂无数据，按 WouldBlock 处理，避免增加输入延迟。
+                        if socket_error_code == Some(0) {
+                            transient_read_errors = 0;
+                            transient_error_started_at = None;
+                            break;
+                        }
+
+                        read_transport_error = true;
                         let started_at =
                             transient_error_started_at.get_or_insert_with(Instant::now);
-                        // 前几次错误时打印详细诊断，包含 socket SO_ERROR，帮助确认是否为连接重置/超时。
-                        if transient_read_errors <= 3 || transient_read_errors % 2000 == 0 {
-                            let dirs = ssh_session.block_directions();
-                            let socket_hint = ssh_socket_error_hint(&ssh_session);
-                            eprintln!(
-                                "[SSH-DIAG] transport read error #{transient_read_errors}: error={error}, block_directions={dirs:?}, pending_input_len={}, {socket_hint}",
-                                pending_input.len(),
-                            );
-                        }
-                        // transport read 表示底层 receive 已失败；此轮不要继续写入，否则 write 会再次 drain incoming flow 并放大错误。
-                        if started_at.elapsed() > Duration::from_secs(30) {
-                            eprintln!("[SSH-DIAG] transient read error limit hit: count={transient_read_errors}, elapsed={:?}, last_error={error:?}, {}", started_at.elapsed(), ssh_socket_error_hint(&ssh_session));
+                        let socket_hint = socket_error_code
+                            .map(|code| format!("so_error={code}"))
+                            .unwrap_or_else(|| ssh_socket_error_hint(&ssh_session));
+                        // 非 0 socket 错误代表底层连接已异常，直接结束；无法读取 socket 状态时仍给短暂重试窗口。
+                        if socket_error_code.is_some()
+                            || started_at.elapsed() > Duration::from_secs(5)
+                        {
+                            eprintln!("[SSH-DIAG] transport read failed: count={transient_read_errors}, elapsed={:?}, last_error={error:?}, {socket_hint}", started_at.elapsed());
                             queue_session_status(&output_queue, &app_handle, &session_id, "error");
                             let _ = channel.close();
                             return;
+                        }
+                        if transient_read_errors <= 3 || transient_read_errors % 200 == 0 {
+                            let dirs = ssh_session.block_directions();
+                            eprintln!(
+                                "[SSH-DIAG] transport read retry #{transient_read_errors}: error={error}, block_directions={dirs:?}, pending_input_len={}, {socket_hint}",
+                                pending_input.len(),
+                            );
                         }
                         break;
                     }
