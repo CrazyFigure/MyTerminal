@@ -1543,8 +1543,8 @@ select:disabled {
 }
 
 .modal-wide.local-terminal-modal {
-  /* 本地终端是启动器弹窗，宽高都比连接管理更收敛，避免打开时压住整块工作区。 */
-  --modal-fixed-height: min(560px, calc(100vh - 48px));
+  /* 本地终端同时承载启动、命令和历史列表，适当增高以减少内部滚动。 */
+  --modal-fixed-height: min(640px, calc(100vh - 48px));
   width: min(860px, 100%);
 }
 
@@ -1603,6 +1603,7 @@ select:disabled {
 
 .local-terminal-command-list {
   max-height: 126px;
+  gap: 4px;
 }
 
 .local-terminal-command-row,
@@ -1617,6 +1618,7 @@ select:disabled {
 
 .local-terminal-command-row {
   grid-template-columns: minmax(80px, 0.7fr) minmax(0, 1fr) auto;
+  padding: 5px 6px;
 }
 
 .local-terminal-command-row span,
@@ -1939,6 +1941,11 @@ select:disabled {
   background: var(--app-item-bg);
 }
 
+/* 设置项彼此没有强关联时强制单列，避免双列表单暗示它们成组联动。 */
+.settings-single-column-grid {
+  grid-template-columns: 1fr;
+}
+
 .modal-backdrop {
   /* 弹窗固定高度只跟窗口高度联动，禁止内容多少改变弹窗外框尺寸。 */
   --modal-fixed-height: min(720px, calc(100vh - 48px));
@@ -1968,6 +1975,8 @@ select:disabled {
 
 /* 弹窗高度由窗口尺寸决定，连接表单把正文区独立滚动，避免 tab 或跳板机数量变化导致外框跳动。 */
 .connection-form-modal {
+  /* SSH 连接表单内容可滚动，外框略低于通用弹窗，减少新建时的压迫感。 */
+  --modal-fixed-height: min(680px, calc(100vh - 48px));
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto auto;
   overflow: hidden;
@@ -1993,6 +2002,11 @@ select:disabled {
 
 .connection-form-feedback:empty {
   display: none;
+}
+
+.tunnel-form-modal {
+  /* SSH 隧道字段较少，单独压缩高度，避免沿用通用表单的大外框。 */
+  --modal-fixed-height: min(360px, calc(100vh - 48px));
 }
 
 .modal-wide {
