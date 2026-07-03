@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     env, fs,
     io::{ErrorKind, Read, Write},
     net::{IpAddr, Shutdown, TcpListener, TcpStream, ToSocketAddrs},
@@ -8,7 +8,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, RecvTimeoutError, TryRecvError},
-        Arc, MutexGuard,
+        Arc, Mutex, MutexGuard,
     },
     thread,
     time::{Duration, Instant},
@@ -34,7 +34,10 @@ use crate::{
         TerminalOutputChunk, TerminalSession, TunnelOpenRequest, TunnelRecord, TunnelUpdateRequest,
         UpdateCheckResult, WebDavSettings,
     },
-    state::{AppState, AuxiliarySshSession, RuntimeSession, SessionControl, TunnelRuntime},
+    state::{
+        AppState, AuxiliarySshSession, RuntimeSession, SessionControl, TunnelRuntime,
+        TunnelSshPool, TunnelSshPoolSession, TunnelSshPoolState,
+    },
 };
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +110,20 @@ const SSH_SHELL_WRITE_BUDGET: Duration = Duration::from_millis(8);
 const SSH_SHELL_IDLE_WAIT: Duration = Duration::from_millis(5);
 // libssh2 暂时不可写或 transport 抖动时的轻量退避，避免瞬时错误下空转烧 CPU。
 const SSH_SHELL_RETRY_WAIT: Duration = Duration::from_millis(1);
+// 每条 SSH session 上允许并发的隧道 channel 数；低于 OpenSSH 常见 MaxSessions 默认值，保留余量给服务端。
+const TUNNEL_CHANNELS_PER_SSH_SESSION: usize = 8;
+// 同一连接配置最多保留的隧道 SSH session 数，网页高并发时超过单 session channel 上限再扩容。
+const TUNNEL_MAX_SSH_SESSIONS_PER_CONNECTION: usize = 4;
+// 并发峰值过去后最多保留的空闲 session 数，兼顾后续访问速度和远端资源占用。
+const TUNNEL_MAX_IDLE_SSH_SESSIONS_PER_CONNECTION: usize = 2;
+// 隧道池等待新 session 或空闲 channel 的短周期；停止隧道时最多等待一个周期即可退出。
+const TUNNEL_POOL_WAIT: Duration = Duration::from_millis(50);
+// 隧道转发采用较大块读写，避免 8KB 小块和固定 sleep 把吞吐人为压低。
+const TUNNEL_TRANSFER_BUFFER_BYTES: usize = 64 * 1024;
+// 单方向待写缓冲上限，给浏览器突发请求留余量，同时避免远端慢读时无界占内存。
+const TUNNEL_MAX_PENDING_BYTES: usize = 2 * 1024 * 1024;
+// 非阻塞转发只有在本轮没有任何进展时短暂退避，不能像旧实现那样每轮固定延迟。
+const TUNNEL_TRANSFER_IDLE_WAIT: Duration = Duration::from_millis(1);
 
 #[cfg(windows)]
 const DEFAULT_LOCAL_SHELL_CANDIDATES: &[&str] = &[
@@ -137,6 +154,15 @@ fn lock_tunnels<'a>(
         .tunnels
         .lock()
         .map_err(|_| AppError::Validation("tunnel registry is unavailable".into()))
+}
+
+fn lock_tunnel_ssh_pools<'a>(
+    state: &'a AppState,
+) -> Result<MutexGuard<'a, std::collections::HashMap<String, Arc<TunnelSshPool>>>, AppError> {
+    state
+        .tunnel_ssh_pools
+        .lock()
+        .map_err(|_| AppError::Validation("tunnel ssh pool registry is unavailable".into()))
 }
 
 fn lock_auxiliary_sessions<'a>(
@@ -637,6 +663,20 @@ fn is_transient_transport_read_error(error: &std::io::Error) -> bool {
         || message.contains("eagain")
         || message.contains("temporarily unavailable")
         || message.contains("try again")
+        || message.contains("socket send")
+        || message.contains("socket write")
+}
+
+fn is_transient_ssh_error(error: &impl std::fmt::Display) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    // direct-tcpip 非阻塞建连和 EOF 发送可能把 EAGAIN 包装成 ssh2::Error；这些都应继续轮询。
+    message.contains("would block")
+        || message.contains("eagain")
+        || message.contains("session(-37)")
+        || message.contains("temporarily unavailable")
+        || message.contains("try again")
+        || message.contains("transport read")
+        || message.contains("transport write")
         || message.contains("socket send")
         || message.contains("socket write")
 }
@@ -1424,18 +1464,251 @@ fn establish_ssh_session(
     Ok(session)
 }
 
-fn proxy_tcp_stream(mut left: TcpStream, mut right: Channel) -> Result<(), AppError> {
-    let mut left_to_right = left.try_clone()?;
-    let mut right_to_left = right.clone();
-    let copy_to_right = thread::spawn(move || {
-        let _ = std::io::copy(&mut left_to_right, &mut right);
-        let _ = left_to_right.shutdown(Shutdown::Both);
-    });
+#[derive(Default)]
+struct TunnelPendingBytes {
+    // 非阻塞写可能只能消费部分数据，剩余字节必须排队，避免网页响应或请求体被截断。
+    bytes: VecDeque<u8>,
+}
 
-    let _ = std::io::copy(&mut right_to_left, &mut left);
-    let _ = left.shutdown(Shutdown::Both);
-    let _ = copy_to_right.join();
-    Ok(())
+impl TunnelPendingBytes {
+    fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    fn push(&mut self, data: &[u8]) {
+        self.bytes.extend(data.iter().copied());
+    }
+
+    fn front_chunk(&self, max_len: usize) -> &[u8] {
+        let (front, back) = self.bytes.as_slices();
+        let chunk = if front.is_empty() { back } else { front };
+        &chunk[..chunk.len().min(max_len)]
+    }
+
+    fn consume(&mut self, amount: usize) {
+        let amount = amount.min(self.bytes.len());
+        if amount > 0 {
+            let _ = self.bytes.drain(..amount);
+        }
+    }
+}
+
+fn is_transient_socket_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        ErrorKind::WouldBlock | ErrorKind::Interrupted | ErrorKind::TimedOut
+    )
+}
+
+fn open_direct_tcpip_channel(
+    session: &Session,
+    remote_host: &str,
+    remote_port: u16,
+    stop_flag: &AtomicBool,
+) -> Result<Option<Channel>, AppError> {
+    let started_at = Instant::now();
+    loop {
+        if stop_flag.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+
+        match session.channel_direct_tcpip(remote_host, remote_port, None) {
+            Ok(channel) => return Ok(Some(channel)),
+            Err(error) if is_transient_ssh_error(&error) => {
+                if started_at.elapsed() > SSH_IO_TIMEOUT {
+                    return Err(AppError::Ssh(format!(
+                        "tunnel channel open timed out for {remote_host}:{remote_port}"
+                    )));
+                }
+                thread::sleep(TUNNEL_TRANSFER_IDLE_WAIT);
+            }
+            Err(error) => return Err(ssh_error(error)),
+        }
+    }
+}
+
+fn close_tunnel_channel(mut channel: Channel) {
+    // 非阻塞 close 可能短暂 EAGAIN；短重试能让服务端尽快回收 channel，又不拖住隧道线程。
+    for _ in 0..8 {
+        match channel.close() {
+            Ok(()) => break,
+            Err(error) if is_transient_ssh_error(&error) => {
+                thread::sleep(TUNNEL_TRANSFER_IDLE_WAIT);
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+fn proxy_tcp_stream(
+    mut local_stream: TcpStream,
+    mut channel: Channel,
+    stop_flag: Arc<AtomicBool>,
+) -> bool {
+    let _ = local_stream.set_nodelay(true);
+    let _ = local_stream.set_nonblocking(true);
+
+    let mut to_remote = TunnelPendingBytes::default();
+    let mut to_local = TunnelPendingBytes::default();
+    let mut local_buffer = vec![0_u8; TUNNEL_TRANSFER_BUFFER_BYTES];
+    let mut remote_buffer = vec![0_u8; TUNNEL_TRANSFER_BUFFER_BYTES];
+    let mut local_read_closed = false;
+    let mut remote_read_closed = false;
+    let mut remote_eof_sent = false;
+    let mut local_write_shutdown = false;
+    let mut session_reusable = true;
+
+    while !stop_flag.load(Ordering::Relaxed) {
+        let mut made_progress = false;
+        let mut wrote_remote = false;
+
+        while !to_remote.is_empty() {
+            let chunk = to_remote.front_chunk(TUNNEL_TRANSFER_BUFFER_BYTES);
+            let chunk_len = chunk.len();
+            match channel.write(chunk) {
+                Ok(0) => break,
+                Ok(size) => {
+                    to_remote.consume(size.min(chunk_len));
+                    made_progress = true;
+                    wrote_remote = true;
+                }
+                Err(error) if is_transient_channel_write_error(&error) => break,
+                Err(_) => {
+                    session_reusable = false;
+                    break;
+                }
+            }
+        }
+
+        if !session_reusable {
+            break;
+        }
+
+        if wrote_remote {
+            match channel.flush() {
+                Ok(()) => {}
+                Err(error) if is_transient_channel_write_error(&error) => {}
+                Err(_) => {
+                    session_reusable = false;
+                    break;
+                }
+            }
+        }
+
+        if local_read_closed && to_remote.is_empty() && !remote_eof_sent {
+            match channel.send_eof() {
+                Ok(()) => {
+                    remote_eof_sent = true;
+                    made_progress = true;
+                }
+                Err(error) if is_transient_ssh_error(&error) => {}
+                Err(_) => {
+                    session_reusable = false;
+                    break;
+                }
+            }
+        }
+
+        while !to_local.is_empty() {
+            let chunk = to_local.front_chunk(TUNNEL_TRANSFER_BUFFER_BYTES);
+            let chunk_len = chunk.len();
+            match local_stream.write(chunk) {
+                Ok(0) => break,
+                Ok(size) => {
+                    to_local.consume(size.min(chunk_len));
+                    made_progress = true;
+                }
+                Err(error) if is_transient_socket_error(&error) => break,
+                Err(_) => {
+                    // 本地浏览器提前关闭连接属于正常网页行为，不应丢弃可复用 SSH session。
+                    local_read_closed = true;
+                    to_local.consume(to_local.len());
+                    break;
+                }
+            }
+        }
+
+        if remote_read_closed && to_local.is_empty() && !local_write_shutdown {
+            let _ = local_stream.shutdown(Shutdown::Write);
+            local_write_shutdown = true;
+            made_progress = true;
+        }
+
+        while !local_read_closed && to_remote.len() < TUNNEL_MAX_PENDING_BYTES {
+            let remaining_capacity = TUNNEL_MAX_PENDING_BYTES - to_remote.len();
+            let read_len = local_buffer.len().min(remaining_capacity);
+            match local_stream.read(&mut local_buffer[..read_len]) {
+                Ok(0) => {
+                    local_read_closed = true;
+                    made_progress = true;
+                    break;
+                }
+                Ok(size) => {
+                    to_remote.push(&local_buffer[..size]);
+                    made_progress = true;
+                    if size < read_len {
+                        break;
+                    }
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) if is_transient_socket_error(&error) => break,
+                Err(_) => {
+                    // 本地端异常断开时尽快给远端 EOF，让 HTTP keep-alive 连接能释放。
+                    local_read_closed = true;
+                    made_progress = true;
+                    break;
+                }
+            }
+        }
+
+        while !remote_read_closed && to_local.len() < TUNNEL_MAX_PENDING_BYTES {
+            let remaining_capacity = TUNNEL_MAX_PENDING_BYTES - to_local.len();
+            let read_len = remote_buffer.len().min(remaining_capacity);
+            match channel.read(&mut remote_buffer[..read_len]) {
+                Ok(0) => {
+                    if channel.eof() {
+                        remote_read_closed = true;
+                        made_progress = true;
+                    }
+                    break;
+                }
+                Ok(size) => {
+                    to_local.push(&remote_buffer[..size]);
+                    made_progress = true;
+                    if size < read_len {
+                        break;
+                    }
+                }
+                Err(error) if is_transient_channel_write_error(&error) => break,
+                Err(_) => {
+                    session_reusable = false;
+                    break;
+                }
+            }
+        }
+
+        if !session_reusable {
+            break;
+        }
+
+        if local_read_closed && remote_read_closed && to_remote.is_empty() && to_local.is_empty() {
+            break;
+        }
+
+        if !made_progress {
+            thread::sleep(TUNNEL_TRANSFER_IDLE_WAIT);
+        }
+    }
+
+    if stop_flag.load(Ordering::Relaxed) {
+        session_reusable = false;
+    }
+    close_tunnel_channel(channel);
+    session_reusable
 }
 
 fn spawn_jump_bridge(
@@ -1451,6 +1724,9 @@ fn spawn_jump_bridge(
     let thread_stop_flag = Arc::clone(&stop_flag);
 
     let handle = thread::spawn(move || {
+        // 跳板桥只服务后续 SSH TCP 流；切到非阻塞后，双向转发不会因单侧 read 卡住同一 session 的写入。
+        session.set_blocking(false);
+        session.set_timeout(0);
         while !thread_stop_flag.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((local_stream, _)) => {
@@ -1458,13 +1734,27 @@ fn spawn_jump_bridge(
                         let _ = local_stream.shutdown(Shutdown::Both);
                         break;
                     }
-                    let Ok(channel) = session.channel_direct_tcpip(&target_host, target_port, None)
-                    else {
-                        let _ = local_stream.shutdown(Shutdown::Both);
-                        continue;
+                    let channel = match open_direct_tcpip_channel(
+                        &session,
+                        &target_host,
+                        target_port,
+                        &thread_stop_flag,
+                    ) {
+                        Ok(Some(channel)) => channel,
+                        Ok(None) => {
+                            let _ = local_stream.shutdown(Shutdown::Both);
+                            break;
+                        }
+                        Err(_) => {
+                            let _ = local_stream.shutdown(Shutdown::Both);
+                            continue;
+                        }
                     };
+                    let bridge_stop = Arc::clone(&thread_stop_flag);
                     thread::spawn(move || {
-                        let _ = proxy_tcp_stream(local_stream, channel);
+                        if !proxy_tcp_stream(local_stream, channel, bridge_stop) {
+                            // 单条桥接流失败只影响当前连接；外层 listener 继续接收后续重连。
+                        }
                     });
                 }
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
@@ -1567,6 +1857,255 @@ pub(crate) fn connect_ssh(connection: &ConnectionProfile) -> Result<Session, App
         Err(error) if is_key_exchange_error(&error) => connect_ssh_once(connection, true),
         Err(error) => Err(error),
     }
+}
+
+struct TunnelSessionLease {
+    // lease 归还时需要回到原池更新 active channel 计数。
+    pool: Arc<TunnelSshPool>,
+    // 池内 session ID，避免 Vec 扩缩容后使用下标归还错误。
+    session_id: u64,
+    // ssh2::Session 是同一底层连接的句柄克隆；channel 结束后由 Drop 自动归还计数。
+    session: Session,
+    // transport 级错误会污染整个 SSH session，此时归还时应从池里剔除。
+    reusable: bool,
+}
+
+impl TunnelSessionLease {
+    fn session(&self) -> &Session {
+        &self.session
+    }
+
+    fn discard(&mut self) {
+        self.reusable = false;
+    }
+}
+
+impl Drop for TunnelSessionLease {
+    fn drop(&mut self) {
+        self.pool.release_session(self.session_id, self.reusable);
+    }
+}
+
+impl TunnelSshPool {
+    fn new(connection: ConnectionProfile) -> Self {
+        Self {
+            connection,
+            inner: Mutex::new(TunnelSshPoolState {
+                sessions: Vec::new(),
+                connecting_sessions: 0,
+                next_session_id: 1,
+                closed: false,
+            }),
+            available: std::sync::Condvar::new(),
+        }
+    }
+
+    fn checkout(
+        self: &Arc<Self>,
+        stop_flag: &AtomicBool,
+    ) -> Result<Option<TunnelSessionLease>, AppError> {
+        loop {
+            if stop_flag.load(Ordering::Relaxed) {
+                return Ok(None);
+            }
+
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|_| AppError::Validation("tunnel ssh pool is unavailable".into()))?;
+            if state.closed {
+                return Ok(None);
+            }
+
+            if let Some(slot) = state
+                .sessions
+                .iter_mut()
+                .find(|slot| !slot.failed && slot.active_channels < TUNNEL_CHANNELS_PER_SSH_SESSION)
+            {
+                slot.active_channels += 1;
+                return Ok(Some(TunnelSessionLease {
+                    pool: Arc::clone(self),
+                    session_id: slot.id,
+                    session: slot.session.clone(),
+                    reusable: true,
+                }));
+            }
+
+            let total_sessions = state.sessions.len() + state.connecting_sessions;
+            let should_connect = state.connecting_sessions == 0
+                && total_sessions < TUNNEL_MAX_SSH_SESSIONS_PER_CONNECTION;
+            if should_connect {
+                state.connecting_sessions += 1;
+                drop(state);
+
+                let connect_result = self.connect_session();
+                let mut state = self
+                    .inner
+                    .lock()
+                    .map_err(|_| AppError::Validation("tunnel ssh pool is unavailable".into()))?;
+                state.connecting_sessions = state.connecting_sessions.saturating_sub(1);
+
+                let session = match connect_result {
+                    Ok(session) => session,
+                    Err(error) => {
+                        self.available.notify_all();
+                        return Err(error);
+                    }
+                };
+
+                if state.closed || stop_flag.load(Ordering::Relaxed) {
+                    self.available.notify_all();
+                    return Ok(None);
+                }
+
+                let session_id = state.next_session_id;
+                state.next_session_id = state.next_session_id.saturating_add(1);
+                state.sessions.push(TunnelSshPoolSession {
+                    id: session_id,
+                    session: session.clone(),
+                    active_channels: 1,
+                    failed: false,
+                });
+                self.available.notify_all();
+                return Ok(Some(TunnelSessionLease {
+                    pool: Arc::clone(self),
+                    session_id,
+                    session,
+                    reusable: true,
+                }));
+            }
+
+            let (next_state, _) = self
+                .available
+                .wait_timeout(state, TUNNEL_POOL_WAIT)
+                .map_err(|_| AppError::Validation("tunnel ssh pool wait failed".into()))?;
+            drop(next_state);
+        }
+    }
+
+    fn connect_session(&self) -> Result<Session, AppError> {
+        let session = connect_ssh(&self.connection)?;
+        // 隧道 channel 使用自己的非阻塞轮询泵，不能让 libssh2 阻塞读占住同一 session 的全局锁。
+        session.set_blocking(false);
+        session.set_timeout(0);
+        Ok(session)
+    }
+
+    fn release_session(&self, session_id: u64, reusable: bool) {
+        let Ok(mut state) = self.inner.lock() else {
+            return;
+        };
+
+        if let Some(slot) = state.sessions.iter_mut().find(|slot| slot.id == session_id) {
+            slot.active_channels = slot.active_channels.saturating_sub(1);
+            if !reusable {
+                slot.failed = true;
+            }
+        }
+
+        state
+            .sessions
+            .retain(|slot| !(slot.failed && slot.active_channels == 0));
+
+        if !state.closed {
+            let mut idle_kept = 0_usize;
+            state.sessions.retain(|slot| {
+                if slot.active_channels > 0 {
+                    true
+                } else {
+                    idle_kept += 1;
+                    idle_kept <= TUNNEL_MAX_IDLE_SSH_SESSIONS_PER_CONNECTION
+                }
+            });
+        }
+
+        self.available.notify_all();
+    }
+
+    fn close(&self) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.closed = true;
+            state.sessions.clear();
+            self.available.notify_all();
+        }
+    }
+}
+
+fn get_or_create_tunnel_ssh_pool(
+    state: &AppState,
+    connection: &ConnectionProfile,
+) -> Result<Arc<TunnelSshPool>, AppError> {
+    let mut pools = lock_tunnel_ssh_pools(state)?;
+    if let Some(pool) = pools.get(&connection.id) {
+        return Ok(Arc::clone(pool));
+    }
+
+    // 池按连接配置快照创建；连接编辑会关闭旧池，新隧道自然使用新配置。
+    let pool = Arc::new(TunnelSshPool::new(connection.clone()));
+    pools.insert(connection.id.clone(), Arc::clone(&pool));
+    Ok(pool)
+}
+
+fn drop_tunnel_ssh_pool(state: &AppState, connection_id: &str) {
+    if let Ok(mut pools) = lock_tunnel_ssh_pools(state) {
+        if let Some(pool) = pools.remove(connection_id) {
+            pool.close();
+        }
+    }
+}
+
+fn clear_tunnel_ssh_pools(state: &AppState) {
+    if let Ok(mut pools) = lock_tunnel_ssh_pools(state) {
+        for pool in pools.drain().map(|(_, pool)| pool) {
+            pool.close();
+        }
+    }
+}
+
+fn cleanup_unused_tunnel_ssh_pool(state: &AppState, connection_id: &str) -> Result<(), AppError> {
+    let has_running_tunnel = lock_tunnels(state)?
+        .values()
+        .any(|runtime| runtime.connection_id == connection_id);
+    if !has_running_tunnel {
+        drop_tunnel_ssh_pool(state, connection_id);
+    }
+    Ok(())
+}
+
+fn stop_connection_tunnel_runtimes(state: &AppState, connection_id: &str) -> Result<(), AppError> {
+    let mut tunnel_runtime = lock_tunnels(state)?;
+    let tunnel_ids = tunnel_runtime
+        .iter()
+        .filter_map(|(tunnel_id, runtime)| {
+            (runtime.connection_id == connection_id).then(|| tunnel_id.clone())
+        })
+        .collect::<Vec<_>>();
+
+    for tunnel_id in tunnel_ids {
+        if let Some(runtime) = tunnel_runtime.remove(&tunnel_id) {
+            runtime.stop_flag.store(true, Ordering::Relaxed);
+        }
+    }
+    drop(tunnel_runtime);
+
+    drop_tunnel_ssh_pool(state, connection_id);
+    Ok(())
+}
+
+fn mark_connection_tunnels_stopped(state: &AppState, connection_id: &str) -> Result<(), AppError> {
+    let mut tunnels = state.storage.load_tunnels()?;
+    let mut changed = false;
+    for tunnel in &mut tunnels {
+        if tunnel.connection_id == connection_id && tunnel.status == "running" {
+            tunnel.status = "stopped".into();
+            changed = true;
+        }
+    }
+
+    if changed {
+        state.storage.save_tunnels(&tunnels)?;
+    }
+    Ok(())
 }
 
 fn get_or_connect_auxiliary_session(
@@ -3269,64 +3808,37 @@ fn download_remote_path_to_local(
 }
 
 fn forward_single_connection(
-    connection: ConnectionProfile,
+    pool: Arc<TunnelSshPool>,
     remote_host: String,
     remote_port: u16,
-    mut local_stream: TcpStream,
+    local_stream: TcpStream,
     stop_flag: Arc<AtomicBool>,
 ) {
-    let Ok(ssh_session) = connect_ssh(&connection) else {
+    let Ok(Some(mut lease)) = pool.checkout(&stop_flag) else {
         return;
     };
 
-    let Ok(mut channel) = ssh_session.channel_direct_tcpip(&remote_host, remote_port, None) else {
-        return;
-    };
-
-    let _ = local_stream.set_read_timeout(Some(Duration::from_millis(80)));
-    let _ = local_stream.set_write_timeout(Some(Duration::from_millis(80)));
-
-    let mut local_buffer = [0_u8; 8192];
-    let mut remote_buffer = [0_u8; 8192];
-    let mut local_closed = false;
-    let mut remote_closed = false;
-
-    while !stop_flag.load(Ordering::Relaxed) && !(local_closed && remote_closed) {
-        match local_stream.read(&mut local_buffer) {
-            Ok(0) => {
-                local_closed = true;
-                let _ = channel.send_eof();
-            }
-            Ok(size) => {
-                let _ = channel.write_all(&local_buffer[..size]);
-                let _ = channel.flush();
-            }
-            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
-            Err(_) => break,
-        }
-
-        match channel.read(&mut remote_buffer) {
-            Ok(0) => {
-                if channel.eof() {
-                    remote_closed = true;
+    let channel =
+        match open_direct_tcpip_channel(lease.session(), &remote_host, remote_port, &stop_flag) {
+            Ok(Some(channel)) => channel,
+            Ok(None) => return,
+            Err(_) => {
+                if stop_flag.load(Ordering::Relaxed) {
+                    lease.discard();
                 }
+                return;
             }
-            Ok(size) => {
-                let _ = local_stream.write_all(&remote_buffer[..size]);
-                let _ = local_stream.flush();
-            }
-            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
-            Err(_) => break,
-        }
+        };
 
-        thread::sleep(Duration::from_millis(8));
+    if !proxy_tcp_stream(local_stream, channel, Arc::clone(&stop_flag))
+        && !stop_flag.load(Ordering::Relaxed)
+    {
+        lease.discard();
     }
-
-    let _ = channel.close();
 }
 
 fn spawn_tunnel_listener(
-    connection: ConnectionProfile,
+    pool: Arc<TunnelSshPool>,
     tunnel: TunnelRecord,
     stop_flag: Arc<AtomicBool>,
 ) -> Result<(), AppError> {
@@ -3337,18 +3849,12 @@ fn spawn_tunnel_listener(
         while !stop_flag.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    let connection = connection.clone();
+                    let pool = Arc::clone(&pool);
                     let remote_host = tunnel.remote_host.clone();
                     let remote_port = tunnel.remote_port;
                     let stop = Arc::clone(&stop_flag);
                     thread::spawn(move || {
-                        forward_single_connection(
-                            connection,
-                            remote_host,
-                            remote_port,
-                            stream,
-                            stop,
-                        );
+                        forward_single_connection(pool, remote_host, remote_port, stream, stop);
                     });
                 }
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
@@ -3393,6 +3899,8 @@ fn stop_all_runtimes(state: &AppState) -> Result<(), AppError> {
     for runtime in tunnels.drain().map(|(_, runtime)| runtime) {
         runtime.stop_flag.store(true, Ordering::Relaxed);
     }
+    drop(tunnels);
+    clear_tunnel_ssh_pools(state);
     Ok(())
 }
 
@@ -3692,6 +4200,9 @@ pub fn create_connection(
 ) -> Result<ConnectionProfile, String> {
     validate_connection_profile(&connection)?;
     drop_auxiliary_session(&state, &connection.id);
+    // 连接配置可能被同 ID 覆盖；旧隧道必须停止，避免后台继续使用旧主机、旧代理或旧凭据。
+    stop_connection_tunnel_runtimes(&state, &connection.id)?;
+    mark_connection_tunnels_stopped(&state, &connection.id)?;
     let mut connections = state.storage.load_connections(&state.crypto)?;
     connections.retain(|item| item.id != connection.id);
     connections.insert(0, connection.clone());
@@ -3751,6 +4262,7 @@ pub fn delete_connection(
         }
     }
     drop(tunnel_runtime);
+    drop_tunnel_ssh_pool(&state, &connection_id);
 
     let mut tunnels = persisted_tunnels;
     tunnels.retain(|item| item.connection_id != connection_id);
@@ -4252,6 +4764,7 @@ pub fn update_tunnel(
     if let Some(runtime) = lock_tunnels(&state)?.remove(&tunnel.id) {
         // 编辑端点会让旧监听参数失效，先停旧监听，再把新配置以停止状态落盘。
         runtime.stop_flag.store(true, Ordering::Relaxed);
+        cleanup_unused_tunnel_ssh_pool(&state, &runtime.connection_id)?;
     }
 
     tunnel.status = "stopped".into();
@@ -4269,22 +4782,45 @@ pub fn start_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<Tun
 
     if let Some(runtime) = lock_tunnels(&state)?.remove(&tunnel_id) {
         runtime.stop_flag.store(true, Ordering::Relaxed);
+        cleanup_unused_tunnel_ssh_pool(&state, &runtime.connection_id)?;
     }
 
     let mut tunnel = tunnels[index].clone();
     let connection = ensure_connection_exists(&state, &tunnel.connection_id)?;
     let stop_flag = Arc::new(AtomicBool::new(false));
-    spawn_tunnel_listener(connection, tunnel.clone(), Arc::clone(&stop_flag))?;
+    let pool = get_or_create_tunnel_ssh_pool(&state, &connection)?;
+    if let Err(error) =
+        spawn_tunnel_listener(Arc::clone(&pool), tunnel.clone(), Arc::clone(&stop_flag))
+    {
+        cleanup_unused_tunnel_ssh_pool(&state, &connection.id)?;
+        return Err(error.into());
+    }
 
     tunnel.status = "running".into();
     tunnels[index] = tunnel.clone();
-    state.storage.save_tunnels(&tunnels)?;
-    lock_tunnels(&state)?.insert(
-        tunnel.id.clone(),
-        TunnelRuntime {
-            stop_flag: Arc::clone(&stop_flag),
-        },
-    );
+    if let Err(error) = state.storage.save_tunnels(&tunnels) {
+        stop_flag.store(true, Ordering::Relaxed);
+        cleanup_unused_tunnel_ssh_pool(&state, &connection.id)?;
+        return Err(error.into());
+    }
+
+    let runtime = TunnelRuntime {
+        connection_id: tunnel.connection_id.clone(),
+        stop_flag: Arc::clone(&stop_flag),
+        pool,
+    };
+    match lock_tunnels(&state) {
+        Ok(mut runtimes) => {
+            runtimes.insert(tunnel.id.clone(), runtime);
+        }
+        Err(error) => {
+            stop_flag.store(true, Ordering::Relaxed);
+            cleanup_unused_tunnel_ssh_pool(&state, &connection.id)?;
+            tunnels[index].status = "stopped".into();
+            let _ = state.storage.save_tunnels(&tunnels);
+            return Err(error.into());
+        }
+    }
 
     Ok(tunnel)
 }
@@ -4293,6 +4829,7 @@ pub fn start_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<Tun
 pub fn close_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<bool, String> {
     if let Some(runtime) = lock_tunnels(&state)?.remove(&tunnel_id) {
         runtime.stop_flag.store(true, Ordering::Relaxed);
+        cleanup_unused_tunnel_ssh_pool(&state, &runtime.connection_id)?;
     }
 
     let mut tunnels = state.storage.load_tunnels()?;
