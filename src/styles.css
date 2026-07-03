@@ -710,7 +710,6 @@ select:disabled {
   line-height: 1.45;
 }
 
-.session-tab,
 .panel-tab,
 .empty-pill,
 .chip,
@@ -751,8 +750,11 @@ select:disabled {
 }
 
 .session-tab {
-  gap: 4px;
+  /* 终端会话标签使用与工具栏按钮一致的小圆角，并压缩横向占位以容纳更多连接。 */
+  gap: 3px;
   min-height: 24px;
+  padding: 2px 5px;
+  border-radius: 7px;
   font-size: 0.76rem;
   position: relative;
   cursor: grab;
@@ -795,8 +797,8 @@ select:disabled {
   flex-wrap: nowrap;
   overflow-x: auto;
   overflow-y: hidden;
-  padding-left: 6px;
-  padding-right: 6px;
+  padding-left: 4px;
+  padding-right: 4px;
   scrollbar-width: thin;
 }
 
@@ -812,7 +814,7 @@ select:disabled {
 }
 
 .session-tab-trigger {
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
   border: 0;
   background: transparent;
@@ -821,7 +823,7 @@ select:disabled {
 }
 
 .session-tab-trigger span {
-  max-width: 220px;
+  max-width: clamp(48px, 10vw, 128px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -870,10 +872,10 @@ select:disabled {
 
 .session-tab-close {
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 5px;
   background: transparent;
   color: inherit;
   opacity: 0.72;
