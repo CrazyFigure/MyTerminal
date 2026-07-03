@@ -993,15 +993,16 @@ function AgentAutoConnectionTree({
   ungroupedLabel: string;
 }) {
   const renderConnection = (connection: ConnectionProfile) => (
-    <label key={connection.id} className="agent-tree-connection">
+    <div key={connection.id} className="agent-tree-connection">
       <input
+        aria-label={connection.name}
         checked={allowedConnectionIds.includes(connection.id)}
         type="checkbox"
         onChange={(event) => onToggleConnection(connection.id, event.target.checked)}
       />
       <span>{connection.name}</span>
       <strong>{connection.username}@{connection.host}:{connection.port}</strong>
-    </label>
+    </div>
   );
 
   const renderGroup = (node: ConnectionGroupNode) => (
@@ -1205,16 +1206,17 @@ function ConnectionFormModal() {
                 <span>{t('fieldUsername')}</span>
                 <input value={connectionDraft.username} onChange={(event) => updateConnectionDraft('username', event.target.value)} />
               </label>
-              <label>
+              <div className="form-field">
                 <span>{t('fieldAuthMethod')}</span>
                 <select
+                  aria-label={t('fieldAuthMethod')}
                   value={connectionDraft.authMethod}
                   onChange={(event) => updateConnectionDraft('authMethod', event.target.value === 'privateKey' ? 'privateKey' : 'password')}
                 >
                   <option value="password">{t('authMethodPassword')}</option>
                   <option value="privateKey">{t('authMethodPrivateKey')}</option>
                 </select>
-              </label>
+              </div>
               {isPrivateKeyMode ? (
                 <>
                   <label className="span-2">
@@ -1344,9 +1346,10 @@ function ConnectionFormModal() {
                           <span>{t('fieldUsername')}</span>
                           <input value={jumpHost.username} onChange={(event) => updateJumpHost(jumpHost.id, { username: event.target.value })} />
                         </label>
-                        <label>
+                        <div className="form-field">
                           <span>{t('fieldAuthMethod')}</span>
                           <select
+                            aria-label={t('fieldAuthMethod')}
                             value={jumpHost.authMethod}
                             onChange={(event) => updateJumpHost(jumpHost.id, {
                               authMethod: event.target.value === 'privateKey' ? 'privateKey' : 'password',
@@ -1355,7 +1358,7 @@ function ConnectionFormModal() {
                             <option value="password">{t('authMethodPassword')}</option>
                             <option value="privateKey">{t('authMethodPrivateKey')}</option>
                           </select>
-                        </label>
+                        </div>
                         {isPrivateKeyModeForJump ? (
                           <>
                             <label className="span-2">
@@ -1410,19 +1413,22 @@ function ConnectionFormModal() {
                 <h4>{t('connectionTabProxy')}</h4>
                 <p>{t('connectionTabProxyDesc')}</p>
               </div>
-              <label className="toggle-row connection-proxy-toggle">
-                <span>{t('enabled')}</span>
-                <input
-                  checked={connectionDraft.proxy.enabled}
-                  type="checkbox"
-                  onChange={(event) => updateProxy({ enabled: event.target.checked })}
-                />
-              </label>
+            </div>
+            <div className="agent-toggle-field connection-proxy-toggle">
+              <span>{t('enabled')}</span>
+              <input
+                aria-label={t('enabled')}
+                checked={connectionDraft.proxy.enabled}
+                type="checkbox"
+                onChange={(event) => updateProxy({ enabled: event.target.checked })}
+              />
+              <strong>{connectionDraft.proxy.enabled ? t('enabled') : t('disabled')}</strong>
             </div>
             <div className="form-grid">
-              <label>
+              <div className="form-field">
                 <span>{t('fieldProxyType')}</span>
                 <select
+                  aria-label={t('fieldProxyType')}
                   disabled={!connectionDraft.proxy.enabled}
                   value={connectionDraft.proxy.type}
                   onChange={(event) => updateProxy({ type: event.target.value === 'http' ? 'http' : 'socks5' })}
@@ -1430,7 +1436,7 @@ function ConnectionFormModal() {
                   <option value="socks5">{t('proxyTypeSocks5')}</option>
                   <option value="http">{t('proxyTypeHttp')}</option>
                 </select>
-              </label>
+              </div>
               <label>
                 <span>{t('fieldHost')}</span>
                 <input
@@ -2820,20 +2826,20 @@ function SettingsModal({
                   </div>
 
                   <div className="form-grid">
-                    <label>
+                    <div className="form-field">
                       <span>{t('fieldTheme')}</span>
-                      <select value={draftSettings.themeMode} onChange={(event) => updateDraftSettings((current) => ({ ...current, themeMode: event.target.value as 'light' | 'dark' }))}>
+                      <select aria-label={t('fieldTheme')} value={draftSettings.themeMode} onChange={(event) => updateDraftSettings((current) => ({ ...current, themeMode: event.target.value as 'light' | 'dark' }))}>
                         <option value="light">{t('light')}</option>
                         <option value="dark">{t('dark')}</option>
                       </select>
-                    </label>
-                    <label>
+                    </div>
+                    <div className="form-field">
                       <span>{t('fieldLanguage')}</span>
-                      <select value={draftSettings.uiLanguage} onChange={(event) => updateDraftSettings((current) => ({ ...current, uiLanguage: event.target.value as UiLanguage }))}>
+                      <select aria-label={t('fieldLanguage')} value={draftSettings.uiLanguage} onChange={(event) => updateDraftSettings((current) => ({ ...current, uiLanguage: event.target.value as UiLanguage }))}>
                         <option value="zh-CN">{t('languageZhCn')}</option>
                         <option value="en-US">{t('languageEnUs')}</option>
                       </select>
-                    </label>
+                    </div>
                   </div>
                 </section>
 
@@ -2844,26 +2850,26 @@ function SettingsModal({
                   </div>
 
                   <div className="form-grid">
-                    <label>
+                    <div className="form-field">
                       <span>{t('fieldLatinFontFamily')}</span>
-                      <select value={selectedLatinFontFamily} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellLatinFontFamily: event.target.value }))}>
+                      <select aria-label={t('fieldLatinFontFamily')} value={selectedLatinFontFamily} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellLatinFontFamily: event.target.value }))}>
                         {latinOptions.map((fontFamily) => (
                           <option key={fontFamily} value={fontFamily}>
                             {fontFamily}
                           </option>
                         ))}
                       </select>
-                    </label>
-                    <label>
+                    </div>
+                    <div className="form-field">
                       <span>{t('fieldCjkFontFamily')}</span>
-                      <select value={selectedCjkFontFamily} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellCjkFontFamily: event.target.value }))}>
+                      <select aria-label={t('fieldCjkFontFamily')} value={selectedCjkFontFamily} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellCjkFontFamily: event.target.value }))}>
                         {cjkOptions.map((fontFamily) => (
                           <option key={fontFamily} value={fontFamily}>
                             {fontFamily}
                           </option>
                         ))}
                       </select>
-                    </label>
+                    </div>
                     <label>
                       <span>{t('fieldFontSize')}</span>
                       <input type="number" value={draftSettings.shellFontSize} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellFontSize: Number(event.target.value) || 15 }))} />
@@ -2921,9 +2927,10 @@ function SettingsModal({
                         />
                       </div>
                     </label>
-                    <label>
+                    <div className="form-field">
                       <span>{t('fieldTerminalBackgroundImageFit')}</span>
                       <select
+                        aria-label={t('fieldTerminalBackgroundImageFit')}
                         value={draftSettings.terminalBackgroundImageFit ?? 'cover'}
                         onChange={(event) =>
                           updateDraftSettings((current) => ({
@@ -2938,7 +2945,7 @@ function SettingsModal({
                           </option>
                         ))}
                       </select>
-                    </label>
+                    </div>
                   </div>
                 </section>
 
@@ -2948,7 +2955,7 @@ function SettingsModal({
                     <p>{t('appearanceBehaviorDesc')}</p>
                   </div>
 
-                  <div className="form-grid settings-single-column-grid">
+                  <div className="form-grid settings-single-column-grid settings-compact-form-grid">
                     <label>
                       <span>{t('fieldRuntimeRefreshInterval')}</span>
                       <input
@@ -2964,34 +2971,39 @@ function SettingsModal({
                         }
                       />
                     </label>
-                    <label>
+                    <div className="form-field">
                       <span>{t('fieldTerminalRightClickBehavior')}</span>
                       <select
+                        aria-label={t('fieldTerminalRightClickBehavior')}
                         value={draftSettings.terminalRightClickBehavior}
                         onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalRightClickBehavior: event.target.value as AppSettings['terminalRightClickBehavior'] }))}
                       >
                         <option value="paste">{t('rightClickPaste')}</option>
                         <option value="menu">{t('rightClickMenu')}</option>
                       </select>
-                    </label>
-                    <label>
+                    </div>
+                    <div className="form-field">
                       <span>{t('fieldTerminalLineWrapMode')}</span>
                       <select
+                        aria-label={t('fieldTerminalLineWrapMode')}
                         value={draftSettings.terminalLineWrapMode ?? 'wrap'}
                         onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalLineWrapMode: event.target.value as AppSettings['terminalLineWrapMode'] }))}
                       >
                         <option value="wrap">{t('terminalLineWrapModeWrap')}</option>
                         <option value="horizontal">{t('terminalLineWrapModeHorizontal')}</option>
                       </select>
-                    </label>
-                    <div className="toggle-row settings-toggle-row">
+                    </div>
+                    <div className="agent-toggle-field settings-toggle-row settings-inline-toggle settings-centered-toggle">
                       <span id="terminal-match-selection-label">{t('fieldTerminalMatchSelection')}</span>
-                      <input
-                        aria-labelledby="terminal-match-selection-label"
-                        checked={draftSettings.terminalMatchSelection ?? true}
-                        type="checkbox"
-                        onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalMatchSelection: event.target.checked }))}
-                      />
+                      <div className="settings-inline-toggle-control">
+                        <input
+                          aria-label={t('fieldTerminalMatchSelection')}
+                          checked={draftSettings.terminalMatchSelection ?? true}
+                          type="checkbox"
+                          onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalMatchSelection: event.target.checked }))}
+                        />
+                        <strong>{(draftSettings.terminalMatchSelection ?? true) ? t('enabled') : t('disabled')}</strong>
+                      </div>
                     </div>
                   </div>
                 </section>
@@ -3147,16 +3159,17 @@ function SettingsModal({
                       <h3>{t('agentBridgeTitle')}</h3>
                       <p>{t('agentBridgeDesc')}</p>
                     </div>
-                    <label className={`agent-toggle-field agent-bridge-power ${agentBridgeSwitchBusy ? 'is-pending' : ''}`}>
-                      <span>{t('fieldAgentBridgeEnabled')}</span>
-                      <input
-                        checked={draftSettings.agentBridge.enabled}
-                        disabled={agentBridgeSwitchBusy}
-                        type="checkbox"
-                        onChange={(event) => void setAgentBridgeEnabled(event.target.checked)}
-                      />
-                      <strong>{agentBridgeSwitchLabel}</strong>
-                    </label>
+                  </div>
+                  <div className={`agent-toggle-field agent-bridge-power ${agentBridgeSwitchBusy ? 'is-pending' : ''}`}>
+                    <span>{t('fieldAgentBridgeEnabled')}</span>
+                    <input
+                      aria-label={t('fieldAgentBridgeEnabled')}
+                      checked={draftSettings.agentBridge.enabled}
+                      disabled={agentBridgeSwitchBusy}
+                      type="checkbox"
+                      onChange={(event) => void setAgentBridgeEnabled(event.target.checked)}
+                    />
+                    <strong>{agentBridgeSwitchLabel}</strong>
                   </div>
 
                   <div className="settings-about-grid agent-bridge-status-grid">
@@ -3187,20 +3200,23 @@ function SettingsModal({
                   {actionFeedbackMap['save-agent-settings'] ? <div className={`sync-action-feedback ${actionFeedbackMap['save-agent-settings'].kind}`}>{actionFeedbackMap['save-agent-settings'].message}</div> : null}
 
                   <div className="form-grid settings-single-column-grid">
-                    <label className="agent-toggle-field">
+                    <div className="agent-toggle-field settings-inline-toggle">
                       <span>{t('fieldAgentBridgeAutoExecute')}</span>
-                      <input
-                        checked={draftSettings.agentBridge.autoExecute}
-                        type="checkbox"
-                        onChange={(event) =>
-                          updateDraftSettings((current) => ({
-                            ...current,
-                            agentBridge: { ...current.agentBridge, autoExecute: event.target.checked },
-                          }))
-                        }
-                      />
-                      <strong>{draftSettings.agentBridge.autoExecute ? t('enabled') : t('disabled')}</strong>
-                    </label>
+                      <div className="settings-inline-toggle-control">
+                        <input
+                          aria-label={t('fieldAgentBridgeAutoExecute')}
+                          checked={draftSettings.agentBridge.autoExecute}
+                          type="checkbox"
+                          onChange={(event) =>
+                            updateDraftSettings((current) => ({
+                              ...current,
+                              agentBridge: { ...current.agentBridge, autoExecute: event.target.checked },
+                            }))
+                          }
+                        />
+                        <strong>{draftSettings.agentBridge.autoExecute ? t('enabled') : t('disabled')}</strong>
+                      </div>
+                    </div>
                     <label>
                       <span>{t('fieldAgentBridgeTimeout')}</span>
                       <input
