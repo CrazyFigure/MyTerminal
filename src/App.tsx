@@ -139,6 +139,12 @@ const connectionTableColumnLimits = [
   { min: 48, max: 96 },
   { min: 72, max: 220 },
 ];
+// 端口只允许键盘录入，不使用 number 类型，避免浏览器步进按钮和鼠标滚轮隐式改值。
+const portTextInputProps = {
+  type: 'text',
+  inputMode: 'numeric',
+  pattern: '[0-9]*',
+} as const;
 // AI 执行通知用稳定 tag 去重，避免 MCP 客户端重试时 Windows 通知中心堆出重复消息。
 const agentBridgeNotificationTagPrefix = 'myterminal-agent-bridge';
 // Windows toast 按钮的动作 ID 和 Rust 端保持一致，前端事件回来后直接分派审批结果。
@@ -1193,7 +1199,7 @@ function ConnectionFormModal() {
               </label>
               <label>
                 <span>{t('fieldPort')}</span>
-                <input type="number" value={connectionDraft.port} onChange={(event) => updateConnectionDraft('port', Number(event.target.value) || 22)} />
+                <input {...portTextInputProps} value={connectionDraft.port} onChange={(event) => updateConnectionDraft('port', Number(event.target.value) || 22)} />
               </label>
               <label>
                 <span>{t('fieldUsername')}</span>
@@ -1329,7 +1335,7 @@ function ConnectionFormModal() {
                         <label>
                           <span>{t('fieldPort')}</span>
                           <input
-                            type="number"
+                            {...portTextInputProps}
                             value={jumpHost.port}
                             onChange={(event) => updateJumpHost(jumpHost.id, { port: Number(event.target.value) || 22 })}
                           />
@@ -1437,7 +1443,7 @@ function ConnectionFormModal() {
                 <span>{t('fieldPort')}</span>
                 <input
                   disabled={!connectionDraft.proxy.enabled}
-                  type="number"
+                  {...portTextInputProps}
                   value={connectionDraft.proxy.port}
                   onChange={(event) => updateProxy({ port: Number(event.target.value) || 1080 })}
                 />
@@ -1531,7 +1537,7 @@ function TunnelFormModal() {
           <label>
             <span>{t('fieldLocalPort')}</span>
             <input
-              type="number"
+              {...portTextInputProps}
               value={tunnelDraft.localPort}
               onChange={(event) => updateTunnelDraft('localPort', Number(event.target.value) || 15432)}
             />
@@ -1543,7 +1549,7 @@ function TunnelFormModal() {
           <label>
             <span>{t('fieldRemotePort')}</span>
             <input
-              type="number"
+              {...portTextInputProps}
               value={tunnelDraft.remotePort}
               onChange={(event) => updateTunnelDraft('remotePort', Number(event.target.value) || 5432)}
             />
