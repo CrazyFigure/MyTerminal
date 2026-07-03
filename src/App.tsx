@@ -86,6 +86,19 @@ type SessionTabDragState = {
   currentY: number;
 } | null;
 type SessionTabDropTarget = { sessionId: string; placement: InsertPlacement } | { type: 'end' } | null;
+// 会话标签自绘滚动条只表达横向溢出位置，避免依赖 WebView 原生滚动条高度渲染。
+type SessionTabScrollbarState = {
+  visible: boolean;
+  thumbLeft: number;
+  thumbWidth: number;
+};
+type SessionTabScrollbarDragState = {
+  pointerId: number;
+  originX: number;
+  originScrollLeft: number;
+  maxScrollLeft: number;
+  maxThumbTravel: number;
+};
 // 传输进度用于给上传、下载、编辑读取和批量删除提供轻量阶段反馈；真实字节级进度需要后端分块事件再扩展。
 type TransferProgressItem = {
   id: string;
@@ -3405,6 +3418,12 @@ export default function App() {
   const [sessionContextMenu, setSessionContextMenu] = useState<SessionContextMenuState | null>(null);
   const [sessionTabDragState, setSessionTabDragState] = useState<SessionTabDragState>(null);
   const [sessionTabDropTarget, setSessionTabDropTarget] = useState<SessionTabDropTarget>(null);
+  // 原生横向滚动条在 WebView2 中高度不可控，顶部标签改用自绘滑块保持细条视觉。
+  const [sessionTabScrollbar, setSessionTabScrollbar] = useState<SessionTabScrollbarState>({
+    visible: false,
+    thumbLeft: 0,
+    thumbWidth: 0,
+  });
   const [selectedFilePath, setSelectedFilePath] = useState('');
   const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
   const [localFileDropActive, setLocalFileDropActive] = useState(false);
@@ -3421,6 +3440,7 @@ export default function App() {
   const sessionTabDragStateRef = useRef<SessionTabDragState>(null);
   const sessionTabDropTargetRef = useRef<SessionTabDropTarget>(null);
   const sessionTabListRef = useRef<HTMLDivElement | null>(null);
+  const sessionTabScrollbarDragRef = useRef<SessionTabScrollbarDragState | null>(null);
   const explorerListRef = useRef<HTMLDivElement | null>(null);
   const bottomPanelActionsRef = useRef<HTMLDivElement | null>(null);
   const explorerScrollRafRef = useRef<number | null>(null);
@@ -4000,6 +4020,114 @@ export default function App() {
     .filter(Boolean)
     .join(' ');
   useFlipListAnimation(sessionTabListRef, '[data-session-id]', [sessions.map((session) => session.id).join('|')]);
+
+  const updateSessionTabScrollbar = useCallback(() => {
+    const listElement = sessionTabListRef.current;
+    if (!listElement) {
+      setSessionTabScrollbar((current) => (
+        current.visible || current.thumbLeft || current.thumbWidth
+          ? { visible: false, thumbLeft: 0, thumbWidth: 0 }
+          : current
+      ));
+      return;
+    }
+
+    const maxScrollLeft = Math.max(0, listElement.scrollWidth - listElement.clientWidth);
+    if (maxScrollLeft <= 1) {
+      setSessionTabScrollbar((current) => (
+        current.visible || current.thumbLeft || current.thumbWidth
+          ? { visible: false, thumbLeft: 0, thumbWidth: 0 }
+          : current
+      ));
+      return;
+    }
+
+    // thumb 宽度按可视区域比例计算，并保留最小可拖动宽度，避免连接很多时滑块过短。
+    const trackWidth = Math.max(1, listElement.clientWidth - 8);
+    const thumbWidth = Math.min(trackWidth, Math.max(24, Math.round((trackWidth * listElement.clientWidth) / listElement.scrollWidth)));
+    const maxThumbTravel = Math.max(1, trackWidth - thumbWidth);
+    const thumbLeft = Math.round((listElement.scrollLeft / maxScrollLeft) * maxThumbTravel);
+    setSessionTabScrollbar((current) => (
+      current.visible === true && current.thumbLeft === thumbLeft && current.thumbWidth === thumbWidth
+        ? current
+        : { visible: true, thumbLeft, thumbWidth }
+    ));
+  }, []);
+
+  useLayoutEffect(() => {
+    updateSessionTabScrollbar();
+    const listElement = sessionTabListRef.current;
+    if (!listElement) {
+      return undefined;
+    }
+
+    const handleResize = () => updateSessionTabScrollbar();
+    const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(handleResize);
+    resizeObserver?.observe(listElement);
+    if (listElement.parentElement) {
+      resizeObserver?.observe(listElement.parentElement);
+    }
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [agentSidebarCollapsed, connections, sessions, sidebarCollapsed, updateSessionTabScrollbar]);
+
+  const handleSessionTabScroll = useCallback(() => {
+    updateSessionTabScrollbar();
+  }, [updateSessionTabScrollbar]);
+
+  const startSessionTabScrollbarDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const listElement = sessionTabListRef.current;
+    if (!listElement || !sessionTabScrollbar.visible) {
+      return;
+    }
+
+    const maxScrollLeft = Math.max(0, listElement.scrollWidth - listElement.clientWidth);
+    const maxThumbTravel = Math.max(1, event.currentTarget.clientWidth - sessionTabScrollbar.thumbWidth);
+    const trackRect = event.currentTarget.getBoundingClientRect();
+    // 点击轨道时先把滑块移动到鼠标附近，再进入拖动，避免细条难以精准命中。
+    const nextThumbLeft = clamp(event.clientX - trackRect.left - sessionTabScrollbar.thumbWidth / 2, 0, maxThumbTravel);
+    listElement.scrollLeft = (nextThumbLeft / maxThumbTravel) * maxScrollLeft;
+    sessionTabScrollbarDragRef.current = {
+      pointerId: event.pointerId,
+      originX: event.clientX,
+      originScrollLeft: listElement.scrollLeft,
+      maxScrollLeft,
+      maxThumbTravel,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    updateSessionTabScrollbar();
+  }, [sessionTabScrollbar.thumbWidth, sessionTabScrollbar.visible, updateSessionTabScrollbar]);
+
+  const handleSessionTabScrollbarPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const dragState = sessionTabScrollbarDragRef.current;
+    const listElement = sessionTabListRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId || !listElement) {
+      return;
+    }
+
+    const scrollDelta = ((event.clientX - dragState.originX) / dragState.maxThumbTravel) * dragState.maxScrollLeft;
+    listElement.scrollLeft = clamp(dragState.originScrollLeft + scrollDelta, 0, dragState.maxScrollLeft);
+    updateSessionTabScrollbar();
+  }, [updateSessionTabScrollbar]);
+
+  const finishSessionTabScrollbarDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const dragState = sessionTabScrollbarDragRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    sessionTabScrollbarDragRef.current = null;
+    updateSessionTabScrollbar();
+  }, [updateSessionTabScrollbar]);
 
   const resolveSessionTabDropTarget = useCallback((event: PointerEvent, currentDrag: NonNullable<SessionTabDragState>): SessionTabDropTarget => {
     const target = document.elementFromPoint(event.clientX, event.clientY);
@@ -5033,53 +5161,74 @@ export default function App() {
             {sidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
           </button>
           <div className="session-strip">
-            <div
-              className={`tab-list session-tab-list ${
-                sessionTabDropTarget && 'type' in sessionTabDropTarget && sessionTabDropTarget.type === 'end' ? 'is-drop-end' : ''
-              }`}
-              ref={sessionTabListRef}
-            >
-              {sessions.map((session) => {
-                const sessionLabel = session.kind === 'local'
-                  ? formatLocalTerminalTabLabel(session, t('localTerminalTitle'))
-                  : connections.find((item) => item.id === session.connectionId)?.name ?? session.title;
-                return (
-                  <div
-                    key={session.id}
-                    data-session-id={session.id}
-                    className={`session-tab ${session.id === activeSessionId ? 'is-active' : ''} ${
-                      sessionTabDragState?.id === session.id ? 'is-dragging' : ''
-                    } ${
-                      sessionTabDropTarget && !('type' in sessionTabDropTarget) && sessionTabDropTarget.sessionId === session.id
-                        ? `is-drop-${sessionTabDropTarget.placement}`
-                        : ''
-                    }`}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setSessionContextMenu({ sessionId: session.id, x: event.clientX, y: event.clientY });
-                    }}
-                    onPointerDown={(event) => startSessionTabDrag(event, session, sessionLabel)}
-                  >
-                    <button className="session-tab-trigger" onClick={() => selectSession(session.id)} type="button">
-                      <span aria-label={translateStatus(settings.uiLanguage, session.status)} className={sessionStatusClassName(session.status)} title={translateStatus(settings.uiLanguage, session.status)} />
-                      <span>{sessionLabel}</span>
-                    </button>
-                    <button
-                      aria-label={t('closeSessionAction')}
-                      className="session-tab-close"
-                      onClick={(event) => {
+            <div className="session-tab-scroll-shell">
+              <div
+                className={`tab-list session-tab-list ${
+                  sessionTabDropTarget && 'type' in sessionTabDropTarget && sessionTabDropTarget.type === 'end' ? 'is-drop-end' : ''
+                }`}
+                onScroll={handleSessionTabScroll}
+                ref={sessionTabListRef}
+              >
+                {sessions.map((session) => {
+                  const sessionLabel = session.kind === 'local'
+                    ? formatLocalTerminalTabLabel(session, t('localTerminalTitle'))
+                    : connections.find((item) => item.id === session.connectionId)?.name ?? session.title;
+                  return (
+                    <div
+                      key={session.id}
+                      data-session-id={session.id}
+                      className={`session-tab ${session.id === activeSessionId ? 'is-active' : ''} ${
+                        sessionTabDragState?.id === session.id ? 'is-dragging' : ''
+                      } ${
+                        sessionTabDropTarget && !('type' in sessionTabDropTarget) && sessionTabDropTarget.sessionId === session.id
+                          ? `is-drop-${sessionTabDropTarget.placement}`
+                          : ''
+                      }`}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
                         event.stopPropagation();
-                        void closeSession(session.id);
+                        setSessionContextMenu({ sessionId: session.id, x: event.clientX, y: event.clientY });
                       }}
-                      title={t('closeSessionAction')}
-                      type="button"
+                      onPointerDown={(event) => startSessionTabDrag(event, session, sessionLabel)}
                     >
-                      <X size={10} />
-                    </button>
-                  </div>
-                );
-              })}
+                      <button className="session-tab-trigger" onClick={() => selectSession(session.id)} type="button">
+                        <span aria-label={translateStatus(settings.uiLanguage, session.status)} className={sessionStatusClassName(session.status)} title={translateStatus(settings.uiLanguage, session.status)} />
+                        <span>{sessionLabel}</span>
+                      </button>
+                      <button
+                        aria-label={t('closeSessionAction')}
+                        className="session-tab-close"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void closeSession(session.id);
+                        }}
+                        title={t('closeSessionAction')}
+                        type="button"
+                      >
+                        <X size={10} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+              {sessionTabScrollbar.visible ? (
+                <div
+                  aria-hidden="true"
+                  className="session-tab-scrollbar"
+                  onPointerCancel={finishSessionTabScrollbarDrag}
+                  onPointerDown={startSessionTabScrollbarDrag}
+                  onPointerMove={handleSessionTabScrollbarPointerMove}
+                  onPointerUp={finishSessionTabScrollbarDrag}
+                >
+                  <div
+                    className="session-tab-scrollbar-thumb"
+                    style={{
+                      transform: `translateX(${sessionTabScrollbar.thumbLeft}px)`,
+                      width: sessionTabScrollbar.thumbWidth,
+                    }}
+                  />
+                </div>
+              ) : null}
             </div>
           </div>
 
