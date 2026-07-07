@@ -32,6 +32,15 @@ const terminalCursorFollowMarginColumns = 8;
 const terminalCursorFollowAfterInputMs = 1800;
 // xterm 内部竖向滚动区会占用少量宽度，横向宽度估算时预留出来避免最后几列被压住。
 const terminalScrollbarReservePx = 18;
+// 横向长行模式下，鼠标靠近右侧时显示可视区固定的竖向滚动条，避免原生滚动条跑到长行内容最右端。
+const terminalVerticalScrollbarRevealZonePx = 44;
+// 右侧自绘滚动条宽度和右边距必须和 CSS 保持一致，用于按 scrollLeft 定位到当前可视区右边。
+const terminalVerticalScrollbarWidthPx = 12;
+const terminalVerticalScrollbarRightInsetPx = 4;
+const terminalVerticalScrollbarTopInsetPx = 8;
+const terminalVerticalScrollbarBottomInsetPx = 22;
+// 自绘竖向滚动条最小拇指高度，保证日志很多时仍能被鼠标稳定命中。
+const terminalVerticalScrollbarMinThumbHeightPx = 32;
 // 普通终端保留 xterm 默认滚屏历史，避免影响 SSH 和 Shell 的日常查看习惯。
 const terminalDefaultScrollbackRows = 1000;
 // AI Agent 也保留历史，避免窗口 resize 后把启动警告等一次性输出彻底丢掉；滚轮另行拦截。
@@ -108,8 +117,24 @@ type TerminalPromptAnchor = {
   cellHeight: number;
 };
 
+type TerminalVerticalScrollbarMetrics = {
+  thumbHeight: number;
+  thumbTop: number;
+  maxThumbTop: number;
+  maxScrollLine: number;
+};
+
+type TerminalVerticalScrollbarDragState = {
+  originY: number;
+  originThumbTop: number;
+  maxThumbTop: number;
+  maxScrollLine: number;
+};
+
 // 只有后端 PTY 已就绪的会话才接收键盘输入，connecting 阶段避免用户输入被前端或后端吞掉。
 const canAcceptTerminalInput = (session?: TerminalSession) => Boolean(session && ['connected', 'stub'].includes(session.status));
+
+const clampTerminalNumber = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
 // 横向宽度只看当前列范围内的真实文本单元格；带反色背景的行尾空格不能把 TUI 标题栏算成长行内容。
 const measureTerminalBufferLineContentColumns = (line: IBufferLine, maxColumns: number) => {
@@ -814,6 +839,11 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   const terminalSelectionOverlayFrameRef = useRef<number | null>(null);
   const terminalControlledCursorRef = useRef<HTMLDivElement | null>(null);
   const terminalControlledCursorFrameRef = useRef<number | null>(null);
+  const terminalVerticalScrollbarRef = useRef<HTMLDivElement | null>(null);
+  const terminalVerticalScrollbarThumbRef = useRef<HTMLDivElement | null>(null);
+  const terminalVerticalScrollbarFrameRef = useRef<number | null>(null);
+  const terminalVerticalScrollbarTimeoutRef = useRef<number | null>(null);
+  const terminalVerticalScrollbarDragRef = useRef<TerminalVerticalScrollbarDragState | null>(null);
   const terminalSelectionDragActiveRef = useRef(false);
   const terminalSelectionDragFrameRef = useRef<number | null>(null);
   const onTerminalDataRef = useRef(onTerminalData);
@@ -1135,22 +1165,249 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   };
 
   const clearTerminalMatchOverlay = () => {
-    terminalMatchOverlayRef.current?.replaceChildren();
+    const overlay = terminalMatchOverlayRef.current;
+    if (!overlay) {
+      return;
+    }
+
+    overlay.replaceChildren();
+    const container = containerRef.current;
+    if (container) {
+      syncTerminalHighlightOverlaySize(overlay, container);
+    }
+  };
+
+  // 覆盖层宽高必须来自 xterm 实际内容盒，不能读取 container.scrollWidth；
+  // 否则旧覆盖层自身会参与 scrollWidth 计算，把横向滚动范围持续撑大。
+  const resolveTerminalAuxiliaryLayerSize = (container: HTMLDivElement) => {
+    const terminalElement = terminalRef.current?.element;
+    if (!terminalElement) {
+      return {
+        width: Math.ceil(container.clientWidth),
+        height: Math.ceil(container.clientHeight),
+      };
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const terminalRect = terminalElement.getBoundingClientRect();
+    return {
+      width: Math.ceil(Math.max(container.clientWidth, terminalRect.right - containerRect.left + container.scrollLeft)),
+      height: Math.ceil(Math.max(container.clientHeight, terminalRect.bottom - containerRect.top + container.scrollTop)),
+    };
   };
 
   const syncTerminalHighlightOverlaySize = (overlay: SVGSVGElement, container: HTMLDivElement) => {
-    const width = Math.max(container.scrollWidth, container.clientWidth);
-    const height = Math.max(container.scrollHeight, container.clientHeight);
+    const { width, height } = resolveTerminalAuxiliaryLayerSize(container);
     overlay.setAttribute('width', `${width}`);
     overlay.setAttribute('height', `${height}`);
     overlay.style.width = `${width}px`;
     overlay.style.height = `${height}px`;
   };
 
+  // 横向列宽变化后立即回收两个 SVG 辅助层，避免下一帧刷新前仍由旧宽度撑出空白滚动范围。
+  const syncTerminalAuxiliaryLayerSizes = () => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const overlays = [terminalMatchOverlayRef.current, terminalSelectionOverlayRef.current];
+    for (const overlay of overlays) {
+      if (overlay) {
+        syncTerminalHighlightOverlaySize(overlay, container);
+      }
+    }
+  };
+
+  const resolveTerminalVerticalScrollbarMetrics = (): TerminalVerticalScrollbarMetrics | undefined => {
+    const container = containerRef.current;
+    const terminal = terminalRef.current;
+    if (!container || !terminal) {
+      return undefined;
+    }
+
+    const buffer = terminal.buffer.active;
+    const totalRows = Math.max(terminal.rows, buffer.length);
+    const maxScrollLine = Math.max(0, totalRows - terminal.rows);
+    // 轨道默认 display:none，不能读取自身 clientHeight；用容器高度减去 CSS 上下留白计算。
+    const trackHeight = Math.max(
+      0,
+      container.clientHeight - terminalVerticalScrollbarTopInsetPx - terminalVerticalScrollbarBottomInsetPx,
+    );
+    if (maxScrollLine <= 0 || trackHeight <= 0) {
+      return undefined;
+    }
+
+    // 拇指高度按当前可视行占总缓冲行的比例计算，并保留最小可拖拽尺寸。
+    const thumbHeight = Math.min(
+      trackHeight,
+      Math.max(terminalVerticalScrollbarMinThumbHeightPx, Math.round((trackHeight * terminal.rows) / totalRows)),
+    );
+    const maxThumbTop = Math.max(0, trackHeight - thumbHeight);
+    const viewportY = clampTerminalNumber(buffer.viewportY, 0, maxScrollLine);
+    const thumbTop = maxThumbTop > 0 ? Math.round((viewportY / maxScrollLine) * maxThumbTop) : 0;
+    return { thumbHeight, thumbTop, maxThumbTop, maxScrollLine };
+  };
+
+  const scrollTerminalVerticalScrollbarToThumbTop = (
+    thumbTop: number,
+    metrics: Pick<TerminalVerticalScrollbarMetrics, 'maxThumbTop' | 'maxScrollLine'>,
+  ) => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+
+    const safeThumbTop = clampTerminalNumber(thumbTop, 0, metrics.maxThumbTop);
+    const scrollRatio = metrics.maxThumbTop > 0 ? safeThumbTop / metrics.maxThumbTop : 0;
+    terminal.scrollToLine(Math.round(scrollRatio * metrics.maxScrollLine));
+    syncTerminalVerticalScrollbar();
+  };
+
+  const syncTerminalVerticalScrollbar = () => {
+    const container = containerRef.current;
+    const scrollbar = terminalVerticalScrollbarRef.current;
+    const thumb = terminalVerticalScrollbarThumbRef.current;
+    if (!container || !scrollbar || !thumb) {
+      return;
+    }
+
+    // 该滚动条已经移动到横向滚动容器的外部；由 CSS right 属性固定在右侧，无需再手动叠加 scrollLeft 计算 left。
+
+    const metrics = resolveTerminalVerticalScrollbarMetrics();
+    const isScrollable = Boolean(metrics);
+    scrollbar.classList.toggle('is-scrollable', isScrollable);
+    if (!metrics) {
+      scrollbar.classList.remove('is-visible', 'is-dragging');
+      return;
+    }
+
+    thumb.style.height = `${metrics.thumbHeight}px`;
+    thumb.style.transform = `translateY(${metrics.thumbTop}px)`;
+  };
+
+  const scheduleTerminalVerticalScrollbarSync = () => {
+    if (terminalVerticalScrollbarFrameRef.current !== null) {
+      return;
+    }
+
+    terminalVerticalScrollbarFrameRef.current = window.requestAnimationFrame(() => {
+      terminalVerticalScrollbarFrameRef.current = null;
+      syncTerminalVerticalScrollbar();
+
+      // 上下滚动时短暂展示竖向滚动条，滚动停止后自动隐藏。
+      showTerminalVerticalScrollbar();
+      if (terminalVerticalScrollbarTimeoutRef.current !== null) {
+        window.clearTimeout(terminalVerticalScrollbarTimeoutRef.current);
+      }
+      terminalVerticalScrollbarTimeoutRef.current = window.setTimeout(() => {
+        terminalVerticalScrollbarTimeoutRef.current = null;
+        hideTerminalVerticalScrollbar();
+      }, 1200);
+    });
+  };
+
+  const showTerminalVerticalScrollbar = () => {
+    syncTerminalVerticalScrollbar();
+    const scrollbar = terminalVerticalScrollbarRef.current;
+    if (scrollbar?.classList.contains('is-scrollable')) {
+      scrollbar.classList.add('is-visible');
+    }
+  };
+
+  const hideTerminalVerticalScrollbar = () => {
+    if (terminalVerticalScrollbarDragRef.current) {
+      return;
+    }
+
+    terminalVerticalScrollbarRef.current?.classList.remove('is-visible');
+  };
+
+  // 鼠标靠近终端右侧边缘时展示自绘竖向滚动条，移开后隐藏。
+  const handleTerminalMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const container = containerRef.current;
+    if (!container) {
+      hideTerminalVerticalScrollbar();
+      return;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const isNearRightEdge = containerRect.right - event.clientX <= terminalVerticalScrollbarRevealZonePx;
+    if (isNearRightEdge) {
+      // 鼠标在右侧区域时，取消自动隐藏定时器，保持滚动条常驻。
+      if (terminalVerticalScrollbarTimeoutRef.current !== null) {
+        window.clearTimeout(terminalVerticalScrollbarTimeoutRef.current);
+        terminalVerticalScrollbarTimeoutRef.current = null;
+      }
+      showTerminalVerticalScrollbar();
+      return;
+    }
+
+    // 鼠标不在右侧区域时，如果没有正在运行的滚动隐藏定时器则立刻隐藏。
+    if (terminalVerticalScrollbarTimeoutRef.current === null) {
+      hideTerminalVerticalScrollbar();
+    }
+  };
+
+  const startTerminalVerticalScrollbarDrag = (event: MouseEvent) => {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const scrollbar = terminalVerticalScrollbarRef.current;
+    const thumb = terminalVerticalScrollbarThumbRef.current;
+    const metrics = resolveTerminalVerticalScrollbarMetrics();
+    if (!scrollbar || !thumb || !metrics) {
+      return;
+    }
+
+    const trackRect = scrollbar.getBoundingClientRect();
+    const isThumbDrag = thumb.contains(event.target as Node);
+    const nextThumbTop = isThumbDrag
+      ? metrics.thumbTop
+      : clampTerminalNumber(event.clientY - trackRect.top - metrics.thumbHeight / 2, 0, metrics.maxThumbTop);
+    if (!isThumbDrag) {
+      scrollTerminalVerticalScrollbarToThumbTop(nextThumbTop, metrics);
+    }
+
+    terminalVerticalScrollbarDragRef.current = {
+      originY: event.clientY,
+      originThumbTop: nextThumbTop,
+      maxThumbTop: metrics.maxThumbTop,
+      maxScrollLine: metrics.maxScrollLine,
+    };
+    scrollbar.classList.add('is-visible', 'is-dragging');
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const syncTerminalVerticalScrollbarDrag = (event: MouseEvent) => {
+    const dragState = terminalVerticalScrollbarDragRef.current;
+    if (!dragState) {
+      return;
+    }
+
+    scrollTerminalVerticalScrollbarToThumbTop(
+      dragState.originThumbTop + event.clientY - dragState.originY,
+      dragState,
+    );
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const stopTerminalVerticalScrollbarDrag = () => {
+    terminalVerticalScrollbarDragRef.current = null;
+    terminalVerticalScrollbarRef.current?.classList.remove('is-dragging');
+  };
+
   const clearTerminalSelectionOverlay = () => {
     const overlay = terminalSelectionOverlayRef.current;
     if (overlay) {
       overlay.replaceChildren();
+      const container = containerRef.current;
+      if (container) {
+        syncTerminalHighlightOverlaySize(overlay, container);
+      }
     }
   };
 
@@ -1301,7 +1558,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
 
   // xterm 的 selection change 在拖拽中不一定逐帧触发；鼠标按住时主动同步圆角层，避免临时露出空背景。
   const startTerminalSelectionDragSync = (event: MouseEvent) => {
-    if (event.button !== 0) {
+    if (event.button !== 0 || terminalVerticalScrollbarRef.current?.contains(event.target as Node)) {
       return;
     }
     terminalSelectionDragActiveRef.current = true;
@@ -1440,6 +1697,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     if (!hasHorizontalOverflow) {
       terminalElement.style.width = '100%';
       container.scrollLeft = 0;
+      syncTerminalAuxiliaryLayerSizes();
       return;
     }
 
@@ -1450,6 +1708,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       : fallbackCellWidth;
     const targetWidth = Math.ceil(Math.max(containerWidth, targetCols * Math.max(4, cellWidth) + terminalScrollbarReservePx));
     terminalElement.style.width = `${targetWidth}px`;
+    syncTerminalAuxiliaryLayerSizes();
   };
 
   // 当前可视缓冲区通过 isWrapped 合并软换行片段，避免历史里的 Docker 进度长行永久撑大后续终端。
@@ -1604,6 +1863,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
         scheduleTerminalMatchHighlightRefresh();
         scheduleTerminalSelectionOverlaySync();
         scheduleTerminalControlledInputCursorSync();
+        scheduleTerminalVerticalScrollbarSync();
       });
       return;
     }
@@ -1614,6 +1874,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     scheduleTerminalMatchHighlightRefresh();
     scheduleTerminalSelectionOverlaySync();
     scheduleTerminalControlledInputCursorSync();
+    scheduleTerminalVerticalScrollbarSync();
   };
 
   useEffect(() => {
@@ -1729,6 +1990,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     scheduleTerminalCursorFollow();
     scheduleTerminalSelectionOverlaySync();
     scheduleTerminalControlledInputCursorSync();
+    scheduleTerminalVerticalScrollbarSync();
   };
 
   // 终端尺寸同步统一合并到动画帧，避免连续输出、拖拽窗口和输入回显造成密集 resize。
@@ -1779,6 +2041,14 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     controlledCursor.classList.add('terminal-controlled-input-cursor');
     containerRef.current.appendChild(controlledCursor);
     terminalControlledCursorRef.current = controlledCursor;
+    const verticalScrollbar = document.createElement('div');
+    verticalScrollbar.classList.add('terminal-vertical-scrollbar');
+    const verticalScrollbarThumb = document.createElement('div');
+    verticalScrollbarThumb.classList.add('terminal-vertical-scrollbar-thumb');
+    verticalScrollbar.appendChild(verticalScrollbarThumb);
+    containerRef.current.parentElement?.appendChild(verticalScrollbar);
+    terminalVerticalScrollbarRef.current = verticalScrollbar;
+    terminalVerticalScrollbarThumbRef.current = verticalScrollbarThumb;
     terminal.attachCustomWheelEventHandler(handleAiAgentTerminalWheel);
     const textarea = terminal.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
     const handleTerminalCompositionStart = () => {
@@ -1818,6 +2088,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       scheduleTerminalSelectionOverlaySync();
       scheduleTerminalImeCompositionAnchorSync();
       scheduleTerminalControlledInputCursorSync();
+      scheduleTerminalVerticalScrollbarSync();
     });
     const selectionDisposable = terminal.onSelectionChange(() => {
       scheduleTerminalMatchHighlightRefresh();
@@ -1827,11 +2098,13 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
       scheduleTerminalControlledInputCursorSync();
+      scheduleTerminalVerticalScrollbarSync();
     });
     const handleTerminalSurfaceScroll = () => {
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
       scheduleTerminalControlledInputCursorSync();
+      scheduleTerminalVerticalScrollbarSync();
     };
 
     terminalRef.current = terminal;
@@ -1843,8 +2116,24 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     window.addEventListener('resize', scheduleTerminalSizeSync);
     window.addEventListener('mouseup', stopTerminalSelectionDragSync, true);
     window.addEventListener('blur', stopTerminalSelectionDragSync);
+    window.addEventListener('mousemove', syncTerminalVerticalScrollbarDrag, true);
+    window.addEventListener('mouseup', stopTerminalVerticalScrollbarDrag, true);
+    window.addEventListener('blur', stopTerminalVerticalScrollbarDrag);
     containerRef.current.addEventListener('mousedown', startTerminalSelectionDragSync, true);
     containerRef.current.addEventListener('scroll', handleTerminalSurfaceScroll);
+    verticalScrollbar.addEventListener('mousedown', startTerminalVerticalScrollbarDrag);
+    const handleScrollbarMouseEnter = () => {
+      if (terminalVerticalScrollbarTimeoutRef.current !== null) {
+        window.clearTimeout(terminalVerticalScrollbarTimeoutRef.current);
+        terminalVerticalScrollbarTimeoutRef.current = null;
+      }
+      showTerminalVerticalScrollbar();
+    };
+    const handleScrollbarMouseLeave = () => {
+      hideTerminalVerticalScrollbar();
+    };
+    verticalScrollbar.addEventListener('mouseenter', handleScrollbarMouseEnter);
+    verticalScrollbar.addEventListener('mouseleave', handleScrollbarMouseLeave);
 
     return () => {
       dataDisposable.dispose();
@@ -1860,8 +2149,14 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       window.removeEventListener('resize', scheduleTerminalSizeSync);
       window.removeEventListener('mouseup', stopTerminalSelectionDragSync, true);
       window.removeEventListener('blur', stopTerminalSelectionDragSync);
+      window.removeEventListener('mousemove', syncTerminalVerticalScrollbarDrag, true);
+      window.removeEventListener('mouseup', stopTerminalVerticalScrollbarDrag, true);
+      window.removeEventListener('blur', stopTerminalVerticalScrollbarDrag);
       containerRef.current?.removeEventListener('mousedown', startTerminalSelectionDragSync, true);
       containerRef.current?.removeEventListener('scroll', handleTerminalSurfaceScroll);
+      verticalScrollbar.removeEventListener('mousedown', startTerminalVerticalScrollbarDrag);
+      verticalScrollbar.removeEventListener('mouseenter', handleScrollbarMouseEnter);
+      verticalScrollbar.removeEventListener('mouseleave', handleScrollbarMouseLeave);
       if (resizeFrameRef.current !== null) {
         window.cancelAnimationFrame(resizeFrameRef.current);
         resizeFrameRef.current = null;
@@ -1890,16 +2185,24 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
         window.cancelAnimationFrame(terminalControlledCursorFrameRef.current);
         terminalControlledCursorFrameRef.current = null;
       }
+      if (terminalVerticalScrollbarFrameRef.current !== null) {
+        window.cancelAnimationFrame(terminalVerticalScrollbarFrameRef.current);
+        terminalVerticalScrollbarFrameRef.current = null;
+      }
       terminalImeComposingRef.current = false;
       terminalSelectionDragActiveRef.current = false;
+      terminalVerticalScrollbarDragRef.current = null;
       clearTerminalMatchOverlay();
       hideTerminalControlledInputCursor();
       matchOverlay.remove();
       selectionOverlay.remove();
       controlledCursor.remove();
+      verticalScrollbar.remove();
       terminalMatchOverlayRef.current = null;
       terminalSelectionOverlayRef.current = null;
       terminalControlledCursorRef.current = null;
+      terminalVerticalScrollbarRef.current = null;
+      terminalVerticalScrollbarThumbRef.current = null;
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
@@ -1927,6 +2230,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
           scheduleTerminalSelectionOverlaySync();
           scheduleTerminalImeCompositionAnchorSync();
           scheduleTerminalControlledInputCursorSync();
+          scheduleTerminalVerticalScrollbarSync();
         });
       }
     };
@@ -1966,6 +2270,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
       scheduleTerminalControlledInputCursorSync();
+      scheduleTerminalVerticalScrollbarSync();
     });
   }, [settings.shellFontSize, terminalFontFamily, terminalTheme]);
 
@@ -1996,6 +2301,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       syncTerminalSizeToRemote();
       focusPendingTerminalInput();
       scheduleTerminalControlledInputCursorSync();
+      scheduleTerminalVerticalScrollbarSync();
     });
   }, [session?.id]);
 
@@ -2013,6 +2319,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       syncTerminalSizeToRemote();
       replayCurrentSessionOutput();
       scheduleTerminalControlledInputCursorSync();
+      scheduleTerminalVerticalScrollbarSync();
     });
   }, [effectiveTerminalLineWrapMode]);
 
@@ -2023,6 +2330,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
         className={`terminal-surface ${terminalHasHorizontalOverflow && effectiveTerminalLineWrapMode === 'horizontal' ? 'is-horizontal-scroll' : 'is-wrapped'}`}
         ref={containerRef}
         onContextMenu={handleTerminalContextMenu}
+        onMouseLeave={hideTerminalVerticalScrollbar}
+        onMouseMove={handleTerminalMouseMove}
         onWheel={handleTerminalWheel}
       />
 

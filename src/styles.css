@@ -2550,14 +2550,13 @@ select:disabled {
 }
 
 .terminal-surface .xterm-viewport {
-  overflow-y: scroll !important;
+  overflow-y: hidden !important;
   scrollbar-width: none !important;
   -ms-overflow-style: none !important;
 }
 
 .terminal-surface .xterm-viewport::-webkit-scrollbar,
-.terminal-surface .xterm-screen::-webkit-scrollbar,
-.terminal-surface::-webkit-scrollbar {
+.terminal-surface .xterm-screen::-webkit-scrollbar {
   width: 0 !important;
   height: 0 !important;
   display: none !important;
@@ -2569,11 +2568,10 @@ select:disabled {
 }
 
 /* 横向滚动模式保留 xterm 内部竖向滚动隐藏，只开放外层底部滑块承载长行浏览。 */
+/* 这里不能写 scrollbar-width/scrollbar-color：Chromium 121+ 中标准属性非 auto 会让本元素的 ::-webkit-scrollbar 系列整体失效。 */
 .terminal-surface.is-horizontal-scroll {
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(203, 213, 225, 0.42) rgba(226, 232, 240, 0.2);
   overscroll-behavior: contain;
 }
 
@@ -2582,37 +2580,31 @@ select:disabled {
   padding-bottom: 18px;
 }
 
+/* 横向模式使用右侧自绘竖向滚动条，隐藏 xterm 内部原生竖向滚动条避免最右侧重叠。 */
 .terminal-surface.is-horizontal-scroll .xterm-viewport {
   bottom: 18px;
+  overflow-y: hidden !important;
+  overflow-x: hidden !important;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
 }
 
-.terminal-surface.is-horizontal-scroll::-webkit-scrollbar {
-  width: 10px !important;
-  height: 10px !important;
-  display: block;
+/* 横向模式下所有子元素的滚动条全部强制隐藏，防止 xterm 内部任何元素渲染出原生竖向滚动条。 */
+.terminal-surface.is-horizontal-scroll *::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
 }
 
-.terminal-surface.is-horizontal-scroll::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
-  border-radius: 999px;
-  background-color: rgba(203, 213, 225, 0.42) !important;
-  background-clip: padding-box;
+.terminal-surface.is-horizontal-scroll * {
+  scrollbar-width: none !important;
 }
 
-.terminal-surface.is-horizontal-scroll::-webkit-scrollbar-thumb:hover {
-  /* 滑块本体悬停和按下保持同一深色；不使用容器 hover，避免鼠标仍在终端内时一直保持深色。 */
-  background-color: rgba(15, 23, 42, 0.94) !important;
-  background-clip: padding-box;
-}
-
-.terminal-surface.is-horizontal-scroll::-webkit-scrollbar-thumb:active {
-  background-color: rgba(15, 23, 42, 0.94) !important;
-  background-clip: padding-box;
-}
-
-.terminal-surface.is-horizontal-scroll::-webkit-scrollbar-track {
-  border-radius: 999px;
-  background: rgba(226, 232, 240, 0.2);
+/* xterm 6 起竖向滚动条是 DOM 自绘元素（.xterm-scrollable-element > .scrollbar.vertical），不是原生 overflow 滚动条；
+   overflow-y/scrollbar-width/::-webkit-scrollbar 对它全部无效，必须直接隐藏元素本身。
+   本地终端、AI Agent（wrap 模式）与 SSH（横向模式）竖向浏览统一交给右侧自绘的 .terminal-vertical-scrollbar。 */
+.terminal-surface .xterm-scrollable-element > .scrollbar.vertical {
+  display: none !important;
 }
 
 /* 连接管理拖拽只从抓手启动，避免点击连接、编辑分组时误触拖动或被按钮区域吞掉 dragstart。 */
@@ -3553,4 +3545,132 @@ select:disabled {
 
 .app-shell.theme-dark .backup-download-btn {
   color: #60a5fa;
+}
+
+/* ── 横向长行模式下的右侧自绘竖向滚动条 ────────────────────────────── */
+
+.terminal-vertical-scrollbar {
+  position: absolute;
+  z-index: 20;
+  top: 12px;
+  right: 0px;
+  bottom: 26px;
+  display: none;
+  width: 14px;
+  border-radius: 999px;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 120ms ease;
+}
+
+.terminal-vertical-scrollbar.is-scrollable {
+  display: block;
+}
+
+.terminal-vertical-scrollbar.is-visible,
+.terminal-vertical-scrollbar.is-dragging {
+  opacity: 1;
+  pointer-events: auto;
+  cursor: default;
+}
+
+.terminal-vertical-scrollbar-thumb {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: 0;
+  min-height: 32px;
+  border-radius: 999px;
+  background: #777777;
+  box-shadow: inset 0 0 0 999px #777777;
+  transition: background-color 120ms ease;
+}
+
+.terminal-vertical-scrollbar:hover .terminal-vertical-scrollbar-thumb,
+.terminal-vertical-scrollbar.is-dragging .terminal-vertical-scrollbar-thumb {
+  background: #777777;
+  box-shadow: inset 0 0 0 999px #777777;
+}
+
+/* ── 深色模式 - 横向/竖向滚动条颜色统一为 #999 ──────────────────────── */
+
+.app-shell.theme-dark .terminal-vertical-scrollbar-thumb {
+  background: #999999;
+  box-shadow: inset 0 0 0 999px #999999;
+}
+
+.app-shell.theme-dark .terminal-vertical-scrollbar:hover .terminal-vertical-scrollbar-thumb,
+.app-shell.theme-dark .terminal-vertical-scrollbar.is-dragging .terminal-vertical-scrollbar-thumb {
+  background: #999999;
+  box-shadow: inset 0 0 0 999px #999999;
+}
+
+/* 强制隐藏整个终端区域内所有的原生滚动条（除了横向模式下的底轨） */
+.terminal-workspace ::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+
+.terminal-surface ::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+
+.xterm-viewport::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+
+.terminal-workspace *,
+.terminal-surface *,
+.xterm-viewport,
+.xterm-viewport * {
+  scrollbar-width: none !important;
+}
+
+/* 仅在横向滚动模式下的 terminal-surface 上重建横向滚动条，并隐藏其纵向分量 */
+.terminal-surface.is-horizontal-scroll::-webkit-scrollbar {
+  width: 0 !important;
+  height: 10px !important;
+  display: block !important;
+}
+
+/* 底部横向滑块恒定同色：hover/active 显式写成同一颜色，避免浏览器自带的悬停变色反馈。 */
+.terminal-surface.is-horizontal-scroll::-webkit-scrollbar-thumb,
+.terminal-surface.is-horizontal-scroll::-webkit-scrollbar-thumb:hover,
+.terminal-surface.is-horizontal-scroll::-webkit-scrollbar-thumb:active {
+  border: 2px solid transparent !important;
+  border-radius: 999px !important;
+  background: #777777 !important;
+  background-color: #777777 !important;
+  background-clip: padding-box !important;
+}
+
+.terminal-surface.is-horizontal-scroll::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+
+.terminal-surface.is-horizontal-scroll::-webkit-scrollbar-corner {
+  background: transparent !important;
+}
+
+/* Chromium 121+ 中 scrollbar-width/scrollbar-color 非 auto 会让上面的 ::-webkit-scrollbar 系列整体失效，
+   且标准滚动条的 thumb 悬停时会被浏览器自动变色、无法关闭；
+   这里强制回 auto 走 ::-webkit-scrollbar 自绘路径（!important 用于压过上方通配选择器里的 none）。 */
+.terminal-surface.is-horizontal-scroll {
+  scrollbar-width: auto !important;
+  scrollbar-color: auto !important;
+}
+
+/* 深色模式横轨颜色适配（hover/active 同样恒定同色） */
+.app-shell.theme-dark .terminal-surface.is-horizontal-scroll::-webkit-scrollbar-thumb,
+.app-shell.theme-dark .terminal-surface.is-horizontal-scroll::-webkit-scrollbar-thumb:hover,
+.app-shell.theme-dark .terminal-surface.is-horizontal-scroll::-webkit-scrollbar-thumb:active {
+  background: #999999 !important;
+  background-color: #999999 !important;
 }
