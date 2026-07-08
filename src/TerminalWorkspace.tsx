@@ -82,7 +82,8 @@ const terminalMatchHighlightGapPx = 1.5;
 type TerminalLayoutSize = {
   // renderCols 是前端 xterm 的渲染列数，横向模式可临时扩大用于浏览当前可见长行。
   renderCols: number;
-  // remoteCols 是远端 PTY 真实列数，必须保持为容器可视列数，避免 scp/top 等程序按虚假宽度布局。
+  // remoteCols 是发给远端 PTY 的列数，必须与 renderCols 保持一致，否则 readline/zle 会按错误宽度
+  // 计算命令行重绘时要清除的物理行数，导致按上/下键翻历史命令时旧行和右侧内容残留清不掉。
   remoteCols: number;
   rows: number;
   visibleCols: number;
@@ -1772,11 +1773,12 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
 
     const visibleCols = Math.max(2, proposed.cols);
     const rows = Math.max(1, proposed.rows);
-    // 远端 PTY 只同步真实可视列数；前端横向浏览需要的扩列仅作用于 xterm 渲染层。
+    // 横向浏览需要的扩列同时作用于 xterm 渲染层和远端 PTY：readline 只有拿到与 xterm 相同的列宽，
+    // 才能在翻历史命令时按正确的物理行数发送清除序列，避免长命令的多余行/右侧内容残留。
     const renderCols = terminalLineWrapModeRef.current === 'horizontal'
       ? resolveHorizontalTerminalColumns(visibleCols)
       : visibleCols;
-    return { renderCols, remoteCols: visibleCols, rows, visibleCols };
+    return { renderCols, remoteCols: renderCols, rows, visibleCols };
   };
 
   // 前端渲染尺寸和横向滚动状态集中在这里更新，缓存重放前也可复用以清掉旧宽度。
@@ -1983,7 +1985,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     const nextSize = { cols: nextLayoutSize.remoteCols, rows: nextLayoutSize.rows };
     const previousSize = remoteTerminalSizeRef.current;
     remoteTerminalSizeRef.current = nextSize;
-    // 远端程序只能看到真实可视列宽；前端横向扩列不再污染 scp/docker/top 读取到的 PTY 尺寸。
+    // 远端 PTY 列宽与 xterm 渲染列宽保持一致（横向模式下同步扩列），确保 readline/zle 翻历史命令时
+    // 按正确宽度重绘；代价是横向扩列时 top/docker 等程序也会看到被撑宽的终端尺寸。
     if (currentSession && (!previousSize || previousSize.cols !== nextSize.cols || previousSize.rows !== nextSize.rows)) {
       void backend.resizeTerminal(currentSession.id, nextLayoutSize.remoteCols, nextLayoutSize.rows);
     }
@@ -2316,8 +2319,13 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     // 模式切换触发的是缓存重排，不是用户正在编辑命令，避免切换后按旧光标位置自动横移。
     lastLocalTerminalInputAtRef.current = 0;
     window.requestAnimationFrame(() => {
+      // 模式切换只按新列宽 resize，交给 xterm 原生 reflow 重排当前缓冲区；绝不能 reset+重放原始缓存，
+      // 否则历史翻页时 readline 的原地重绘序列会按新列宽错位，导致翻过的命令全部堆叠残留在屏幕上。
       syncTerminalSizeToRemote();
-      replayCurrentSessionOutput();
+      clearTerminalMatchOverlay();
+      clearTerminalSelectionOverlay();
+      scheduleTerminalMatchHighlightRefresh();
+      scheduleTerminalSelectionOverlaySync();
       scheduleTerminalControlledInputCursorSync();
       scheduleTerminalVerticalScrollbarSync();
     });
