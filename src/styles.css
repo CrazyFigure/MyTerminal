@@ -60,6 +60,8 @@ select:disabled {
   /* 弹窗、右键菜单和下拉浮层承载操作入口，必须使用实色背景避免底层终端内容透出。 */
   --app-overlay-bg: #ffffff;
   --app-card-border: rgba(148, 163, 184, 0.28);
+  /* 弹窗边框需要比普通卡片更明确，避免实色浮层和背后面板在同色区域混在一起。 */
+  --app-modal-border: rgba(100, 116, 139, 0.38);
   --app-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
   --app-panel-bg: rgba(248, 250, 252, 0.95);
   --app-item-bg: rgba(248, 250, 252, 0.84);
@@ -90,6 +92,7 @@ select:disabled {
   --app-card-bg: rgba(15, 23, 42, 0.88);
   --app-overlay-bg: #0f172a;
   --app-card-border: rgba(71, 85, 105, 0.42);
+  --app-modal-border: rgba(148, 163, 184, 0.56);
   --app-shadow: 0 22px 52px rgba(2, 6, 23, 0.34);
   --app-panel-bg: rgba(30, 41, 59, 0.9);
   --app-item-bg: rgba(30, 41, 59, 0.76);
@@ -203,14 +206,15 @@ select:disabled {
 
 .runtime-row {
   display: grid;
-  grid-template-columns: 54px minmax(0, 1fr);
+  grid-template-columns: minmax(84px, max-content) minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
-  min-height: 22px;
-  padding: 1px 0;
-  border: 0;
+  min-height: 24px;
+  padding: 2px 3px;
+  border: 1px solid transparent;
   border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 5px;
   background: transparent;
   color: inherit;
   font-size: 0.78rem;
@@ -226,8 +230,39 @@ select:disabled {
   cursor: pointer;
 }
 
+.runtime-row.is-cpu-row.is-clickable {
+  border-color: rgba(79, 70, 229, 0.22);
+  background: rgba(238, 242, 255, 0.72);
+}
+
+.app-shell.theme-dark .runtime-row.is-cpu-row.is-clickable {
+  border-color: rgba(129, 140, 248, 0.32);
+  background: rgba(99, 102, 241, 0.14);
+}
+
 .runtime-row.is-clickable:hover {
-  background: rgba(148, 163, 184, 0.12);
+  border-color: var(--app-active-border);
+  background: var(--app-active-bg);
+}
+
+.runtime-row.is-clickable:focus-visible {
+  outline: 2px solid var(--app-active-border);
+  outline-offset: 1px;
+}
+
+.runtime-row.is-cpu-row .metric-label {
+  color: var(--app-text);
+  font-weight: 700;
+}
+
+.runtime-expand-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  color: var(--app-active-text);
 }
 
 .metric-bar-cell {
@@ -273,6 +308,12 @@ select:disabled {
   line-height: 16px;
 }
 
+/* 进度条底色和填充色都偏浅，数值固定用深色字保证深色主题下也有足够反差。 */
+.runtime-row:not(.metric-tone-neutral) .metric-value,
+.runtime-core-row .metric-value {
+  color: #0f172a;
+}
+
 .runtime-row-group {
   min-width: 0;
 }
@@ -286,7 +327,7 @@ select:disabled {
 
 .runtime-core-row {
   display: grid;
-  grid-template-columns: 50px minmax(0, 1fr);
+  grid-template-columns: 54px minmax(0, 1fr);
   align-items: center;
   gap: 5px;
   min-height: 18px;
@@ -2048,6 +2089,7 @@ select:disabled {
 
 /* 所有弹窗外壳统一使用实色浮层背景，避免通用 card 的半透明背景泄露到底层终端。 */
 .modal.card {
+  border-color: var(--app-modal-border);
   background: var(--app-overlay-bg);
 }
 

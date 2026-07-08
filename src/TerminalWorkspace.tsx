@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from 'react';
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
-import { Terminal, type IBufferCell, type IBufferLine } from '@xterm/xterm';
+import { Terminal, type IBufferCell, type IBufferLine, type IDisposable } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 
 import { backend } from './backend';
@@ -67,11 +67,14 @@ const terminalControlledInputCursorCommandNames = new Set(['codex']);
 const terminalMatchHighlightOverscanRows = 24;
 // 单字符选择可能命中非常多内容，硬上限用于保护 WebView 内存和滚动帧率。
 const terminalMatchHighlightMaxRanges = 1800;
-// 选区和匹配项都用底层 SVG 色块绘制，颜色在文字下方，不覆盖终端字符。
+// 选区和匹配项都用底层 SVG 色块绘制，颜色在文字下方，不覆盖终端字符；深色匹配项额外用 xterm decoration 调整文字色。
 const terminalSelectionHighlightBackground = '#c7c7fb';
 const terminalSelectionHighlightBorder = '#b8b8f5';
-const terminalMatchHighlightBackground = '#cfcfcf';
-const terminalMatchHighlightBorder = '#bdbdbd';
+const terminalMatchHighlightLightBackground = '#cfcfcf';
+const terminalMatchHighlightLightBorder = '#bdbdbd';
+const terminalMatchHighlightDarkBackground = '#d8d6ff';
+const terminalMatchHighlightDarkBorder = '#b9b5ff';
+const terminalMatchHighlightDarkForeground = '#111827';
 const terminalHighlightSvgNamespace = 'http://www.w3.org/2000/svg';
 // 圆角只做柔化，不接近胶囊形；终端行高较小时也保留轻微弧度。
 const terminalHighlightCornerRadiusPx = 4;
@@ -100,6 +103,12 @@ type TerminalHighlightStrip = {
   top: number;
   right: number;
   bottom: number;
+};
+
+type TerminalMatchDecorationRange = {
+  row: number;
+  column: number;
+  width: number;
 };
 
 type TerminalHighlightPoint = {
@@ -437,6 +446,21 @@ const createTerminalHighlightPathElement = (className: string, color: string, bo
   path.setAttribute('vector-effect', 'non-scaling-stroke');
   return path;
 };
+
+// 匹配高亮需要按主题换底色，避免深色模式白色终端字压在浅灰命中块上读不清。
+const resolveTerminalMatchHighlightColors = (isDarkTheme: boolean) => (
+  isDarkTheme
+    ? {
+        background: terminalMatchHighlightDarkBackground,
+        border: terminalMatchHighlightDarkBorder,
+        foreground: terminalMatchHighlightDarkForeground,
+      }
+    : {
+        background: terminalMatchHighlightLightBackground,
+        border: terminalMatchHighlightLightBorder,
+        foreground: undefined,
+      }
+);
 
 // 横向列数只在确实超过可视宽度时增长，并按固定步长取整来减少后端 resize 抖动。
 const roundHorizontalColumns = (requiredColumns: number, visibleColumns: number) => {
@@ -835,6 +859,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   const fitAddonRef = useRef<FitAddon | null>(null);
   const cachedOutputBySessionRef = useRef<Record<string, string>>({});
   const terminalMatchOverlayRef = useRef<SVGSVGElement | null>(null);
+  const terminalMatchDecorationDisposablesRef = useRef<IDisposable[]>([]);
   const terminalMatchHighlightFrameRef = useRef<number | null>(null);
   const terminalSelectionOverlayRef = useRef<SVGSVGElement | null>(null);
   const terminalSelectionOverlayFrameRef = useRef<number | null>(null);
@@ -1166,6 +1191,17 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   };
 
   const clearTerminalMatchOverlay = () => {
+    const terminal = terminalRef.current;
+    const hadDecorations = terminalMatchDecorationDisposablesRef.current.length > 0;
+    for (const disposable of terminalMatchDecorationDisposablesRef.current) {
+      disposable.dispose();
+    }
+    terminalMatchDecorationDisposablesRef.current = [];
+    if (hadDecorations && terminal && terminal.rows > 0) {
+      // 匹配文字前景色由 xterm decoration 接管，清除 decoration 后必须重绘可视行，避免旧色残留。
+      terminal.refresh(0, terminal.rows - 1);
+    }
+
     const overlay = terminalMatchOverlayRef.current;
     if (!overlay) {
       return;
@@ -1175,6 +1211,77 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     const container = containerRef.current;
     if (container) {
       syncTerminalHighlightOverlaySize(overlay, container);
+    }
+  };
+
+  const terminalMatchRangeToDecorationRanges = (range: TerminalMatchRange) => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return [];
+    }
+
+    const ranges: TerminalMatchDecorationRange[] = [];
+    let row = range.row;
+    let column = range.col;
+    let remainingSize = range.size;
+    while (remainingSize > 0) {
+      const width = Math.min(Math.max(terminal.cols - column, 0), remainingSize);
+      if (width > 0) {
+        ranges.push({ row, column, width });
+      }
+      remainingSize -= width;
+      row += 1;
+      column = 0;
+      if (width <= 0) {
+        break;
+      }
+    }
+    return ranges;
+  };
+
+  const syncTerminalMatchDecorations = (ranges: TerminalMatchRange[], foregroundColor?: string) => {
+    const terminal = terminalRef.current;
+    const hadDecorations = terminalMatchDecorationDisposablesRef.current.length > 0;
+    for (const disposable of terminalMatchDecorationDisposablesRef.current) {
+      disposable.dispose();
+    }
+    terminalMatchDecorationDisposablesRef.current = [];
+
+    if (!terminal || !foregroundColor) {
+      if (hadDecorations && terminal && terminal.rows > 0) {
+        terminal.refresh(0, terminal.rows - 1);
+      }
+      return;
+    }
+
+    const buffer = terminal.buffer.active;
+    const disposables: IDisposable[] = [];
+    for (const range of ranges) {
+      for (const decorationRange of terminalMatchRangeToDecorationRanges(range)) {
+        // xterm marker 以当前光标为基准定位缓冲区行，匹配范围来自绝对 buffer row，需要转换成 cursorYOffset。
+        const markerOffset = decorationRange.row - buffer.baseY - buffer.cursorY;
+        const marker = terminal.registerMarker(markerOffset);
+        if (!marker) {
+          continue;
+        }
+        const decoration = terminal.registerDecoration({
+          marker,
+          x: decorationRange.column,
+          width: decorationRange.width,
+          foregroundColor,
+          layer: 'top',
+        });
+        if (!decoration) {
+          marker.dispose();
+          continue;
+        }
+        disposables.push(marker, decoration);
+      }
+    }
+    terminalMatchDecorationDisposablesRef.current = disposables;
+    if ((hadDecorations || disposables.length > 0) && terminal.rows > 0) {
+      // xterm decoration 只在重绘后才会把匹配项文字改成深色，避免深色模式下白字压在浅色块上。
+      terminal.refresh(0, terminal.rows - 1);
     }
   };
 
@@ -1630,6 +1737,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     );
 
     const paths: SVGPathElement[] = [];
+    const matchHighlightColors = resolveTerminalMatchHighlightColors(settings.themeMode === 'dark');
+    syncTerminalMatchDecorations(ranges, matchHighlightColors.foreground);
     for (const range of ranges) {
       const resolved = terminalMatchRangeToHighlightStrips(range, metrics);
       if (!resolved.strips.length) {
@@ -1639,8 +1748,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       if (pathValue) {
         paths.push(createTerminalHighlightPathElement(
           'terminal-match-rounded-shape',
-          terminalMatchHighlightBackground,
-          terminalMatchHighlightBorder,
+          matchHighlightColors.background,
+          matchHighlightColors.border,
           pathValue,
         ));
       }
