@@ -229,6 +229,10 @@ Before opening a pull request, run the smallest useful checks for your change. F
 - Community: [Linux.do](https://linux.do)
 - Inspired by practical remote terminal workflows found in tools such as FinalShell.
 
+## Star History
+
+![Star History Chart](https://starchart.cc/CrazyFigure/MyTerminal.svg)
+
 ## License
 
 [MIT](./LICENSE) © 2026 CrazyFigure
