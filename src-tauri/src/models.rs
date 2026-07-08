@@ -662,6 +662,7 @@ pub struct UpdateCheckResult {
     pub installer_asset_name: Option<String>,
     pub installer_download_url: Option<String>,
     pub installer_size: Option<u64>,
+    pub release_body: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

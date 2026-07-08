@@ -240,6 +240,7 @@ export interface UpdateCheckResult {
   installerAssetName?: string;
   installerDownloadUrl?: string;
   installerSize?: number;
+  releaseBody?: string;
 }
 
 export interface LocalTerminalCommand {
