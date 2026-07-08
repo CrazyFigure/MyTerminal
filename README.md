@@ -206,28 +206,9 @@ npm run check        # Run frontend build and Rust backend checks
 - **Terminal and editor:** xterm.js, portable-pty, Monaco Editor
 - **Sync and files:** SFTP, WebDAV, local import/export
 
-## Current Limitations
-
-- `known_hosts` and host fingerprint trust flows are not implemented yet.
-- Large SFTP transfers do not have progress bars or cancel controls yet.
-- Tunnel management supports create, edit, start, and stop, but does not yet expose advanced runtime metrics such as active connection counts.
-- Monaco is lazy-loaded, but production builds may still show large chunk warnings because xterm.js and Monaco are both substantial dependencies.
-
-## Contributing
-
-Issues, bug reports, and pull requests are welcome. A good contribution usually includes:
-
-- A clear description of the problem or feature.
-- Steps to reproduce when reporting a bug.
-- Screenshots or logs for UI and connection issues.
-- A focused change set that keeps unrelated refactors out of the same pull request.
-
-Before opening a pull request, run the smallest useful checks for your change. For behavior that touches both frontend and backend, `npm run check` is the preferred baseline.
-
 ## Acknowledgements
 
-- Community: [Linux.do](https://linux.do)
-- Inspired by practical remote terminal workflows found in tools such as FinalShell.
+- Thanks to the [Linux.do](https://linux.do) community for project promotion and feedback.
 
 ## Star History
 
