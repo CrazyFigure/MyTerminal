@@ -212,7 +212,7 @@ npm run check        # 执行前端构建和 Rust 后端检查
 
 ## Star 走势
 
-![Star 走势图](https://starchart.cc/CrazyFigure/MyTerminal.svg)
+![Star 走势图](https://api.star-history.com/svg?repos=CrazyFigure/MyTerminal&type=Date)
 
 ## License
 
