@@ -2463,6 +2463,7 @@ function SettingsModal({
     exportLocalConfig,
     importLocalConfig,
     persistSettings,
+    updateCheckResult: storeUpdateCheckResult,
     updateSettings,
   } = useAppStore();
   const [revealWebdavPassword, setRevealWebdavPassword] = useState(false);
@@ -2770,9 +2771,11 @@ function SettingsModal({
       setDraftSettings(settings);
       setSettingsSaveMessage('');
       setSettingsActionRunning('');
+      // 打开设置页时同步定时检测缓存的结果，避免首页已发现更新而关于页仍显示旧版本。
+      setUpdateCheckResult(storeUpdateCheckResult);
       void refreshAgentBridgeStatus();
     }
-  }, [open, settings]);
+  }, [open, settings, storeUpdateCheckResult]);
 
   useEffect(() => {
     return () => {
@@ -3524,12 +3527,18 @@ export default function App() {
   // 上一轮审批状态用于识别 pending -> running/completed/rejected/error，保证执行后自动折叠一次。
   const agentRequestStatusRef = useRef<Record<string, string>>({});
   const [explorerViewport, setExplorerViewport] = useState({ height: 0, scrollTop: 0 });
+  // 首页工具栏“更新”按钮触发的弹窗状态，与设置页内的更新弹窗独立，避免互相抢占打开状态。
+  const [appUpdateModalOpen, setAppUpdateModalOpen] = useState(false);
+  const [appUpdateInstalling, setAppUpdateInstalling] = useState(false);
+  const [appUpdateProgress, setAppUpdateProgress] = useState<UpdateDownloadProgress | null>(null);
+  const [appUpdateError, setAppUpdateError] = useState<string | null>(null);
 
   const {
     activeConnectionId,
     activeSessionId,
     bootstrapped,
     bootstrap,
+    checkForUpdates,
     closeSession,
     closeTunnel,
     commandBuffers,
@@ -3540,6 +3549,7 @@ export default function App() {
     editTunnel,
     files,
     history,
+    installUpdate,
     openConnectionForm,
     openSession,
     openRemoteFile,
@@ -3563,12 +3573,47 @@ export default function App() {
     startTunnel,
     stopAllTunnels,
     tunnels,
+    updateCheckResult,
     uploadLocalFiles,
     uploadLocalPaths,
   } = useAppStore();
 
   const t = useCallback((key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements), [settings.uiLanguage]);
+
+  // 首页工具栏“更新”按钮和设置页共用后端安装接口，但下载进度与弹窗状态各自独立。
+  const openAppExternalLink = useCallback((url: string) => {
+    if (!isTauriRuntime()) {
+      window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    void backend.openExternalUrl(url).catch(() => {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    });
+  }, []);
+  const handleAppInstallUpdate = useCallback(async () => {
+    if (!updateCheckResult) {
+      return;
+    }
+    setAppUpdateInstalling(true);
+    setAppUpdateError(null);
+    setAppUpdateProgress(null);
+    try {
+      await installUpdate(updateCheckResult);
+      // 安装程序已由后端启动，关闭首页弹窗即可，避免遮挡安装器窗口。
+      setAppUpdateModalOpen(false);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (reason === t('downloadCancelled')) {
+        setAppUpdateInstalling(false);
+        return;
+      }
+      setAppUpdateError(t('statusUpdateInstallFailed', { reason }));
+    } finally {
+      setAppUpdateInstalling(false);
+      setAppUpdateProgress(null);
+    }
+  }, [installUpdate, t, updateCheckResult]);
 
   const activeSession = useMemo(() => sessions.find((item) => item.id === activeSessionId), [activeSessionId, sessions]);
   // 远端文件、运行状态和历史都必须绑定到已经打开的终端会话，避免仅选中连接时提前拉取远端数据。
@@ -3844,6 +3889,46 @@ export default function App() {
       void bootstrap();
     }
   }, [bootstrap, bootstrapped]);
+
+  // 启动后立即检测一次更新，之后每 10 分钟复检一次；网络失败时静默忽略，不打扰用户。
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return undefined;
+    }
+    const runSilentCheck = () => {
+      void checkForUpdates().catch(() => {
+        // 网络异常或 GitHub 不可达时不报错，仅在后台静默失败。
+      });
+    };
+    runSilentCheck();
+    const timer = window.setInterval(runSilentCheck, 10 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [checkForUpdates]);
+
+  // 下载进度事件由后端统一发出，首页和设置页弹窗共用同一个事件名，分别更新各自进度状态。
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return undefined;
+    }
+    let unlistenFn: (() => void) | undefined;
+    let isMounted = true;
+    void import('@tauri-apps/api/event').then(({ listen }) =>
+      listen('myterminal-update-download-progress', (event) => {
+        const payload = event.payload as UpdateDownloadProgress;
+        setAppUpdateProgress(payload);
+      }),
+    ).then((unlisten) => {
+      if (isMounted) {
+        unlistenFn = unlisten;
+      } else {
+        unlisten();
+      }
+    }).catch(() => undefined);
+    return () => {
+      isMounted = false;
+      unlistenFn?.();
+    };
+  }, []);
 
   // 主题切换时同步 Tauri 窗口主题和 document 颜色方案，确保标题栏、表单控件立即跟随。
   useEffect(() => {
@@ -5306,6 +5391,16 @@ export default function App() {
           </div>
 
           <div className="workspace-toolbar-actions">
+            {updateCheckResult?.updateAvailable ? (
+              <button
+                className="primary-button update-available-button"
+                onClick={() => setAppUpdateModalOpen(true)}
+                title={t('updateModalTitle')}
+                type="button"
+              >
+                <RefreshCw size={16} /> {renderActionButtonLabel(t('updateButton'))}
+              </button>
+            ) : null}
             <button className="secondary-button" onClick={() => setLocalTerminalsOpen(true)} type="button">
               <Laptop size={16} /> {renderActionButtonLabel(t('localTerminalTitle'))}
             </button>
@@ -5596,6 +5691,21 @@ export default function App() {
       <ConnectionManagerModal open={connectionsOpen} onClose={() => setConnectionsOpen(false)} />
       <LocalTerminalManagerModal open={localTerminalsOpen} onClose={() => setLocalTerminalsOpen(false)} />
       <SettingsModal open={settingsOpen} activeTab={settingsTab} onClose={() => setSettingsOpen(false)} onTabChange={setSettingsTab} />
+      <UpdateModal
+        downloading={appUpdateInstalling}
+        error={appUpdateError}
+        onClose={() => {
+          setAppUpdateModalOpen(false);
+          setAppUpdateProgress(null);
+          setAppUpdateError(null);
+        }}
+        onDownload={() => void handleAppInstallUpdate()}
+        onOpenRelease={(url) => openAppExternalLink(url)}
+        open={appUpdateModalOpen}
+        progress={appUpdateProgress}
+        result={updateCheckResult}
+        t={t}
+      />
       <EditorModal onSaveWithProgress={saveRemoteFileWithProgress} />
       <ConnectionFormModal />
       <TunnelFormModal />

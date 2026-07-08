@@ -2743,6 +2743,23 @@ select:disabled {
   justify-content: flex-start;
 }
 
+/* 首页工具栏“更新”按钮用主色高亮，提示用户有新版本可下载安装。 */
+.update-available-button {
+  position: relative;
+  animation: update-button-pulse 2s ease-in-out infinite;
+}
+
+@keyframes update-button-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.35); }
+  50% { box-shadow: 0 0 0 4px rgba(79, 70, 229, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-available-button {
+    animation: none;
+  }
+}
+
 .agent-bridge-control {
   gap: 14px;
 }
