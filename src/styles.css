@@ -2760,6 +2760,54 @@ select:disabled {
   }
 }
 
+/* 通用刷新旋转动画：任何带 is-spinning 的图标持续匀速旋转，用于运行状态/文件/历史刷新按钮。 */
+.is-spinning {
+  animation: panel-refresh-spin 0.9s linear infinite;
+  transform-origin: center;
+}
+
+@keyframes panel-refresh-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* 面板首次加载遮罩：覆盖在对应面板内容区，居中显示旋转图标和“正在刷新”文案。 */
+.panel-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--app-muted);
+  font-size: 0.82rem;
+  /* 半透明背景保证遮罩期间隐约透出旧布局，过渡更自然；变量已带透明度，直接复用卡片背景。 */
+  background: var(--app-card-bg);
+  pointer-events: none;
+}
+
+/* 行内变体：用于文件/历史列表这类没有定位父级的场景，占据列表空白区而非绝对覆盖。 */
+.panel-loading-overlay.is-inline {
+  position: static;
+  inset: auto;
+  padding: 24px 12px;
+  background: transparent;
+}
+
+/* 运行状态列表在加载遮罩期间需要成为定位父级，并留出最小高度承载遮罩。 */
+.runtime-list.is-panel-loading {
+  position: relative;
+  min-height: 96px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-spinning {
+    animation: none;
+  }
+}
+
 .agent-bridge-control {
   gap: 14px;
 }

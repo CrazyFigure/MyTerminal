@@ -610,6 +610,10 @@ type StoreState = {
   files: RemoteFileEntry[];
   currentRemotePath: string;
   runtimeOverview?: RuntimeOverview;
+  // 三个远端面板各自的刷新态：仅在“无旧内容可展示”时才用于显示刷新动画，避免定时刷新时闪烁。
+  runtimeLoading: boolean;
+  filesLoading: boolean;
+  historyLoading: boolean;
   connectionTestResult?: ConnectionTestResult;
   editorDocument?: EditorDocument;
   activeConnectionId?: string;
@@ -706,6 +710,9 @@ export const useAppStore = create<StoreState>((set, get) => ({
   files: [],
   currentRemotePath: '',
   runtimeOverview: undefined,
+  runtimeLoading: false,
+  filesLoading: false,
+  historyLoading: false,
   connectionTestResult: undefined,
   editorDocument: undefined,
   activeConnectionId: undefined,
@@ -749,12 +756,17 @@ export const useAppStore = create<StoreState>((set, get) => ({
         ? state.sessions.find((item) => item.connectionId === activeConnectionId)
         : undefined;
       const keepCurrentFiles = Boolean(matchedSession && matchedSession.connectionId === state.activeConnectionId);
+      // 切到同一连接的其它会话时保留运行状态/文件旧内容，避免整块回退成空白；只有真正换连接才清空。
+      const willRefreshRemote = isUsableRemoteSession(matchedSession);
 
       return {
         activeConnectionId,
         activeSessionId: matchedSession?.id,
-        runtimeOverview: undefined,
+        runtimeOverview: keepCurrentFiles ? state.runtimeOverview : undefined,
+        // 只有换到别的连接且需要拉取远端时才进入加载态显示刷新动画；保留旧内容时不显示动画。
+        runtimeLoading: willRefreshRemote && !keepCurrentFiles,
         files: keepCurrentFiles ? state.files : [],
+        filesLoading: willRefreshRemote && !keepCurrentFiles,
         currentRemotePath: matchedSession?.cwd ?? '',
       };
     }),
@@ -764,12 +776,15 @@ export const useAppStore = create<StoreState>((set, get) => ({
         ? state.sessions.find((item) => item.id === activeSessionId)
         : undefined;
       const keepCurrentFiles = Boolean(matchedSession && matchedSession.kind !== 'local' && matchedSession.connectionId === state.activeConnectionId);
+      const willRefreshRemote = isUsableRemoteSession(matchedSession);
 
       return {
         activeSessionId,
         activeConnectionId: matchedSession?.kind === 'local' ? undefined : matchedSession?.connectionId,
-        runtimeOverview: undefined,
+        runtimeOverview: keepCurrentFiles ? state.runtimeOverview : undefined,
+        runtimeLoading: willRefreshRemote && !keepCurrentFiles,
         files: keepCurrentFiles ? state.files : [],
+        filesLoading: willRefreshRemote && !keepCurrentFiles,
         currentRemotePath: matchedSession?.kind === 'local' ? '' : matchedSession?.cwd ?? '',
       };
     }),
@@ -1246,6 +1261,9 @@ export const useAppStore = create<StoreState>((set, get) => ({
         files: [],
         currentRemotePath: nextSession.cwd ?? '~',
         runtimeOverview: undefined,
+        // 新开会话即将拉取远端数据，先点亮加载动画，等状态事件触发的刷新完成后自动熄灭。
+        filesLoading: true,
+        runtimeLoading: true,
       }));
       // SSH 握手在后端后台线程完成；连接状态事件回来后再刷新文件、运行状态和首屏输出。
       void get().pollTerminalOutputs(nextSession.id);
@@ -1288,6 +1306,10 @@ export const useAppStore = create<StoreState>((set, get) => ({
         files: [],
         currentRemotePath: '',
         runtimeOverview: undefined,
+        // 本地终端没有远端面板，直接熄灭加载态，避免遗留卡死的动画。
+        filesLoading: false,
+        runtimeLoading: false,
+        historyLoading: false,
         statusMessage: statusText(state.settings, 'statusLocalTerminalOpened', { title: session.title }),
       }));
       void get().pollTerminalOutputs(session.id);
@@ -1350,6 +1372,10 @@ export const useAppStore = create<StoreState>((set, get) => ({
             files: [],
             currentRemotePath: '',
             runtimeOverview: undefined,
+            // 本地终端无远端面板，熄灭加载态。
+            filesLoading: false,
+            runtimeLoading: false,
+            historyLoading: false,
             statusMessage: statusText(current.settings, 'statusLocalTerminalOpened', { title: openedSession.title }),
           };
         });
@@ -1407,6 +1433,9 @@ export const useAppStore = create<StoreState>((set, get) => ({
           files: [],
           currentRemotePath: nextSession.cwd ?? '~',
           runtimeOverview: undefined,
+          // 重连后即将重新拉取远端数据，先点亮加载动画。
+          filesLoading: true,
+          runtimeLoading: true,
           statusMessage: statusText(current.settings, 'statusSessionReady', { name: connection.name }),
         };
       });
@@ -1455,6 +1484,12 @@ export const useAppStore = create<StoreState>((set, get) => ({
       delete nextCommandBuffers[sessionId];
       delete nextSuggestions[sessionId];
 
+      // 关闭当前会话后切到了另一条远端连接时，紧接着会重新拉取远端数据，需要点亮加载动画；
+      // 切到本地/无会话则熄灭，避免遗留空转动画。
+      const switchedToOtherRemote = closedActiveSession
+        && Boolean(nextActiveConnectionId)
+        && nextActiveConnectionId !== state.activeConnectionId;
+
       return {
         sessions: nextSessions,
         activeSessionId: nextActiveSessionId,
@@ -1462,6 +1497,9 @@ export const useAppStore = create<StoreState>((set, get) => ({
         runtimeOverview: nextActiveConnectionId ? state.runtimeOverview : undefined,
         files: closedActiveSession && !nextActiveConnectionId ? [] : state.files,
         currentRemotePath: closedActiveSession ? (nextActiveConnectionId ? nextActiveSession?.cwd ?? '' : '') : state.currentRemotePath,
+        filesLoading: switchedToOtherRemote,
+        runtimeLoading: switchedToOtherRemote,
+        historyLoading: false,
         commandBuffers: nextCommandBuffers,
         suggestions: nextSuggestions,
         statusMessage: statusText(state.settings, 'statusSessionClosed'),
@@ -1677,11 +1715,18 @@ export const useAppStore = create<StoreState>((set, get) => ({
       const activeSessionBecameUnavailable = activeSession ? !isUsableRemoteSession(activeSession) : false;
       const shouldClearActiveRemoteData = activeSessionBecameUnavailable
         && (state.files.length > 0 || Boolean(state.runtimeOverview) || Boolean(state.currentRemotePath));
+      // 只要会话变为不可用（含握手失败、cwd 为空的场景），就无条件熄灭加载动画；
+      // 这一步不依赖是否有旧数据可清，否则握手失败又没有旧内容时动画会一直空转。
+      const shouldStopLoading = activeSessionBecameUnavailable
+        && (state.filesLoading || state.runtimeLoading || state.historyLoading);
 
       return {
         ...(sessionsChanged ? { sessions: nextSessions } : {}),
         ...(activeCwdToRefresh ? { currentRemotePath: activeCwdToRefresh } : {}),
+        // 会话变为不可用（断开/异常）时清掉残留的远端数据，避免继续展示上一台主机的内容。
         ...(shouldClearActiveRemoteData ? { files: [], runtimeOverview: undefined, currentRemotePath: '' } : {}),
+        // 加载动画的熄灭独立判断，覆盖“无旧数据可清但动画已点亮”的握手失败场景。
+        ...(shouldStopLoading ? { filesLoading: false, runtimeLoading: false, historyLoading: false } : {}),
       };
     });
 
@@ -1709,6 +1754,10 @@ export const useAppStore = create<StoreState>((set, get) => ({
     }
 
     const requestSeq = ++remoteHistoryRefreshSeq;
+    // 仅在当前没有该连接历史缓存时才进入加载态显示动画；有旧内容则静默刷新，避免闪烁。
+    if (!get().history.some((item) => item.connectionId === targetConnectionId)) {
+      set({ historyLoading: true });
+    }
     try {
       const remoteHistory = await backend.readRemoteHistory(targetConnectionId);
       if (requestSeq !== remoteHistoryRefreshSeq) {
@@ -1721,6 +1770,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
           ...remoteHistory,
           ...state.history.filter((item) => item.connectionId !== targetConnectionId),
         ],
+        historyLoading: false,
         statusMessage: statusText(state.settings, 'statusLoadedRemoteHistory'),
       }));
     } catch (error) {
@@ -1729,6 +1779,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
       }
 
       set((state) => ({
+        historyLoading: false,
         statusMessage: statusText(state.settings, 'statusRemoteHistoryFailed', {
           reason: error instanceof Error ? error.message : String(error),
         }),
@@ -1764,6 +1815,10 @@ export const useAppStore = create<StoreState>((set, get) => ({
       return;
     }
 
+    // 当前列表为空时才显示加载动画；已有旧文件内容时静默刷新，避免闪烁。
+    if (!get().files.length) {
+      set({ filesLoading: true });
+    }
     remoteFilesRefreshInFlight = true;
     let request: typeof firstRequest | undefined = firstRequest;
     try {
@@ -1777,7 +1832,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
             continue;
           }
 
-          set({ files, currentRemotePath: currentRequest.path, statusMessage: statusText(get().settings, 'statusLoadedPath', { path: currentRequest.path }) });
+          set({ files, currentRemotePath: currentRequest.path, filesLoading: false, statusMessage: statusText(get().settings, 'statusLoadedPath', { path: currentRequest.path }) });
         } catch (error) {
           if (currentRequest.seq !== remoteFilesRefreshSeq || get().activeConnectionId !== currentRequest.connectionId) {
             request = remoteFilesQueuedRequest;
@@ -1785,6 +1840,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
           }
 
           set((state) => ({
+            filesLoading: false,
             statusMessage: statusText(state.settings, 'statusRemoteFilesFailed', {
               reason: error instanceof Error ? error.message : String(error),
             }),
@@ -1795,6 +1851,10 @@ export const useAppStore = create<StoreState>((set, get) => ({
       }
     } finally {
       remoteFilesRefreshInFlight = false;
+      // 兜底：无论中途 continue 还是异常，最终都清掉加载态，避免动画卡死。
+      if (get().filesLoading) {
+        set({ filesLoading: false });
+      }
     }
   },
 
@@ -1991,27 +2051,31 @@ export const useAppStore = create<StoreState>((set, get) => ({
     const { activeConnectionId, activeSessionId, sessions } = get();
     const activeSession = sessions.find((item) => item.id === activeSessionId);
     const activeRemoteConnectionId = isUsableRemoteSession(activeSession) ? activeSession?.connectionId : undefined;
-    // 运行状态只跟随已打开会话刷新，刷新完成后一次性替换旧数据，不显示中间“刷新中”状态。
+    // 运行状态只跟随已打开会话刷新；有旧数据时静默替换，无旧数据时用加载态显示刷新动画。
     if (!activeConnectionId || activeConnectionId !== activeRemoteConnectionId) {
-      set({ runtimeOverview: undefined });
+      set({ runtimeOverview: undefined, runtimeLoading: false });
       return;
     }
 
     const requestConnectionId = activeConnectionId;
     const requestSeq = ++runtimeOverviewRefreshSeq;
+    // 首次加载（还没有任何运行状态数据）才显示动画，定时轮询有旧内容时不打扰。
+    if (!get().runtimeOverview) {
+      set({ runtimeLoading: true });
+    }
     try {
       const runtimeOverview = await backend.fetchRuntimeOverview(activeConnectionId);
       if (requestSeq !== runtimeOverviewRefreshSeq || get().activeConnectionId !== requestConnectionId) {
         return;
       }
 
-      set({ runtimeOverview });
+      set({ runtimeOverview, runtimeLoading: false });
     } catch {
       if (requestSeq !== runtimeOverviewRefreshSeq || get().activeConnectionId !== requestConnectionId) {
         return;
       }
 
-      set({ runtimeOverview: undefined });
+      set({ runtimeOverview: undefined, runtimeLoading: false });
     }
   },
 
@@ -2110,6 +2174,9 @@ export const useAppStore = create<StoreState>((set, get) => ({
       files: [],
       currentRemotePath: nextActiveSessionId ? '~' : '',
       runtimeOverview: undefined,
+      filesLoading: false,
+      runtimeLoading: false,
+      historyLoading: false,
       editorDocument: undefined,
       statusMessage: statusText(nextState.settings, 'statusDownloadedConfig', { path: remotePath }),
     });
@@ -2139,6 +2206,9 @@ export const useAppStore = create<StoreState>((set, get) => ({
       // 导入配置后只有已有会话才展示远端路径，避免刚导入就像已连接主机一样显示远端文件。
       currentRemotePath: nextActiveSessionId ? '~' : '',
       runtimeOverview: undefined,
+      filesLoading: false,
+      runtimeLoading: false,
+      historyLoading: false,
       editorDocument: undefined,
       statusMessage: statusText(nextState.settings, 'statusImportedLocalConfig', { name: file.name }),
     });
