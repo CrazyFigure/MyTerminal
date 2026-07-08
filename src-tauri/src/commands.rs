@@ -46,6 +46,7 @@ struct GitHubReleaseResponse {
     name: Option<String>,
     html_url: String,
     published_at: Option<String>,
+    body: Option<String>,
     #[serde(default)]
     assets: Vec<GitHubReleaseAsset>,
 }
@@ -98,6 +99,16 @@ const UPDATE_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const UPDATE_HTTP_READ_TIMEOUT: Duration = Duration::from_secs(15);
 // 安装包总下载时长设置为人可接受的上限；超时后让用户检查代理或稍后重试。
 const UPDATE_INSTALLER_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(45);
+const UPDATE_DOWNLOAD_PROGRESS_EVENT: &str = "myterminal-update-download-progress";
+const UPDATE_DOWNLOAD_PROGRESS_THROTTLE: Duration = Duration::from_millis(100);
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateDownloadProgressEvent {
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    percent: Option<u32>,
+}
 // Shell 主循环每轮最多处理的前端控制事件数；输入风暴下必须留出读 SSH 输出的机会。
 const SSH_SHELL_MAX_CONTROL_EVENTS_PER_TICK: usize = 64;
 // Shell 主循环每轮最多连续读 SSH 输出次数；既尽快排空远端回显，也避免长期占住线程。
@@ -468,6 +479,7 @@ fn installer_path_matches_expected_size(
 }
 
 async fn download_update_installer(
+    app_handle: &AppHandle,
     client: &reqwest::Client,
     download_url: &str,
     installer_path: &Path,
@@ -497,6 +509,7 @@ async fn download_update_installer(
         .map_err(AppError::from)?;
     let mut temp_file = fs::File::create(&temp_installer_path).map_err(AppError::from)?;
     let mut downloaded_size = 0_u64;
+    let mut last_progress_emit = Instant::now();
 
     while let Some(chunk) = response.chunk().await.map_err(AppError::from)? {
         // 下载过程中持续校验大小上界，防止错误地址返回 HTML 或其它大文件时继续写入。
@@ -507,9 +520,35 @@ async fn download_update_installer(
             ));
         }
         temp_file.write_all(&chunk).map_err(AppError::from)?;
+
+        // 按固定间隔向前端推送下载进度，避免高频 chunk 事件占用过多通信带宽。
+        if last_progress_emit.elapsed() >= UPDATE_DOWNLOAD_PROGRESS_THROTTLE {
+            let percent = expected_size.map(|size| {
+                ((downloaded_size as f64 / size as f64) * 100.0).min(100.0).round() as u32
+            });
+            let _ = app_handle.emit(
+                UPDATE_DOWNLOAD_PROGRESS_EVENT,
+                &UpdateDownloadProgressEvent {
+                    downloaded_bytes: downloaded_size,
+                    total_bytes: expected_size,
+                    percent,
+                },
+            );
+            last_progress_emit = Instant::now();
+        }
     }
     temp_file.flush().map_err(AppError::from)?;
     drop(temp_file);
+
+    // 下载结束时再推送一次完整进度，让前端进度条到达 100%。
+    let _ = app_handle.emit(
+        UPDATE_DOWNLOAD_PROGRESS_EVENT,
+        &UpdateDownloadProgressEvent {
+            downloaded_bytes: downloaded_size,
+            total_bytes: expected_size,
+            percent: expected_size.map(|size| ((downloaded_size as f64 / size as f64) * 100.0).min(100.0).round() as u32),
+        },
+    );
 
     // 下载结束后再次校验精确大小，确保启动安装器前拿到的是完整 Release 资产。
     if expected_size.is_some_and(|size| downloaded_size != size) {
@@ -5065,11 +5104,13 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
             .as_ref()
             .map(|asset| asset.browser_download_url.clone()),
         installer_size: installer_asset.and_then(|asset| asset.size),
+        release_body: release.body,
     })
 }
 
 #[tauri::command]
 pub async fn download_and_install_update(
+    app_handle: AppHandle,
     download_url: String,
     asset_name: String,
     installer_size: Option<u64>,
@@ -5093,7 +5134,7 @@ pub async fn download_and_install_update(
 
     let client = build_update_http_client(UPDATE_INSTALLER_DOWNLOAD_TIMEOUT)?;
     // 安装包下载使用 GitHub Release 浏览器下载地址；完成写入后立即启动安装程序，交互式确认交给安装器自身处理。
-    download_update_installer(&client, normalized_url, &installer_path, installer_size).await?;
+    download_update_installer(&app_handle, &client, normalized_url, &installer_path, installer_size).await?;
     spawn_update_installer(&installer_path).map_err(|error| AppError::from(error).to_string())?;
     Ok(installer_path.to_string_lossy().to_string())
 }

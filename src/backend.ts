@@ -382,6 +382,7 @@ const mockUpdateCheckResult: UpdateCheckResult = {
   // 本地预览的更新结果也保持真实 Release 地址，便于关于页和安装链路一致跳转。
   releaseUrl: 'https://github.com/CrazyFigure/MyTerminal/releases/latest',
   updateAvailable: false,
+  releaseBody: '本地预览环境没有可用的更新内容。',
 };
 
 const call = async <T>(command: string, args?: Record<string, unknown>, fallback?: T): Promise<T> => {

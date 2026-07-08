@@ -3674,3 +3674,126 @@ select:disabled {
   background: #999999 !important;
   background-color: #999999 !important;
 }
+
+/* ── Update Modal ──────────────────────────────────────────────────────── */
+
+.update-modal {
+  width: min(520px, 92vw);
+  max-width: 520px;
+}
+
+.update-modal-version {
+  color: var(--app-muted);
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+
+.update-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 0;
+}
+
+.update-modal-meta {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 8px 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: var(--app-input-bg);
+  font-size: 0.86rem;
+}
+
+.update-modal-meta span {
+  color: var(--app-muted);
+}
+
+.update-modal-meta strong {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-modal-notes h4 {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.update-modal-notes-content {
+  max-height: 220px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: var(--app-input-bg);
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.update-modal-notes-content pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.update-modal-empty-notes {
+  margin: 0;
+  color: var(--app-muted);
+  font-style: italic;
+}
+
+.update-modal-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: var(--app-input-bg);
+}
+
+.update-modal-progress-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: var(--app-muted);
+}
+
+.update-modal-progress-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.22);
+  overflow: hidden;
+}
+
+.update-modal-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--app-accent, #4f46e5);
+  transition: width 120ms linear;
+}
+
+.update-modal-progress-percent {
+  text-align: right;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--app-accent, #4f46e5);
+}
+
+.update-modal-error {
+  padding: 10px 12px;
+  border: 1px solid rgba(220, 38, 38, 0.28);
+  border-radius: 8px;
+  background: rgba(254, 226, 226, 0.72);
+  color: #991b1b;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  word-break: break-word;
+}

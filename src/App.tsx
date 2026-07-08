@@ -59,6 +59,7 @@ import { TerminalWorkspace } from './TerminalWorkspace';
 import { backend } from './backend';
 import { writeClipboardText } from './clipboard';
 import { useAppStore } from './store';
+import { UpdateModal, type UpdateDownloadProgress } from './UpdateModal';
 import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, RemoteFileEntry, SshJumpHost, TerminalSession, UiLanguage, UpdateCheckResult } from './types';
 
 const MonacoEditor = lazy(() => import('./MonacoEditor'));
@@ -2472,6 +2473,9 @@ function SettingsModal({
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [updateCheckResult, setUpdateCheckResult] = useState<UpdateCheckResult | null>(null);
   const [updateFeedback, setUpdateFeedback] = useState<{ kind: 'is-success' | 'is-error'; message: string } | null>(null);
+  const [updateModalOpen, setUpdateModalOpen] = useState(false);
+  const [updateDownloadProgress, setUpdateDownloadProgress] = useState<UpdateDownloadProgress | null>(null);
+  const [updateModalError, setUpdateModalError] = useState<string | null>(null);
   const [agentBridgeStatus, setAgentBridgeStatus] = useState<AgentBridgeStatus | null>(null);
   const [agentBridgeTransition, setAgentBridgeTransition] = useState<'starting' | 'stopping' | ''>('');
   const settingsSaveTimerRef = useRef<number | null>(null);
@@ -2677,10 +2681,15 @@ function SettingsModal({
     setUpdateChecking(true);
     setUpdateFeedback(null);
     setUpdateCheckResult(null);
+    setUpdateDownloadProgress(null);
     try {
       // 更新检测只读取 GitHub Release 元数据，用户确认后再通过 Release 页面下载新版安装包。
       const result = await checkForUpdates();
       setUpdateCheckResult(result);
+      // 发现新版本时弹出详情弹窗展示更新内容；已是最新版时保留设置页内反馈。
+      if (result.updateAvailable) {
+        setUpdateModalOpen(true);
+      }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       setUpdateFeedback({ kind: 'is-error', message: t('statusUpdateCheckFailed', { reason }) });
@@ -2695,16 +2704,25 @@ function SettingsModal({
 
     setUpdateInstalling(true);
     setUpdateFeedback(null);
+    setUpdateModalError(null);
+    setUpdateDownloadProgress(null);
     try {
       // 安装动作只在用户点击后触发；后端会下载 Release 安装包并启动安装程序。
       const installerPath = await installUpdate(updateCheckResult);
-      // 桌面 WebView 弹窗可能被安装器抢焦点，设置页内也保留可见成功信息和本地路径。
+      // 下载完成且安装器已启动，关闭弹窗并在设置页内保留成功信息。
+      setUpdateModalOpen(false);
       setUpdateFeedback({ kind: 'is-success', message: t('statusUpdateInstallStartedWithPath', { path: installerPath }) });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      setUpdateFeedback({ kind: 'is-error', message: t('statusUpdateInstallFailed', { reason }) });
+      // 用户主动取消（如下载弹窗点取消），不展示错误提示
+      if (reason === t('downloadCancelled')) {
+        setUpdateInstalling(false);
+        return;
+      }
+      setUpdateModalError(t('statusUpdateInstallFailed', { reason }));
     } finally {
       setUpdateInstalling(false);
+      setUpdateDownloadProgress(null);
     }
   };
   const handleLocalBackgroundImage = async () => {
@@ -2764,6 +2782,34 @@ function SettingsModal({
       Object.values(actionFeedbackTimerRef.current).forEach((timer) => {
         window.clearTimeout(timer);
       });
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return undefined;
+    }
+
+    let unlistenFn: (() => void) | undefined;
+    let isMounted = true;
+    void import('@tauri-apps/api/event').then(({ listen }) =>
+      listen('myterminal-update-download-progress', (event) => {
+        const payload = event.payload as UpdateDownloadProgress;
+        setUpdateDownloadProgress(payload);
+      }),
+    ).then((unlisten) => {
+      if (isMounted) {
+        unlistenFn = unlisten;
+      } else {
+        unlisten();
+      }
+    }).catch(() => {
+      // 进度监听失败不影响下载安装本身，静默忽略。
+    });
+
+    return () => {
+      isMounted = false;
+      unlistenFn?.();
     };
   }, []);
 
@@ -3352,26 +3398,21 @@ function SettingsModal({
                     <button className="primary-button" disabled={updateChecking} onClick={() => void handleCheckForUpdates()} type="button">
                       <RefreshCw size={16} /> {updateChecking ? t('working') : t('checkUpdates')}
                     </button>
-                    <button
-                      className="secondary-button"
-                      disabled={
-                        updateInstalling ||
-                        !updateCheckResult?.updateAvailable ||
-                        !updateCheckResult.installerDownloadUrl ||
-                        !updateCheckResult.installerAssetName
-                      }
-                      onClick={() => void handleInstallUpdate()}
-                      type="button"
-                    >
-                      <Download size={16} /> {updateInstalling ? t('working') : t('downloadAndInstallUpdate')}
-                    </button>
+                    {updateCheckResult?.updateAvailable ? (
+                      <button
+                        className="secondary-button"
+                        disabled={updateInstalling}
+                        onClick={() => setUpdateModalOpen(true)}
+                        type="button"
+                      >
+                        {t('updateModalTitle')}
+                      </button>
+                    ) : null}
                   </div>
 
-                  {updateCheckResult ? (
-                    <div className={`update-check-result ${updateCheckResult.updateAvailable ? 'is-update-available' : 'is-up-to-date'}`}>
-                      {updateCheckResult.updateAvailable
-                        ? t('statusUpdateAvailable', { version: updateCheckResult.latestVersion })
-                        : t('statusUpdateNotAvailable')}
+                  {updateCheckResult && !updateCheckResult.updateAvailable ? (
+                    <div className={`update-check-result is-up-to-date`}>
+                      {t('statusUpdateNotAvailable')}
                     </div>
                   ) : null}
                   {updateFeedback ? (
@@ -3386,6 +3427,21 @@ function SettingsModal({
         </div>
       </div>
 
+      <UpdateModal
+        downloading={updateInstalling}
+        error={updateModalError}
+        onClose={() => {
+          setUpdateModalOpen(false);
+          setUpdateDownloadProgress(null);
+          setUpdateModalError(null);
+        }}
+        onDownload={() => void handleInstallUpdate()}
+        onOpenRelease={(url) => openExternalLink(url)}
+        open={updateModalOpen}
+        progress={updateDownloadProgress}
+        result={updateCheckResult}
+        t={t}
+      />
       <BackupSelectorModal
         open={backupSelectorOpen}
         backups={backupList}
