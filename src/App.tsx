@@ -2984,6 +2984,23 @@ function SettingsModal({
                         }
                       />
                     </label>
+                    <label>
+                      <span>{t('fieldSshKeepaliveInterval')}</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={300}
+                        step={5}
+                        value={draftSettings.sshKeepaliveIntervalSec ?? 30}
+                        onChange={(event) =>
+                          updateDraftSettings((current) => ({
+                            ...current,
+                            // 0 表示关闭保活；其余值在保存归一化时夹到 10~300 秒。
+                            sshKeepaliveIntervalSec: Math.max(0, Number(event.target.value) || 0),
+                          }))
+                        }
+                      />
+                    </label>
                     <div className="form-field">
                       <span>{t('fieldTerminalRightClickBehavior')}</span>
                       <select

@@ -81,6 +81,8 @@ export interface AppSettings {
   uiLanguage: UiLanguage;
   themeMode: ThemeMode;
   runtimeRefreshIntervalSec: number;
+  /** SSH 保活间隔（秒），0 表示关闭；作用于交互终端、文件/状态辅助会话与隧道池会话。 */
+  sshKeepaliveIntervalSec: number;
   /** 终端英文字体优先用于 ASCII、数字和常见符号。 */
   shellLatinFontFamily: string;
   /** 终端中文字体优先用于 CJK 字符，避免中英文宽度互相影响。 */

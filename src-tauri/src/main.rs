@@ -14,6 +14,11 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(app_state)
+        .setup(|app| {
+            // 启动后台 SSH 保活守护线程，防止辅助会话与隧道池会话在应用后台运行时空闲掉线。
+            commands::spawn_keepalive_daemon(app.handle().clone());
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let app_handle = window.app_handle().clone();

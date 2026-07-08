@@ -33,6 +33,11 @@ fn default_runtime_refresh_interval_sec() -> u16 {
     1
 }
 
+// SSH 保活默认间隔（秒）；0 表示关闭。默认 30 秒，兼顾防止空闲掉线和后台资源占用。
+fn default_ssh_keepalive_interval_sec() -> u16 {
+    30
+}
+
 fn default_terminal_background() -> String {
     "#f7f7f7".into()
 }
@@ -256,6 +261,9 @@ pub struct AppSettings {
     pub theme_mode: String,
     #[serde(default = "default_runtime_refresh_interval_sec")]
     pub runtime_refresh_interval_sec: u16,
+    /// SSH 保活间隔（秒），0 表示关闭；作用于交互终端、文件/状态辅助会话与隧道池会话。
+    #[serde(default = "default_ssh_keepalive_interval_sec")]
+    pub ssh_keepalive_interval_sec: u16,
     /// 终端英文字体用于 ASCII、数字和符号优先匹配。
     #[serde(default = "default_shell_latin_font_family")]
     pub shell_latin_font_family: String,
@@ -312,6 +320,7 @@ impl Default for AppSettings {
             ui_language: "zh-CN".into(),
             theme_mode: "light".into(),
             runtime_refresh_interval_sec: 1,
+            ssh_keepalive_interval_sec: default_ssh_keepalive_interval_sec(),
             shell_latin_font_family: default_shell_latin_font_family(),
             shell_cjk_font_family: default_shell_cjk_font_family(),
             shell_font_family: "JetBrains Mono".into(),
@@ -719,6 +728,8 @@ pub struct StoredAppSettings {
     pub theme_mode: String,
     #[serde(default = "default_runtime_refresh_interval_sec")]
     pub runtime_refresh_interval_sec: u16,
+    #[serde(default = "default_ssh_keepalive_interval_sec")]
+    pub ssh_keepalive_interval_sec: u16,
     #[serde(default = "default_shell_latin_font_family")]
     pub shell_latin_font_family: String,
     #[serde(default = "default_shell_cjk_font_family")]
