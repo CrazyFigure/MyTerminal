@@ -619,6 +619,8 @@ type StoreState = {
   connectionDraft: ConnectionDraft;
   showTunnelForm: boolean;
   tunnelDraft: TunnelDraft;
+  // 全局缓存的更新检测结果，首页工具栏按钮和定时检测共用，避免每次都重新请求。
+  updateCheckResult: UpdateCheckResult | null;
   bootstrap: () => Promise<void>;
   setStatusMessage: (message: string) => void;
   clearConnectionTestResult: () => void;
@@ -713,6 +715,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
   connectionDraft: emptyConnectionDraft(),
   showTunnelForm: false,
   tunnelDraft: emptyTunnelDraft(),
+  updateCheckResult: null,
 
   bootstrap: async () => {
     set({ loading: true, statusMessage: statusText(get().settings, 'statusLoadingWorkspace') });
@@ -2145,6 +2148,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
     // 更新检测走 GitHub Release 元数据，不直接下载安装，避免在未确认前产生外部副作用。
     const result = await backend.checkForUpdates();
     set((state) => ({
+      updateCheckResult: result,
       statusMessage: result.updateAvailable
         ? statusText(state.settings, 'statusUpdateAvailable', { version: result.latestVersion })
         : statusText(state.settings, 'statusUpdateNotAvailable'),
