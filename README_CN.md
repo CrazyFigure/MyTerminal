@@ -206,28 +206,9 @@ npm run check        # 执行前端构建和 Rust 后端检查
 - **终端与编辑器：** xterm.js、portable-pty、Monaco Editor
 - **同步与文件：** SFTP、WebDAV、本地导入 / 导出
 
-## 当前限制
-
-- 暂未实现 `known_hosts` / 主机指纹信任流程。
-- SFTP 大文件传输暂未提供进度条与取消能力。
-- 隧道管理已支持新增、编辑、开启和停止，但暂未展示实时连接数等高级运行指标。
-- Monaco 已改为懒加载，但由于 xterm.js 和 Monaco 体积都比较大，生产构建仍可能出现较大的 chunk 提示。
-
-## 参与贡献
-
-欢迎提交 Issue、Bug 反馈和 Pull Request。一个比较理想的贡献通常包含：
-
-- 清晰描述问题或功能目标。
-- 反馈 Bug 时提供可复现步骤。
-- UI、连接、文件传输相关问题尽量附带截图或日志。
-- 变更尽量聚焦，避免把无关重构混在同一个 Pull Request 里。
-
-提交 Pull Request 前，请根据变更范围运行必要检查。涉及前后端联动的变更，建议至少执行 `npm run check`。
-
 ## 致谢
 
-- 社区：[Linux.do](https://linux.do)
-- 项目体验参考了 FinalShell 等远程终端工具中的实用工作流。
+- 感谢 [Linux.do](https://linux.do) 社区对项目的推广与反馈。
 
 ## Star 走势
 
