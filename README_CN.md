@@ -229,6 +229,10 @@ npm run check        # 执行前端构建和 Rust 后端检查
 - 社区：[Linux.do](https://linux.do)
 - 项目体验参考了 FinalShell 等远程终端工具中的实用工作流。
 
+## Star 走势
+
+![Star 走势图](https://starchart.cc/CrazyFigure/MyTerminal.svg)
+
 ## License
 
 [MIT](./LICENSE) © 2026 CrazyFigure
