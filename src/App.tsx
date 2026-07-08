@@ -5011,51 +5011,64 @@ export default function App() {
                 <span>{t('panelRefreshing')}</span>
               </div>
             ) : null}
-            {runtimeItems.map(({ id, icon: Icon, label, percent, value }) => (
-              <div key={id} className="runtime-row-group">
-                <button
-                  className={`runtime-row metric-tone-${metricTone(percent)} ${id === 'cpu' && runtimeOverview?.cpuCores?.length ? 'is-clickable' : ''}`}
-                  disabled={id !== 'cpu' || !runtimeOverview?.cpuCores?.length}
-                  onClick={() => {
-                    if (id === 'cpu' && runtimeOverview?.cpuCores?.length) {
-                      setCpuCoresExpanded((current) => !current);
-                    }
-                  }}
-                  type="button"
-                >
-                  <div className="metric-label">
-                    <Icon size={14} />
-                    <span>{label}</span>
-                  </div>
-                  <div className="metric-bar-cell">
-                    {percent !== undefined ? (
-                      <div className="metric-progress-track" aria-label={`${label} ${percent.toFixed(0)}%`}>
-                        <span className="metric-progress-fill" style={{ width: `${percent}%` }} />
-                      </div>
-                    ) : null}
-                    <span className="metric-value">{value}</span>
-                  </div>
-                </button>
-                {id === 'cpu' && cpuCoresExpanded && runtimeOverview?.cpuCores?.length ? (
-                  <div className="runtime-core-list">
-                    {runtimeOverview.cpuCores.map((core) => {
-                      const percentValue = clamp(core.percent, 0, 100);
-                      return (
-                        <div key={core.name} className={`runtime-core-row metric-tone-${metricTone(percentValue)}`}>
-                          <span>{core.name}</span>
-                          <div className="metric-bar-cell">
-                            <div className="metric-progress-track" aria-label={`${core.name} ${percentValue.toFixed(0)}%`}>
-                              <span className="metric-progress-fill" style={{ width: `${percentValue}%` }} />
-                            </div>
-                            <span className="metric-value">{percentValue.toFixed(0)}%</span>
-                          </div>
+            {runtimeItems.map(({ id, icon: Icon, label, percent, value }) => {
+              // CPU 主行承担展开入口，单独计算状态让样式、禁用逻辑和无障碍属性保持一致。
+              const isCpuMetric = id === 'cpu';
+              const cpuCoreCount = runtimeOverview?.cpuCores?.length ?? 0;
+              const isCpuExpandable = isCpuMetric && cpuCoreCount > 0;
+              return (
+                <div key={id} className="runtime-row-group">
+                  <button
+                    aria-controls={isCpuExpandable ? 'runtime-cpu-core-list' : undefined}
+                    aria-expanded={isCpuExpandable ? cpuCoresExpanded : undefined}
+                    className={`runtime-row metric-tone-${metricTone(percent)} ${isCpuMetric ? 'is-cpu-row' : ''} ${isCpuExpandable ? 'is-clickable' : ''}`}
+                    disabled={!isCpuExpandable}
+                    onClick={() => {
+                      if (isCpuExpandable) {
+                        setCpuCoresExpanded((current) => !current);
+                      }
+                    }}
+                    type="button"
+                  >
+                    <div className="metric-label">
+                      {isCpuExpandable ? (
+                        <span className="runtime-expand-indicator" aria-hidden="true">
+                          {cpuCoresExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                        </span>
+                      ) : null}
+                      <Icon size={14} />
+                      <span>{label}</span>
+                    </div>
+                    <div className="metric-bar-cell">
+                      {percent !== undefined ? (
+                        <div className="metric-progress-track" aria-label={`${label} ${percent.toFixed(0)}%`}>
+                          <span className="metric-progress-fill" style={{ width: `${percent}%` }} />
                         </div>
-                      );
-                    })}
-                  </div>
-                ) : null}
-              </div>
-            ))}
+                      ) : null}
+                      <span className="metric-value">{value}</span>
+                    </div>
+                  </button>
+                  {isCpuMetric && cpuCoresExpanded && cpuCoreCount > 0 ? (
+                    <div className="runtime-core-list" id="runtime-cpu-core-list">
+                      {runtimeOverview?.cpuCores.map((core) => {
+                        const percentValue = clamp(core.percent, 0, 100);
+                        return (
+                          <div key={core.name} className={`runtime-core-row metric-tone-${metricTone(percentValue)}`}>
+                            <span>{core.name}</span>
+                            <div className="metric-bar-cell">
+                              <div className="metric-progress-track" aria-label={`${core.name} ${percentValue.toFixed(0)}%`}>
+                                <span className="metric-progress-fill" style={{ width: `${percentValue}%` }} />
+                              </div>
+                              <span className="metric-value">{percentValue.toFixed(0)}%</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
 
           <div className="runtime-extra">
