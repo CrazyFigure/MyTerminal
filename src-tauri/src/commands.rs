@@ -4644,7 +4644,8 @@ pub fn resize_terminal(
     Ok(true)
 }
 
-#[tauri::command]
+// SFTP 目录列举走网络，用 (async) 移出主线程，避免文件管理刷新时冻结 UI。
+#[tauri::command(async)]
 pub fn list_remote_files(
     state: State<'_, AppState>,
     connection_id: String,
@@ -4654,7 +4655,8 @@ pub fn list_remote_files(
     list_remote_entries_cached(&state, &connection, &path).map_err(Into::into)
 }
 
-#[tauri::command]
+// 以下文件操作均走阻塞 SFTP 网络往返，统一用 (async) 移出主线程，操作期间不冻结终端与界面。
+#[tauri::command(async)]
 pub fn upload_remote_file(
     state: State<'_, AppState>,
     connection_id: String,
@@ -4671,7 +4673,7 @@ pub fn upload_remote_file(
     Ok(true)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn upload_local_paths(
     state: State<'_, AppState>,
     connection_id: String,
@@ -4687,7 +4689,7 @@ pub fn upload_local_paths(
     )?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn download_remote_file(
     state: State<'_, AppState>,
     connection_id: String,
@@ -4697,7 +4699,7 @@ pub fn download_remote_file(
     Ok(download_remote_file_with_cache(&state, &connection, &path)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn download_remote_paths(
     state: State<'_, AppState>,
     connection_id: String,
@@ -4713,7 +4715,7 @@ pub fn download_remote_paths(
     )?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_remote_path(
     state: State<'_, AppState>,
     connection_id: String,
@@ -4750,7 +4752,7 @@ fn delete_remote_path_with_sftp(sftp: &Sftp, path: &str) -> Result<(), AppError>
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 // 批量删除只建立一次 SSH/SFTP 会话，逐项删除后由前端统一刷新目录。
 pub fn delete_remote_paths(
     state: State<'_, AppState>,
@@ -4762,7 +4764,7 @@ pub fn delete_remote_paths(
     Ok(true)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rename_remote_path(
     state: State<'_, AppState>,
     connection_id: String,
@@ -4774,7 +4776,7 @@ pub fn rename_remote_path(
     Ok(true)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_editor_document(
     state: State<'_, AppState>,
     connection_id: String,
@@ -4802,7 +4804,7 @@ pub fn load_editor_document(
     Ok(document)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_editor_document(
     state: State<'_, AppState>,
     connection_id: String,
@@ -4828,7 +4830,8 @@ pub fn list_tunnels(state: State<'_, AppState>) -> Result<Vec<TunnelRecord>, Str
     Ok(state.storage.load_tunnels()?)
 }
 
-#[tauri::command]
+// 运行状态要跑多条远端命令，必须用 (async) 放到独立线程执行，避免阻塞主线程冻结整个 UI 和终端输入。
+#[tauri::command(async)]
 pub fn fetch_runtime_overview(
     state: State<'_, AppState>,
     connection_id: String,
@@ -4997,7 +5000,8 @@ pub fn close_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<boo
     Ok(true)
 }
 
-#[tauri::command]
+// 读取远端 Shell 历史要跑远端命令，用 (async) 移出主线程，避免历史刷新时冻结 UI。
+#[tauri::command(async)]
 pub fn read_remote_shell_history(
     state: State<'_, AppState>,
     connection_id: String,

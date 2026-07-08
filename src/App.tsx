@@ -3513,6 +3513,8 @@ export default function App() {
   const [explorerColumnWidths, setExplorerColumnWidths] = useState(explorerDefaultColumnWidths);
   const pathByConnectionRef = useRef<Record<string, string>>({});
   const runtimeRefreshInFlightRef = useRef(false);
+  // 刷新进行中又收到刷新请求时置位，当前刷新结束后补跑一次，避免切换连接时漏刷、加载动画卡住。
+  const runtimeRefreshPendingRef = useRef(false);
   const sessionTabDragStateRef = useRef<SessionTabDragState>(null);
   const sessionTabDropTargetRef = useRef<SessionTabDropTarget>(null);
   const sessionTabListRef = useRef<HTMLDivElement | null>(null);
@@ -3548,7 +3550,9 @@ export default function App() {
     downloadRemotePaths,
     editTunnel,
     files,
+    filesLoading,
     history,
+    historyLoading,
     installUpdate,
     openConnectionForm,
     openSession,
@@ -3562,6 +3566,7 @@ export default function App() {
     renameRemotePath,
     reorderSessions,
     runtimeOverview,
+    runtimeLoading,
     selectSession,
     sendCommand,
     sendTerminalData,
@@ -3876,12 +3881,24 @@ export default function App() {
   }, [dismissTransferProgress, t]);
 
   const refreshRuntimeOverviewOnce = useCallback(() => {
-    if (!runtimeRefreshInFlightRef.current) {
+    // 正在刷新时不并发重入，只记下“还需再刷一次”的诉求；否则切换连接时新刷新会被丢弃，
+    // 导致运行状态加载动画一直空转到下一次定时器才恢复。
+    if (runtimeRefreshInFlightRef.current) {
+      runtimeRefreshPendingRef.current = true;
+      return;
+    }
+    const run = () => {
       runtimeRefreshInFlightRef.current = true;
+      runtimeRefreshPendingRef.current = false;
       void refreshRuntimeOverview().finally(() => {
         runtimeRefreshInFlightRef.current = false;
+        // 刷新期间若又发起过（如切换了连接），补跑一次以覆盖最新的活动连接，避免漏刷。
+        if (runtimeRefreshPendingRef.current) {
+          run();
+        }
       });
-    }
+    };
+    run();
   }, [refreshRuntimeOverview]);
 
   useEffect(() => {
@@ -4980,12 +4997,20 @@ export default function App() {
         <section className="sidebar-panel runtime-panel" style={{ height: runtimePanelHeight }}>
           <div className="section-row runtime-header">
             <h3>{runtimeHostLabel}</h3>
+            {/* 刷新进行中时图标持续旋转，给出“正在刷新”的即时反馈。 */}
             <button className="icon-button" disabled={!hasActiveRemoteSession} onClick={refreshRuntimeOverviewOnce} type="button">
-              <RefreshCw size={16} />
+              <RefreshCw className={runtimeLoading ? 'is-spinning' : ''} size={16} />
             </button>
           </div>
 
-          <div className="runtime-list">
+          {/* 无旧数据的首次加载才显示遮罩动画；有旧数据时后台静默刷新，保留上次内容不闪烁。 */}
+          <div className={`runtime-list ${runtimeLoading && !runtimeOverview ? 'is-panel-loading' : ''}`}>
+            {runtimeLoading && !runtimeOverview ? (
+              <div className="panel-loading-overlay">
+                <RefreshCw className="is-spinning" size={18} />
+                <span>{t('panelRefreshing')}</span>
+              </div>
+            ) : null}
             {runtimeItems.map(({ id, icon: Icon, label, percent, value }) => (
               <div key={id} className="runtime-row-group">
                 <button
@@ -5100,7 +5125,8 @@ export default function App() {
                 {t('up')}
               </button>
               <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles()} title={t('refresh')} type="button">
-                <RefreshCw size={14} />
+                {/* 文件刷新进行中时图标旋转，提示后台正在拉取目录。 */}
+                <RefreshCw className={filesLoading ? 'is-spinning' : ''} size={14} />
               </button>
             </div>
             <div className="address-bar">
@@ -5194,6 +5220,12 @@ export default function App() {
                       </div>
                     );
                   })}
+                </div>
+              ) : filesLoading ? (
+                // 列表为空且正在加载时显示刷新动画，而不是直接闪出“空目录”文案。
+                <div className="panel-loading-overlay is-inline">
+                  <RefreshCw className="is-spinning" size={18} />
+                  <span>{t('panelRefreshing')}</span>
                 </div>
               ) : (
                 <div className="empty-state">{t('remoteFilesEmpty')}</div>
@@ -5555,7 +5587,8 @@ export default function App() {
                     style={buildActionButtonStyle(t('refresh'), bottomPanelNeedsCompactActions)}
                     type="button"
                   >
-                    <RefreshCw size={14} /> {renderActionButtonLabel(t('refresh'), bottomPanelNeedsCompactActions)}
+                    {/* 历史刷新进行中时图标旋转，提示后台正在读取远端历史。 */}
+                    <RefreshCw className={historyLoading ? 'is-spinning' : ''} size={14} /> {renderActionButtonLabel(t('refresh'), bottomPanelNeedsCompactActions)}
                   </button>
                 ) : null}
               </div>
@@ -5644,6 +5677,12 @@ export default function App() {
                           <span>{new Date(item.executedAt).toLocaleString()}</span>
                         </button>
                       ))
+                    ) : historyLoading ? (
+                      // 历史为空且正在加载时显示刷新动画，避免先闪一下“无历史”再出现列表。
+                      <div className="panel-loading-overlay is-inline">
+                        <RefreshCw className="is-spinning" size={18} />
+                        <span>{t('panelRefreshing')}</span>
+                      </div>
                     ) : (
                       <div className="empty-state">{t('noHistory')}</div>
                     )}
