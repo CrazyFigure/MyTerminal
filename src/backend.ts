@@ -122,6 +122,14 @@ const normalizeSettings = (settings: AppSettings): AppSettings => ({
   ...normalizeFontPair(settings),
   shellFontSize: clampFontSize(settings.shellFontSize),
   runtimeRefreshIntervalSec: clampRefreshInterval(settings.runtimeRefreshIntervalSec),
+  // SSH 保活间隔：0 表示关闭；否则夹在 10~300 秒之间，避免过于频繁或形同虚设。
+  sshKeepaliveIntervalSec: (() => {
+    const value = Math.round(Number(settings.sshKeepaliveIntervalSec));
+    if (!Number.isFinite(value) || value <= 0) {
+      return 0;
+    }
+    return Math.min(300, Math.max(10, value));
+  })(),
   terminalBackgroundImageOpacity: clampRatio(settings.terminalBackgroundImageOpacity, 0.18),
   terminalBackgroundImageFit: terminalBackgroundImageFits.has(settings.terminalBackgroundImageFit)
     ? settings.terminalBackgroundImageFit
@@ -236,6 +244,7 @@ const mockSettings: AppSettings = {
   uiLanguage: 'zh-CN',
   themeMode: 'light',
   runtimeRefreshIntervalSec: 1,
+  sshKeepaliveIntervalSec: 30,
   shellLatinFontFamily: 'JetBrains Mono',
   shellCjkFontFamily: 'Microsoft YaHei UI',
   shellFontFamily: 'JetBrains Mono',

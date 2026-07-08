@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, RecvTimeoutError, TryRecvError},
         Arc, Mutex, MutexGuard,
     },
@@ -124,6 +124,10 @@ const TUNNEL_TRANSFER_BUFFER_BYTES: usize = 64 * 1024;
 const TUNNEL_MAX_PENDING_BYTES: usize = 2 * 1024 * 1024;
 // 非阻塞转发只有在本轮没有任何进展时短暂退避，不能像旧实现那样每轮固定延迟。
 const TUNNEL_TRANSFER_IDLE_WAIT: Duration = Duration::from_millis(1);
+// 辅助会话（文件/运行状态/历史）阻塞操作超时；后台挂起导致连接静默失效时，切 tab 最多卡这么久即快速失败重连，而非默认握手期的 20 秒。
+const AUXILIARY_IO_TIMEOUT: Duration = Duration::from_secs(10);
+// 后台保活守护线程的最小轮询周期；保活间隔更小时以设置值为准，间隔为 0（关闭）时按此周期空转检查。
+const KEEPALIVE_DAEMON_MIN_TICK: Duration = Duration::from_secs(10);
 
 #[cfg(windows)]
 const DEFAULT_LOCAL_SHELL_CANDIDATES: &[&str] = &[
@@ -2126,6 +2130,9 @@ fn get_or_connect_auxiliary_session(
 
     // 辅助会话独立于交互 PTY；连接建立可能较慢，仅锁住当前连接，避免同一连接并发重复握手。
     let session = connect_ssh(connection)?;
+    // 收紧辅助会话阻塞超时：后台挂起导致连接静默失效时，读操作最多等 AUXILIARY_IO_TIMEOUT 即报错，
+    // 触发 with_auxiliary_session 的丢弃重连，切 tab 不再干等握手期的 20 秒。
+    session.set_timeout(AUXILIARY_IO_TIMEOUT.as_millis() as u32);
     let cached = Arc::new(std::sync::Mutex::new(AuxiliarySshSession {
         session,
         sftp: None,
@@ -2344,6 +2351,8 @@ fn spawn_shell_thread(
     output_queue: Arc<std::sync::Mutex<Vec<TerminalOutputChunk>>>,
     control_rx: mpsc::Receiver<SessionControl>,
     app_handle: tauri::AppHandle,
+    // 保活间隔（秒，0=关闭）由设置驱动；交互终端每轮读取，实现设置热更新。
+    keepalive_interval_sec: Arc<AtomicU64>,
 ) {
     thread::spawn(move || {
         let mut channel = match ssh_session.channel_session() {
@@ -2543,8 +2552,11 @@ fn spawn_shell_thread(
                 }
             }
 
-            if last_keepalive_at.elapsed() >= Duration::from_secs(20) {
-                // 交互会话长时间无输出时主动发送 SSH keepalive，不向终端写入可见内容。
+            // 交互会话长时间无输出时主动发送 SSH keepalive，不向终端写入可见内容。
+            // 间隔由设置驱动（0=关闭）；用户改设置后下一轮循环即生效。
+            let keepalive_secs = keepalive_interval_sec.load(Ordering::Relaxed);
+            if keepalive_secs > 0 && last_keepalive_at.elapsed() >= Duration::from_secs(keepalive_secs)
+            {
                 let _ = ssh_session.keepalive_send();
                 last_keepalive_at = Instant::now();
             }
@@ -3963,6 +3975,73 @@ pub fn prepare_agent_bridge_startup() -> Result<(), AppError> {
     terminate_myterminal_cli_processes()
 }
 
+/// 后台 SSH 保活守护线程：周期性向辅助会话与隧道池会话发送协议级 keepalive，
+/// 避免它们在应用后台运行时被服务端/NAT 因空闲回收。交互终端在自己的 shell 循环里保活，此处不处理。
+/// 只有进程未被系统挂起时才生效；Windows 后台节流挂起整个进程时无线程可运行，属于系统层限制。
+pub fn spawn_keepalive_daemon(app_handle: tauri::AppHandle) {
+    thread::spawn(move || loop {
+        // 每轮读取最新保活间隔（0=关闭）；用 clamp 出一个不小于最小周期的睡眠时长。
+        let interval_sec = {
+            let state = app_handle.state::<AppState>();
+            if state.is_shutting_down.load(Ordering::Relaxed) {
+                return;
+            }
+            state.ssh_keepalive_interval_sec.load(Ordering::Relaxed)
+        };
+
+        let sleep_for = if interval_sec == 0 {
+            KEEPALIVE_DAEMON_MIN_TICK
+        } else {
+            Duration::from_secs(interval_sec).max(KEEPALIVE_DAEMON_MIN_TICK)
+        };
+        thread::sleep(sleep_for);
+
+        let state = app_handle.state::<AppState>();
+        if state.is_shutting_down.load(Ordering::Relaxed) {
+            return;
+        }
+        // 间隔为 0 表示用户关闭了保活，本轮什么都不做，仅保持线程存活等待重新开启。
+        if state.ssh_keepalive_interval_sec.load(Ordering::Relaxed) == 0 {
+            continue;
+        }
+
+        // 辅助会话：先克隆出 Arc 列表再逐个 try_lock，避免长时间占用注册表锁；
+        // 会话正被文件/状态操作持有时直接跳过，keepalive 可等下一轮。
+        let auxiliary = {
+            match state.auxiliary_sessions.lock() {
+                Ok(map) => map.values().cloned().collect::<Vec<_>>(),
+                Err(_) => Vec::new(),
+            }
+        };
+        for session in auxiliary {
+            if let Ok(guard) = session.try_lock() {
+                let _ = guard.session.keepalive_send();
+            }
+        }
+
+        // 隧道池会话：在池锁内克隆 Session 句柄（ssh2::Session 是同一底层连接的句柄克隆），
+        // 释放池锁后再发 keepalive，避免持池锁做网络调用阻塞 checkout/release。
+        let pool_sessions = {
+            let mut collected: Vec<Session> = Vec::new();
+            if let Ok(pools) = state.tunnel_ssh_pools.lock() {
+                for pool in pools.values() {
+                    if let Ok(inner) = pool.inner.lock() {
+                        for slot in &inner.sessions {
+                            if !slot.failed {
+                                collected.push(slot.session.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            collected
+        };
+        for session in pool_sessions {
+            let _ = session.keepalive_send();
+        }
+    });
+}
+
 pub fn shutdown_app_backends(state: &AppState) -> Result<(), AppError> {
     // 退出清理先停 MyTerminal 自己的 SSH 会话和隧道，再停 MCP Bridge 和外部 CLI 后端。
     let mut first_error: Option<AppError> = None;
@@ -4028,6 +4107,10 @@ pub fn save_app_settings(
 ) -> Result<AppSettings, String> {
     agent_bridge::set_app_handle(&state.agent_bridge, app_handle)?;
     state.storage.save_settings(&settings, &state.crypto)?;
+    // 保活间隔热更新：后台守护线程和交互终端下一轮即读到新值，无需重连会话。
+    state
+        .ssh_keepalive_interval_sec
+        .store(settings.ssh_keepalive_interval_sec as u64, Ordering::Relaxed);
     agent_bridge::sync_server(
         &state.agent_bridge,
         &state.storage,
@@ -4327,6 +4410,8 @@ pub fn open_ssh_session(
     let thread_session_id = session_id.clone();
     let thread_output_queue = Arc::clone(&output_queue);
     let thread_app_handle = app_handle.clone();
+    // 交互终端保活间隔跟随全局设置热更新，克隆共享原子给 shell 线程。
+    let keepalive_interval = Arc::clone(&state.ssh_keepalive_interval_sec);
     thread::spawn(move || {
         // SSH 握手和认证放到后台线程，前端先获得 connecting 标签，避免打开连接时主交互等待网络。
         match connect_ssh(&connection) {
@@ -4351,6 +4436,7 @@ pub fn open_ssh_session(
                     thread_output_queue,
                     control_rx,
                     thread_app_handle,
+                    keepalive_interval,
                 );
             }
             Err(error) => {
@@ -4781,7 +4867,11 @@ pub fn update_tunnel(
         return Err(AppError::NotFound(format!("tunnel {} not found", tunnel.id)).into());
     };
 
-    if let Some(runtime) = lock_tunnels(&state)?.remove(&tunnel.id) {
+    // 必须先把 MutexGuard 落到独立 let 上，让锁在分号处立即释放；
+    // 否则 edition 2021 里 if let 判据中的临时 guard 会持有到块体结束，
+    // 块内 cleanup_unused_tunnel_ssh_pool 再次 lock_tunnels() 即同锁重入死锁。
+    let removed_runtime = lock_tunnels(&state)?.remove(&tunnel.id);
+    if let Some(runtime) = removed_runtime {
         // 编辑端点会让旧监听参数失效，先停旧监听，再把新配置以停止状态落盘。
         runtime.stop_flag.store(true, Ordering::Relaxed);
         cleanup_unused_tunnel_ssh_pool(&state, &runtime.connection_id)?;
@@ -4800,7 +4890,10 @@ pub fn start_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<Tun
         return Err(AppError::NotFound(format!("tunnel {tunnel_id} not found")).into());
     };
 
-    if let Some(runtime) = lock_tunnels(&state)?.remove(&tunnel_id) {
+    // 先把 remove 结果落到 let，让判据里的 tunnels 锁在分号处释放，
+    // 避免块内 cleanup_unused_tunnel_ssh_pool 再次 lock_tunnels() 造成同锁重入死锁。
+    let removed_runtime = lock_tunnels(&state)?.remove(&tunnel_id);
+    if let Some(runtime) = removed_runtime {
         runtime.stop_flag.store(true, Ordering::Relaxed);
         cleanup_unused_tunnel_ssh_pool(&state, &runtime.connection_id)?;
     }
@@ -4847,7 +4940,10 @@ pub fn start_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<Tun
 
 #[tauri::command]
 pub fn close_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<bool, String> {
-    if let Some(runtime) = lock_tunnels(&state)?.remove(&tunnel_id) {
+    // 先把 remove 结果落到 let，让判据里的 tunnels 锁在分号处释放，
+    // 避免块内 cleanup_unused_tunnel_ssh_pool 再次 lock_tunnels() 造成同锁重入死锁。
+    let removed_runtime = lock_tunnels(&state)?.remove(&tunnel_id);
+    if let Some(runtime) = removed_runtime {
         runtime.stop_flag.store(true, Ordering::Relaxed);
         cleanup_unused_tunnel_ssh_pool(&state, &runtime.connection_id)?;
     }

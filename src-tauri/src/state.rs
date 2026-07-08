@@ -1,6 +1,10 @@
 use std::{
     collections::HashMap,
-    sync::{atomic::AtomicBool, mpsc::Sender, Arc, Condvar, Mutex},
+    sync::{
+        atomic::{AtomicBool, AtomicU64},
+        mpsc::Sender,
+        Arc, Condvar, Mutex,
+    },
 };
 
 use crate::{
@@ -123,6 +127,8 @@ pub struct AppState {
     pub tunnels: Mutex<HashMap<String, TunnelRuntime>>,
     /// SSH 隧道专用会话池按连接配置共享，避免每个网页请求都重新握手。
     pub tunnel_ssh_pools: Mutex<HashMap<String, Arc<TunnelSshPool>>>,
+    /// SSH 保活间隔（秒，0=关闭）。后台守护线程和交互终端各自克隆一份 Arc 读取；保存设置时热更新，无需重连。
+    pub ssh_keepalive_interval_sec: Arc<AtomicU64>,
 }
 
 impl AppState {
@@ -142,6 +148,11 @@ impl AppState {
         }
 
         let crypto = CryptoService::new(storage.key_path())?;
+        // 启动时读取保活间隔初值；后续保存设置时由命令层热更新该原子值。
+        let keepalive_interval_sec = storage
+            .load_settings(&crypto)
+            .map(|settings| settings.ssh_keepalive_interval_sec as u64)
+            .unwrap_or(30);
         Ok(Self {
             storage,
             crypto,
@@ -153,6 +164,7 @@ impl AppState {
             auxiliary_session_locks: Mutex::new(HashMap::new()),
             tunnels: Mutex::new(HashMap::new()),
             tunnel_ssh_pools: Mutex::new(HashMap::new()),
+            ssh_keepalive_interval_sec: Arc::new(AtomicU64::new(keepalive_interval_sec)),
         })
     }
 }
