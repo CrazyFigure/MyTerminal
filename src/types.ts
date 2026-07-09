@@ -175,6 +175,8 @@ export interface RuntimeOverview {
   }>;
   memory: string;
   storage: string;
+  /** 远端主机已建立 TCP 连接数，并附带当前 SSH 端口连接数。 */
+  connections: string;
   network: string;
   uptime: string;
 }

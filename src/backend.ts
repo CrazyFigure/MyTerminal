@@ -338,6 +338,7 @@ const mockRuntimeOverview: RuntimeOverview = {
   ],
   memory: '1423 / 4096 MB (35%)',
   storage: '18 / 64 GB (29%)',
+  connections: 'TCP 18 / SSH 1',
   network: '192.168.12.28',
   uptime: '3d 4h',
 };

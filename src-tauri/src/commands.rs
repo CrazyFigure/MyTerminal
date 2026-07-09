@@ -3280,6 +3280,25 @@ fn format_uptime(seconds: u64) -> String {
     }
 }
 
+fn parse_connection_counts(contents: &str) -> Option<String> {
+    let mut tcp_count = None;
+    let mut ssh_count = None;
+
+    for token in contents.split_whitespace() {
+        if let Some(value) = token.strip_prefix("tcp=") {
+            tcp_count = value.parse::<u64>().ok();
+            continue;
+        }
+
+        if let Some(value) = token.strip_prefix("ssh=") {
+            ssh_count = value.parse::<u64>().ok();
+        }
+    }
+
+    // 连接数用于观察机器整体 TCP 压力，同时保留当前 SSH 端口连接数方便判断终端侧负载。
+    tcp_count.map(|tcp| format!("TCP {tcp} / SSH {}", ssh_count.unwrap_or(0)))
+}
+
 fn parse_cpu_sample(line: &str) -> Option<(u64, u64)> {
     let values = line
         .split_whitespace()
@@ -3352,12 +3371,13 @@ fn query_runtime_overview_with_session(
     session: &Session,
 ) -> Result<RuntimeOverview, AppError> {
     // 运行状态一次性读取所有需要的远端文本，避免 CPU/内存/磁盘等指标各自开 channel 导致刷新发慢。
-    let sections = exec_remote_command(
-        session,
-        "sh -lc 'printf \"__MYTERMINAL_OS__\\n\"; (uname -srmo 2>/dev/null || uname -a 2>/dev/null || true); printf \"\\n__MYTERMINAL_CPUSTAT__\\n\"; (grep -E \"^cpu[0-9 ]\" /proc/stat 2>/dev/null; sleep 0.2; grep -E \"^cpu[0-9 ]\" /proc/stat 2>/dev/null) || true; printf \"\\n__MYTERMINAL_MEMINFO__\\n\"; cat /proc/meminfo 2>/dev/null || true; printf \"\\n__MYTERMINAL_DF__\\n\"; df -Pk / 2>/dev/null || true; printf \"\\n__MYTERMINAL_HOSTIP__\\n\"; hostname -I 2>/dev/null || true; printf \"\\n__MYTERMINAL_UPTIME__\\n\"; cat /proc/uptime 2>/dev/null || true'",
-    )
-    .map(|contents| parse_marked_sections(&contents))
-    .unwrap_or_default();
+    let runtime_command = format!(
+        r#"sh -lc 'ssh_port={}; printf "__MYTERMINAL_OS__\n"; (uname -srmo 2>/dev/null || uname -a 2>/dev/null || true); printf "\n__MYTERMINAL_CPUSTAT__\n"; (grep -E "^cpu[0-9 ]" /proc/stat 2>/dev/null; sleep 0.2; grep -E "^cpu[0-9 ]" /proc/stat 2>/dev/null) || true; printf "\n__MYTERMINAL_MEMINFO__\n"; cat /proc/meminfo 2>/dev/null || true; printf "\n__MYTERMINAL_DF__\n"; df -Pk / 2>/dev/null || true; printf "\n__MYTERMINAL_CONNECTIONS__\n"; connection_total=""; connection_ssh=""; if [ -r /proc/net/tcp ] || [ -r /proc/net/tcp6 ]; then port_hex=$(printf "%04X" "$ssh_port" 2>/dev/null || printf ""); total=0; ssh=0; for file in /proc/net/tcp /proc/net/tcp6; do [ -r "$file" ] || continue; while read sl local_addr remote_addr state rest; do [ "$sl" = "sl" ] && continue; [ "$state" = "01" ] || continue; total=$((total + 1)); case "$local_addr" in *":$port_hex") ssh=$((ssh + 1));; esac; done < "$file"; done; connection_total=$total; connection_ssh=$ssh; elif command -v ss >/dev/null 2>&1; then connection_total=$(ss -Htan state established 2>/dev/null | wc -l | tr -d " "); connection_ssh=$(ss -Htan state established 2>/dev/null | grep -Ec ":$ssh_port[[:space:]]" 2>/dev/null || true); elif command -v netstat >/dev/null 2>&1; then connection_total=$(netstat -tan 2>/dev/null | grep -c "ESTABLISHED" 2>/dev/null || true); connection_ssh=$(netstat -tan 2>/dev/null | grep "ESTABLISHED" 2>/dev/null | grep -Ec "[:.]$ssh_port[[:space:]]" 2>/dev/null || true); fi; if [ -n "$connection_total" ]; then [ -n "$connection_ssh" ] || connection_ssh=0; printf "tcp=%s ssh=%s\n" "$connection_total" "$connection_ssh"; fi; printf "\n__MYTERMINAL_HOSTIP__\n"; hostname -I 2>/dev/null || true; printf "\n__MYTERMINAL_UPTIME__\n"; cat /proc/uptime 2>/dev/null || true'"#,
+        connection.port
+    );
+    let sections = exec_remote_command(session, &runtime_command)
+        .map(|contents| parse_marked_sections(&contents))
+        .unwrap_or_default();
 
     let os = sections
         .get("OS")
@@ -3413,6 +3433,11 @@ fn query_runtime_overview_with_session(
         })
         .unwrap_or_else(|| String::from("--"));
 
+    let connections = sections
+        .get("CONNECTIONS")
+        .and_then(|contents| parse_connection_counts(contents))
+        .unwrap_or_else(|| String::from("--"));
+
     let network = sections
         .get("HOSTIP")
         .and_then(|contents| contents.split_whitespace().next().map(ToString::to_string))
@@ -3437,6 +3462,7 @@ fn query_runtime_overview_with_session(
         cpu_cores,
         memory,
         storage,
+        connections,
         network,
         uptime,
     })
