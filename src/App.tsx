@@ -24,6 +24,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  CloudDownload,
   Copy,
   Download,
   Eye,
@@ -42,6 +43,7 @@ import {
   Laptop,
   MemoryStick,
   Minus,
+  Moon,
   Pencil,
   Play,
   Plus,
@@ -50,6 +52,7 @@ import {
   Save,
   Settings,
   Square,
+  Sun,
   TerminalSquare,
   Trash2,
   Upload,
@@ -3738,6 +3741,8 @@ export default function App() {
   const [appUpdateInstalling, setAppUpdateInstalling] = useState(false);
   const [appUpdateProgress, setAppUpdateProgress] = useState<UpdateDownloadProgress | null>(null);
   const [appUpdateError, setAppUpdateError] = useState<string | null>(null);
+  // 标题栏“更新”按钮主动检测时的进行态，用于图标旋转反馈并避免重复点击。
+  const [appUpdateChecking, setAppUpdateChecking] = useState(false);
 
   const {
     activeConnectionId,
@@ -3762,6 +3767,7 @@ export default function App() {
     openSession,
     openRemoteFile,
     openTunnel,
+    persistSettings,
     pollTerminalOutputs,
     refreshFiles,
     refreshRemoteHistory,
@@ -3831,6 +3837,30 @@ export default function App() {
       setAppUpdateProgress(null);
     }
   }, [installUpdate, t, updateCheckResult]);
+
+  // 标题栏更新按钮：用户主动点击时立即检测一次；发现新版本则打开详情弹窗，否则由 store 写入“已是最新”状态提示。
+  const handleTitlebarCheckUpdate = useCallback(async () => {
+    if (appUpdateChecking) {
+      return;
+    }
+    setAppUpdateChecking(true);
+    try {
+      const result = await checkForUpdates();
+      if (result.updateAvailable) {
+        setAppUpdateModalOpen(true);
+      }
+    } catch {
+      // 网络异常或 GitHub 不可达时静默失败，状态提示已由 store 层处理。
+    } finally {
+      setAppUpdateChecking(false);
+    }
+  }, [appUpdateChecking, checkForUpdates]);
+
+  // 标题栏主题按钮：在深浅色之间切换并立即持久化，无需打开设置页。
+  const handleToggleTheme = useCallback(() => {
+    const nextMode = settings.themeMode === 'dark' ? 'light' : 'dark';
+    void persistSettings({ ...settings, themeMode: nextMode }).catch(() => undefined);
+  }, [persistSettings, settings]);
 
   const activeSession = useMemo(() => sessions.find((item) => item.id === activeSessionId), [activeSessionId, sessions]);
   // 远端文件、运行状态和历史都必须绑定到已经打开的终端会话，避免仅选中连接时提前拉取远端数据。
@@ -5317,23 +5347,14 @@ export default function App() {
       {/* 自定义标题栏：关闭原生装饰后承载操作入口和窗口控制，中间空白区作为拖动手柄。 */}
       <header className="app-titlebar">
         <div className="app-titlebar-actions">
-          {updateCheckResult?.updateAvailable ? (
-            <button
-              className="titlebar-action-button is-update"
-              onClick={() => setAppUpdateModalOpen(true)}
-              title={t('updateModalTitle')}
-              type="button"
-            >
-              <RefreshCw size={16} /> <span className="button-label">{t('updateButton')}</span>
-            </button>
-          ) : null}
           <button
+            aria-label={t('newConnection')}
             className="titlebar-action-button"
-            onClick={() => setLocalTerminalsOpen(true)}
-            title={t('localTerminalTitle')}
+            onClick={() => openConnectionForm()}
+            title={t('newConnection')}
             type="button"
           >
-            <Laptop size={16} /> <span className="button-label">{t('localTerminalTitle')}</span>
+            <Plus size={16} /> <span className="button-label">{t('newConnection')}</span>
           </button>
           <button
             className="titlebar-action-button"
@@ -5345,6 +5366,41 @@ export default function App() {
           </button>
           <button
             className="titlebar-action-button"
+            onClick={() => setLocalTerminalsOpen(true)}
+            title={t('localTerminalTitle')}
+            type="button"
+          >
+            <Laptop size={16} /> <span className="button-label">{t('localTerminalTitle')}</span>
+          </button>
+        </div>
+        {/* 中间空白区专用于拖动窗口，避免按钮区误触发拖动。 */}
+        <div className="app-titlebar-drag" data-tauri-drag-region />
+        <div className="app-titlebar-system">
+          {/* 更新按钮常驻，支持主动点击检测；检测中图标旋转，发现新版本时右上角显示红点提示。 */}
+          <button
+            aria-label={t('checkUpdates')}
+            className="titlebar-icon-button"
+            disabled={appUpdateChecking}
+            onClick={() => void handleTitlebarCheckUpdate()}
+            title={t('checkUpdates')}
+            type="button"
+          >
+            <CloudDownload className={appUpdateChecking ? 'is-spinning' : ''} size={16} />
+            {updateCheckResult?.updateAvailable ? <span className="titlebar-badge-dot" /> : null}
+          </button>
+          {/* 主题按钮：浅色下显示月亮（点击进入深色），深色下显示太阳（点击回到浅色）。 */}
+          <button
+            aria-label={settings.themeMode === 'dark' ? t('switchToLightMode') : t('switchToDarkMode')}
+            className="titlebar-icon-button"
+            onClick={handleToggleTheme}
+            title={settings.themeMode === 'dark' ? t('switchToLightMode') : t('switchToDarkMode')}
+            type="button"
+          >
+            {settings.themeMode === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
+          <button
+            aria-label={t('openSettings')}
+            className="titlebar-icon-button"
             onClick={() => {
               setSettingsTab('appearance');
               setSettingsOpen(true);
@@ -5352,21 +5408,10 @@ export default function App() {
             title={t('openSettings')}
             type="button"
           >
-            <Settings size={16} /> <span className="button-label">{t('openSettings')}</span>
+            <Settings size={16} />
           </button>
-          <button
-            aria-label={t('newConnection')}
-            className="titlebar-action-button is-primary"
-            onClick={() => openConnectionForm()}
-            title={t('newConnection')}
-            type="button"
-          >
-            <Plus size={16} /> <span className="button-label">{t('newConnection')}</span>
-          </button>
+          <TitlebarWindowControls t={t} />
         </div>
-        {/* 中间空白区专用于拖动窗口，避免按钮区误触发拖动。 */}
-        <div className="app-titlebar-drag" data-tauri-drag-region />
-        <TitlebarWindowControls t={t} />
       </header>
 
       <div className="app-body">
