@@ -149,7 +149,7 @@ select:disabled {
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
-  color: var(--app-subtle-text);
+  color: var(--app-text);
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
@@ -158,35 +158,67 @@ select:disabled {
 }
 
 .titlebar-action-button:hover {
-  background: var(--app-item-bg);
+  background: var(--app-active-bg);
+  border-color: var(--app-active-border);
   color: var(--app-text);
 }
 
 .titlebar-action-button:active {
-  background: var(--app-active-bg);
+  background: var(--app-chip-bg);
 }
 
 .titlebar-action-button svg {
   flex-shrink: 0;
 }
 
-/* 新增连接作为主操作，用主题强调色突出。 */
-.titlebar-action-button.is-primary {
-  color: var(--app-active-text);
+/* 右侧系统区：更新 / 主题 / 设置图标按钮紧挨窗口控制按钮。 */
+.app-titlebar-system {
+  display: flex;
+  align-items: center;
+  height: 100%;
 }
 
-.titlebar-action-button.is-primary:hover {
-  background: var(--app-active-bg);
-  border-color: var(--app-active-border);
+/* 纯图标功能按钮：无文字，靠 title 悬浮提示，尺寸与窗口控制协调。 */
+.titlebar-icon-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: none;
+  background: transparent;
+  color: var(--app-subtle-text);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
-/* 发现更新时的入口用醒目底色提示。 */
-.titlebar-action-button.is-update {
-  color: #b45309;
+.titlebar-icon-button:hover {
+  background: var(--app-item-bg);
+  color: var(--app-text);
 }
 
-.app-shell.theme-dark .titlebar-action-button.is-update {
-  color: #fbbf24;
+.titlebar-icon-button:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.titlebar-icon-button:disabled:hover {
+  background: transparent;
+  color: var(--app-subtle-text);
+}
+
+/* 发现新版本时的红点提示，浮在更新图标右上角。 */
+.titlebar-badge-dot {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  border: 1.5px solid var(--app-panel-bg);
+  pointer-events: none;
 }
 
 .titlebar-window-controls {
@@ -699,7 +731,7 @@ select:disabled {
 .workspace {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 4px;
+  gap: 0;
   min-width: min(100%, var(--main-workspace-min-width, 0px));
   padding-left: 0;
 }
@@ -712,6 +744,11 @@ select:disabled {
   overflow: hidden;
   min-height: 32px;
   padding: 4px 6px;
+  /* 会话标签栏与下方终端功能统一，合并成一个连续面板：底部拉平、去下边框与阴影，避免出现双层描边和缝隙。 */
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom: none;
+  box-shadow: none;
 }
 
 .toolbar-sidebar-toggle {
@@ -837,6 +874,9 @@ select:disabled {
   position: relative;
   padding: 4px;
   overflow: hidden;
+  /* 顶部与会话标签栏拼接，去掉上圆角，让两块卡片合成一个连续面板。 */
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 
 .terminal-background-image {
