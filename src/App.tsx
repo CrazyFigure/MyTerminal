@@ -5012,7 +5012,7 @@ export default function App() {
               </div>
             ) : null}
             {runtimeItems.map(({ id, icon: Icon, label, percent, value }) => {
-              // CPU 主行承担展开入口，单独计算状态让样式、禁用逻辑和无障碍属性保持一致。
+              // CPU 主行仍承担展开入口，但不再显示独立箭头，避免左侧状态区出现额外展开符号。
               const isCpuMetric = id === 'cpu';
               const cpuCoreCount = runtimeOverview?.cpuCores?.length ?? 0;
               const isCpuExpandable = isCpuMetric && cpuCoreCount > 0;
@@ -5031,11 +5031,6 @@ export default function App() {
                     type="button"
                   >
                     <div className="metric-label">
-                      {isCpuExpandable ? (
-                        <span className="runtime-expand-indicator" aria-hidden="true">
-                          {cpuCoresExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                        </span>
-                      ) : null}
                       <Icon size={14} />
                       <span>{label}</span>
                     </div>
@@ -5069,10 +5064,10 @@ export default function App() {
                 </div>
               );
             })}
-          </div>
-
-          <div className="runtime-extra">
-            <span>{runtimeOverview?.os ?? '--'}</span>
+            {/* 系统版本信息跟随运行状态列表滚动，运行区被拖小时不会固定占位压住运行时长。 */}
+            <div className="runtime-extra">
+              <span>{runtimeOverview?.os ?? '--'}</span>
+            </div>
           </div>
         </section>
 
