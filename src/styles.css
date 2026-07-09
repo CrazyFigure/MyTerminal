@@ -231,12 +231,12 @@ select:disabled {
   cursor: pointer;
 }
 
-.runtime-row.is-cpu-row.is-clickable {
+.runtime-row.is-expandable-metric-row.is-clickable {
   border-color: rgba(79, 70, 229, 0.22);
   background: rgba(238, 242, 255, 0.72);
 }
 
-.app-shell.theme-dark .runtime-row.is-cpu-row.is-clickable {
+.app-shell.theme-dark .runtime-row.is-expandable-metric-row.is-clickable {
   border-color: rgba(129, 140, 248, 0.32);
   background: rgba(99, 102, 241, 0.14);
 }
@@ -251,7 +251,7 @@ select:disabled {
   outline-offset: 1px;
 }
 
-.runtime-row.is-cpu-row .metric-label {
+.runtime-row.is-expandable-metric-row .metric-label {
   color: var(--app-text);
   font-weight: 700;
 }
@@ -331,6 +331,121 @@ select:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.runtime-resource-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 4px 0 5px 14px;
+  font-size: 0.68rem;
+  color: var(--app-subtle-text);
+}
+
+.runtime-resource-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.runtime-segmented-control {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 5px;
+  background: rgba(226, 232, 240, 0.45);
+}
+
+.runtime-segmented-control button {
+  min-width: 38px;
+  min-height: 20px;
+  padding: 2px 6px;
+  border: 0;
+  border-right: 1px solid rgba(148, 163, 184, 0.24);
+  background: transparent;
+  color: inherit;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.runtime-segmented-control button:last-child {
+  border-right: 0;
+}
+
+.runtime-segmented-control button.is-active {
+  background: var(--app-active-bg);
+  color: var(--app-active-text);
+}
+
+.runtime-resource-header {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 42px 52px;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 0 3px;
+  color: var(--app-muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.runtime-resource-table {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.runtime-resource-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 42px 52px;
+  align-items: center;
+  gap: 5px;
+  min-height: 22px;
+  padding: 2px 3px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.runtime-resource-rank {
+  color: var(--app-muted);
+  font-weight: 700;
+  text-align: right;
+}
+
+.runtime-resource-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.runtime-resource-name strong,
+.runtime-resource-name small,
+.runtime-resource-row > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-resource-row > span:nth-child(3),
+.runtime-resource-row > span:nth-child(4),
+.runtime-resource-header > span:nth-child(3),
+.runtime-resource-header > span:nth-child(4) {
+  color: var(--app-text);
+  font-weight: 700;
+  text-align: right;
+}
+
+.runtime-resource-header > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-resource-empty {
+  padding: 6px 3px;
+  color: var(--app-muted);
 }
 
 .metric-tone-neutral .metric-value {
@@ -2050,6 +2165,13 @@ select:disabled {
   padding: 16px;
   border-radius: 18px;
   background: var(--app-item-bg);
+}
+
+.settings-helper-text {
+  margin: 0;
+  color: var(--app-subtle-text);
+  font-size: 0.82rem;
+  line-height: 1.5;
 }
 
 /* 设置项彼此没有强关联时强制单列，避免双列表单暗示它们成组联动。 */

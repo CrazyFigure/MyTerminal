@@ -13,6 +13,8 @@ import type {
   LocalTerminalSettings,
   RemoteFileEntry,
   RuntimeOverview,
+  RuntimeResourceUsage,
+  RuntimeResourceUsageRequest,
   SshJumpHost,
   SshProxyConfig,
   TerminalOutputChunk,
@@ -48,6 +50,7 @@ const clampRatio = (value: number | undefined, fallback: number) => {
 const terminalBackgroundImageFits = new Set<AppSettings['terminalBackgroundImageFit']>(['cover', 'contain', 'stretch', 'tile', 'center']);
 // 长行展示模式只接受前端枚举值，旧配置或手动编辑错误时回落到自动换行。
 const terminalLineWrapModes = new Set<AppSettings['terminalLineWrapMode']>(['wrap', 'horizontal']);
+const runtimeResourceSources = new Set<AppSettings['runtimeResourceSource']>(['system', 'docker', 'kubernetes']);
 
 const normalizeSingleFontFamily = (value: string) => {
   // 旧配置可能保存过一整串 fallback 字体；设置页只展示和保存用户明确选择的单个字体。
@@ -71,6 +74,16 @@ const normalizeFontPair = (settings: AppSettings) => {
       .filter((fontFamily, index, array) => array.indexOf(fontFamily) === index)
       .join(', '),
   };
+};
+
+const normalizeRuntimeResourceSource = (value: unknown): AppSettings['runtimeResourceSource'] => {
+  // 旧配置可能保存过 auto/compose；auto 不再展示，按系统进程处理，compose 由 Docker 覆盖。
+  if (value === 'compose') {
+    return 'docker';
+  }
+  return runtimeResourceSources.has(value as AppSettings['runtimeResourceSource'])
+    ? value as AppSettings['runtimeResourceSource']
+    : 'system';
 };
 
 const trimToUndefined = (value?: string) => {
@@ -122,6 +135,7 @@ const normalizeSettings = (settings: AppSettings): AppSettings => ({
   ...normalizeFontPair(settings),
   shellFontSize: clampFontSize(settings.shellFontSize),
   runtimeRefreshIntervalSec: clampRefreshInterval(settings.runtimeRefreshIntervalSec),
+  runtimeResourceSource: normalizeRuntimeResourceSource(settings.runtimeResourceSource),
   // SSH 保活间隔：0 表示关闭；否则夹在 10~300 秒之间，避免过于频繁或形同虚设。
   sshKeepaliveIntervalSec: (() => {
     const value = Math.round(Number(settings.sshKeepaliveIntervalSec));
@@ -244,6 +258,7 @@ const mockSettings: AppSettings = {
   uiLanguage: 'zh-CN',
   themeMode: 'light',
   runtimeRefreshIntervalSec: 1,
+  runtimeResourceSource: 'system',
   sshKeepaliveIntervalSec: 30,
   shellLatinFontFamily: 'JetBrains Mono',
   shellCjkFontFamily: 'Microsoft YaHei UI',
@@ -341,6 +356,18 @@ const mockRuntimeOverview: RuntimeOverview = {
   connections: 'TCP 18 / SSH 1',
   network: '192.168.12.28',
   uptime: '3d 4h',
+};
+
+const mockRuntimeResourceUsage: RuntimeResourceUsage = {
+  source: 'system',
+  metric: 'memory',
+  target: 'process',
+  capturedAt: nowIso(),
+  items: [
+    { rank: 1, id: '3241', name: 'postgres', context: 'postgres', cpu: '4.3%', memory: '812 MB', detail: 'postgres: writer', cpuPercent: 4.3, memoryPercent: 18.2 },
+    { rank: 2, id: '1180', name: 'java', context: 'spring', cpu: '12.5%', memory: '640 MB', detail: 'java -jar app.jar', cpuPercent: 12.5, memoryPercent: 14.4 },
+    { rank: 3, id: '902', name: 'node', context: 'node', cpu: '2.1%', memory: '310 MB', detail: 'node server.js', cpuPercent: 2.1, memoryPercent: 7.1 },
+  ],
 };
 
 const mockTunnels: TunnelRecord[] = [
@@ -522,6 +549,14 @@ export const backend = {
     call<RuntimeOverview>('fetch_runtime_overview', { connectionId }, {
       ...mockRuntimeOverview,
       host: mockConnections.find((item) => item.id === connectionId)?.host ?? mockRuntimeOverview.host,
+    }),
+  fetchRuntimeResourceUsage: (connectionId: string, request: RuntimeResourceUsageRequest) =>
+    call<RuntimeResourceUsage>('fetch_runtime_resource_usage', { connectionId, request }, {
+      ...mockRuntimeResourceUsage,
+      source: normalizeRuntimeResourceSource(request.source),
+      metric: request.metric,
+      target: request.target,
+      capturedAt: nowIso(),
     }),
   listTunnels: () => call<TunnelRecord[]>('list_tunnels', undefined, mockTunnels),
   // 新建隧道只保存配置，真正绑定本地端口交给 startTunnel，避免端口占用导致配置无法添加。

@@ -8,6 +8,10 @@ export type TerminalSessionKind = 'ssh' | 'local';
 export type TerminalRightClickBehavior = 'paste' | 'menu';
 /** 终端长行展示模式，horizontal 表示用横向滚动保留同一输出行。 */
 export type TerminalLineWrapMode = 'wrap' | 'horizontal';
+/** 运行状态资源明细来源；Docker 同时覆盖 Docker Compose 容器场景。 */
+export type RuntimeResourceSource = 'system' | 'docker' | 'kubernetes';
+export type RuntimeResourceMetric = 'cpu' | 'memory';
+export type RuntimeResourceTarget = 'process' | 'thread';
 
 export interface SshJumpHost {
   /** 跳板机条目稳定 id，用于表单增删排序时保持 React key 与保存结构稳定。 */
@@ -81,6 +85,8 @@ export interface AppSettings {
   uiLanguage: UiLanguage;
   themeMode: ThemeMode;
   runtimeRefreshIntervalSec: number;
+  /** 内存行展开后的资源明细默认来源，容器环境可切到 Docker/Compose/K8s。 */
+  runtimeResourceSource: RuntimeResourceSource;
   /** SSH 保活间隔（秒），0 表示关闭；作用于交互终端、文件/状态辅助会话与隧道池会话。 */
   sshKeepaliveIntervalSec: number;
   /** 终端英文字体优先用于 ASCII、数字和常见符号。 */
@@ -179,6 +185,34 @@ export interface RuntimeOverview {
   connections: string;
   network: string;
   uptime: string;
+}
+
+export interface RuntimeResourceUsageRequest {
+  source: RuntimeResourceSource;
+  metric: RuntimeResourceMetric;
+  target: RuntimeResourceTarget;
+  limit: number;
+}
+
+export interface RuntimeResourceUsageItem {
+  rank: number;
+  id: string;
+  name: string;
+  context: string;
+  cpu: string;
+  memory: string;
+  detail: string;
+  cpuPercent?: number;
+  memoryPercent?: number;
+}
+
+export interface RuntimeResourceUsage {
+  source: RuntimeResourceSource;
+  metric: RuntimeResourceMetric;
+  target: RuntimeResourceTarget;
+  items: RuntimeResourceUsageItem[];
+  capturedAt: string;
+  error?: string;
 }
 
 export interface EditorDocument {
