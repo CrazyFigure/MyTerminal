@@ -72,16 +72,26 @@ select:disabled {
   --app-chip-bg: rgba(224, 231, 255, 0.85);
   --app-chip-text: #3730a3;
   position: relative;
-  display: grid;
-  grid-template-columns: var(--app-grid-columns, auto 4px minmax(0, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 0;
   width: 100%;
   height: 100vh;
-  padding: 4px;
+  padding: 0;
   color: var(--app-text);
 }
 
-.app-shell.sidebar-collapsed {
+/* 主体区承接原来的三栏网格：左侧栏 / 终端主体 / 右侧 AI 栏，标题栏之下占满剩余高度。 */
+.app-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: var(--app-grid-columns, auto 4px minmax(0, 1fr));
+  gap: 0;
+  padding: 4px;
+}
+
+.app-shell.sidebar-collapsed .app-body {
   grid-template-columns: var(--app-grid-columns, minmax(0, 1fr));
 }
 
@@ -102,6 +112,111 @@ select:disabled {
   --app-active-text: #c7d2fe;
   --app-chip-bg: rgba(55, 48, 163, 0.34);
   --app-chip-text: #c7d2fe;
+}
+
+/* ── 自定义标题栏 ─────────────────────────────────────────────── */
+.app-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 0 0 8px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--app-card-border);
+  background: var(--app-panel-bg);
+  user-select: none;
+}
+
+.app-titlebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 中间空白拖动区吃掉所有剩余空间，是主要的窗口拖动手柄。 */
+.app-titlebar-drag {
+  flex: 1;
+  align-self: stretch;
+  min-width: 24px;
+}
+
+.titlebar-action-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--app-subtle-text);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.titlebar-action-button:hover {
+  background: var(--app-item-bg);
+  color: var(--app-text);
+}
+
+.titlebar-action-button:active {
+  background: var(--app-active-bg);
+}
+
+.titlebar-action-button svg {
+  flex-shrink: 0;
+}
+
+/* 新增连接作为主操作，用主题强调色突出。 */
+.titlebar-action-button.is-primary {
+  color: var(--app-active-text);
+}
+
+.titlebar-action-button.is-primary:hover {
+  background: var(--app-active-bg);
+  border-color: var(--app-active-border);
+}
+
+/* 发现更新时的入口用醒目底色提示。 */
+.titlebar-action-button.is-update {
+  color: #b45309;
+}
+
+.app-shell.theme-dark .titlebar-action-button.is-update {
+  color: #fbbf24;
+}
+
+.titlebar-window-controls {
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+.titlebar-window-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 40px;
+  border: none;
+  background: transparent;
+  color: var(--app-subtle-text);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.titlebar-window-button:hover {
+  background: var(--app-item-bg);
+  color: var(--app-text);
+}
+
+/* 关闭按钮沿用系统习惯，hover 呈红底白字。 */
+.titlebar-window-button.titlebar-window-close:hover {
+  background: #e81123;
+  color: #ffffff;
 }
 
 .card {
@@ -3563,7 +3678,7 @@ select:disabled {
 }
 
 @media (max-width: 960px) {
-  .app-shell {
+  .app-body {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1fr);
   }
