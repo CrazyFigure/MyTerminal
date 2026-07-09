@@ -10,6 +10,7 @@
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
     "sync:version": "node scripts/sync-version.mjs",
+    "generate:star-history": "node scripts/generate-star-history.mjs",
     "check:web": "npm run build",
     "precheck:rust": "npm run sync:version",
     "check:perl": "powershell -ExecutionPolicy Bypass -File ./scripts/check-perl.ps1",

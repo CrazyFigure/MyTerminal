@@ -212,7 +212,7 @@ npm run check        # Run frontend build and Rust backend checks
 
 ## Star History
 
-![Star History Chart](https://api.star-history.com/svg?repos=CrazyFigure/MyTerminal&type=Date)
+[![Star History Chart](./assets/star-history.svg)](https://github.com/CrazyFigure/MyTerminal/stargazers)
 
 ## License
 
