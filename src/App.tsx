@@ -41,6 +41,7 @@ import {
   Info,
   Laptop,
   MemoryStick,
+  Minus,
   Pencil,
   Play,
   Plus,
@@ -465,6 +466,85 @@ const buildActionButtonStyle = (label: string, compact: boolean): CSSProperties 
   }
   return { '--compact-action-button-width': `${estimateCompactButtonWidth(label)}px` } as CSSProperties;
 };
+
+// 自定义标题栏的窗口控制按钮：最小化、最大化/还原、关闭。
+// 关闭原生装饰后由前端接管这些操作，同时监听窗口尺寸变化保持最大化图标状态同步。
+function TitlebarWindowControls({
+  t,
+}: {
+  t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
+}) {
+  const [isMaximized, setIsMaximized] = useState(false);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void import('@tauri-apps/api/window').then(async ({ getCurrentWindow }) => {
+      const currentWindow = getCurrentWindow();
+      // 初始同步一次最大化状态，避免启动即最大化时图标显示错误。
+      const syncMaximized = async () => {
+        try {
+          const maximized = await currentWindow.isMaximized();
+          if (!disposed) {
+            setIsMaximized(maximized);
+          }
+        } catch {
+          // 忽略窗口状态查询失败，保持上一次的图标状态即可。
+        }
+      };
+      await syncMaximized();
+      // 拖动最大化、系统快捷键等都会触发 resize，用它统一驱动图标切换。
+      unlisten = await currentWindow.onResized(() => {
+        void syncMaximized();
+      });
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // 各窗口操作都动态引入 window API，复用应用其他位置的懒加载方式，避免非 Tauri 环境报错。
+  const runWindowAction = (
+    action: (currentWindow: import('@tauri-apps/api/window').Window) => void,
+  ) => {
+    void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+      action(getCurrentWindow());
+    });
+  };
+
+  return (
+    <div className="titlebar-window-controls">
+      <button
+        aria-label={t('windowMinimize')}
+        className="titlebar-window-button"
+        onClick={() => runWindowAction((currentWindow) => void currentWindow.minimize())}
+        title={t('windowMinimize')}
+        type="button"
+      >
+        <Minus size={16} />
+      </button>
+      <button
+        aria-label={isMaximized ? t('windowRestore') : t('windowMaximize')}
+        className="titlebar-window-button"
+        onClick={() => runWindowAction((currentWindow) => void currentWindow.toggleMaximize())}
+        title={isMaximized ? t('windowRestore') : t('windowMaximize')}
+        type="button"
+      >
+        {isMaximized ? <Copy size={14} /> : <Square size={13} />}
+      </button>
+      <button
+        aria-label={t('windowClose')}
+        className="titlebar-window-button titlebar-window-close"
+        onClick={() => runWindowAction((currentWindow) => void currentWindow.close())}
+        title={t('windowClose')}
+        type="button"
+      >
+        <X size={16} />
+      </button>
+    </div>
+  );
+}
 
 // 侧栏最大宽度由当前窗口、另一侧栏宽度和主工作区保底宽度共同决定，避免双侧栏展开时互相抢占中间区域。
 const resolveSidePanelMaxWidth = (oppositePanelVisible: boolean, oppositePanelWidth: number) => {
@@ -5234,6 +5314,62 @@ export default function App() {
 
   return (
     <div className={shellClassName} style={appShellStyle}>
+      {/* 自定义标题栏：关闭原生装饰后承载操作入口和窗口控制，中间空白区作为拖动手柄。 */}
+      <header className="app-titlebar">
+        <div className="app-titlebar-actions">
+          {updateCheckResult?.updateAvailable ? (
+            <button
+              className="titlebar-action-button is-update"
+              onClick={() => setAppUpdateModalOpen(true)}
+              title={t('updateModalTitle')}
+              type="button"
+            >
+              <RefreshCw size={16} /> <span className="button-label">{t('updateButton')}</span>
+            </button>
+          ) : null}
+          <button
+            className="titlebar-action-button"
+            onClick={() => setLocalTerminalsOpen(true)}
+            title={t('localTerminalTitle')}
+            type="button"
+          >
+            <Laptop size={16} /> <span className="button-label">{t('localTerminalTitle')}</span>
+          </button>
+          <button
+            className="titlebar-action-button"
+            onClick={() => setConnectionsOpen(true)}
+            title={t('manageConnections')}
+            type="button"
+          >
+            <FolderTree size={16} /> <span className="button-label">{t('manageConnections')}</span>
+          </button>
+          <button
+            className="titlebar-action-button"
+            onClick={() => {
+              setSettingsTab('appearance');
+              setSettingsOpen(true);
+            }}
+            title={t('openSettings')}
+            type="button"
+          >
+            <Settings size={16} /> <span className="button-label">{t('openSettings')}</span>
+          </button>
+          <button
+            aria-label={t('newConnection')}
+            className="titlebar-action-button is-primary"
+            onClick={() => openConnectionForm()}
+            title={t('newConnection')}
+            type="button"
+          >
+            <Plus size={16} /> <span className="button-label">{t('newConnection')}</span>
+          </button>
+        </div>
+        {/* 中间空白区专用于拖动窗口，避免按钮区误触发拖动。 */}
+        <div className="app-titlebar-drag" data-tauri-drag-region />
+        <TitlebarWindowControls t={t} />
+      </header>
+
+      <div className="app-body">
       {!sidebarCollapsed ? (
       <aside className="sidebar card" style={{ minWidth: sidePanelMinWidth, width: sidebarWidth }}>
         <section className="sidebar-panel runtime-panel" style={{ height: runtimePanelHeight }}>
@@ -5813,41 +5949,6 @@ export default function App() {
           </div>
 
           <div className="workspace-toolbar-actions">
-            {updateCheckResult?.updateAvailable ? (
-              <button
-                className="primary-button update-available-button"
-                onClick={() => setAppUpdateModalOpen(true)}
-                title={t('updateModalTitle')}
-                type="button"
-              >
-                <RefreshCw size={16} /> {renderActionButtonLabel(t('updateButton'))}
-              </button>
-            ) : null}
-            <button className="secondary-button" onClick={() => setLocalTerminalsOpen(true)} type="button">
-              <Laptop size={16} /> {renderActionButtonLabel(t('localTerminalTitle'))}
-            </button>
-            <button className="secondary-button" onClick={() => setConnectionsOpen(true)} type="button">
-              <FolderTree size={16} /> {renderActionButtonLabel(t('manageConnections'))}
-            </button>
-            <button
-              className="secondary-button"
-              onClick={() => {
-                setSettingsTab('appearance');
-                setSettingsOpen(true);
-              }}
-              type="button"
-            >
-              <Settings size={16} /> {renderActionButtonLabel(t('openSettings'))}
-            </button>
-            <button
-              aria-label={t('newConnection')}
-              className="primary-button toolbar-icon-only"
-              onClick={() => openConnectionForm()}
-              title={t('newConnection')}
-              type="button"
-            >
-              <Plus size={16} />
-            </button>
             <button
               aria-label={agentSidebarCollapsed ? t('expandAgentSidebar') : t('collapseAgentSidebar')}
               className="toolbar-sidebar-toggle icon-button"
@@ -6116,6 +6217,7 @@ export default function App() {
           </aside>
         </>
       ) : null}
+      </div>
 
       <ConnectionManagerModal open={connectionsOpen} onClose={() => setConnectionsOpen(false)} />
       <LocalTerminalManagerModal open={localTerminalsOpen} onClose={() => setLocalTerminalsOpen(false)} />
