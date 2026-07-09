@@ -448,6 +448,80 @@ select:disabled {
   color: var(--app-muted);
 }
 
+/* 存储展开区需要紧凑展示长文件名和路径，同时允许用户直接选中文本复制。 */
+.runtime-storage-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0 5px 14px;
+  font-size: 0.68rem;
+  color: var(--app-subtle-text);
+}
+
+.runtime-storage-header,
+.runtime-storage-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 58px;
+  align-items: center;
+  gap: 5px;
+}
+
+.runtime-storage-header {
+  padding: 0 3px;
+  color: var(--app-muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.runtime-storage-table {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.runtime-storage-row {
+  min-height: 26px;
+  padding: 3px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.08);
+  cursor: text;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.runtime-storage-row * {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.runtime-storage-rank {
+  color: var(--app-muted);
+  font-weight: 700;
+  text-align: right;
+}
+
+.runtime-storage-file {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.runtime-storage-file strong,
+.runtime-storage-file small,
+.runtime-storage-header > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-storage-size,
+.runtime-storage-header > span:last-child {
+  color: var(--app-text);
+  font-weight: 700;
+  text-align: right;
+}
+
 .metric-tone-neutral .metric-value {
   position: static;
   line-height: normal;

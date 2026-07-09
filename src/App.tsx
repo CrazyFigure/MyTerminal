@@ -13,6 +13,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
 } from 'react';
 import { open as openFileDialog, save as saveFileDialog } from '@tauri-apps/plugin-dialog';
 import {
@@ -60,7 +61,7 @@ import { backend } from './backend';
 import { writeClipboardText } from './clipboard';
 import { useAppStore } from './store';
 import { UpdateModal, type UpdateDownloadProgress } from './UpdateModal';
-import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, RemoteFileEntry, RuntimeResourceMetric, RuntimeResourceTarget, RuntimeResourceUsage, RuntimeResourceSource, SshJumpHost, TerminalSession, UiLanguage, UpdateCheckResult } from './types';
+import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, RemoteFileEntry, RuntimeResourceMetric, RuntimeResourceTarget, RuntimeResourceUsage, RuntimeResourceSource, RuntimeStorageFiles, SshJumpHost, TerminalSession, UiLanguage, UpdateCheckResult } from './types';
 
 const MonacoEditor = lazy(() => import('./MonacoEditor'));
 
@@ -159,6 +160,16 @@ const portTextInputProps = {
   inputMode: 'numeric',
   pattern: '[0-9]*',
 } as const;
+// 设置里的秒数字段同样不用 number 类型，避免上下步进按钮和鼠标滚轮隐式改配置。
+const numericSettingInputProps = {
+  type: 'text',
+  inputMode: 'numeric',
+  pattern: '[0-9]*',
+  autoComplete: 'off',
+  onWheel: (event: ReactWheelEvent<HTMLInputElement>) => {
+    event.currentTarget.blur();
+  },
+} as const;
 // AI 执行通知用稳定 tag 去重，避免 MCP 客户端重试时 Windows 通知中心堆出重复消息。
 const agentBridgeNotificationTagPrefix = 'myterminal-agent-bridge';
 // Windows toast 按钮的动作 ID 和 Rust 端保持一致，前端事件回来后直接分派审批结果。
@@ -169,11 +180,18 @@ const agentRequestSummaryMaxLength = 160;
 // 左右侧栏允许比旧版 320px 更窄，展开双侧栏时优先把横向空间留给终端和底部操作区。
 const sidePanelMinWidth = 240;
 const sidePanelMaxWidth = 560;
+// 左侧上下分区都保留约 120px 最小可用高度，避免文件管理区被限制成半屏起步。
+const sidebarRuntimeMinHeight = 120;
+const sidebarExplorerMinHeight = 120;
+// app 外壳 padding、sidebar padding、分隔拖拽条和 gap 都要从可分配高度里预留出来。
+const sidebarVerticalChromeBudget = 28;
 // 主工作区保底宽度用于反推侧栏最大可拖宽度，避免左右栏继续挤压中间按钮和终端。
 const mainWorkspaceMinWidth = 720;
 // 应用外壳左右 padding 和侧栏拖拽柄宽度参与宽度预算，保证 JS 钳制与 CSS 网格尺寸一致。
 const appShellHorizontalPadding = 8;
 const sidePanelResizeHandleWidth = 4;
+// 内存展开区只展示前 4 项，降低远端 ps 查询和前端渲染负担。
+const runtimeResourceDetailLimit = 4;
 
 const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -349,6 +367,15 @@ const bottomTabs: Array<{ id: BottomPanelTab; labelKey: TranslationKey; icon: ty
 ];
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+// 设置页数字输入只接收整数文本；越界值在录入时钳制，保存时后端还会再归一化一次。
+const readBoundedIntegerInput = (value: string, min: number, max: number, fallback: number) => {
+  const numericText = value.replace(/\D/g, '');
+  if (!numericText) {
+    return fallback;
+  }
+  const numericValue = Number(numericText);
+  return Number.isFinite(numericValue) ? clamp(Math.trunc(numericValue), min, max) : fallback;
+};
 
 // 动作按钮紧凑态使用显式分行，中文优先保留业务词组，英文按单词长度均衡切分，避免 CSS 自动断成 3/1 之类的畸形结果。
 const splitActionButtonLabel = (label: string) => {
@@ -451,6 +478,18 @@ const resolveSidePanelMaxWidth = (oppositePanelVisible: boolean, oppositePanelWi
     (oppositePanelVisible ? sidePanelResizeHandleWidth + oppositePanelWidth : 0);
   const availableWidth = window.innerWidth - occupiedByChrome - mainWorkspaceMinWidth;
   return Math.max(sidePanelMinWidth, Math.min(sidePanelMaxWidth, Math.floor(availableWidth)));
+};
+
+// 运行状态区域最大高度由文件管理区最小高度反推，拖拽到底时仍给文件管理保留可操作空间。
+const resolveRuntimePanelMaxHeight = () => {
+  if (typeof window === 'undefined') {
+    return 380;
+  }
+
+  return Math.max(
+    sidebarRuntimeMinHeight,
+    window.innerHeight - sidebarExplorerMinHeight - sidebarVerticalChromeBudget,
+  );
 };
 
 const parentPath = (path: string) => {
@@ -3026,38 +3065,6 @@ function SettingsModal({
                   </div>
 
                   <div className="form-grid settings-single-column-grid settings-compact-form-grid">
-                    <label>
-                      <span>{t('fieldRuntimeRefreshInterval')}</span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={60}
-                        value={draftSettings.runtimeRefreshIntervalSec}
-                        onChange={(event) =>
-                          updateDraftSettings((current) => ({
-                            ...current,
-                            runtimeRefreshIntervalSec: Number(event.target.value) || 1,
-                          }))
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>{t('fieldSshKeepaliveInterval')}</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={300}
-                        step={5}
-                        value={draftSettings.sshKeepaliveIntervalSec ?? 30}
-                        onChange={(event) =>
-                          updateDraftSettings((current) => ({
-                            ...current,
-                            // 0 表示关闭保活；其余值在保存归一化时夹到 10~300 秒。
-                            sshKeepaliveIntervalSec: Math.max(0, Number(event.target.value) || 0),
-                          }))
-                        }
-                      />
-                    </label>
                     <div className="form-field">
                       <span>{t('fieldTerminalRightClickBehavior')}</span>
                       <select
@@ -3113,6 +3120,65 @@ function SettingsModal({
                   </div>
 
                   <div className="form-grid settings-single-column-grid settings-compact-form-grid">
+                    <label>
+                      <span>{t('fieldRuntimeRefreshInterval')}</span>
+                      <input
+                        {...numericSettingInputProps}
+                        aria-label={t('fieldRuntimeRefreshInterval')}
+                        value={draftSettings.runtimeRefreshIntervalSec}
+                        onChange={(event) =>
+                          updateDraftSettings((current) => ({
+                            ...current,
+                            runtimeRefreshIntervalSec: readBoundedIntegerInput(event.target.value, 1, 60, 1),
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>{t('fieldRuntimeResourceRefreshInterval')}</span>
+                      <input
+                        {...numericSettingInputProps}
+                        aria-label={t('fieldRuntimeResourceRefreshInterval')}
+                        value={draftSettings.runtimeResourceRefreshIntervalSec ?? 3}
+                        onChange={(event) =>
+                          updateDraftSettings((current) => ({
+                            ...current,
+                            // 进程/线程明细是独立接口，允许比常规运行状态更贴近实时，但避免低于 1 秒。
+                            runtimeResourceRefreshIntervalSec: readBoundedIntegerInput(event.target.value, 1, 300, 3),
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>{t('fieldRuntimeStorageRefreshInterval')}</span>
+                      <input
+                        {...numericSettingInputProps}
+                        aria-label={t('fieldRuntimeStorageRefreshInterval')}
+                        value={draftSettings.runtimeStorageRefreshIntervalSec ?? 5}
+                        onChange={(event) =>
+                          updateDraftSettings((current) => ({
+                            ...current,
+                            // 大文件扫描会遍历文件系统，前端最低 5 秒，保存时后端再次兜底。
+                            runtimeStorageRefreshIntervalSec: readBoundedIntegerInput(event.target.value, 5, 300, 5),
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>{t('fieldSshKeepaliveInterval')}</span>
+                      <input
+                        {...numericSettingInputProps}
+                        aria-label={t('fieldSshKeepaliveInterval')}
+                        value={draftSettings.sshKeepaliveIntervalSec ?? 30}
+                        onChange={(event) =>
+                          updateDraftSettings((current) => ({
+                            ...current,
+                            // 0 表示关闭保活；其余值在保存归一化时夹到 10~300 秒。
+                            sshKeepaliveIntervalSec: readBoundedIntegerInput(event.target.value, 0, 300, 0),
+                          }))
+                        }
+                      />
+                    </label>
                     <div className="form-field">
                       <span>{t('fieldRuntimeResourceSource')}</span>
                       <select
@@ -3132,8 +3198,6 @@ function SettingsModal({
                       </select>
                     </div>
                   </div>
-
-                  <p className="settings-helper-text">{t('runtimeResourceSettingsHint')}</p>
                 </section>
 
                 <div className="modal-actions">
@@ -3524,7 +3588,7 @@ export default function App() {
       return 220;
     }
     // 左侧默认给运行状态约 1/3 高度，文件管理保持约 2/3，CPU 展开时不至于被文件区挤掉。
-    return clamp(Math.round(window.innerHeight * 0.3), 190, 300);
+    return clamp(Math.round(window.innerHeight * 0.3), 190, Math.min(resolveRuntimePanelMaxHeight(), 300));
   });
   const [bottomHeight, setBottomHeight] = useState(180);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -3553,13 +3617,18 @@ export default function App() {
   const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
   const [localFileDropActive, setLocalFileDropActive] = useState(false);
   const [remoteDownloadDragPaths, setRemoteDownloadDragPaths] = useState<string[]>([]);
+  // 运行状态区的展开态独立保存；存储明细只在 storageFilesExpanded 为 true 时触发远端扫描。
   const [cpuCoresExpanded, setCpuCoresExpanded] = useState(false);
   const [memoryResourcesExpanded, setMemoryResourcesExpanded] = useState(false);
+  const [storageFilesExpanded, setStorageFilesExpanded] = useState(false);
   const [runtimeResourceMetric, setRuntimeResourceMetric] = useState<RuntimeResourceMetric>('memory');
   const [runtimeResourceTarget, setRuntimeResourceTarget] = useState<RuntimeResourceTarget>('process');
   const [runtimeResourceUsage, setRuntimeResourceUsage] = useState<RuntimeResourceUsage | null>(null);
   const [runtimeResourceLoading, setRuntimeResourceLoading] = useState(false);
   const [runtimeResourceError, setRuntimeResourceError] = useState('');
+  const [runtimeStorageFiles, setRuntimeStorageFiles] = useState<RuntimeStorageFiles | null>(null);
+  const [runtimeStorageFilesLoading, setRuntimeStorageFilesLoading] = useState(false);
+  const [runtimeStorageFilesError, setRuntimeStorageFilesError] = useState('');
   const [bottomDockCollapsed, setBottomDockCollapsed] = useState(false);
   const [transferProgressItems, setTransferProgressItems] = useState<TransferProgressItem[]>([]);
   const [agentBridgeRequests, setAgentBridgeRequests] = useState<AgentBridgeRequest[]>([]);
@@ -3570,7 +3639,13 @@ export default function App() {
   const runtimeRefreshInFlightRef = useRef(false);
   // 刷新进行中又收到刷新请求时置位，当前刷新结束后补跑一次，避免切换连接时漏刷、加载动画卡住。
   const runtimeRefreshPendingRef = useRef(false);
+  // 展开明细的刷新序号用于丢弃旧请求，避免收起或切换连接后把过期结果写回界面。
   const runtimeResourceRefreshSeqRef = useRef(0);
+  // 进程/线程资源明细可能需要 1~2 秒；同一展开态下避免轮询并发堆积。
+  const runtimeResourceRefreshInFlightRef = useRef(false);
+  const runtimeStorageFilesRefreshSeqRef = useRef(0);
+  // 大文件扫描可能超过刷新间隔；同一连接同一展开态下只允许一个扫描请求在路上。
+  const runtimeStorageFilesRefreshInFlightRef = useRef(false);
   const sessionTabDragStateRef = useRef<SessionTabDragState>(null);
   const sessionTabDropTargetRef = useRef<SessionTabDropTarget>(null);
   const sessionTabListRef = useRef<HTMLDivElement | null>(null);
@@ -3712,6 +3787,8 @@ export default function App() {
         }
         return clamp(current, sidePanelMinWidth, resolveSidePanelMaxWidth(!sidebarCollapsed, sidebarWidth));
       });
+      // 窗口缩小时重新钳制运行状态高度，确保文件管理区仍保留最小可操作高度。
+      setRuntimePanelHeight((current) => clamp(current, sidebarRuntimeMinHeight, resolveRuntimePanelMaxHeight()));
     };
 
     clampExpandedSidebars();
@@ -3966,18 +4043,19 @@ export default function App() {
   }, [refreshRuntimeOverview]);
 
   const refreshRuntimeResourceUsageOnce = useCallback(() => {
-    if (!activeRemoteConnectionId || !memoryResourcesExpanded) {
+    if (!activeRemoteConnectionId || !memoryResourcesExpanded || runtimeResourceRefreshInFlightRef.current) {
       return;
     }
 
     const requestSeq = ++runtimeResourceRefreshSeqRef.current;
+    runtimeResourceRefreshInFlightRef.current = true;
     setRuntimeResourceLoading(true);
     setRuntimeResourceError('');
     void backend.fetchRuntimeResourceUsage(activeRemoteConnectionId, {
       source: settings.runtimeResourceSource ?? 'system',
       metric: runtimeResourceMetric,
       target: runtimeResourceTarget,
-      limit: 5,
+      limit: runtimeResourceDetailLimit,
     }).then((usage) => {
       if (requestSeq !== runtimeResourceRefreshSeqRef.current) {
         return;
@@ -3988,10 +4066,11 @@ export default function App() {
       if (requestSeq !== runtimeResourceRefreshSeqRef.current) {
         return;
       }
-      setRuntimeResourceUsage(null);
+      // 刷新失败时保留旧明细，避免网络抖动或远端命令慢导致展开区突然清空。
       setRuntimeResourceError(error instanceof Error ? error.message : String(error));
     }).finally(() => {
       if (requestSeq === runtimeResourceRefreshSeqRef.current) {
+        runtimeResourceRefreshInFlightRef.current = false;
         setRuntimeResourceLoading(false);
       }
     });
@@ -4000,21 +4079,75 @@ export default function App() {
   useEffect(() => {
     if (!memoryResourcesExpanded || !activeRemoteConnectionId) {
       runtimeResourceRefreshSeqRef.current += 1;
+      runtimeResourceRefreshInFlightRef.current = false;
       setRuntimeResourceLoading(false);
       return undefined;
     }
 
-    // 内存明细展开后才启动独立刷新；收起或切换连接时递增序号，让旧请求结果自动失效。
+    // 内存明细展开、切换 CPU/内存、切换进程/线程或来源设置变化时都会立即刷新一次。
+    // 后续按资源设置里的进程状态刷新频率轮询；收起时 cleanup 会关闭轮询。
     refreshRuntimeResourceUsageOnce();
     const timer = window.setInterval(
       refreshRuntimeResourceUsageOnce,
-      Math.max(5, settings.runtimeRefreshIntervalSec) * 1000,
+      Math.max(1, settings.runtimeResourceRefreshIntervalSec ?? 3) * 1000,
     );
     return () => {
       runtimeResourceRefreshSeqRef.current += 1;
+      runtimeResourceRefreshInFlightRef.current = false;
       window.clearInterval(timer);
     };
-  }, [activeRemoteConnectionId, memoryResourcesExpanded, refreshRuntimeResourceUsageOnce, settings.runtimeRefreshIntervalSec]);
+  }, [activeRemoteConnectionId, memoryResourcesExpanded, refreshRuntimeResourceUsageOnce, settings.runtimeResourceRefreshIntervalSec]);
+
+  // 存储最大文件扫描按展开态触发；未选连接或已收起时直接跳过，减少远端磁盘遍历。
+  const refreshRuntimeStorageFilesOnce = useCallback(() => {
+    if (!activeRemoteConnectionId || !storageFilesExpanded || runtimeStorageFilesRefreshInFlightRef.current) {
+      return;
+    }
+
+    const requestSeq = ++runtimeStorageFilesRefreshSeqRef.current;
+    runtimeStorageFilesRefreshInFlightRef.current = true;
+    setRuntimeStorageFilesLoading(true);
+    setRuntimeStorageFilesError('');
+    void backend.fetchRuntimeStorageFiles(activeRemoteConnectionId).then((files) => {
+      if (requestSeq !== runtimeStorageFilesRefreshSeqRef.current) {
+        return;
+      }
+      setRuntimeStorageFiles(files);
+      setRuntimeStorageFilesError(files.error ?? '');
+    }).catch((error) => {
+      if (requestSeq !== runtimeStorageFilesRefreshSeqRef.current) {
+        return;
+      }
+      // 刷新失败时保留旧文件列表，避免一次扫描超时导致已展示的大文件数据消失。
+      setRuntimeStorageFilesError(error instanceof Error ? error.message : String(error));
+    }).finally(() => {
+      if (requestSeq === runtimeStorageFilesRefreshSeqRef.current) {
+        runtimeStorageFilesRefreshInFlightRef.current = false;
+        setRuntimeStorageFilesLoading(false);
+      }
+    });
+  }, [activeRemoteConnectionId, storageFilesExpanded]);
+
+  useEffect(() => {
+    if (!storageFilesExpanded || !activeRemoteConnectionId) {
+      runtimeStorageFilesRefreshSeqRef.current += 1;
+      runtimeStorageFilesRefreshInFlightRef.current = false;
+      setRuntimeStorageFilesLoading(false);
+      return undefined;
+    }
+
+    // 存储展开时立即扫描一次，后续按资源设置里的大文件状态刷新频率轮询；收起时 cleanup 会关闭轮询。
+    refreshRuntimeStorageFilesOnce();
+    const timer = window.setInterval(
+      refreshRuntimeStorageFilesOnce,
+      Math.max(5, settings.runtimeStorageRefreshIntervalSec ?? 5) * 1000,
+    );
+    return () => {
+      runtimeStorageFilesRefreshSeqRef.current += 1;
+      runtimeStorageFilesRefreshInFlightRef.current = false;
+      window.clearInterval(timer);
+    };
+  }, [activeRemoteConnectionId, refreshRuntimeStorageFilesOnce, settings.runtimeStorageRefreshIntervalSec, storageFilesExpanded]);
 
   useEffect(() => {
     if (!bootstrapped) {
@@ -5128,18 +5261,28 @@ export default function App() {
               </div>
             ) : null}
             {runtimeItems.map(({ id, icon: Icon, label, percent, value }) => {
-              // CPU 和内存主行承担各自展开入口；行内不再放箭头，保持左侧状态区横向空间稳定。
+              // CPU、内存和存储主行承担各自展开入口；行内不再放箭头，保持左侧状态区横向空间稳定。
               const isCpuMetric = id === 'cpu';
               const isMemoryMetric = id === 'memory';
+              const isStorageMetric = id === 'storage';
               const cpuCoreCount = runtimeOverview?.cpuCores?.length ?? 0;
               const isCpuExpandable = isCpuMetric && cpuCoreCount > 0;
               const isMemoryExpandable = isMemoryMetric && Boolean(activeRemoteConnectionId);
-              const isExpandableMetric = isCpuExpandable || isMemoryExpandable;
-              const expanded = isCpuMetric ? cpuCoresExpanded : isMemoryMetric ? memoryResourcesExpanded : undefined;
+              const isStorageExpandable = isStorageMetric && Boolean(activeRemoteConnectionId);
+              const isExpandableMetric = isCpuExpandable || isMemoryExpandable || isStorageExpandable;
+              const expanded = isCpuMetric
+                ? cpuCoresExpanded
+                : isMemoryMetric
+                  ? memoryResourcesExpanded
+                  : isStorageMetric
+                    ? storageFilesExpanded
+                    : undefined;
               const controlsId = isCpuExpandable
                 ? 'runtime-cpu-core-list'
                 : isMemoryExpandable
                   ? 'runtime-memory-resource-list'
+                  : isStorageExpandable
+                    ? 'runtime-storage-file-list'
                   : undefined;
               return (
                 <div key={id} className="runtime-row-group">
@@ -5154,6 +5297,9 @@ export default function App() {
                       }
                       if (isMemoryExpandable) {
                         setMemoryResourcesExpanded((current) => !current);
+                      }
+                      if (isStorageExpandable) {
+                        setStorageFilesExpanded((current) => !current);
                       }
                     }}
                     type="button"
@@ -5258,6 +5404,38 @@ export default function App() {
                       ) : null}
                     </div>
                   ) : null}
+                  {isStorageMetric && storageFilesExpanded ? (
+                    <div className="runtime-storage-panel" id="runtime-storage-file-list">
+                      <div className="runtime-storage-header">
+                        <span>#</span>
+                        <span>{t('runtimeStorageFileName')}</span>
+                        <span>{t('runtimeStorageFileSize')}</span>
+                      </div>
+
+                      {runtimeStorageFiles?.items.length ? (
+                        <div className="runtime-storage-table">
+                          {runtimeStorageFiles.items.map((item) => (
+                            <div
+                              className="runtime-storage-row"
+                              key={`${item.path}-${item.rank}`}
+                              title={`${item.name}\n${item.path}\n${item.size}`}
+                            >
+                              <span className="runtime-storage-rank">{item.rank}</span>
+                              <span className="runtime-storage-file">
+                                <strong>{item.name}</strong>
+                                <small>{item.path}</small>
+                              </span>
+                              <span className="runtime-storage-size">{item.size}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : runtimeStorageFilesError || !runtimeStorageFilesLoading ? (
+                        <div className="runtime-resource-empty">
+                          {runtimeStorageFilesError || t('runtimeStorageFilesEmpty')}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               );
             })}
@@ -5273,7 +5451,7 @@ export default function App() {
           onPointerDown={(event) => {
             const startHeight = runtimePanelHeight;
             beginResize(event, (moveEvent, _startX, startY) => {
-              setRuntimePanelHeight(clamp(startHeight + (moveEvent.clientY - startY), 120, Math.min(window.innerHeight * 0.48, 380)));
+              setRuntimePanelHeight(clamp(startHeight + (moveEvent.clientY - startY), sidebarRuntimeMinHeight, resolveRuntimePanelMaxHeight()));
             });
           }}
         />

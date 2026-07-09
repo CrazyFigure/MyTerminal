@@ -32,6 +32,7 @@ use crate::{
         HistoryEntryInput, LocalConfigBundle, LocalTerminalProfile, LocalTerminalSettings,
         RemoteFileEntry, RuntimeCpuCore, RuntimeOverview, SshJumpHost, SshProxyConfig,
         RuntimeResourceUsage, RuntimeResourceUsageItem, RuntimeResourceUsageRequest,
+        RuntimeStorageFileItem, RuntimeStorageFiles,
         TerminalOutputChunk, TerminalSession, TunnelOpenRequest, TunnelRecord, TunnelUpdateRequest,
         UpdateCheckResult, WebDavSettings,
     },
@@ -3729,15 +3730,16 @@ fn query_system_resource_usage_with_session(
     target: &str,
     limit: usize,
 ) -> Result<RuntimeResourceUsage, AppError> {
-    let sort_field = if metric == "cpu" { "pcpu" } else { "pmem" };
+    let sort_field = if metric == "cpu" { "pcpu" } else { "rss" };
     // ps 只在内存行展开时执行；线程模式读取 LWP，进程模式读取 PID，避免常规刷新额外消耗远端资源。
+    // 不读取完整 args，减少遍历 /proc/cmdline 和传输长命令行的成本；列表悬浮信息用 comm 兜底即可。
     let command = if target == "thread" {
         format!(
-            "sh -lc 'ps -eLo pid=,lwp=,comm=,pcpu=,pmem=,rss=,args= --sort=-{sort_field} 2>/dev/null | head -n {limit}'"
+            "sh -lc 'LC_ALL=C ps -eLo pid=,lwp=,comm=,pcpu=,pmem=,rss= --sort=-{sort_field} 2>/dev/null | head -n {limit}'"
         )
     } else {
         format!(
-            "sh -lc 'ps -eo pid=,comm=,pcpu=,pmem=,rss=,args= --sort=-{sort_field} 2>/dev/null | head -n {limit}'"
+            "sh -lc 'LC_ALL=C ps -eo pid=,comm=,pcpu=,pmem=,rss= --sort=-{sort_field} 2>/dev/null | head -n {limit}'"
         )
     };
     let contents = exec_remote_command(session, &command).unwrap_or_default();
@@ -3795,6 +3797,69 @@ fn query_runtime_resource_usage_with_session(
     } else {
         Ok(usage)
     }
+}
+
+// 解析 `du -k` 的单行输出，保留带空格的路径并把 KiB 转成前端可读大小。
+fn parse_runtime_storage_file_line(line: &str, index: usize) -> Option<RuntimeStorageFileItem> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let (size_text, path_text) = trimmed.split_once(char::is_whitespace)?;
+    let size_kib = size_text.trim().parse::<u64>().ok()?;
+    let path = path_text.trim().to_string();
+    if path.is_empty() {
+        return None;
+    }
+
+    // 远端路径统一按 Unix 分隔符处理；根目录文件或异常路径缺少文件名时用完整路径兜底。
+    let name = path
+        .rsplit('/')
+        .find(|segment| !segment.is_empty())
+        .unwrap_or(path.as_str())
+        .to_string();
+
+    Some(RuntimeStorageFileItem {
+        rank: index + 1,
+        name,
+        path,
+        size: format_kib(size_kib),
+        size_kib,
+    })
+}
+
+// 汇总远端最大文件扫描结果；解析失败的行直接丢弃，避免一行异常拖垮整个面板。
+fn parse_runtime_storage_files(contents: &str) -> RuntimeStorageFiles {
+    RuntimeStorageFiles {
+        items: contents
+            .lines()
+            .enumerate()
+            .filter_map(|(index, line)| parse_runtime_storage_file_line(line, index))
+            .collect(),
+        captured_at: Utc::now().to_rfc3339(),
+        error: None,
+    }
+}
+
+fn query_runtime_storage_files_with_session(session: &Session) -> Result<RuntimeStorageFiles, AppError> {
+    // 存储行展示的是根文件系统用量，因此最大文件扫描也限制在 / 所在文件系统，避免跨挂载点扫全机。
+    // 优先用 GNU find 的 %k 直接输出文件占用块数，减少为每个文件执行 du 的开销；不支持时再退回 du。
+    // timeout 只限制扫描阶段，扫描超时后仍把已发现的部分结果交给 sort/head，避免界面误报“没有文件”。
+    // 列表只取前 6 个大文件，降低远端排序输出和左侧栏渲染成本。
+    // 辅助 SSH 会话读超时是 10 秒，这里把远端扫描压到 4 秒，给 sort/head 和网络传输留下余量。
+    let command = r#"sh -lc 'limit=6; scan_timeout=4; command -v timeout >/dev/null 2>&1 || exit 0; if find / -maxdepth 0 -printf "" >/dev/null 2>&1; then { timeout "$scan_timeout" find / -xdev -type f -printf "%k\t%p\n" 2>/dev/null || true; } else { timeout "$scan_timeout" find / -xdev -type f -exec du -k {} + 2>/dev/null || true; } fi | sort -rn | head -n "$limit"'"#;
+    let contents = match exec_remote_command(session, command) {
+        Ok(contents) => contents,
+        Err(error) => {
+            return Ok(RuntimeStorageFiles {
+                items: Vec::new(),
+                captured_at: Utc::now().to_rfc3339(),
+                error: Some(error.to_string()),
+            });
+        }
+    };
+    Ok(parse_runtime_storage_files(&contents))
 }
 
 fn list_remote_entries(
@@ -3910,6 +3975,16 @@ fn query_runtime_resource_usage_cached(
 ) -> Result<RuntimeResourceUsage, AppError> {
     with_auxiliary_session(state, connection, |auxiliary| {
         query_runtime_resource_usage_with_session(&auxiliary.session, request)
+    })
+}
+
+// 复用辅助 SSH 会话执行最大文件扫描，避免展开存储明细时占用主终端会话。
+fn query_runtime_storage_files_cached(
+    state: &AppState,
+    connection: &ConnectionProfile,
+) -> Result<RuntimeStorageFiles, AppError> {
+    with_auxiliary_session(state, connection, |auxiliary| {
+        query_runtime_storage_files_with_session(&auxiliary.session)
     })
 }
 
@@ -5214,6 +5289,16 @@ pub fn fetch_runtime_resource_usage(
 ) -> Result<RuntimeResourceUsage, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
     Ok(query_runtime_resource_usage_cached(&state, &connection, &request)?)
+}
+
+// 最大文件扫描可能触发较多磁盘遍历，仅在存储行展开后由前端按需调用。
+#[tauri::command(async)]
+pub fn fetch_runtime_storage_files(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<RuntimeStorageFiles, String> {
+    let connection = ensure_connection_exists(&state, &connection_id)?;
+    Ok(query_runtime_storage_files_cached(&state, &connection)?)
 }
 
 #[tauri::command]

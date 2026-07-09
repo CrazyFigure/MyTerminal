@@ -15,6 +15,7 @@ import type {
   RuntimeOverview,
   RuntimeResourceUsage,
   RuntimeResourceUsageRequest,
+  RuntimeStorageFiles,
   SshJumpHost,
   SshProxyConfig,
   TerminalOutputChunk,
@@ -40,6 +41,10 @@ const clampU16 = (value: number, fallback: number) => clampInteger(value, 0, 655
 const clampPort = (value: number, fallback = 22) => clampInteger(value, 1, 65535, fallback);
 const clampFontSize = (value: number, fallback = 15) => clampInteger(value, 8, 48, fallback);
 const clampRefreshInterval = (value: number, fallback = 1) => clampInteger(value, 1, 60, fallback);
+// 大文件扫描比普通状态刷新更重，最小 5 秒，避免误操作造成连续扫盘。
+const clampStorageRefreshInterval = (value: number, fallback = 5) => clampInteger(value, 5, 300, fallback);
+// 进程/线程资源明细是独立接口，默认 3 秒；前端还会阻止同一轮询并发重入。
+const clampResourceRefreshInterval = (value: number, fallback = 3) => clampInteger(value, 1, 300, fallback);
 const clampRatio = (value: number | undefined, fallback: number) => {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return fallback;
@@ -135,6 +140,8 @@ const normalizeSettings = (settings: AppSettings): AppSettings => ({
   ...normalizeFontPair(settings),
   shellFontSize: clampFontSize(settings.shellFontSize),
   runtimeRefreshIntervalSec: clampRefreshInterval(settings.runtimeRefreshIntervalSec),
+  runtimeStorageRefreshIntervalSec: clampStorageRefreshInterval(settings.runtimeStorageRefreshIntervalSec),
+  runtimeResourceRefreshIntervalSec: clampResourceRefreshInterval(settings.runtimeResourceRefreshIntervalSec),
   runtimeResourceSource: normalizeRuntimeResourceSource(settings.runtimeResourceSource),
   // SSH 保活间隔：0 表示关闭；否则夹在 10~300 秒之间，避免过于频繁或形同虚设。
   sshKeepaliveIntervalSec: (() => {
@@ -258,6 +265,8 @@ const mockSettings: AppSettings = {
   uiLanguage: 'zh-CN',
   themeMode: 'light',
   runtimeRefreshIntervalSec: 1,
+  runtimeStorageRefreshIntervalSec: 5,
+  runtimeResourceRefreshIntervalSec: 3,
   runtimeResourceSource: 'system',
   sshKeepaliveIntervalSec: 30,
   shellLatinFontFamily: 'JetBrains Mono',
@@ -367,6 +376,16 @@ const mockRuntimeResourceUsage: RuntimeResourceUsage = {
     { rank: 1, id: '3241', name: 'postgres', context: 'postgres', cpu: '4.3%', memory: '812 MB', detail: 'postgres: writer', cpuPercent: 4.3, memoryPercent: 18.2 },
     { rank: 2, id: '1180', name: 'java', context: 'spring', cpu: '12.5%', memory: '640 MB', detail: 'java -jar app.jar', cpuPercent: 12.5, memoryPercent: 14.4 },
     { rank: 3, id: '902', name: 'node', context: 'node', cpu: '2.1%', memory: '310 MB', detail: 'node server.js', cpuPercent: 2.1, memoryPercent: 7.1 },
+  ],
+};
+
+// 本地预览时模拟远端大文件列表，保持存储展开区在非 Tauri 环境也能完整渲染。
+const mockRuntimeStorageFiles: RuntimeStorageFiles = {
+  capturedAt: nowIso(),
+  items: [
+    { rank: 1, name: 'mysql.ibd', path: '/var/lib/mysql/ology/mysql.ibd', size: '12.4 GB', sizeKib: 13_002_342 },
+    { rank: 2, name: 'app.log', path: '/srv/ology/logs/app.log', size: '4.7 GB', sizeKib: 4_928_307 },
+    { rank: 3, name: 'container-json.log', path: '/var/lib/docker/containers/demo/demo-json.log', size: '2.1 GB', sizeKib: 2_202_009 },
   ],
 };
 
@@ -556,6 +575,12 @@ export const backend = {
       source: normalizeRuntimeResourceSource(request.source),
       metric: request.metric,
       target: request.target,
+      capturedAt: nowIso(),
+    }),
+  // 存储大文件扫描由前端展开态驱动调用，收起时不会触发这个远端命令。
+  fetchRuntimeStorageFiles: (connectionId: string) =>
+    call<RuntimeStorageFiles>('fetch_runtime_storage_files', { connectionId }, {
+      ...mockRuntimeStorageFiles,
       capturedAt: nowIso(),
     }),
   listTunnels: () => call<TunnelRecord[]>('list_tunnels', undefined, mockTunnels),

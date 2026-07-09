@@ -77,6 +77,7 @@ fn main() {
             commands::list_tunnels,
             commands::fetch_runtime_overview,
             commands::fetch_runtime_resource_usage,
+            commands::fetch_runtime_storage_files,
             commands::open_tunnel,
             commands::update_tunnel,
             commands::start_tunnel,
