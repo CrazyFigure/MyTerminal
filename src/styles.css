@@ -206,9 +206,10 @@ select:disabled {
 
 .runtime-row {
   display: grid;
-  grid-template-columns: minmax(84px, max-content) minmax(0, 1fr);
+  /* 概览行去掉 CPU 箭头后使用原核心行的短标签列，让 CPU、内存、存储横条更长。 */
+  grid-template-columns: minmax(54px, max-content) minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
+  gap: 5px;
   width: 100%;
   min-height: 24px;
   padding: 2px 3px;
@@ -253,16 +254,6 @@ select:disabled {
 .runtime-row.is-cpu-row .metric-label {
   color: var(--app-text);
   font-weight: 700;
-}
-
-.runtime-expand-indicator {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  flex: 0 0 14px;
-  color: var(--app-active-text);
 }
 
 .metric-bar-cell {
@@ -327,9 +318,10 @@ select:disabled {
 
 .runtime-core-row {
   display: grid;
-  grid-template-columns: 54px minmax(0, 1fr);
+  /* 核心明细行使用原概览行的长标签列，让单核心横条长度与概览行对调。 */
+  grid-template-columns: 84px minmax(0, 1fr);
   align-items: center;
-  gap: 5px;
+  gap: 8px;
   min-height: 18px;
   font-size: 0.72rem;
   color: var(--app-subtle-text);

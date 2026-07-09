@@ -111,6 +111,24 @@ type TerminalMatchDecorationRange = {
   width: number;
 };
 
+type TerminalSelectionPosition = {
+  start: {
+    x: number;
+    y: number;
+  };
+  end: {
+    x: number;
+    y: number;
+  };
+};
+
+type TerminalSelectionSnapshot = {
+  text: string;
+  position: TerminalSelectionPosition;
+  cols: number;
+  sessionId?: string;
+};
+
 type TerminalHighlightPoint = {
   x: number;
   y: number;
@@ -172,6 +190,70 @@ const normalizeTerminalMatchSelection = (selection: string) => {
     return '';
   }
   return normalized;
+};
+
+const normalizeTerminalSelectionSnapshotText = (selection: string) =>
+  selection.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\u00a0/g, ' ');
+
+const cloneTerminalSelectionPosition = (position: TerminalSelectionPosition): TerminalSelectionPosition => ({
+  start: { x: position.start.x, y: position.start.y },
+  end: { x: position.end.x, y: position.end.y },
+});
+
+const terminalSelectionPositionHasRange = (position: TerminalSelectionPosition) =>
+  position.start.x !== position.end.x || position.start.y !== position.end.y;
+
+const resolveTerminalSelectionLength = (position: TerminalSelectionPosition, cols: number) =>
+  (position.end.y - position.start.y) * cols - position.start.x + position.end.x;
+
+// 选区快照校验直接从当前缓冲区重读文本，避免把已经被 scrollback trim 或 resize reflow 改写的旧坐标硬恢复出来。
+const readTerminalSelectionTextFromBuffer = (terminal: Terminal, position: TerminalSelectionPosition) => {
+  const buffer = terminal.buffer.active;
+  if (
+    position.start.y < 0 ||
+    position.end.y < position.start.y ||
+    position.start.y >= buffer.length ||
+    position.end.y >= buffer.length
+  ) {
+    return '';
+  }
+
+  const result: string[] = [];
+  const firstLine = buffer.getLine(position.start.y);
+  if (!firstLine) {
+    return '';
+  }
+
+  const firstRowEndColumn = position.start.y === position.end.y ? position.end.x : undefined;
+  result.push(firstLine.translateToString(true, position.start.x, firstRowEndColumn));
+
+  for (let row = position.start.y + 1; row <= position.end.y - 1; row += 1) {
+    const line = buffer.getLine(row);
+    if (!line) {
+      return '';
+    }
+    const lineText = line.translateToString(true);
+    if (line.isWrapped && result.length > 0) {
+      result[result.length - 1] += lineText;
+    } else {
+      result.push(lineText);
+    }
+  }
+
+  if (position.start.y !== position.end.y) {
+    const finalLine = buffer.getLine(position.end.y);
+    if (!finalLine) {
+      return '';
+    }
+    const lineText = finalLine.translateToString(true, 0, position.end.x);
+    if (finalLine.isWrapped && result.length > 0) {
+      result[result.length - 1] += lineText;
+    } else {
+      result.push(lineText);
+    }
+  }
+
+  return result.join('\n');
 };
 
 // 复用 xterm search addon 的行合并思路：软换行需要当成同一条逻辑行搜索，硬换行才截断。
@@ -863,6 +945,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   const terminalMatchHighlightFrameRef = useRef<number | null>(null);
   const terminalSelectionOverlayRef = useRef<SVGSVGElement | null>(null);
   const terminalSelectionOverlayFrameRef = useRef<number | null>(null);
+  const terminalSelectionSnapshotRef = useRef<TerminalSelectionSnapshot | null>(null);
+  const terminalSelectionRestoreActiveRef = useRef(false);
   const terminalControlledCursorRef = useRef<HTMLDivElement | null>(null);
   const terminalControlledCursorFrameRef = useRef<number | null>(null);
   const terminalVerticalScrollbarRef = useRef<HTMLDivElement | null>(null);
@@ -1519,6 +1603,92 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     }
   };
 
+  // 选区快照只记录用户已经确认过的 xterm 选区；主动清空时同步回收选区层和匹配层。
+  const clearTerminalSelectionSnapshot = (clearVisuals = true) => {
+    terminalSelectionSnapshotRef.current = null;
+    if (!clearVisuals) {
+      return;
+    }
+    clearTerminalSelectionOverlay();
+    clearTerminalMatchOverlay();
+  };
+
+  const captureTerminalSelectionSnapshot = () => {
+    const terminal = terminalRef.current;
+    const selectionPosition = terminal?.getSelectionPosition();
+    if (!terminal || !selectionPosition || !terminal.hasSelection() || !terminalSelectionPositionHasRange(selectionPosition)) {
+      return undefined;
+    }
+
+    const selectionText = terminal.getSelection();
+    if (!selectionText.length) {
+      return undefined;
+    }
+
+    const snapshot: TerminalSelectionSnapshot = {
+      text: selectionText,
+      position: cloneTerminalSelectionPosition(selectionPosition),
+      cols: terminal.cols,
+      sessionId: sessionRef.current?.id,
+    };
+    terminalSelectionSnapshotRef.current = snapshot;
+    return snapshot;
+  };
+
+  const isTerminalSelectionSnapshotUsable = (snapshot: TerminalSelectionSnapshot) => {
+    const terminal = terminalRef.current;
+    if (
+      !terminal ||
+      snapshot.sessionId !== sessionRef.current?.id ||
+      snapshot.cols !== terminal.cols ||
+      !terminalSelectionPositionHasRange(snapshot.position)
+    ) {
+      return false;
+    }
+
+    const bufferedText = readTerminalSelectionTextFromBuffer(terminal, snapshot.position);
+    return Boolean(bufferedText.length) &&
+      normalizeTerminalSelectionSnapshotText(bufferedText) === normalizeTerminalSelectionSnapshotText(snapshot.text);
+  };
+
+  // 滚动/翻页/布局刷新可能让 xterm 短暂丢掉原生选区；快照仍能通过缓冲区文本校验时继续用于重绘。
+  const resolveTerminalSelectionSnapshot = () => {
+    const liveSnapshot = captureTerminalSelectionSnapshot();
+    if (liveSnapshot) {
+      return liveSnapshot;
+    }
+
+    const snapshot = terminalSelectionSnapshotRef.current;
+    if (!snapshot) {
+      return undefined;
+    }
+    if (!isTerminalSelectionSnapshotUsable(snapshot)) {
+      terminalSelectionSnapshotRef.current = null;
+      return undefined;
+    }
+    return snapshot;
+  };
+
+  const restoreTerminalSelectionFromSnapshot = (snapshot: TerminalSelectionSnapshot) => {
+    const terminal = terminalRef.current;
+    if (!terminal || terminal.hasSelection()) {
+      return;
+    }
+
+    const selectionLength = resolveTerminalSelectionLength(snapshot.position, terminal.cols);
+    if (selectionLength <= 0) {
+      return;
+    }
+
+    terminalSelectionRestoreActiveRef.current = true;
+    try {
+      // 恢复 xterm 原生选区，保证右键复制等原有能力不会因为内部 resize/scroll 刷新而丢失。
+      terminal.select(snapshot.position.start.x, snapshot.position.start.y, selectionLength);
+    } finally {
+      terminalSelectionRestoreActiveRef.current = false;
+    }
+  };
+
   const resolveTerminalHighlightMetrics = () => {
     const terminal = terminalRef.current;
     const container = containerRef.current;
@@ -1586,18 +1756,22 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     const terminal = terminalRef.current;
     const container = containerRef.current;
     const overlay = terminalSelectionOverlayRef.current;
-    const selectionPosition = terminal?.getSelectionPosition();
     if (!terminal || !container || !overlay) {
       clearTerminalSelectionOverlay();
       return;
     }
 
     const metrics = resolveTerminalHighlightMetrics();
+    const selectionSnapshot = resolveTerminalSelectionSnapshot();
+    if (selectionSnapshot && !terminal.hasSelection()) {
+      restoreTerminalSelectionFromSnapshot(selectionSnapshot);
+    }
+
     let resolved: { metrics: NonNullable<ReturnType<typeof resolveTerminalHighlightMetrics>>; strips: TerminalHighlightStrip[] } | undefined;
-    if (selectionPosition && terminal.hasSelection()) {
-      resolved = terminalRowsToHighlightStrips(selectionPosition.start.y, selectionPosition.end.y, (row) => ({
-        startColumn: row === selectionPosition.start.y ? selectionPosition.start.x : 0,
-        endColumn: row === selectionPosition.end.y ? selectionPosition.end.x : terminal.cols,
+    if (selectionSnapshot) {
+      resolved = terminalRowsToHighlightStrips(selectionSnapshot.position.start.y, selectionSnapshot.position.end.y, (row) => ({
+        startColumn: row === selectionSnapshot.position.start.y ? selectionSnapshot.position.start.x : 0,
+        endColumn: row === selectionSnapshot.position.end.y ? selectionSnapshot.position.end.x : terminal.cols,
       }));
     } else if (metrics) {
       const containerRect = container.getBoundingClientRect();
@@ -1669,6 +1843,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     if (event.button !== 0 || terminalVerticalScrollbarRef.current?.contains(event.target as Node)) {
       return;
     }
+    // 新一轮鼠标选区必须从干净快照开始，避免单击空白取消选区后继续显示旧高亮。
+    clearTerminalSelectionSnapshot();
     terminalSelectionDragActiveRef.current = true;
     scheduleTerminalSelectionDragSync();
   };
@@ -1711,12 +1887,17 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     const container = containerRef.current;
     const overlay = terminalMatchOverlayRef.current;
     const metrics = resolveTerminalHighlightMetrics();
-    if (!terminal || !container || !overlay || !metrics || !terminalMatchSelectionRef.current || !terminal.hasSelection()) {
+    const selectionSnapshot = resolveTerminalSelectionSnapshot();
+    if (!terminal || !container || !overlay || !metrics || !terminalMatchSelectionRef.current || !selectionSnapshot) {
       clearTerminalMatchOverlay();
       return;
     }
 
-    const term = normalizeTerminalMatchSelection(terminal.getSelection());
+    if (!terminal.hasSelection()) {
+      restoreTerminalSelectionFromSnapshot(selectionSnapshot);
+    }
+
+    const term = normalizeTerminalMatchSelection(selectionSnapshot.text);
     if (!term) {
       clearTerminalMatchOverlay();
       return;
@@ -1957,8 +2138,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       return;
     }
 
-    clearTerminalMatchOverlay();
-    clearTerminalSelectionOverlay();
+    clearTerminalSelectionSnapshot();
     applyTerminalSessionBehaviorOptions();
     terminal.reset();
     const nextLayoutSize = resolveTerminalLayoutSize();
@@ -2011,6 +2191,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       // 右键粘贴直接走终端输入通道，保持和键盘粘贴完全一致的后端写入路径。
       const text = await readClipboardText().catch(() => '');
       if (text) {
+        clearTerminalSelectionSnapshot();
         markLocalTerminalInputForCursorFollow();
         onTerminalDataRef.current(text);
       }
@@ -2034,10 +2215,11 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       return;
     }
 
+    const selectedText = terminal.getSelection() || resolveTerminalSelectionSnapshot()?.text || '';
     setTerminalContextMenu({
       x: event.clientX,
       y: event.clientY,
-      selectedText: terminal.getSelection(),
+      selectedText,
     });
   };
 
@@ -2180,6 +2362,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
 
     const dataDisposable = terminal.onData((data) => {
       if (canAcceptTerminalInput(sessionRef.current)) {
+        clearTerminalSelectionSnapshot();
         markLocalTerminalInputForCursorFollow();
         onTerminalDataRef.current(data);
         scheduleTerminalCursorFollow();
@@ -2203,6 +2386,9 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       scheduleTerminalVerticalScrollbarSync();
     });
     const selectionDisposable = terminal.onSelectionChange(() => {
+      if (!terminalSelectionRestoreActiveRef.current) {
+        captureTerminalSelectionSnapshot();
+      }
       scheduleTerminalMatchHighlightRefresh();
       syncTerminalSelectionOverlay();
     });
@@ -2304,7 +2490,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       terminalImeComposingRef.current = false;
       terminalSelectionDragActiveRef.current = false;
       terminalVerticalScrollbarDragRef.current = null;
-      clearTerminalMatchOverlay();
+      clearTerminalSelectionSnapshot();
       hideTerminalControlledInputCursor();
       matchOverlay.remove();
       selectionOverlay.remove();
@@ -2430,9 +2616,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     window.requestAnimationFrame(() => {
       // 模式切换只按新列宽 resize，交给 xterm 原生 reflow 重排当前缓冲区；绝不能 reset+重放原始缓存，
       // 否则历史翻页时 readline 的原地重绘序列会按新列宽错位，导致翻过的命令全部堆叠残留在屏幕上。
+      clearTerminalSelectionSnapshot();
       syncTerminalSizeToRemote();
-      clearTerminalMatchOverlay();
-      clearTerminalSelectionOverlay();
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
       scheduleTerminalControlledInputCursorSync();
