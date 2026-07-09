@@ -33,6 +33,10 @@ fn default_runtime_refresh_interval_sec() -> u16 {
     1
 }
 
+fn default_runtime_resource_source() -> String {
+    "system".into()
+}
+
 // SSH 保活默认间隔（秒）；0 表示关闭。默认 30 秒，兼顾防止空闲掉线和后台资源占用。
 fn default_ssh_keepalive_interval_sec() -> u16 {
     30
@@ -261,6 +265,9 @@ pub struct AppSettings {
     pub theme_mode: String,
     #[serde(default = "default_runtime_refresh_interval_sec")]
     pub runtime_refresh_interval_sec: u16,
+    /// 内存行展开后的资源明细默认来源，Docker 同时覆盖 Docker Compose 容器场景。
+    #[serde(default = "default_runtime_resource_source")]
+    pub runtime_resource_source: String,
     /// SSH 保活间隔（秒），0 表示关闭；作用于交互终端、文件/状态辅助会话与隧道池会话。
     #[serde(default = "default_ssh_keepalive_interval_sec")]
     pub ssh_keepalive_interval_sec: u16,
@@ -320,6 +327,7 @@ impl Default for AppSettings {
             ui_language: "zh-CN".into(),
             theme_mode: "light".into(),
             runtime_refresh_interval_sec: 1,
+            runtime_resource_source: default_runtime_resource_source(),
             ssh_keepalive_interval_sec: default_ssh_keepalive_interval_sec(),
             shell_latin_font_family: default_shell_latin_font_family(),
             shell_cjk_font_family: default_shell_cjk_font_family(),
@@ -611,6 +619,59 @@ pub struct RuntimeOverview {
     pub uptime: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeResourceUsageRequest {
+    #[serde(default = "default_runtime_resource_source")]
+    pub source: String,
+    #[serde(default)]
+    pub metric: String,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeResourceUsageItem {
+    #[serde(default)]
+    pub rank: usize,
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub context: String,
+    #[serde(default)]
+    pub cpu: String,
+    #[serde(default)]
+    pub memory: String,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default)]
+    pub cpu_percent: Option<f64>,
+    #[serde(default)]
+    pub memory_percent: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeResourceUsage {
+    #[serde(default = "default_runtime_resource_source")]
+    pub source: String,
+    #[serde(default)]
+    pub metric: String,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub items: Vec<RuntimeResourceUsageItem>,
+    #[serde(default)]
+    pub captured_at: String,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct EditorDocument {
@@ -732,6 +793,8 @@ pub struct StoredAppSettings {
     pub theme_mode: String,
     #[serde(default = "default_runtime_refresh_interval_sec")]
     pub runtime_refresh_interval_sec: u16,
+    #[serde(default = "default_runtime_resource_source")]
+    pub runtime_resource_source: String,
     #[serde(default = "default_ssh_keepalive_interval_sec")]
     pub ssh_keepalive_interval_sec: u16,
     #[serde(default = "default_shell_latin_font_family")]

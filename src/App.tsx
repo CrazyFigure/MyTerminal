@@ -60,12 +60,12 @@ import { backend } from './backend';
 import { writeClipboardText } from './clipboard';
 import { useAppStore } from './store';
 import { UpdateModal, type UpdateDownloadProgress } from './UpdateModal';
-import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, RemoteFileEntry, SshJumpHost, TerminalSession, UiLanguage, UpdateCheckResult } from './types';
+import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, RemoteFileEntry, RuntimeResourceMetric, RuntimeResourceTarget, RuntimeResourceUsage, RuntimeResourceSource, SshJumpHost, TerminalSession, UiLanguage, UpdateCheckResult } from './types';
 
 const MonacoEditor = lazy(() => import('./MonacoEditor'));
 
 type BottomPanelTab = 'commands' | 'tunnels' | 'history';
-type SettingsTab = 'appearance' | 'sync' | 'agent' | 'about';
+type SettingsTab = 'appearance' | 'resources' | 'sync' | 'agent' | 'about';
 type ConnectionFormTab = 'basic' | 'jumpHosts' | 'proxy';
 type FileContextMenuState = {
   file: RemoteFileEntry;
@@ -2852,6 +2852,14 @@ function SettingsModal({
               {t('settingsTabAppearance')}
             </button>
             <button
+              className={`settings-nav-item ${activeTab === 'resources' ? 'is-active' : ''}`}
+              onClick={() => onTabChange('resources')}
+              type="button"
+            >
+              <Activity size={16} />
+              {t('settingsTabResources')}
+            </button>
+            <button
               className={`settings-nav-item ${activeTab === 'sync' ? 'is-active' : ''}`}
               onClick={() => onTabChange('sync')}
               type="button"
@@ -3091,6 +3099,47 @@ function SettingsModal({
                   {settingsSaveMessage ? <span className="inline-save-feedback">{settingsSaveMessage}</span> : null}
                   <button className="primary-button" onClick={() => void persistSettingsWithFeedback()} type="button">
                     <Save size={16} /> {t('saveAppearance')}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {activeTab === 'resources' ? (
+              <div className="stack gap-16">
+                <section className="settings-section-block">
+                  <div>
+                    <h3>{t('runtimeResourceSettingsTitle')}</h3>
+                    <p>{t('runtimeResourceSettingsDesc')}</p>
+                  </div>
+
+                  <div className="form-grid settings-single-column-grid settings-compact-form-grid">
+                    <div className="form-field">
+                      <span>{t('fieldRuntimeResourceSource')}</span>
+                      <select
+                        aria-label={t('fieldRuntimeResourceSource')}
+                        value={draftSettings.runtimeResourceSource ?? 'system'}
+                        onChange={(event) =>
+                          updateDraftSettings((current) => ({
+                            ...current,
+                            // 资源来源只作为内存行展开明细的默认采集策略，不影响常规运行状态轮询。
+                            runtimeResourceSource: event.target.value as RuntimeResourceSource,
+                          }))
+                        }
+                      >
+                        <option value="system">{t('runtimeResourceSourceSystem')}</option>
+                        <option value="docker">{t('runtimeResourceSourceDocker')}</option>
+                        <option value="kubernetes">{t('runtimeResourceSourceKubernetes')}</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <p className="settings-helper-text">{t('runtimeResourceSettingsHint')}</p>
+                </section>
+
+                <div className="modal-actions">
+                  {settingsSaveMessage ? <span className="inline-save-feedback">{settingsSaveMessage}</span> : null}
+                  <button className="primary-button" onClick={() => void persistSettingsWithFeedback()} type="button">
+                    <Save size={16} /> {t('saveResourceSettings')}
                   </button>
                 </div>
               </div>
@@ -3505,6 +3554,12 @@ export default function App() {
   const [localFileDropActive, setLocalFileDropActive] = useState(false);
   const [remoteDownloadDragPaths, setRemoteDownloadDragPaths] = useState<string[]>([]);
   const [cpuCoresExpanded, setCpuCoresExpanded] = useState(false);
+  const [memoryResourcesExpanded, setMemoryResourcesExpanded] = useState(false);
+  const [runtimeResourceMetric, setRuntimeResourceMetric] = useState<RuntimeResourceMetric>('memory');
+  const [runtimeResourceTarget, setRuntimeResourceTarget] = useState<RuntimeResourceTarget>('process');
+  const [runtimeResourceUsage, setRuntimeResourceUsage] = useState<RuntimeResourceUsage | null>(null);
+  const [runtimeResourceLoading, setRuntimeResourceLoading] = useState(false);
+  const [runtimeResourceError, setRuntimeResourceError] = useState('');
   const [bottomDockCollapsed, setBottomDockCollapsed] = useState(false);
   const [transferProgressItems, setTransferProgressItems] = useState<TransferProgressItem[]>([]);
   const [agentBridgeRequests, setAgentBridgeRequests] = useState<AgentBridgeRequest[]>([]);
@@ -3515,6 +3570,7 @@ export default function App() {
   const runtimeRefreshInFlightRef = useRef(false);
   // 刷新进行中又收到刷新请求时置位，当前刷新结束后补跑一次，避免切换连接时漏刷、加载动画卡住。
   const runtimeRefreshPendingRef = useRef(false);
+  const runtimeResourceRefreshSeqRef = useRef(0);
   const sessionTabDragStateRef = useRef<SessionTabDragState>(null);
   const sessionTabDropTargetRef = useRef<SessionTabDropTarget>(null);
   const sessionTabListRef = useRef<HTMLDivElement | null>(null);
@@ -3585,6 +3641,14 @@ export default function App() {
 
   const t = useCallback((key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements), [settings.uiLanguage]);
+  const runtimeResourceSourceLabel = useCallback((source: RuntimeResourceSource) => {
+    const labelKeyBySource: Record<RuntimeResourceSource, TranslationKey> = {
+      system: 'runtimeResourceSourceSystem',
+      docker: 'runtimeResourceSourceDocker',
+      kubernetes: 'runtimeResourceSourceKubernetes',
+    };
+    return t(labelKeyBySource[source] ?? 'runtimeResourceSourceSystem');
+  }, [t]);
 
   // 首页工具栏“更新”按钮和设置页共用后端安装接口，但下载进度与弹窗状态各自独立。
   const openAppExternalLink = useCallback((url: string) => {
@@ -3900,6 +3964,57 @@ export default function App() {
     };
     run();
   }, [refreshRuntimeOverview]);
+
+  const refreshRuntimeResourceUsageOnce = useCallback(() => {
+    if (!activeRemoteConnectionId || !memoryResourcesExpanded) {
+      return;
+    }
+
+    const requestSeq = ++runtimeResourceRefreshSeqRef.current;
+    setRuntimeResourceLoading(true);
+    setRuntimeResourceError('');
+    void backend.fetchRuntimeResourceUsage(activeRemoteConnectionId, {
+      source: settings.runtimeResourceSource ?? 'system',
+      metric: runtimeResourceMetric,
+      target: runtimeResourceTarget,
+      limit: 5,
+    }).then((usage) => {
+      if (requestSeq !== runtimeResourceRefreshSeqRef.current) {
+        return;
+      }
+      setRuntimeResourceUsage(usage);
+      setRuntimeResourceError(usage.error ?? '');
+    }).catch((error) => {
+      if (requestSeq !== runtimeResourceRefreshSeqRef.current) {
+        return;
+      }
+      setRuntimeResourceUsage(null);
+      setRuntimeResourceError(error instanceof Error ? error.message : String(error));
+    }).finally(() => {
+      if (requestSeq === runtimeResourceRefreshSeqRef.current) {
+        setRuntimeResourceLoading(false);
+      }
+    });
+  }, [activeRemoteConnectionId, memoryResourcesExpanded, runtimeResourceMetric, runtimeResourceTarget, settings.runtimeResourceSource]);
+
+  useEffect(() => {
+    if (!memoryResourcesExpanded || !activeRemoteConnectionId) {
+      runtimeResourceRefreshSeqRef.current += 1;
+      setRuntimeResourceLoading(false);
+      return undefined;
+    }
+
+    // 内存明细展开后才启动独立刷新；收起或切换连接时递增序号，让旧请求结果自动失效。
+    refreshRuntimeResourceUsageOnce();
+    const timer = window.setInterval(
+      refreshRuntimeResourceUsageOnce,
+      Math.max(5, settings.runtimeRefreshIntervalSec) * 1000,
+    );
+    return () => {
+      runtimeResourceRefreshSeqRef.current += 1;
+      window.clearInterval(timer);
+    };
+  }, [activeRemoteConnectionId, memoryResourcesExpanded, refreshRuntimeResourceUsageOnce, settings.runtimeRefreshIntervalSec]);
 
   useEffect(() => {
     if (!bootstrapped) {
@@ -5013,20 +5128,32 @@ export default function App() {
               </div>
             ) : null}
             {runtimeItems.map(({ id, icon: Icon, label, percent, value }) => {
-              // CPU 主行仍承担展开入口，但不再显示独立箭头，避免左侧状态区出现额外展开符号。
+              // CPU 和内存主行承担各自展开入口；行内不再放箭头，保持左侧状态区横向空间稳定。
               const isCpuMetric = id === 'cpu';
+              const isMemoryMetric = id === 'memory';
               const cpuCoreCount = runtimeOverview?.cpuCores?.length ?? 0;
               const isCpuExpandable = isCpuMetric && cpuCoreCount > 0;
+              const isMemoryExpandable = isMemoryMetric && Boolean(activeRemoteConnectionId);
+              const isExpandableMetric = isCpuExpandable || isMemoryExpandable;
+              const expanded = isCpuMetric ? cpuCoresExpanded : isMemoryMetric ? memoryResourcesExpanded : undefined;
+              const controlsId = isCpuExpandable
+                ? 'runtime-cpu-core-list'
+                : isMemoryExpandable
+                  ? 'runtime-memory-resource-list'
+                  : undefined;
               return (
                 <div key={id} className="runtime-row-group">
                   <button
-                    aria-controls={isCpuExpandable ? 'runtime-cpu-core-list' : undefined}
-                    aria-expanded={isCpuExpandable ? cpuCoresExpanded : undefined}
-                    className={`runtime-row metric-tone-${metricTone(percent)} ${isCpuMetric ? 'is-cpu-row' : ''} ${isCpuExpandable ? 'is-clickable' : ''}`}
-                    disabled={!isCpuExpandable}
+                    aria-controls={controlsId}
+                    aria-expanded={isExpandableMetric ? expanded : undefined}
+                    className={`runtime-row metric-tone-${metricTone(percent)} ${isExpandableMetric ? 'is-expandable-metric-row' : ''} ${isExpandableMetric ? 'is-clickable' : ''}`}
+                    disabled={!isExpandableMetric}
                     onClick={() => {
                       if (isCpuExpandable) {
                         setCpuCoresExpanded((current) => !current);
+                      }
+                      if (isMemoryExpandable) {
+                        setMemoryResourcesExpanded((current) => !current);
                       }
                     }}
                     type="button"
@@ -5060,6 +5187,75 @@ export default function App() {
                           </div>
                         );
                       })}
+                    </div>
+                  ) : null}
+                  {isMemoryMetric && memoryResourcesExpanded ? (
+                    <div className="runtime-resource-panel" id="runtime-memory-resource-list">
+                      <div className="runtime-resource-toolbar">
+                        <div className="runtime-segmented-control" aria-label={t('runtimeResourceMetric')}>
+                          <button
+                            className={runtimeResourceMetric === 'memory' ? 'is-active' : ''}
+                            onClick={() => setRuntimeResourceMetric('memory')}
+                            type="button"
+                          >
+                            {t('runtimeResourceMetricMemory')}
+                          </button>
+                          <button
+                            className={runtimeResourceMetric === 'cpu' ? 'is-active' : ''}
+                            onClick={() => setRuntimeResourceMetric('cpu')}
+                            type="button"
+                          >
+                            {t('runtimeResourceMetricCpu')}
+                          </button>
+                        </div>
+                        <div className="runtime-segmented-control" aria-label={t('runtimeResourceTarget')}>
+                          <button
+                            className={runtimeResourceTarget === 'process' ? 'is-active' : ''}
+                            onClick={() => setRuntimeResourceTarget('process')}
+                            type="button"
+                          >
+                            {t('runtimeResourceTargetProcess')}
+                          </button>
+                          <button
+                            className={runtimeResourceTarget === 'thread' ? 'is-active' : ''}
+                            onClick={() => setRuntimeResourceTarget('thread')}
+                            type="button"
+                          >
+                            {t('runtimeResourceTargetThread')}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="runtime-resource-header">
+                        <span>#</span>
+                        <span>
+                          {runtimeResourceTarget === 'thread' ? t('runtimeResourceTargetThread') : t('runtimeResourceTargetProcess')}
+                          {' · '}
+                          {runtimeResourceSourceLabel((runtimeResourceUsage?.source ?? settings.runtimeResourceSource ?? 'system') as RuntimeResourceSource)}
+                        </span>
+                        <span>{t('metricCpu')}</span>
+                        <span>{t('metricMemory')}</span>
+                      </div>
+
+                      {runtimeResourceUsage?.items.length ? (
+                        <div className="runtime-resource-table">
+                          {runtimeResourceUsage.items.map((item, index) => (
+                            <div className="runtime-resource-row" key={`${item.id}-${index}`} title={item.detail}>
+                              <span className="runtime-resource-rank">{item.rank}</span>
+                              <span className="runtime-resource-name">
+                                <strong>{item.name || item.id}</strong>
+                                <small>{item.context}</small>
+                              </span>
+                              <span>{item.cpu}</span>
+                              <span>{item.memory}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : runtimeResourceError || !runtimeResourceLoading ? (
+                        <div className="runtime-resource-empty">
+                          {runtimeResourceError || t('runtimeResourceEmpty')}
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>

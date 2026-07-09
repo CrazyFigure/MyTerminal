@@ -29,6 +29,7 @@ const defaultSettings: AppSettings = {
   uiLanguage: 'zh-CN',
   themeMode: 'light',
   runtimeRefreshIntervalSec: 1,
+  runtimeResourceSource: 'system',
   sshKeepaliveIntervalSec: 30,
   shellLatinFontFamily: 'JetBrains Mono',
   shellCjkFontFamily: 'Microsoft YaHei UI',
