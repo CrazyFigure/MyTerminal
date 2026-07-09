@@ -33,6 +33,16 @@ fn default_runtime_refresh_interval_sec() -> u16 {
     1
 }
 
+// 大文件扫描默认 5 秒刷新一次；该命令会遍历文件系统，默认值不跟随常规运行状态的 1 秒刷新。
+fn default_runtime_storage_refresh_interval_sec() -> u16 {
+    5
+}
+
+// 进程/线程资源明细默认 3 秒刷新一次；该接口只在内存行展开后启用。
+fn default_runtime_resource_refresh_interval_sec() -> u16 {
+    3
+}
+
 fn default_runtime_resource_source() -> String {
     "system".into()
 }
@@ -265,6 +275,12 @@ pub struct AppSettings {
     pub theme_mode: String,
     #[serde(default = "default_runtime_refresh_interval_sec")]
     pub runtime_refresh_interval_sec: u16,
+    /// 存储行展开后的大文件列表刷新频率（秒），独立于常规运行状态刷新。
+    #[serde(default = "default_runtime_storage_refresh_interval_sec")]
+    pub runtime_storage_refresh_interval_sec: u16,
+    /// 内存行展开后的进程/线程资源明细刷新频率（秒），独立于常规运行状态刷新。
+    #[serde(default = "default_runtime_resource_refresh_interval_sec")]
+    pub runtime_resource_refresh_interval_sec: u16,
     /// 内存行展开后的资源明细默认来源，Docker 同时覆盖 Docker Compose 容器场景。
     #[serde(default = "default_runtime_resource_source")]
     pub runtime_resource_source: String,
@@ -327,6 +343,8 @@ impl Default for AppSettings {
             ui_language: "zh-CN".into(),
             theme_mode: "light".into(),
             runtime_refresh_interval_sec: 1,
+            runtime_storage_refresh_interval_sec: default_runtime_storage_refresh_interval_sec(),
+            runtime_resource_refresh_interval_sec: default_runtime_resource_refresh_interval_sec(),
             runtime_resource_source: default_runtime_resource_source(),
             ssh_keepalive_interval_sec: default_ssh_keepalive_interval_sec(),
             shell_latin_font_family: default_shell_latin_font_family(),
@@ -674,6 +692,34 @@ pub struct RuntimeResourceUsage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+// 存储展开区的单文件信息，前端依赖名称、路径和格式化大小同时展示与悬浮提示。
+pub struct RuntimeStorageFileItem {
+    #[serde(default)]
+    pub rank: usize,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub size: String,
+    #[serde(default)]
+    pub size_kib: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+// 存储展开区的扫描结果，error 用于把远端扫描异常直接反馈到列表占位区域。
+pub struct RuntimeStorageFiles {
+    #[serde(default)]
+    pub items: Vec<RuntimeStorageFileItem>,
+    #[serde(default)]
+    pub captured_at: String,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct EditorDocument {
     pub connection_id: String,
     pub path: String,
@@ -793,6 +839,10 @@ pub struct StoredAppSettings {
     pub theme_mode: String,
     #[serde(default = "default_runtime_refresh_interval_sec")]
     pub runtime_refresh_interval_sec: u16,
+    #[serde(default = "default_runtime_storage_refresh_interval_sec")]
+    pub runtime_storage_refresh_interval_sec: u16,
+    #[serde(default = "default_runtime_resource_refresh_interval_sec")]
+    pub runtime_resource_refresh_interval_sec: u16,
     #[serde(default = "default_runtime_resource_source")]
     pub runtime_resource_source: String,
     #[serde(default = "default_ssh_keepalive_interval_sec")]

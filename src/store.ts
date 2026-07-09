@@ -29,6 +29,10 @@ const defaultSettings: AppSettings = {
   uiLanguage: 'zh-CN',
   themeMode: 'light',
   runtimeRefreshIntervalSec: 1,
+  // 大文件扫描独立于常规运行状态，默认 5 秒刷新一次。
+  runtimeStorageRefreshIntervalSec: 5,
+  // 进程/线程资源明细只在内存展开时刷新，默认 3 秒。
+  runtimeResourceRefreshIntervalSec: 3,
   runtimeResourceSource: 'system',
   sshKeepaliveIntervalSec: 30,
   shellLatinFontFamily: 'JetBrains Mono',

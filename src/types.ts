@@ -85,6 +85,10 @@ export interface AppSettings {
   uiLanguage: UiLanguage;
   themeMode: ThemeMode;
   runtimeRefreshIntervalSec: number;
+  /** 存储行展开后的大文件列表刷新频率，独立控制较重的文件系统扫描。 */
+  runtimeStorageRefreshIntervalSec: number;
+  /** 内存行展开后的进程/线程资源明细刷新频率，只影响资源明细接口。 */
+  runtimeResourceRefreshIntervalSec: number;
   /** 内存行展开后的资源明细默认来源，容器环境可切到 Docker/Compose/K8s。 */
   runtimeResourceSource: RuntimeResourceSource;
   /** SSH 保活间隔（秒），0 表示关闭；作用于交互终端、文件/状态辅助会话与隧道池会话。 */
@@ -211,6 +215,22 @@ export interface RuntimeResourceUsage {
   metric: RuntimeResourceMetric;
   target: RuntimeResourceTarget;
   items: RuntimeResourceUsageItem[];
+  capturedAt: string;
+  error?: string;
+}
+
+// 存储展开列表的单文件数据，名称用于紧凑展示，路径用于定位和悬浮完整查看。
+export interface RuntimeStorageFileItem {
+  rank: number;
+  name: string;
+  path: string;
+  size: string;
+  sizeKib: number;
+}
+
+// 存储展开列表的后端响应，只在存储行展开时刷新，error 直接显示在列表区域。
+export interface RuntimeStorageFiles {
+  items: RuntimeStorageFileItem[];
   capturedAt: string;
   error?: string;
 }
