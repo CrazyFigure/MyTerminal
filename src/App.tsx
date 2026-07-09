@@ -5390,6 +5390,10 @@ export default function App() {
                             </div>
                           ))}
                         </div>
+                      ) : runtimeResourceLoading ? (
+                        <div className="runtime-resource-empty">
+                          {t('panelRefreshing')}
+                        </div>
                       ) : runtimeResourceError || !runtimeResourceLoading ? (
                         <div className="runtime-resource-empty">
                           {runtimeResourceError || t('runtimeResourceEmpty')}
@@ -5421,6 +5425,10 @@ export default function App() {
                               <span className="runtime-storage-size">{item.size}</span>
                             </div>
                           ))}
+                        </div>
+                      ) : runtimeStorageFilesLoading ? (
+                        <div className="runtime-resource-empty">
+                          {t('panelRefreshing')}
                         </div>
                       ) : runtimeStorageFilesError || !runtimeStorageFilesLoading ? (
                         <div className="runtime-resource-empty">
@@ -5558,6 +5566,12 @@ export default function App() {
                   {explorerVirtualRange.entries.map(({ file, index }) => {
                     const Icon = fileLabelIcon(file);
                     const isSelected = selectedFilePathSet.has(file.path);
+                    // 文件表格列宽通常较窄，悬浮提示必须复用单元格展示文本，避免省略号场景下看到不同格式。
+                    const fileSizeLabel = file.isDir ? '' : formatBytes(file.size);
+                    const fileTypeLabel = formatFileType(file, t('directoryLabel'), t('symlinkLabel'), t('fileLabel'));
+                    const fileModifiedAtLabel = formatTimestamp(file.modifiedAt);
+                    const filePermissionLabel = file.permissions ?? '--';
+                    const fileOwnerGroupLabel = formatOwnerGroup(file);
                     return (
                       <div
                         key={file.path}
@@ -5583,15 +5597,15 @@ export default function App() {
                           style={explorerGridStyle}
                           type="button"
                         >
-                          <span className="explorer-name">
+                          <span className="explorer-name" title={file.name}>
                             <Icon size={16} />
                             <strong>{file.name}</strong>
                           </span>
-                          <span>{file.isDir ? '' : formatBytes(file.size)}</span>
-                          <span>{formatFileType(file, t('directoryLabel'), t('symlinkLabel'), t('fileLabel'))}</span>
-                          <span>{formatTimestamp(file.modifiedAt)}</span>
-                          <span>{file.permissions ?? '--'}</span>
-                          <span>{formatOwnerGroup(file)}</span>
+                          <span title={fileSizeLabel || undefined}>{fileSizeLabel}</span>
+                          <span title={fileTypeLabel}>{fileTypeLabel}</span>
+                          <span title={fileModifiedAtLabel}>{fileModifiedAtLabel}</span>
+                          <span title={filePermissionLabel}>{filePermissionLabel}</span>
+                          <span title={fileOwnerGroupLabel}>{fileOwnerGroupLabel}</span>
                         </button>
                       </div>
                     );
