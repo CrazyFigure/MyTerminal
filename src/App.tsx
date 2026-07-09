@@ -2931,7 +2931,6 @@ function SettingsModal({
                 <section className="settings-section-block">
                   <div>
                     <h3>{t('appearanceBaseTitle')}</h3>
-                    <p>{t('appearanceBaseDesc')}</p>
                   </div>
 
                   <div className="form-grid">
@@ -2955,7 +2954,6 @@ function SettingsModal({
                 <section className="settings-section-block">
                   <div>
                     <h3>{t('appearanceFontTitle')}</h3>
-                    <p>{t('appearanceFontDesc')}</p>
                   </div>
 
                   <div className="form-grid">
@@ -2993,7 +2991,6 @@ function SettingsModal({
                 <section className="settings-section-block">
                   <div>
                     <h3>{t('appearanceBackgroundTitle')}</h3>
-                    <p>{t('appearanceBackgroundDesc')}</p>
                   </div>
 
                   <div className="form-grid">
@@ -3061,7 +3058,6 @@ function SettingsModal({
                 <section className="settings-section-block">
                   <div>
                     <h3>{t('appearanceBehaviorTitle')}</h3>
-                    <p>{t('appearanceBehaviorDesc')}</p>
                   </div>
 
                   <div className="form-grid settings-single-column-grid settings-compact-form-grid">
@@ -3116,7 +3112,6 @@ function SettingsModal({
                 <section className="settings-section-block">
                   <div>
                     <h3>{t('runtimeResourceSettingsTitle')}</h3>
-                    <p>{t('runtimeResourceSettingsDesc')}</p>
                   </div>
 
                   <div className="form-grid settings-single-column-grid settings-compact-form-grid">
@@ -3349,7 +3344,6 @@ function SettingsModal({
                   <div className="agent-bridge-control-main">
                     <div>
                       <h3>{t('agentBridgeTitle')}</h3>
-                      <p>{t('agentBridgeDesc')}</p>
                     </div>
                   </div>
                   <div className={`agent-toggle-field agent-bridge-power ${agentBridgeSwitchBusy ? 'is-pending' : ''}`}>
@@ -3378,7 +3372,6 @@ function SettingsModal({
                   <div className="section-row">
                     <div>
                       <h3>{t('agentBridgeConfigTitle')}</h3>
-                      <p>{t('agentBridgeConfigDesc')}</p>
                     </div>
                     <button
                       className="primary-button"
