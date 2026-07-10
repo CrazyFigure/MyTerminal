@@ -3680,6 +3680,12 @@ export default function App() {
   const [agentSidebarCollapsed, setAgentSidebarCollapsed] = useState(true);
   const [pathInput, setPathInput] = useState('~');
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
+  // 文件右键“复制”暂存待粘贴的远端路径；记录来源连接以便仅在同主机内启用粘贴。
+  const [fileClipboard, setFileClipboard] = useState<{ connectionId: string; paths: string[] } | null>(null);
+  // 右键菜单容器引用，用于渲染后按视口边界回收越界位置，避免菜单被面板/窗口裁掉。
+  const fileContextMenuRef = useRef<HTMLDivElement | null>(null);
+  // 复制名称的二级菜单默认向右展开，靠近右边界时翻转到左侧，防止子菜单溢出窗口。
+  const [copyNameSubmenuFlipLeft, setCopyNameSubmenuFlipLeft] = useState(false);
   const [sessionContextMenu, setSessionContextMenu] = useState<SessionContextMenuState | null>(null);
   const [sessionTabDragState, setSessionTabDragState] = useState<SessionTabDragState>(null);
   const [sessionTabDropTarget, setSessionTabDropTarget] = useState<SessionTabDropTarget>(null);
@@ -3756,6 +3762,7 @@ export default function App() {
     connections,
     currentRemotePath,
     deleteRemotePaths,
+    copyRemotePaths,
     downloadRemotePaths,
     editTunnel,
     files,
@@ -4336,6 +4343,31 @@ export default function App() {
       window.removeEventListener('keydown', onEscape);
     };
   }, []);
+
+  // 文件右键菜单渲染后按视口边界回拉位置，防止靠近面板右/下缘时被裁切；useLayoutEffect 在绘制前完成，无跳动。
+  useLayoutEffect(() => {
+    const menu = fileContextMenuRef.current;
+    if (!fileContextMenu || !menu) {
+      return;
+    }
+
+    const margin = 8;
+    const rect = menu.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    let left = fileContextMenu.x;
+    let top = fileContextMenu.y;
+    if (left + rect.width > viewportWidth - margin) {
+      left = Math.max(margin, viewportWidth - rect.width - margin);
+    }
+    if (top + rect.height > viewportHeight - margin) {
+      top = Math.max(margin, viewportHeight - rect.height - margin);
+    }
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    // 二级菜单约 160px 宽，主菜单右侧放不下时翻转到左边展开。
+    setCopyNameSubmenuFlipLeft(left + rect.width + 160 > viewportWidth - margin);
+  }, [fileContextMenu]);
 
   useEffect(() => {
     if (!sessions.length) {
@@ -5121,6 +5153,36 @@ export default function App() {
       setSelectedFilePaths([]);
     });
   }, [deleteRemotePaths, runTransferProgress, t]);
+  // 复制名称：写入系统剪贴板，name 为文件名、fullPath 为从 / 起的完整路径。
+  const copyFileNameToClipboard = useCallback((text: string) => {
+    setFileContextMenu(null);
+    void writeClipboardText(text)
+      .then(() => setStatusMessage(t('statusCopiedName', { name: text })))
+      .catch((error) => setStatusMessage(error instanceof Error ? error.message : String(error)));
+  }, [setStatusMessage, t]);
+  // 复制：把选中（或右键命中）的远端路径暂存到内部剪贴板，供后续在目标目录粘贴。
+  const copyRemoteSelection = useCallback((paths: string[]) => {
+    const normalizedPaths = Array.from(new Set(paths.filter(Boolean)));
+    setFileContextMenu(null);
+    if (!activeConnectionId || !normalizedPaths.length) {
+      return;
+    }
+    setFileClipboard({ connectionId: activeConnectionId, paths: normalizedPaths });
+    setStatusMessage(t('statusClipboardReady', { count: normalizedPaths.length }));
+  }, [activeConnectionId, setStatusMessage, t]);
+  // 粘贴：仅当剪贴板来源与当前连接一致时可用，复制走后端服务器本地 cp，无需经客户端中转。
+  const pasteRemoteClipboard = useCallback(() => {
+    setFileContextMenu(null);
+    if (!fileClipboard || fileClipboard.connectionId !== activeConnectionId || !fileClipboard.paths.length) {
+      return;
+    }
+    const sources = fileClipboard.paths;
+    void runTransferProgress(`${t('fileMenuPaste')} ${sources.length}`, async (setPercent) => {
+      setPercent(24);
+      await copyRemotePaths(sources, currentRemotePath);
+      setPercent(92);
+    });
+  }, [activeConnectionId, copyRemotePaths, currentRemotePath, fileClipboard, runTransferProgress, t]);
   const openRemoteFileEntry = useCallback((file: RemoteFileEntry) => {
     // 打开动作统一从文件条目入口走，保证单击选中、双击打开和回车打开使用同一套规则。
     setSelectedFilePath(file.path);
@@ -5687,6 +5749,7 @@ export default function App() {
               </button>
               <span className="explorer-toolbar-spacer" />
               <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles(parentPath(currentRemotePath))} type="button">
+                <ChevronUp size={14} />
                 {t('up')}
               </button>
               <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles()} title={t('refresh')} type="button">
@@ -5807,8 +5870,12 @@ export default function App() {
       </aside>
       ) : null}
 
-      {fileContextMenu ? (
-          <div className="context-menu file-context-menu" style={{ left: fileContextMenu.x, top: fileContextMenu.y }} onClick={(event) => event.stopPropagation()}>
+      {fileContextMenu ? (() => {
+          // 复制/复制名称作用于选区（右键命中已选中项时）或单个右键目标；粘贴仅在同连接有暂存内容时可用。
+          const menuPaths = selectedFilePathSet.has(fileContextMenu.file.path) ? selectedFilePaths : [fileContextMenu.file.path];
+          const canPaste = Boolean(fileClipboard && fileClipboard.connectionId === activeConnectionId && fileClipboard.paths.length);
+          return (
+          <div ref={fileContextMenuRef} className="context-menu file-context-menu" style={{ left: fileContextMenu.x, top: fileContextMenu.y }} onClick={(event) => event.stopPropagation()}>
             {selectedFilePathSet.has(fileContextMenu.file.path) && selectedFilePaths.length > 1 ? (
               <>
                 <button className="context-menu-item" onClick={() => {
@@ -5838,6 +5905,18 @@ export default function App() {
               downloadFileWithProgress(fileContextMenu.file.path);
               setFileContextMenu(null);
             }} type="button">{t('fileMenuDownload')}</button>
+            <div className="context-menu-item has-submenu" tabIndex={0}>
+              <span className="context-menu-item-label"><Copy size={14} /> {t('fileMenuCopyName')}</span>
+              <ChevronRight className="context-submenu-caret" size={12} />
+              <div className={`context-menu file-context-menu context-submenu${copyNameSubmenuFlipLeft ? ' flip-left' : ''}`}>
+                <button className="context-menu-item" onClick={() => copyFileNameToClipboard(fileContextMenu.file.name)} type="button">{t('fileMenuCopyFileName')}</button>
+                <button className="context-menu-item" onClick={() => copyFileNameToClipboard(fileContextMenu.file.path)} type="button">{t('fileMenuCopyFullPath')}</button>
+              </div>
+            </div>
+            <button className="context-menu-item" onClick={() => copyRemoteSelection(menuPaths)} type="button">
+              {t('fileMenuCopy')}{menuPaths.length > 1 ? ` (${menuPaths.length})` : ''}
+            </button>
+            <button className="context-menu-item" disabled={!canPaste} onClick={pasteRemoteClipboard} type="button">{t('fileMenuPaste')}</button>
             <button className="context-menu-item" onClick={() => {
               const nextName = window.prompt(t('rename'), fileContextMenu.file.name);
               if (nextName) {
@@ -5846,11 +5925,11 @@ export default function App() {
               setFileContextMenu(null);
             }} type="button">{t('fileMenuRename')}</button>
             <button className="context-menu-item danger" onClick={() => {
-              const paths = selectedFilePathSet.has(fileContextMenu.file.path) ? selectedFilePaths : [fileContextMenu.file.path];
-              deleteSelectedRemotePaths(paths);
+              deleteSelectedRemotePaths(menuPaths);
             }} type="button">{t('fileMenuDelete')}</button>
           </div>
-        ) : null}
+          );
+        })() : null}
 
       {sessionContextMenu && sessionContextSession ? (
         <div

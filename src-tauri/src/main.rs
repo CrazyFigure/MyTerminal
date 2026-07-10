@@ -71,6 +71,7 @@ fn main() {
             commands::download_remote_paths,
             commands::delete_remote_path,
             commands::delete_remote_paths,
+            commands::copy_remote_paths,
             commands::rename_remote_path,
             commands::load_editor_document,
             commands::save_editor_document,
