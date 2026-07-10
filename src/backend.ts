@@ -559,6 +559,8 @@ export const backend = {
     call<boolean>('delete_remote_paths', { connectionId, paths }, true),
   renameRemotePath: (connectionId: string, path: string, newPath: string) =>
     call<boolean>('rename_remote_path', { connectionId, path, newPath }, true),
+  copyRemotePaths: (connectionId: string, sources: string[], targetDir: string) =>
+    call<boolean>('copy_remote_paths', { connectionId, sources, targetDir }, true),
   loadEditorDocument: (connectionId: string, path: string) =>
     call<EditorDocument>('load_editor_document', { connectionId, path }, {
       connectionId,

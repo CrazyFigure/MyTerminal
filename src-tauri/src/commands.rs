@@ -949,6 +949,31 @@ mod shell_output_filter_tests {
     }
 
     #[test]
+    fn build_remote_copy_command_quotes_sources_and_target() {
+        let sources = vec!["/ology/hello.txt".to_string(), "/ology/ology dir".to_string()];
+        let command = build_remote_copy_command(&sources, "/backup").expect("command should build");
+        // -- 终止选项，源与目标各自单引号包裹，空格路径不会被拆分。
+        assert_eq!(
+            command,
+            "cp -rp -- '/ology/hello.txt' '/ology/ology dir' '/backup' && printf ok"
+        );
+    }
+
+    #[test]
+    fn build_remote_copy_command_escapes_single_quote() {
+        let sources = vec!["/ology/it's here".to_string()];
+        let command = build_remote_copy_command(&sources, "/tmp").expect("command should build");
+        // 文件名中的单引号必须转义成 '\'' 序列，避免提前闭合引号导致命令注入或解析错乱。
+        assert_eq!(command, "cp -rp -- '/ology/it'\\''s here' '/tmp' && printf ok");
+    }
+
+    #[test]
+    fn build_remote_copy_command_returns_none_for_empty_sources() {
+        let sources = vec!["   ".to_string(), String::new()];
+        assert!(build_remote_copy_command(&sources, "/tmp").is_none());
+    }
+
+    #[test]
     fn restores_cursor_when_prompt_marker_arrives_after_hidden_cursor() {
         let mut filter = ShellOutputFilter::default();
         let input = format!(
@@ -4150,6 +4175,52 @@ fn rename_remote_path_with_cache(
     })
 }
 
+/// 用单引号包裹并转义 shell 参数，供组装 cp 命令时防止空格及特殊字符被再次解析。
+fn shell_single_quote(value: &str) -> String {
+    // POSIX 单引号内只需把每个单引号替换成 '\'' 序列即可安全传参。
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// 组装服务端 cp 命令：-r 递归复制目录、-p 保留权限时间，`--` 终止选项防止以 - 开头的文件名被当作参数。
+/// 追加 `&& printf ok` 让成功时输出非空，从而与真正失败区分（个别系统 -p 保留属性会向 stderr 输出告警）。
+/// 全部源为空时返回 None，调用方据此跳过执行。
+fn build_remote_copy_command(sources: &[String], target: &str) -> Option<String> {
+    let mut quoted_sources = String::new();
+    for source in sources.iter().filter(|item| !item.trim().is_empty()) {
+        quoted_sources.push(' ');
+        quoted_sources.push_str(&shell_single_quote(&normalize_remote_path(source)));
+    }
+    if quoted_sources.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "cp -rp --{} {} && printf ok",
+        quoted_sources,
+        shell_single_quote(target)
+    ))
+}
+
+fn copy_remote_paths_with_cache(
+    state: &AppState,
+    connection: &ConnectionProfile,
+    sources: &[String],
+    target_dir: &str,
+) -> Result<(), AppError> {
+    with_auxiliary_session_once(state, connection, |auxiliary| {
+        // 目标目录可能是 ~ 或 .，先用 SFTP realpath 解析成绝对路径，保证 cp 落点与列表视图一致。
+        let target = {
+            let sftp = auxiliary_sftp(auxiliary)?;
+            resolve_remote_dir(sftp, target_dir)?
+        };
+        // 远端到远端复制直接走服务器本地 cp，避免经客户端下载再上传，大目录也高效。
+        // ponytail: 粘贴到源文件所在目录会因 cp 同名自拷贝报错（已知上限）；如需“生成副本”可后续在目标名追加后缀。
+        let Some(command) = build_remote_copy_command(sources, &target) else {
+            return Ok(());
+        };
+        exec_remote_command(&auxiliary.session, &command).map(|_| ())
+    })
+}
+
 fn upload_local_file_to_remote(
     sftp: &Sftp,
     local_path: &Path,
@@ -5201,6 +5272,19 @@ pub fn delete_remote_paths(
 ) -> Result<bool, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
     delete_remote_paths_with_cache(&state, &connection, &paths)?;
+    Ok(true)
+}
+
+#[tauri::command(async)]
+// 远端内部复制：一次辅助会话即可完成多选源到目标目录的服务器本地 cp，复制大目录时避免客户端中转。
+pub fn copy_remote_paths(
+    state: State<'_, AppState>,
+    connection_id: String,
+    sources: Vec<String>,
+    target_dir: String,
+) -> Result<bool, String> {
+    let connection = ensure_connection_exists(&state, &connection_id)?;
+    copy_remote_paths_with_cache(&state, &connection, &sources, &target_dir)?;
     Ok(true)
 }
 

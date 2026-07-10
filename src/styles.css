@@ -3856,6 +3856,41 @@ select:disabled {
   font-size: 0.78rem;
 }
 
+/* 文件右键“复制名称”的二级菜单：悬停或聚焦父项时向右浮出，靠近窗口右缘时加 .flip-left 翻到左侧。 */
+.context-menu-item.has-submenu {
+  position: relative;
+  justify-content: space-between;
+  cursor: default;
+}
+
+.context-menu-item.has-submenu > .context-menu-item-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.context-submenu-caret {
+  flex: 0 0 auto;
+  opacity: 0.6;
+}
+
+.context-menu .context-submenu {
+  position: absolute;
+  top: -5px;
+  left: 100%;
+  display: none;
+}
+
+.context-menu .context-submenu.flip-left {
+  left: auto;
+  right: 100%;
+}
+
+.context-menu-item.has-submenu:hover > .context-submenu,
+.context-menu-item.has-submenu:focus-within > .context-submenu {
+  display: block;
+}
+
 .terminal-context-menu {
   z-index: 130;
   min-width: 140px;

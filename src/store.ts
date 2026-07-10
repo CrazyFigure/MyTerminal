@@ -679,6 +679,7 @@ type StoreState = {
   deleteRemotePath: (path: string) => Promise<void>;
   deleteRemotePaths: (paths: string[]) => Promise<void>;
   renameRemotePath: (path: string, newName: string) => Promise<void>;
+  copyRemotePaths: (sources: string[], targetDir: string) => Promise<void>;
   refreshRuntimeOverview: () => Promise<void>;
   openRemoteFile: (path: string) => Promise<void>;
   closeEditorDocument: () => void;
@@ -2045,6 +2046,29 @@ export const useAppStore = create<StoreState>((set, get) => ({
       await backend.renameRemotePath(activeConnectionId, path, nextPath);
       await get().refreshFiles(currentRemotePath);
       set({ statusMessage: statusText(get().settings, 'statusRenamedPath', { name: newName.trim() }) });
+    } catch (error) {
+      set((state) => ({
+        statusMessage: statusText(state.settings, 'statusFileOperationFailed', {
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      }));
+      throw error;
+    }
+  },
+
+  copyRemotePaths: async (sources, targetDir) => {
+    const { activeConnectionId, currentRemotePath } = get();
+    const normalizedSources = Array.from(new Set(sources.filter(Boolean)));
+    const destination = targetDir || currentRemotePath;
+    if (!activeConnectionId || !normalizedSources.length) {
+      return;
+    }
+
+    try {
+      // 复制走后端一次辅助会话，粘贴完统一刷新目标目录，避免逐项刷新拖慢界面。
+      await backend.copyRemotePaths(activeConnectionId, normalizedSources, destination);
+      await get().refreshFiles(currentRemotePath);
+      set({ statusMessage: statusText(get().settings, 'statusCopiedPaths', { count: normalizedSources.length }) });
     } catch (error) {
       set((state) => ({
         statusMessage: statusText(state.settings, 'statusFileOperationFailed', {
