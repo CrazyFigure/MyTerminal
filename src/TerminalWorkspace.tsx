@@ -1775,14 +1775,11 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     const showNumber = gutterShowLineNumberRef.current;
     const showTime = gutterShowTimestampRef.current;
 
-    // 无会话（空态）时收起行号栏并恢复 surface 默认宽度，避免空占位挤压占位提示。
-    if (!sessionRef.current) {
+    // 无会话（空态）或本地终端（PowerShell/TUI 不需要时间/行号栏）时收起整条左栏并把宽度归零，
+    // 让 surface 恢复全宽——本地终端的自动换行据此按全宽排版；SSH 会话则有左栏占位、按缩减后的宽度排版。
+    if (!sessionRef.current || sessionRef.current.kind === 'local') {
       gutter.style.display = 'none';
-      if (terminalGutterWidthRef.current !== 0) {
-        terminalGutterWidthRef.current = 0;
-        container.style.marginLeft = '';
-        container.style.width = '';
-      }
+      applyTerminalGutterWidth(0);
       return;
     }
 
@@ -2954,11 +2951,11 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     clearTerminalMatchOverlay();
   }, [settings.terminalMatchSelection]);
 
-  // 行号栏显示项或字号变化后重算宽度并重绘：宽度变化会改动 surface 内边距，需要重新 fit 终端列宽。
+  // 行号栏显示项、字号或会话类型变化后重算宽度并重绘：本地会话整条左栏隐藏（宽度归零），会改变正文列宽，需重新 fit。
   useEffect(() => {
     scheduleTerminalGutterSync();
     scheduleTerminalSizeSync();
-  }, [gutterShowLineNumber, gutterShowTimestamp, settings.shellFontSize]);
+  }, [gutterShowLineNumber, gutterShowTimestamp, settings.shellFontSize, session?.kind]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
