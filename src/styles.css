@@ -4057,6 +4057,120 @@ select:disabled {
   box-shadow: inset 0 0 0 999px #999999;
 }
 
+/* ── 终端左侧行号栏（时间戳 + 行号）────────────────────────────────── */
+
+.terminal-gutter {
+  position: absolute;
+  z-index: 5;
+  display: none;
+  overflow: hidden;
+  pointer-events: auto;
+  user-select: none;
+  font-family: 'Cascadia Mono', Consolas, 'Courier New', monospace;
+  line-height: 1;
+  /* 浅色模式：淡灰底、深灰字，和终端正文分隔但不喧宾夺主。 */
+  color: #9aa0a6;
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.terminal-gutter-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  box-sizing: border-box;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+/* 时间戳靠左紧贴 gutter 左缘（margin-right:auto 把行号推到右侧）；单独显示时间时也保持靠左。 */
+.terminal-gutter-time {
+  flex: 0 0 auto;
+  margin-right: auto;
+  color: #b0b6bd;
+  font-variant-numeric: tabular-nums;
+}
+
+.terminal-gutter-number {
+  flex: 0 0 auto;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 当前（光标所在）行高亮，时间戳走实时时钟，颜色略深以示活动状态。 */
+.terminal-gutter-line.is-active {
+  color: #6b7075;
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.terminal-gutter-line.is-active .terminal-gutter-time {
+  color: #6b7075;
+}
+
+/* 深色模式：暗底亮字，与深色终端背景协调。 */
+.app-shell.theme-dark .terminal-gutter {
+  color: #6b7280;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.app-shell.theme-dark .terminal-gutter-time {
+  color: #5f6672;
+}
+
+.app-shell.theme-dark .terminal-gutter-line.is-active {
+  color: #aab2c0;
+  background: rgba(129, 140, 248, 0.12);
+}
+
+.app-shell.theme-dark .terminal-gutter-line.is-active .terminal-gutter-time {
+  color: #aab2c0;
+}
+
+/* 行号栏右键菜单：显示项开关，前置勾选标记。 */
+.terminal-gutter-context-menu {
+  z-index: 130;
+  min-width: 132px;
+}
+
+.terminal-gutter-context-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 6px 9px;
+}
+
+.terminal-gutter-context-check {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1.5px solid currentColor;
+  opacity: 0.5;
+}
+
+.terminal-gutter-context-check.is-checked {
+  opacity: 1;
+  background: var(--app-accent, #4f46e5);
+  border-color: var(--app-accent, #4f46e5);
+  position: relative;
+}
+
+.terminal-gutter-context-check.is-checked::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 3px;
+  height: 7px;
+  border: solid #ffffff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
 /* 强制隐藏整个终端区域内所有的原生滚动条（除了横向模式下的底轨） */
 .terminal-workspace ::-webkit-scrollbar {
   width: 0 !important;

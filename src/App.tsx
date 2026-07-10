@@ -6016,6 +6016,10 @@ export default function App() {
               }
               void sendTerminalData(activeSessionId, data);
             }}
+            onUpdateSettings={(partial) => {
+              // 行号栏右键切换的显示项直接落盘持久化，保证重启和多端同步后仍生效。
+              void persistSettings({ ...settings, ...partial }).catch(() => undefined);
+            }}
           />
 
           <div

@@ -85,6 +85,15 @@ fn default_terminal_match_selection() -> bool {
     true
 }
 
+// 旧设置文件没有行号栏开关时默认显示行号与时间戳。
+fn default_terminal_gutter_show_line_number() -> bool {
+    true
+}
+
+fn default_terminal_gutter_show_timestamp() -> bool {
+    true
+}
+
 fn default_show_command_ghost() -> bool {
     true
 }
@@ -319,6 +328,11 @@ pub struct AppSettings {
     /// 选中文本匹配高亮由前端渲染层执行，后端只负责持久化开关。
     #[serde(default = "default_terminal_match_selection")]
     pub terminal_match_selection: bool,
+    /// 终端左侧行号栏由前端渲染层执行，后端只负责持久化显示开关。
+    #[serde(default = "default_terminal_gutter_show_line_number")]
+    pub terminal_gutter_show_line_number: bool,
+    #[serde(default = "default_terminal_gutter_show_timestamp")]
+    pub terminal_gutter_show_timestamp: bool,
     #[serde(default)]
     pub compact_sidebar: bool,
     #[serde(default = "default_show_command_ghost")]
@@ -360,6 +374,8 @@ impl Default for AppSettings {
             terminal_right_click_behavior: default_terminal_right_click_behavior(),
             terminal_line_wrap_mode: default_terminal_line_wrap_mode(),
             terminal_match_selection: default_terminal_match_selection(),
+            terminal_gutter_show_line_number: default_terminal_gutter_show_line_number(),
+            terminal_gutter_show_timestamp: default_terminal_gutter_show_timestamp(),
             compact_sidebar: false,
             show_command_ghost: true,
             connection_groups: default_connection_groups(),
@@ -873,6 +889,10 @@ pub struct StoredAppSettings {
     pub terminal_line_wrap_mode: String,
     #[serde(default = "default_terminal_match_selection")]
     pub terminal_match_selection: bool,
+    #[serde(default = "default_terminal_gutter_show_line_number")]
+    pub terminal_gutter_show_line_number: bool,
+    #[serde(default = "default_terminal_gutter_show_timestamp")]
+    pub terminal_gutter_show_timestamp: bool,
     #[serde(default)]
     pub compact_sidebar: bool,
     #[serde(default = "default_show_command_ghost")]

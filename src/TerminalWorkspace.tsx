@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from 'react';
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
-import { Terminal, type IBufferCell, type IBufferLine, type IDisposable } from '@xterm/xterm';
+import { Terminal, type IBufferCell, type IBufferLine, type IDisposable, type IMarker } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 
 import { backend } from './backend';
@@ -14,6 +14,8 @@ type Props = {
   session?: TerminalSession;
   settings: AppSettings;
   onTerminalData: (data: string) => void;
+  // 行号栏右键菜单切换显示项后，需要把设置写回并持久化。
+  onUpdateSettings: (partial: Partial<AppSettings>) => void;
 };
 
 const terminalOutputEventName = 'myterminal-terminal-output';
@@ -81,6 +83,42 @@ const terminalHighlightCornerRadiusPx = 4;
 const terminalHighlightBorderWidthPx = 1;
 // 匹配块之间需要有可见间隙；只收缩每个命中块的外边缘，跨行命中内部仍保持连贯。
 const terminalMatchHighlightGapPx = 1.5;
+
+// 行号栏（gutter）都不显示时仍保留少量宽度，用于承载右键菜单命中区域。
+const terminalGutterMinWidthPx = 16;
+// 行号栏左右内边距，保证时间戳/行号不贴住边缘；左侧取较小值避免时间戳与 gutter 左缘之间出现空隙。
+const terminalGutterHorizontalPaddingPx = 6;
+// 时间戳固定按 [HH:MM:SS] 展示；行号右对齐，位宽随当前最大逻辑行号动态增长。
+const terminalGutterTimestampCharCount = 10;
+const terminalGutterMinDigits = 2;
+// 行号栏字体相对终端字号略小，避免占用过多正文宽度；同时保证最小可读像素。
+const terminalGutterFontScale = 0.9;
+const terminalGutterMinFontSizePx = 11;
+// 等宽字体单字符宽度估算系数，用于按字符数换算行号栏像素宽度。
+const terminalGutterCharWidthRatio = 0.62;
+// 软换行续行在行号列以该符号占位，表示它属于上一条逻辑行。
+const terminalGutterWrappedLineSymbol = '-';
+// 每个会话最多缓存这么多条逻辑行的到达时刻，超出后从最旧端回收并用 base 记录已丢弃数量。
+const terminalGutterMaxTrackedLines = 5000;
+
+// 每条逻辑行（两次硬换行之间）用一个 xterm marker 锚定其起始 buffer 行；marker 会随滚动、reflow
+// 自动跟随，被 scrollback 裁剪时自动 dispose（marker.line 变为 -1），渲染时惰性回收。marker 只负责
+// 定位，编号按“存活 marker 从末端对齐到累计计数”推算，到达时刻由按会话持久保存的时间线按编号提供，
+// 这样切换会话重放缓存、后台会话继续产出时，历史行的编号与真实时间都保持不变。
+
+// 按会话持久缓存的逻辑行时间线：times[i] 是累计编号为 (base + i + 1) 的逻辑行到达时刻（ms）。
+// base 记录已从最旧端回收的行数，保证累计编号（行号）持续增长且不回退。
+type TerminalGutterSessionData = {
+  times: number[];
+  base: number;
+};
+
+// 行号栏时间戳固定使用本地时区 HH:MM:SS，与常见远程终端展示保持一致。
+const formatTerminalGutterClock = (timestampMs: number) => {
+  const date = new Date(timestampMs);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+};
 
 type TerminalLayoutSize = {
   // renderCols 是前端 xterm 的渲染列数，横向模式可临时扩大用于浏览当前可见长行。
@@ -933,8 +971,10 @@ const resolveTerminalRelativeLuminance = (color: TerminalRgbColor) => {
   return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
 };
 
-export function TerminalWorkspace({ session, settings, onTerminalData }: Props) {
+export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateSettings }: Props) {
   const [terminalContextMenu, setTerminalContextMenu] = useState<{ x: number; y: number; selectedText: string } | null>(null);
+  // 行号栏右键菜单只承载“显示行号/时间戳”两个开关，与正文区右键复制/粘贴互不干扰。
+  const [terminalGutterContextMenu, setTerminalGutterContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [terminalHasHorizontalOverflow, setTerminalHasHorizontalOverflow] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -954,6 +994,15 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   const terminalVerticalScrollbarFrameRef = useRef<number | null>(null);
   const terminalVerticalScrollbarTimeoutRef = useRef<number | null>(null);
   const terminalVerticalScrollbarDragRef = useRef<TerminalVerticalScrollbarDragState | null>(null);
+  // 行号栏容器与逐行行数据、时间戳追踪状态；追踪状态随会话切换重置。
+  const terminalGutterRef = useRef<HTMLDivElement | null>(null);
+  const terminalGutterFrameRef = useRef<number | null>(null);
+  const terminalGutterClockTimerRef = useRef<number | null>(null);
+  const terminalGutterWidthRef = useRef(0);
+  // 按注册顺序保存的逻辑行 marker（仅定位）；每次硬换行追加一个，被裁剪的自动 dispose。
+  const terminalGutterMarkersRef = useRef<IMarker[]>([]);
+  // 按会话持久保存的逻辑行时间线；切换会话不清空，保证历史时间恒定。
+  const terminalGutterSessionDataRef = useRef<Record<string, TerminalGutterSessionData>>({});
   const terminalSelectionDragActiveRef = useRef(false);
   const terminalSelectionDragFrameRef = useRef<number | null>(null);
   const onTerminalDataRef = useRef(onTerminalData);
@@ -1005,6 +1054,12 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   const anchorImeToPromptForSessionRef = useRef(anchorImeToPromptForSession);
   const useControlledInputCursorForSessionRef = useRef(useControlledInputCursorForSession);
   const terminalMatchSelectionRef = useRef(settings.terminalMatchSelection ?? true);
+  // 行号栏两个开关缓存进 ref，命令式同步逻辑读取时无需依赖闭包中的最新 props。
+  const gutterShowLineNumber = settings.terminalGutterShowLineNumber !== false;
+  const gutterShowTimestamp = settings.terminalGutterShowTimestamp !== false;
+  const gutterShowLineNumberRef = useRef(gutterShowLineNumber);
+  const gutterShowTimestampRef = useRef(gutterShowTimestamp);
+  const terminalFontSizeRef = useRef(settings.shellFontSize);
   const terminalTheme = useMemo(
     () => buildTerminalTheme(settings, {
       softenDarkBlocks: useSoftDarkBlocksForSession,
@@ -1049,6 +1104,9 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   anchorImeToPromptForSessionRef.current = anchorImeToPromptForSession;
   useControlledInputCursorForSessionRef.current = useControlledInputCursorForSession;
   terminalMatchSelectionRef.current = settings.terminalMatchSelection ?? true;
+  gutterShowLineNumberRef.current = gutterShowLineNumber;
+  gutterShowTimestampRef.current = gutterShowTimestamp;
+  terminalFontSizeRef.current = settings.shellFontSize;
 
   useEffect(() => {
     onTerminalDataRef.current = onTerminalData;
@@ -1590,6 +1648,266 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
   const stopTerminalVerticalScrollbarDrag = () => {
     terminalVerticalScrollbarDragRef.current = null;
     terminalVerticalScrollbarRef.current?.classList.remove('is-dragging');
+  };
+
+  // 会话切换或缓存重放前只回收 marker（定位信息），不触碰按会话持久保存的时间线，
+  // 保证重放后历史行的编号与真实到达时刻原样恢复。
+  const resetTerminalGutterMarkers = () => {
+    for (const marker of terminalGutterMarkersRef.current) {
+      marker.dispose();
+    }
+    terminalGutterMarkersRef.current = [];
+  };
+
+  // 取（必要时初始化）某会话的逻辑行时间线；首行（序号 1，从不触发硬换行）在创建时即打上时刻。
+  const ensureTerminalGutterSessionData = (sessionId: string, nowMs: number) => {
+    let data = terminalGutterSessionDataRef.current[sessionId];
+    if (!data) {
+      data = { times: [nowMs], base: 0 };
+      terminalGutterSessionDataRef.current[sessionId] = data;
+    }
+    return data;
+  };
+
+  // 由原始输出流推进某会话的时间线：内容里每个硬换行都新起一条逻辑行并记录到达时刻。
+  // 对后台（非活动）会话同样生效，保证切回来时这些行仍是真实时间。
+  const appendTerminalGutterSessionTimes = (sessionId: string, content: string, nowMs: number) => {
+    const data = ensureTerminalGutterSessionData(sessionId, nowMs);
+    for (let index = 0; index < content.length; index += 1) {
+      if (content.charCodeAt(index) === 10) {
+        data.times.push(nowMs);
+      }
+    }
+    // 超出上限时从最旧端回收，并累加 base，保证累计序号不回退。
+    if (data.times.length > terminalGutterMaxTrackedLines) {
+      const drop = data.times.length - terminalGutterMaxTrackedLines;
+      data.times.splice(0, drop);
+      data.base += drop;
+    }
+  };
+
+  // 硬换行后光标已落到新的一行，为该行注册一个 marker 作为逻辑行位置锚点。
+  const registerTerminalGutterLine = () => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+
+    // 防护：若光标落到的新行是软换行续行（部分 xterm 版本自动折行也会触发 onLineFeed），则不建 marker，
+    // 使 marker 仅对应逻辑行，既让续行正确显示为占位符，也与按 \n 计数的时间线严格对齐。
+    const buffer = terminal.buffer.active;
+    if (buffer.getLine(buffer.baseY + buffer.cursorY)?.isWrapped) {
+      return;
+    }
+
+    const marker = terminal.registerMarker(0);
+    if (!marker) {
+      return;
+    }
+    terminalGutterMarkersRef.current.push(marker);
+
+    // 缓存重放会同步触发大量换行；超过阈值时惰性回收已被裁剪（line<0）的 marker，避免数组无界增长。
+    const markers = terminalGutterMarkersRef.current;
+    if (markers.length > terminal.rows + terminalScrollbackRowsRef.current + 64) {
+      terminalGutterMarkersRef.current = markers.filter((item) => item.line >= 0);
+    }
+  };
+
+  // 当前会话累计逻辑行数（= 最新一行的编号）。
+  const resolveTerminalGutterCounter = () => {
+    const sessionId = sessionRef.current?.id;
+    const data = sessionId ? terminalGutterSessionDataRef.current[sessionId] : undefined;
+    return data ? data.base + data.times.length : 0;
+  };
+
+  // 行号栏当前需要的像素宽度：按显示项和最大逻辑行号位宽估算，两项都关闭时保留右键命中宽度。
+  const resolveTerminalGutterWidth = () => {
+    if (!gutterShowLineNumberRef.current && !gutterShowTimestampRef.current) {
+      return terminalGutterMinWidthPx;
+    }
+
+    const fontSize = Math.max(terminalGutterMinFontSizePx, terminalFontSizeRef.current * terminalGutterFontScale);
+    const charWidth = fontSize * terminalGutterCharWidthRatio;
+    let charCount = 0;
+    if (gutterShowTimestampRef.current) {
+      charCount += terminalGutterTimestampCharCount;
+    }
+    if (gutterShowLineNumberRef.current) {
+      const maxLogical = resolveTerminalGutterCounter();
+      const digits = Math.max(terminalGutterMinDigits, String(Math.max(1, maxLogical)).length);
+      // 行号和时间戳之间留 1 个字符间距。
+      charCount += digits + (gutterShowTimestampRef.current ? 1 : 0);
+    }
+    return Math.ceil(charCount * charWidth) + terminalGutterHorizontalPaddingPx * 2;
+  };
+
+  // 行号栏通过真正缩小 surface 的宽度来占位（marginLeft + width），而不是加 padding：FitAddon 读的是
+  // 父容器 border-box 宽度、只扣 .xterm 自身 padding，若用容器 padding 占位会导致列数被高估、右侧字符被裁。
+  const applyTerminalGutterWidth = (width: number) => {
+    const container = containerRef.current;
+    if (!container || terminalGutterWidthRef.current === width) {
+      return;
+    }
+    terminalGutterWidthRef.current = width;
+    if (width > 0) {
+      container.style.marginLeft = `${width}px`;
+      container.style.width = `calc(100% - ${width}px)`;
+    } else {
+      container.style.marginLeft = '';
+      container.style.width = '';
+    }
+    // 宽度变化会改变正文可用列宽，主动重排一次终端尺寸，避免自动换行模式下右侧字符被裁剪。
+    scheduleTerminalSizeSync();
+  };
+
+  // 行号栏渲染：按当前可见 buffer 行逐行绘制时间戳与逻辑行号，软换行续行显示占位符，
+  // 光标所在行显示实时时钟。gutter 固定在左侧，横向滚动时不随正文移动。
+  const syncTerminalGutter = (nowMs: number) => {
+    const terminal = terminalRef.current;
+    const container = containerRef.current;
+    const gutter = terminalGutterRef.current;
+    const workspace = container?.parentElement;
+    const screen = terminal?.element?.querySelector<HTMLElement>('.xterm-screen');
+    if (!terminal || !container || !gutter || !workspace || !screen) {
+      return;
+    }
+
+    const showNumber = gutterShowLineNumberRef.current;
+    const showTime = gutterShowTimestampRef.current;
+
+    // 无会话（空态）时收起行号栏并恢复 surface 默认宽度，避免空占位挤压占位提示。
+    if (!sessionRef.current) {
+      gutter.style.display = 'none';
+      if (terminalGutterWidthRef.current !== 0) {
+        terminalGutterWidthRef.current = 0;
+        container.style.marginLeft = '';
+        container.style.width = '';
+      }
+      return;
+    }
+
+    const width = resolveTerminalGutterWidth();
+    applyTerminalGutterWidth(width);
+    gutter.style.display = 'block';
+
+    if (terminal.cols <= 0 || terminal.rows <= 0) {
+      return;
+    }
+
+    const workspaceRect = workspace.getBoundingClientRect();
+    const surfaceRect = container.getBoundingClientRect();
+    const screenRect = screen.getBoundingClientRect();
+    const cellHeight = screenRect.height / terminal.rows;
+    const fontSize = Math.max(terminalGutterMinFontSizePx, terminalFontSizeRef.current * terminalGutterFontScale);
+    const buffer = terminal.buffer.active;
+    const firstVisibleRow = buffer.viewportY;
+    const cursorBufferRow = buffer.baseY + buffer.cursorY;
+
+    // 存活 marker 按注册顺序即逻辑行顺序排列，最后一个对应“最新逻辑行”，其编号 = 会话累计行数。
+    // 以此从末端对齐，推算每个存活 marker 对应的绝对逻辑编号，避免依赖易漂移的即时计数。
+    const liveMarkers = terminalGutterMarkersRef.current.filter((entry) => entry.line >= 0);
+    // 时间线尚未建立（会话刚打开）时用存活 marker 数兜底，避免最旧行推出非正编号。
+    const totalLogical = Math.max(resolveTerminalGutterCounter(), liveMarkers.length);
+    const sessionData = sessionRef.current?.id ? terminalGutterSessionDataRef.current[sessionRef.current.id] : undefined;
+    // buffer 行 -> 逻辑行编号；同一 buffer 行可能有多个历史 marker（reflow 后），取最新（末端）的编号。
+    const logicalNumberByBufferRow = new Map<number, number>();
+    for (let index = 0; index < liveMarkers.length; index += 1) {
+      const logicalNumber = totalLogical - (liveMarkers.length - 1 - index);
+      logicalNumberByBufferRow.set(liveMarkers[index].line, logicalNumber);
+    }
+    const digits = Math.max(terminalGutterMinDigits, String(Math.max(1, totalLogical)).length);
+
+    // 按逻辑编号取该行到达时刻；编号已回收出时间线窗口时返回 undefined（极旧历史行不显示时间）。
+    const resolveLineTime = (logicalNumber: number) => {
+      if (!sessionData) {
+        return undefined;
+      }
+      const timeIndex = logicalNumber - 1 - sessionData.base;
+      return timeIndex >= 0 && timeIndex < sessionData.times.length ? sessionData.times[timeIndex] : undefined;
+    };
+
+    // 当前光标所在“逻辑行”的起始 buffer 行：从光标行向上跳过软换行续行，得到这条逻辑行的第一物理行。
+    let activeLineStartRow = cursorBufferRow;
+    while (activeLineStartRow > 0 && buffer.getLine(activeLineStartRow)?.isWrapped) {
+      activeLineStartRow -= 1;
+    }
+    // 当前逻辑行若还没有落 marker（例如刚新起一行），用累计行数兜底，保证底部当前行始终有编号。
+    const activeLogicalNumber = logicalNumberByBufferRow.get(activeLineStartRow) ?? Math.max(1, totalLogical);
+
+    // gutter 覆盖 surface 左侧外部的占位区（marginLeft 让出的宽度），对齐 xterm 内容顶部与高度。
+    gutter.style.left = `${surfaceRect.left - workspaceRect.left - width}px`;
+    gutter.style.top = `${screenRect.top - workspaceRect.top}px`;
+    gutter.style.width = `${width}px`;
+    gutter.style.height = `${screenRect.height}px`;
+    gutter.style.fontSize = `${fontSize}px`;
+
+    const rows: HTMLDivElement[] = [];
+    for (let i = 0; i < terminal.rows; i += 1) {
+      const bufferRow = firstVisibleRow + i;
+      if (bufferRow >= buffer.length) {
+        break;
+      }
+      const line = buffer.getLine(bufferRow);
+      const logicalNumber = logicalNumberByBufferRow.get(bufferRow);
+      // 只有“当前逻辑行”所覆盖的物理行属于活动行（时间走实时时钟并高亮）；光标下方的空行不算。
+      const isActiveLine = bufferRow >= activeLineStartRow && bufferRow <= cursorBufferRow;
+      const isActiveLineStart = bufferRow === activeLineStartRow;
+
+      const rowElement = document.createElement('div');
+      rowElement.className = 'terminal-gutter-line';
+      rowElement.style.top = `${i * cellHeight}px`;
+      rowElement.style.height = `${cellHeight}px`;
+      if (isActiveLine) {
+        rowElement.classList.add('is-active');
+      }
+
+      if (showTime) {
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'terminal-gutter-time';
+        // 活动逻辑行起始行显示实时时钟；其余逻辑行按编号显示各自真实到达时刻，软换行续行留空。
+        let arrival: number | undefined;
+        if (isActiveLineStart) {
+          arrival = nowMs;
+        } else if (logicalNumber !== undefined) {
+          arrival = resolveLineTime(logicalNumber);
+        }
+        timeSpan.textContent = arrival !== undefined ? `[${formatTerminalGutterClock(arrival)}]` : '';
+        rowElement.appendChild(timeSpan);
+      }
+
+      if (showNumber) {
+        const numberSpan = document.createElement('span');
+        numberSpan.className = 'terminal-gutter-number';
+        numberSpan.style.minWidth = `${digits}ch`;
+        if (logicalNumber !== undefined) {
+          numberSpan.textContent = String(logicalNumber);
+        } else if (isActiveLineStart) {
+          // 当前逻辑行尚未落 marker 时用兜底编号，保证底部当前行始终有编号。
+          numberSpan.textContent = String(activeLogicalNumber);
+        } else if (line?.isWrapped) {
+          // 软换行续行不占逻辑号，用占位符表示它接续上一行。
+          numberSpan.textContent = terminalGutterWrappedLineSymbol;
+        } else {
+          // 没有 marker 的非续行（例如光标下方的空行）不显示编号。
+          numberSpan.textContent = '';
+        }
+        rowElement.appendChild(numberSpan);
+      }
+
+      rows.push(rowElement);
+    }
+
+    gutter.replaceChildren(...rows);
+  };
+
+  const scheduleTerminalGutterSync = () => {
+    if (terminalGutterFrameRef.current !== null) {
+      return;
+    }
+    terminalGutterFrameRef.current = window.requestAnimationFrame(() => {
+      terminalGutterFrameRef.current = null;
+      syncTerminalGutter(Date.now());
+    });
   };
 
   const clearTerminalSelectionOverlay = () => {
@@ -2140,11 +2458,16 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
 
     clearTerminalSelectionSnapshot();
     applyTerminalSessionBehaviorOptions();
+    // 只回收 marker（定位）并清空 buffer，保留按会话持久保存的时间线；缓存重放触发的 onLineFeed
+    // 会按同样顺序重建 marker，再由时间线按编号还原历史真实到达时刻。
+    resetTerminalGutterMarkers();
     terminal.reset();
     const nextLayoutSize = resolveTerminalLayoutSize();
     if (nextLayoutSize) {
       applyTerminalLayoutSize(nextLayoutSize);
     }
+    // 为会话首行（row0，从不触发 onLineFeed）登记初始 marker；始终登记以保证第一条逻辑行也可定位。
+    registerTerminalGutterLine();
     const cachedOutput = sessionRef.current?.id ? cachedOutputBySessionRef.current[sessionRef.current.id] ?? '' : '';
     if (cachedOutput) {
       terminal.write(cachedOutput, () => {
@@ -2155,6 +2478,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
         scheduleTerminalSelectionOverlaySync();
         scheduleTerminalControlledInputCursorSync();
         scheduleTerminalVerticalScrollbarSync();
+        scheduleTerminalGutterSync();
       });
       return;
     }
@@ -2166,10 +2490,14 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     scheduleTerminalSelectionOverlaySync();
     scheduleTerminalControlledInputCursorSync();
     scheduleTerminalVerticalScrollbarSync();
+    scheduleTerminalGutterSync();
   };
 
   useEffect(() => {
-    const closeTerminalContextMenu = () => setTerminalContextMenu(null);
+    const closeTerminalContextMenu = () => {
+      setTerminalContextMenu(null);
+      setTerminalGutterContextMenu(null);
+    };
     window.addEventListener('click', closeTerminalContextMenu);
     window.addEventListener('keydown', closeTerminalContextMenu);
     return () => {
@@ -2343,6 +2671,17 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     containerRef.current.parentElement?.appendChild(verticalScrollbar);
     terminalVerticalScrollbarRef.current = verticalScrollbar;
     terminalVerticalScrollbarThumbRef.current = verticalScrollbarThumb;
+    // 行号栏挂到 workspace（surface 的父层），横向滚动时保持固定在左侧；右键弹出显示项开关菜单。
+    const gutter = document.createElement('div');
+    gutter.classList.add('terminal-gutter');
+    const handleGutterContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setTerminalGutterContextMenu({ x: event.clientX, y: event.clientY });
+    };
+    gutter.addEventListener('contextmenu', handleGutterContextMenu);
+    containerRef.current.parentElement?.appendChild(gutter);
+    terminalGutterRef.current = gutter;
     terminal.attachCustomWheelEventHandler(handleAiAgentTerminalWheel);
     const textarea = terminal.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
     const handleTerminalCompositionStart = () => {
@@ -2376,6 +2715,12 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     const renderDisposable = terminal.onRender(() => {
       scheduleTerminalImeCompositionAnchorSync();
       scheduleTerminalControlledInputCursorSync();
+      scheduleTerminalGutterSync();
+    });
+    // 每次硬换行落到新行时登记一条逻辑行 marker（仅定位）；始终登记，与开关无关，保证切换显示项后
+    // 历史行仍能定位。软换行不触发，天然显示为续行占位。
+    const lineFeedDisposable = terminal.onLineFeed(() => {
+      registerTerminalGutterLine();
     });
     const scrollDisposable = terminal.onScroll(() => {
       scheduleTerminalSizeSync();
@@ -2384,6 +2729,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       scheduleTerminalImeCompositionAnchorSync();
       scheduleTerminalControlledInputCursorSync();
       scheduleTerminalVerticalScrollbarSync();
+      scheduleTerminalGutterSync();
     });
     const selectionDisposable = terminal.onSelectionChange(() => {
       if (!terminalSelectionRestoreActiveRef.current) {
@@ -2397,12 +2743,14 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       scheduleTerminalSelectionOverlaySync();
       scheduleTerminalControlledInputCursorSync();
       scheduleTerminalVerticalScrollbarSync();
+      scheduleTerminalGutterSync();
     });
     const handleTerminalSurfaceScroll = () => {
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
       scheduleTerminalControlledInputCursorSync();
       scheduleTerminalVerticalScrollbarSync();
+      scheduleTerminalGutterSync();
     };
 
     terminalRef.current = terminal;
@@ -2432,11 +2780,19 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
     };
     verticalScrollbar.addEventListener('mouseenter', handleScrollbarMouseEnter);
     verticalScrollbar.addEventListener('mouseleave', handleScrollbarMouseLeave);
+    // 每秒刷新一次行号栏，让最底部当前行的时间戳跟随实时时钟走动。
+    terminalGutterClockTimerRef.current = window.setInterval(() => {
+      if (gutterShowTimestampRef.current) {
+        scheduleTerminalGutterSync();
+      }
+    }, 1000);
+    scheduleTerminalGutterSync();
 
     return () => {
       dataDisposable.dispose();
       cursorMoveDisposable.dispose();
       renderDisposable.dispose();
+      lineFeedDisposable.dispose();
       scrollDisposable.dispose();
       selectionDisposable.dispose();
       resizeDisposable.dispose();
@@ -2455,6 +2811,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       verticalScrollbar.removeEventListener('mousedown', startTerminalVerticalScrollbarDrag);
       verticalScrollbar.removeEventListener('mouseenter', handleScrollbarMouseEnter);
       verticalScrollbar.removeEventListener('mouseleave', handleScrollbarMouseLeave);
+      gutter.removeEventListener('contextmenu', handleGutterContextMenu);
       if (resizeFrameRef.current !== null) {
         window.cancelAnimationFrame(resizeFrameRef.current);
         resizeFrameRef.current = null;
@@ -2487,20 +2844,31 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
         window.cancelAnimationFrame(terminalVerticalScrollbarFrameRef.current);
         terminalVerticalScrollbarFrameRef.current = null;
       }
+      if (terminalGutterFrameRef.current !== null) {
+        window.cancelAnimationFrame(terminalGutterFrameRef.current);
+        terminalGutterFrameRef.current = null;
+      }
+      if (terminalGutterClockTimerRef.current !== null) {
+        window.clearInterval(terminalGutterClockTimerRef.current);
+        terminalGutterClockTimerRef.current = null;
+      }
       terminalImeComposingRef.current = false;
       terminalSelectionDragActiveRef.current = false;
       terminalVerticalScrollbarDragRef.current = null;
       clearTerminalSelectionSnapshot();
+      resetTerminalGutterMarkers();
       hideTerminalControlledInputCursor();
       matchOverlay.remove();
       selectionOverlay.remove();
       controlledCursor.remove();
       verticalScrollbar.remove();
+      gutter.remove();
       terminalMatchOverlayRef.current = null;
       terminalSelectionOverlayRef.current = null;
       terminalControlledCursorRef.current = null;
       terminalVerticalScrollbarRef.current = null;
       terminalVerticalScrollbarThumbRef.current = null;
+      terminalGutterRef.current = null;
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
@@ -2519,6 +2887,10 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
       cachedOutputBySessionRef.current[chunk.sessionId] =
         cached.length > maxCachedTerminalOutputLength ? cached.slice(-maxCachedTerminalOutputLength) : cached;
 
+      // 由原始输出流推进该会话的逻辑行时间线（含后台会话），记录每条命令行的真实到达时刻，
+      // 切换会话或改字号/主题后重放缓存时按编号还原，历史时间恒定不变。
+      appendTerminalGutterSessionTimes(chunk.sessionId, chunk.content, Date.now());
+
       if (sessionRef.current?.id === chunk.sessionId) {
         terminalRef.current?.write(chunk.content, () => {
           scheduleTerminalSizeSync();
@@ -2529,6 +2901,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
           scheduleTerminalImeCompositionAnchorSync();
           scheduleTerminalControlledInputCursorSync();
           scheduleTerminalVerticalScrollbarSync();
+          scheduleTerminalGutterSync();
         });
       }
     };
@@ -2580,6 +2953,12 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
 
     clearTerminalMatchOverlay();
   }, [settings.terminalMatchSelection]);
+
+  // 行号栏显示项或字号变化后重算宽度并重绘：宽度变化会改动 surface 内边距，需要重新 fit 终端列宽。
+  useEffect(() => {
+    scheduleTerminalGutterSync();
+    scheduleTerminalSizeSync();
+  }, [gutterShowLineNumber, gutterShowTimestamp, settings.shellFontSize]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -2668,6 +3047,39 @@ export function TerminalWorkspace({ session, settings, onTerminalData }: Props) 
             type="button"
           >
             {translate(settings.uiLanguage, 'terminalMenuPaste')}
+          </button>
+        </div>
+      ) : null}
+
+      {terminalGutterContextMenu ? (
+        <div
+          className="context-menu terminal-gutter-context-menu"
+          style={{ left: terminalGutterContextMenu.x, top: terminalGutterContextMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            className="context-menu-item terminal-gutter-context-item"
+            onClick={() => {
+              setTerminalGutterContextMenu(null);
+              onUpdateSettings({ terminalGutterShowLineNumber: !gutterShowLineNumber });
+              restoreTerminalFocusAfterContextMenuAction();
+            }}
+            type="button"
+          >
+            <span className={`terminal-gutter-context-check ${gutterShowLineNumber ? 'is-checked' : ''}`} aria-hidden="true" />
+            {translate(settings.uiLanguage, 'terminalGutterShowLineNumber')}
+          </button>
+          <button
+            className="context-menu-item terminal-gutter-context-item"
+            onClick={() => {
+              setTerminalGutterContextMenu(null);
+              onUpdateSettings({ terminalGutterShowTimestamp: !gutterShowTimestamp });
+              restoreTerminalFocusAfterContextMenuAction();
+            }}
+            type="button"
+          >
+            <span className={`terminal-gutter-context-check ${gutterShowTimestamp ? 'is-checked' : ''}`} aria-hidden="true" />
+            {translate(settings.uiLanguage, 'terminalGutterShowTimestamp')}
           </button>
         </div>
       ) : null}

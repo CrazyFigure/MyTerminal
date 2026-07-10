@@ -162,6 +162,9 @@ const normalizeSettings = (settings: AppSettings): AppSettings => ({
     : 'wrap',
   // 旧配置没有匹配高亮字段时默认开启，符合新版本的终端阅读体验。
   terminalMatchSelection: settings.terminalMatchSelection !== false,
+  // 旧配置没有行号栏字段时默认显示，避免升级后左侧信息突然消失。
+  terminalGutterShowLineNumber: settings.terminalGutterShowLineNumber !== false,
+  terminalGutterShowTimestamp: settings.terminalGutterShowTimestamp !== false,
   // 分组和连接排序来自用户拖拽结果，规范化时只去重清洗，不再按字母重新排序。
   connectionGroups: Array.from(
     new Set(
@@ -282,6 +285,8 @@ const mockSettings: AppSettings = {
   terminalRightClickBehavior: 'paste',
   terminalLineWrapMode: 'wrap',
   terminalMatchSelection: true,
+  terminalGutterShowLineNumber: true,
+  terminalGutterShowTimestamp: true,
   compactSidebar: false,
   showCommandGhost: true,
   connectionGroups: ['ology', 'ology/ology-old'],
