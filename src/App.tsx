@@ -4399,6 +4399,19 @@ export default function App() {
     };
   }, [activeRemoteConnectionId, refreshRuntimeStorageFilesOnce, settings.runtimeStorageRefreshIntervalSec, storageFilesExpanded]);
 
+  // 活动远端连接变化时（关闭 SSH tab、切到其它连接或断开），收起运行状态所有下拉并清空已暂存的明细。
+  // 否则下拉会停留在上一个连接的内存/存储数据上：无连接时轮询已停止无法刷新，看起来像卡死；
+  // 切到其它连接时又会短暂显示旧连接数据，语义错误。收起后用户重新展开即按新连接重新拉取。
+  useEffect(() => {
+    setCpuCoresExpanded(false);
+    setMemoryResourcesExpanded(false);
+    setStorageFilesExpanded(false);
+    setRuntimeResourceUsage(null);
+    setRuntimeResourceError('');
+    setRuntimeStorageFiles(null);
+    setRuntimeStorageFilesError('');
+  }, [activeRemoteConnectionId]);
+
   useEffect(() => {
     if (!bootstrapped) {
       void bootstrap();
