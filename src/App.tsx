@@ -64,6 +64,9 @@ import { TerminalWorkspace } from './TerminalWorkspace';
 import { backend } from './backend';
 import { writeClipboardText } from './clipboard';
 import { useAppStore } from './store';
+// useShallow 让组件按“选中字段的浅比较”订阅 store，避免订阅整个 store 导致终端 cwd/status
+// 等高频更新触发无关组件（尤其是未打开的弹窗）重渲染。
+import { useShallow } from 'zustand/react/shallow';
 import { UpdateModal, type UpdateDownloadProgress } from './UpdateModal';
 import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, RemoteFileEntry, RuntimeResourceMetric, RuntimeResourceTarget, RuntimeResourceUsage, RuntimeResourceSource, RuntimeStorageFiles, SshJumpHost, TerminalSession, UiLanguage, UpdateCheckResult } from './types';
 
@@ -1186,7 +1189,20 @@ function ConnectionFormModal() {
     connections,
     loading,
     settings,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((state) => ({
+      showConnectionForm: state.showConnectionForm,
+      connectionDraft: state.connectionDraft,
+      connectionTestResult: state.connectionTestResult,
+      closeConnectionForm: state.closeConnectionForm,
+      updateConnectionDraft: state.updateConnectionDraft,
+      saveConnectionDraft: state.saveConnectionDraft,
+      testConnectionDraft: state.testConnectionDraft,
+      connections: state.connections,
+      loading: state.loading,
+      settings: state.settings,
+    })),
+  );
 
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements);
@@ -1645,7 +1661,16 @@ function TunnelFormModal() {
     showTunnelForm,
     tunnelDraft,
     updateTunnelDraft,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((state) => ({
+      closeTunnelForm: state.closeTunnelForm,
+      saveTunnelDraft: state.saveTunnelDraft,
+      settings: state.settings,
+      showTunnelForm: state.showTunnelForm,
+      tunnelDraft: state.tunnelDraft,
+      updateTunnelDraft: state.updateTunnelDraft,
+    })),
+  );
 
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements);
@@ -1738,7 +1763,22 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
     reorderConnectionGroups,
     reorderConnections,
     settings,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((state) => ({
+      connections: state.connections,
+      createConnectionGroup: state.createConnectionGroup,
+      deleteConnection: state.deleteConnection,
+      deleteConnectionGroup: state.deleteConnectionGroup,
+      duplicateConnection: state.duplicateConnection,
+      moveConnectionToGroup: state.moveConnectionToGroup,
+      openConnectionForm: state.openConnectionForm,
+      openSession: state.openSession,
+      renameConnectionGroup: state.renameConnectionGroup,
+      reorderConnectionGroups: state.reorderConnectionGroups,
+      reorderConnections: state.reorderConnections,
+      settings: state.settings,
+    })),
+  );
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements);
   const orderedConnections = useMemo(() => sortConnectionsByOrder(connections, settings.connectionOrder), [connections, settings.connectionOrder]);
@@ -2215,7 +2255,15 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
     saveLocalTerminals,
     settings,
     setStatusMessage,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((state) => ({
+      localTerminals: state.localTerminals,
+      openLocalTerminal: state.openLocalTerminal,
+      saveLocalTerminals: state.saveLocalTerminals,
+      settings: state.settings,
+      setStatusMessage: state.setStatusMessage,
+    })),
+  );
   const [draft, setDraft] = useState<LocalTerminalSettings>(localTerminals);
   // 当前启动目录默认落到工作区，避免用户第一次打开时面对空白路径。
   const [cwd, setCwd] = useState(localTerminals.profiles[0]?.cwd ?? defaultLocalTerminalCwd);
@@ -2507,7 +2555,15 @@ function EditorModal({
     saveEditorDocument,
     setEditorContent,
     settings,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((state) => ({
+      closeEditorDocument: state.closeEditorDocument,
+      editorDocument: state.editorDocument,
+      saveEditorDocument: state.saveEditorDocument,
+      setEditorContent: state.setEditorContent,
+      settings: state.settings,
+    })),
+  );
 
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements);
@@ -2587,7 +2643,22 @@ function SettingsModal({
     persistSettings,
     updateCheckResult: storeUpdateCheckResult,
     updateSettings,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((state) => ({
+      checkForUpdates: state.checkForUpdates,
+      connections: state.connections,
+      installUpdate: state.installUpdate,
+      settings: state.settings,
+      testWebdavConnection: state.testWebdavConnection,
+      uploadConfig: state.uploadConfig,
+      downloadConfig: state.downloadConfig,
+      exportLocalConfig: state.exportLocalConfig,
+      importLocalConfig: state.importLocalConfig,
+      persistSettings: state.persistSettings,
+      updateCheckResult: state.updateCheckResult,
+      updateSettings: state.updateSettings,
+    })),
+  );
   const [revealWebdavPassword, setRevealWebdavPassword] = useState(false);
   const [settingsSaveMessage, setSettingsSaveMessage] = useState('');
   const [settingsActionRunning, setSettingsActionRunning] = useState('');
@@ -3813,7 +3884,57 @@ export default function App() {
     updateCheckResult,
     uploadLocalFiles,
     uploadLocalPaths,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((state) => ({
+      activeConnectionId: state.activeConnectionId,
+      activeSessionId: state.activeSessionId,
+      bootstrapped: state.bootstrapped,
+      bootstrap: state.bootstrap,
+      checkForUpdates: state.checkForUpdates,
+      closeSession: state.closeSession,
+      closeTunnel: state.closeTunnel,
+      commandBuffers: state.commandBuffers,
+      connections: state.connections,
+      currentRemotePath: state.currentRemotePath,
+      deleteRemotePaths: state.deleteRemotePaths,
+      copyRemotePaths: state.copyRemotePaths,
+      downloadRemotePaths: state.downloadRemotePaths,
+      editTunnel: state.editTunnel,
+      files: state.files,
+      filesLoading: state.filesLoading,
+      history: state.history,
+      historyLoading: state.historyLoading,
+      installUpdate: state.installUpdate,
+      openConnectionForm: state.openConnectionForm,
+      openSession: state.openSession,
+      openRemoteFile: state.openRemoteFile,
+      openTunnel: state.openTunnel,
+      persistSettings: state.persistSettings,
+      pollTerminalOutputs: state.pollTerminalOutputs,
+      refreshFiles: state.refreshFiles,
+      refreshRemoteHistory: state.refreshRemoteHistory,
+      refreshRuntimeOverview: state.refreshRuntimeOverview,
+      reconnectSession: state.reconnectSession,
+      renameRemotePath: state.renameRemotePath,
+      reorderSessions: state.reorderSessions,
+      runtimeOverview: state.runtimeOverview,
+      runtimeLoading: state.runtimeLoading,
+      selectSession: state.selectSession,
+      sendCommand: state.sendCommand,
+      sendTerminalData: state.sendTerminalData,
+      sessions: state.sessions,
+      setCommandBuffer: state.setCommandBuffer,
+      setStatusMessage: state.setStatusMessage,
+      settings: state.settings,
+      startAllTunnels: state.startAllTunnels,
+      startTunnel: state.startTunnel,
+      stopAllTunnels: state.stopAllTunnels,
+      tunnels: state.tunnels,
+      updateCheckResult: state.updateCheckResult,
+      uploadLocalFiles: state.uploadLocalFiles,
+      uploadLocalPaths: state.uploadLocalPaths,
+    })),
+  );
 
   const t = useCallback((key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements), [settings.uiLanguage]);
@@ -3885,6 +4006,10 @@ export default function App() {
   }, [persistSettings, settings]);
 
   const activeSession = useMemo(() => sessions.find((item) => item.id === activeSessionId), [activeSessionId, sessions]);
+  // 存活会话 ID 列表传给 TerminalWorkspace 做缓存回收；用 join 作为 memo key，会话状态/cwd 更新不改变
+  // ID 集合时保持数组引用稳定，避免每次 store 更新都触发缓存清理副作用。
+  const sessionIdsKey = sessions.map((item) => item.id).join('\n');
+  const sessionIds = useMemo(() => sessions.map((item) => item.id), [sessionIdsKey]);
   // 远端文件、运行状态和历史都必须绑定到已经打开的终端会话，避免仅选中连接时提前拉取远端数据。
   const hasActiveRemoteSession = isUsableRemoteSession(activeSession);
   const activeRemoteConnectionId = hasActiveRemoteSession ? activeSession?.connectionId : undefined;
@@ -6104,6 +6229,7 @@ export default function App() {
           <TerminalWorkspace
             session={activeSession}
             settings={settings}
+            liveSessionIds={sessionIds}
             onTerminalData={(data) => {
               if (!activeSessionId) {
                 return;

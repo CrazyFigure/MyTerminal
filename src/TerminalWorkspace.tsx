@@ -6,6 +6,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { backend } from './backend';
 import { readClipboardText, writeClipboardText } from './clipboard';
 import { translate } from './i18n';
+import { TerminalOutputCache } from './terminalCache';
 import type { AppSettings, TerminalOutputChunk, TerminalSession } from './types';
 
 import '@xterm/xterm/css/xterm.css';
@@ -16,10 +17,11 @@ type Props = {
   onTerminalData: (data: string) => void;
   // 行号栏右键菜单切换显示项后，需要把设置写回并持久化。
   onUpdateSettings: (partial: Partial<AppSettings>) => void;
+  // 当前仍存活的会话 ID 列表；用于关闭标签后显式回收对应的输出缓存与行号时间线。
+  liveSessionIds: string[];
 };
 
 const terminalOutputEventName = 'myterminal-terminal-output';
-const maxCachedTerminalOutputLength = 1_000_000;
 const terminalCursorShowSequence = '\x1b[?25h';
 const terminalCursorHideSequence = '\x1b[?25l';
 // 横向滚动模式根据当前缓冲区最长逻辑行动态扩列，上限防止异常长行拖慢渲染。
@@ -971,7 +973,7 @@ const resolveTerminalRelativeLuminance = (color: TerminalRgbColor) => {
   return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
 };
 
-export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateSettings }: Props) {
+export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateSettings, liveSessionIds }: Props) {
   const [terminalContextMenu, setTerminalContextMenu] = useState<{ x: number; y: number; selectedText: string } | null>(null);
   // 行号栏右键菜单只承载“显示行号/时间戳”两个开关，与正文区右键复制/粘贴互不干扰。
   const [terminalGutterContextMenu, setTerminalGutterContextMenu] = useState<{ x: number; y: number } | null>(null);
@@ -979,7 +981,9 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const cachedOutputBySessionRef = useRef<Record<string, string>>({});
+  // 终端原始输出改用有界分片缓存：按会话/全局字节封顶、LRU 淘汰，关闭会话时显式回收，
+  // 避免旧实现的全量字符串拼接与关闭后不回收导致的长时间运行内存增长。
+  const outputCacheRef = useRef(new TerminalOutputCache());
   const terminalMatchOverlayRef = useRef<SVGSVGElement | null>(null);
   const terminalMatchDecorationDisposablesRef = useRef<IDisposable[]>([]);
   const terminalMatchHighlightFrameRef = useRef<number | null>(null);
@@ -2465,9 +2469,11 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     }
     // 为会话首行（row0，从不触发 onLineFeed）登记初始 marker；始终登记以保证第一条逻辑行也可定位。
     registerTerminalGutterLine();
-    const cachedOutput = sessionRef.current?.id ? cachedOutputBySessionRef.current[sessionRef.current.id] ?? '' : '';
-    if (cachedOutput) {
-      terminal.write(cachedOutput, () => {
+    const replayChunks = sessionRef.current?.id
+      ? outputCacheRef.current.replayChunks(sessionRef.current.id)
+      : [];
+    if (replayChunks.length > 0) {
+      const runReplayCompletion = () => {
         scheduleTerminalSizeSync();
         syncLocalCursorVisibility();
         scheduleTerminalCursorFollow();
@@ -2476,6 +2482,11 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
         scheduleTerminalControlledInputCursorSync();
         scheduleTerminalVerticalScrollbarSync();
         scheduleTerminalGutterSync();
+      };
+      // 逐块写入 xterm，不先 join 成大字符串；完成回调只挂在最后一块，行为与旧的单次 write 一致。
+      replayChunks.forEach((chunk, index) => {
+        const isLast = index === replayChunks.length - 1;
+        terminal.write(chunk, isLast ? runReplayCompletion : undefined);
       });
       return;
     }
@@ -2779,10 +2790,21 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     verticalScrollbar.addEventListener('mouseleave', handleScrollbarMouseLeave);
     // 每秒刷新一次行号栏，让最底部当前行的时间戳跟随实时时钟走动。
     terminalGutterClockTimerRef.current = window.setInterval(() => {
+      // 页面隐藏（最小化/切后台）时跳过纯 UI 的时钟重绘，避免无谓布局与重绘开销；恢复时统一补一次。
+      if (document.visibilityState !== 'visible') {
+        return;
+      }
       if (gutterShowTimestampRef.current) {
         scheduleTerminalGutterSync();
       }
     }, 1000);
+    // 窗口从隐藏恢复可见时，合并刷新一次行号栏时钟，避免隐藏期间累积的时间偏差在下一秒才补上。
+    const handleTerminalGutterVisibilityRefresh = () => {
+      if (document.visibilityState === 'visible' && gutterShowTimestampRef.current) {
+        scheduleTerminalGutterSync();
+      }
+    };
+    document.addEventListener('visibilitychange', handleTerminalGutterVisibilityRefresh);
     scheduleTerminalGutterSync();
 
     return () => {
@@ -2849,6 +2871,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
         window.clearInterval(terminalGutterClockTimerRef.current);
         terminalGutterClockTimerRef.current = null;
       }
+      document.removeEventListener('visibilitychange', handleTerminalGutterVisibilityRefresh);
       terminalImeComposingRef.current = false;
       terminalSelectionDragActiveRef.current = false;
       terminalVerticalScrollbarDragRef.current = null;
@@ -2880,9 +2903,12 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
       }
 
       // 终端输出直接写入 xterm，避免每 80ms 把大字符串塞进 React 状态导致输入、滚动和选区明显卡顿。
-      const cached = `${cachedOutputBySessionRef.current[chunk.sessionId] ?? ''}${chunk.content}`;
-      cachedOutputBySessionRef.current[chunk.sessionId] =
-        cached.length > maxCachedTerminalOutputLength ? cached.slice(-maxCachedTerminalOutputLength) : cached;
+      // 原始输出进有界分片缓存：只累加分片、不整体拼接，超限时按会话/全局上限淘汰最旧分片。
+      outputCacheRef.current.append(
+        chunk.sessionId,
+        chunk.content,
+        sessionRef.current?.id === chunk.sessionId,
+      );
 
       // 由原始输出流推进该会话的逻辑行时间线（含后台会话），记录每条命令行的真实到达时刻，
       // 切换会话或改字号/主题后重放缓存时按编号还原，历史时间恒定不变。
@@ -2906,6 +2932,18 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     window.addEventListener(terminalOutputEventName, handleTerminalOutput);
     return () => window.removeEventListener(terminalOutputEventName, handleTerminalOutput);
   }, []);
+
+  // 会话列表变化时（含关闭标签、批量关闭、重连换 ID），显式回收已不存在会话的输出缓存与行号时间线，
+  // 避免关闭过的会话历史一直保留到应用退出。
+  useEffect(() => {
+    const live = new Set(liveSessionIds);
+    outputCacheRef.current.retain(live);
+    for (const sessionId of Object.keys(terminalGutterSessionDataRef.current)) {
+      if (!live.has(sessionId)) {
+        delete terminalGutterSessionDataRef.current[sessionId];
+      }
+    }
+  }, [liveSessionIds]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
