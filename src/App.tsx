@@ -3658,7 +3658,8 @@ function SettingsModal({
 }
 
 export default function App() {
-  const [sidebarWidth, setSidebarWidth] = useState(330);
+  // 左侧栏初始宽度默认取最小宽度稍多一点，避免打开时占用过多空间
+  const [sidebarWidth, setSidebarWidth] = useState(sidePanelMinWidth + 20);
   const [runtimePanelHeight, setRuntimePanelHeight] = useState(() => {
     if (typeof window === 'undefined') {
       return 220;
