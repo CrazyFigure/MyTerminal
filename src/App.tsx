@@ -3178,6 +3178,20 @@ function SettingsModal({
                         <strong>{(draftSettings.terminalMatchSelection ?? true) ? t('enabled') : t('disabled')}</strong>
                       </div>
                     </div>
+                    <div className="agent-toggle-field settings-toggle-row settings-inline-toggle settings-centered-toggle">
+                      <span id="hardware-acceleration-label">{t('fieldHardwareAcceleration')}</span>
+                      <div className="settings-inline-toggle-control">
+                        <input
+                          aria-label={t('fieldHardwareAcceleration')}
+                          checked={draftSettings.hardwareAcceleration ?? true}
+                          type="checkbox"
+                          onChange={(event) => updateDraftSettings((current) => ({ ...current, hardwareAcceleration: event.target.checked }))}
+                        />
+                        <strong>{(draftSettings.hardwareAcceleration ?? true) ? t('enabled') : t('disabled')}</strong>
+                      </div>
+                    </div>
+                    {/* 关闭硬件加速属于重启生效项，用提示文本明确告知用户需要重启才能应用低内存渲染。 */}
+                    <p className="field-hint">{t('hardwareAccelerationHint')}</p>
                   </div>
                 </section>
 
