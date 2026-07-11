@@ -120,6 +120,8 @@ export interface AppSettings {
   terminalGutterShowTimestamp: boolean;
   compactSidebar: boolean;
   showCommandGhost: boolean;
+  /** Windows 硬件加速开关（重启生效）；关闭后进入低内存渲染模式，显著降低 WebView2 GPU 进程内存。 */
+  hardwareAcceleration: boolean;
   /** 连接管理中显式维护的分组路径；即使分组下暂无连接，也需要持久保留。 */
   connectionGroups: string[];
   /** 连接列表的人工排序；旧配置没有该字段时按连接文件原顺序兜底。 */

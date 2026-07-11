@@ -32,32 +32,26 @@ export default defineConfig({
     sourcemap: !!process.env.TAURI_DEBUG,
     rollupOptions: {
       output: {
+        // 不再手工把 node_modules 全部塞进兜底 vendor：之前的 manualChunks 会把 Monaco 及其共享运行时
+        // 拉进静态 vendor，破坏 `lazy(() => import('./MonacoEditor'))` 的动态边界，导致首屏 modulepreload
+        // 约 4 MB 的 monaco-vendor 并在启动即解析。改为让打包器按动态 import 自动分包，Monaco 只在打开
+        // 编辑器时才请求。分包结构由 scripts/check-bundle-memory.mjs 守卫，避免 Monaco 回到首屏。
         manualChunks(id) {
           if (!id.includes('node_modules')) {
             return undefined;
           }
 
-          if (id.includes('@monaco-editor') || id.includes('monaco-editor')) {
-            return 'monaco-vendor';
-          }
-
+          // 只对确定“首屏必用且与 Monaco 无关”的大依赖做稳定缓存分包，绝不提供兜底 vendor。
           if (id.includes('@xterm/')) {
             return 'xterm-vendor';
           }
 
-          if (id.includes('react') || id.includes('scheduler')) {
+          if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/scheduler/')) {
             return 'react-vendor';
           }
 
-          if (id.includes('lucide-react')) {
-            return 'ui-vendor';
-          }
-
-          if (id.includes('@tauri-apps/')) {
-            return 'tauri-vendor';
-          }
-
-          return 'vendor';
+          // Monaco、@monaco-editor、tauri、lucide 等其余依赖交给打包器随各自 import 边界自动归组。
+          return undefined;
         },
       },
     },

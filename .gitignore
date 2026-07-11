@@ -10,6 +10,9 @@ dist-ssr/
 # 本地运行数据包含连接、历史、密钥和编辑缓存，不能进入仓库。
 .myterminal-data/
 
+# 内存采样脚本 measure-memory.ps1 的输出，仅供本地对照，不进仓库。
+.memory-samples/
+
 # Rust/Tauri 编译产物体积大且平台相关，全部交给本地或 CI 构建。
 src-tauri/target/
 src-tauri/target-*/
