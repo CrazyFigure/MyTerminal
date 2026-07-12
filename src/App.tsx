@@ -264,6 +264,16 @@ const ensureFontOption = (options: string[], current: string) => {
   return normalized && !options.includes(normalized) ? [normalized, ...options] : options;
 };
 
+// 推荐字体置顶，本机字体去重追加，保证下拉既能一键选中常用字体又覆盖全部已安装字体。
+const mergeFontOptions = (curated: string[], systemFonts: string[]) => {
+  const seen = new Set(curated.map((fontFamily) => fontFamily.toLowerCase()));
+  const extras = systemFonts.filter((fontFamily) => {
+    const key = fontFamily.toLowerCase();
+    return !seen.has(key) && seen.add(key);
+  });
+  return [...curated, ...extras];
+};
+
 const quoteCssFontFamily = (fontFamily: string) => {
   const cleaned = fontFamily.trim().replace(/^['"]|['"]$/g, '');
   if (!cleaned) {
@@ -2678,6 +2688,25 @@ function SettingsModal({
   const [backupSelectorOpen, setBackupSelectorOpen] = useState(false);
   const [backupList, setBackupList] = useState<string[]>([]);
   const backupSelectorResolveRef = useRef<((value: string | null) => void) | null>(null);
+  // 本机已安装字体列表，进入设置时异步枚举，与推荐字体合并后供字体下拉全量选择。
+  const [systemFonts, setSystemFonts] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    backend
+      .listSystemFonts()
+      .then((fonts) => {
+        if (!cancelled) {
+          setSystemFonts(fonts);
+        }
+      })
+      .catch(() => {
+        // 枚举失败时保持空列表，字体下拉仍回退到推荐字体。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(draftSettings.uiLanguage ?? settings.uiLanguage, key, replacements);
@@ -2686,8 +2715,8 @@ function SettingsModal({
   const webdavPasswordToggleLabel = revealWebdavPassword ? t('hideSecret') : t('showSecret');
   const selectedLatinFontFamily = draftSettings.shellLatinFontFamily || draftSettings.shellFontFamily.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '') || 'JetBrains Mono';
   const selectedCjkFontFamily = draftSettings.shellCjkFontFamily || selectedLatinFontFamily;
-  const latinOptions = ensureFontOption(latinFontOptions, selectedLatinFontFamily);
-  const cjkOptions = ensureFontOption(cjkFontOptions, selectedCjkFontFamily);
+  const latinOptions = ensureFontOption(mergeFontOptions(latinFontOptions, systemFonts), selectedLatinFontFamily);
+  const cjkOptions = ensureFontOption(mergeFontOptions(cjkFontOptions, systemFonts), selectedCjkFontFamily);
   const agentAutoGroups = useMemo(
     () => buildConnectionGroupTree(draftSettings.connectionGroups, connections),
     [connections, draftSettings.connectionGroups],
