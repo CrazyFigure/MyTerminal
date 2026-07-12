@@ -963,6 +963,28 @@ mod shell_output_filter_tests {
     }
 
     #[test]
+    fn dedupe_font_names_trims_dedupes_and_sorts() {
+        let names = [
+            "  JetBrains Mono ",
+            "Microsoft YaHei",
+            "jetbrains mono",
+            "",
+            "Cascadia Mono",
+        ]
+        .into_iter()
+        .map(str::to_string);
+        // 去空白、按小写去重（保留首次出现的大小写）、按字母排序。
+        assert_eq!(
+            dedupe_font_names(names),
+            vec![
+                "Cascadia Mono".to_string(),
+                "JetBrains Mono".to_string(),
+                "Microsoft YaHei".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn build_remote_copy_command_escapes_single_quote() {
         let sources = vec!["/ology/it's here".to_string()];
         let command = build_remote_copy_command(&sources, "/tmp").expect("command should build");
@@ -4776,6 +4798,98 @@ pub fn save_local_terminal_settings(
     // 本地终端配置包含本机目录和 shell 路径，只写入 local-terminals.json，不进入 WebDAV 同步包。
     state.storage.save_local_terminals(&settings)?;
     Ok(state.storage.load_local_terminals()?)
+}
+
+#[tauri::command(async)]
+pub fn list_system_fonts() -> Result<Vec<String>, String> {
+    // 字体设置下拉需要覆盖本机已安装的全部字体，交由平台原生方式枚举，失败时返回空列表由前端补齐推荐字体。
+    Ok(enumerate_system_fonts()?)
+}
+
+#[cfg(windows)]
+fn enumerate_system_fonts() -> Result<Vec<String>, AppError> {
+    // 字体名取自 WPF SystemFontFamilies（DirectWrite），得到 WebView2 前端真正用于匹配的完整 typographic
+    // 族名，不受 GDI 32 字符 LF_FACESIZE 截断（如 "Maple Mono Normal NF CN" 这类超长 Nerd 字体名）。
+    // 再用 GDI EnumFontFamiliesEx 读取字符集，识别"只有符号字符集（SYMBOL_CHARSET）"的纯图标字体
+    // （Wingdings/Marlett 等，在终端只会显示成方块）并从列表剔除；Nerd 等含正常字符集的字体全部保留。
+    // 强制 UTF-8 输出，保证中文字体名不乱码。
+    let script = r#"[Console]::OutputEncoding=[System.Text.Encoding]::UTF8
+Add-Type -AssemblyName PresentationCore
+Add-Type @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+public class FontSym {
+    const int SYMBOL_CHARSET = 2;
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    struct LOGFONT {
+        public int lfHeight; public int lfWidth; public int lfEscapement; public int lfOrientation;
+        public int lfWeight; public byte lfItalic; public byte lfUnderline; public byte lfStrikeOut;
+        public byte lfCharSet; public byte lfOutPrecision; public byte lfClipPrecision; public byte lfQuality;
+        public byte lfPitchAndFamily;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string lfFaceName;
+    }
+    [DllImport("gdi32.dll", CharSet=CharSet.Unicode)]
+    static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+    [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr hdc);
+    delegate int EnumProc(ref LOGFONT lf, IntPtr tm, uint type, IntPtr p);
+    [DllImport("gdi32.dll", CharSet=CharSet.Unicode)]
+    static extern int EnumFontFamiliesEx(IntPtr hdc, ref LOGFONT lf, EnumProc cb, IntPtr p, uint flags);
+    // 记录每个字体族是否出现过非符号字符集；@ 开头是竖排变体，终端用不到，直接跳过。
+    static Dictionary<string, bool> hasText = new Dictionary<string, bool>();
+    static int Callback(ref LOGFONT lf, IntPtr tm, uint type, IntPtr p) {
+        string name = lf.lfFaceName;
+        if (string.IsNullOrEmpty(name) || name[0] == '@') return 1;
+        bool prev; hasText.TryGetValue(name, out prev);
+        hasText[name] = prev || lf.lfCharSet != SYMBOL_CHARSET;
+        return 1;
+    }
+    // 返回"仅符号字符集"的字体名集合（图标字体名较短，不会触及 GDI 32 字符截断）。
+    public static HashSet<string> SymbolOnly() {
+        IntPtr dc = CreateCompatibleDC(IntPtr.Zero);
+        LOGFONT lf = new LOGFONT(); lf.lfCharSet = 1; // DEFAULT_CHARSET
+        EnumFontFamiliesEx(dc, ref lf, Callback, IntPtr.Zero, 0);
+        DeleteDC(dc);
+        var s = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in hasText) if (!kv.Value) s.Add(kv.Key);
+        return s;
+    }
+}
+'@
+$symbol = [FontSym]::SymbolOnly()
+[System.Windows.Media.Fonts]::SystemFontFamilies | ForEach-Object { $_.Source } | Where-Object { -not $symbol.Contains($_) }"#;
+    let output = Command::new("powershell")
+        .creation_flags(WINDOWS_CREATE_NO_WINDOW)
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .output()
+        .map_err(AppError::from)?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(dedupe_font_names(text.lines().map(str::to_string)))
+}
+
+#[cfg(not(windows))]
+fn enumerate_system_fonts() -> Result<Vec<String>, AppError> {
+    // 非 Windows 平台使用 fontconfig 的 fc-list 读取字体族名；不可用时回退空列表由前端补齐推荐字体。
+    let Ok(output) = Command::new("fc-list").args([":", "family"]).output() else {
+        return Ok(Vec::new());
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    // fc-list 每行形如 "Family A,Family B"，取首个别名即可。
+    Ok(dedupe_font_names(
+        text.lines()
+            .filter_map(|line| line.split(',').next().map(str::to_string)),
+    ))
+}
+
+// 统一去除空白、按小写去重并按字母排序，得到稳定可展示的字体族列表。
+fn dedupe_font_names(names: impl Iterator<Item = String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut result: Vec<String> = names
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty() && seen.insert(name.to_lowercase()))
+        .collect();
+    result.sort_by_key(|name| name.to_lowercase());
+    result
 }
 
 #[tauri::command]
