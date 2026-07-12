@@ -6,10 +6,10 @@ use std::sync::atomic::Ordering;
 use myterminal::{commands, state::AppState};
 use tauri::{Manager, WindowEvent};
 
-// 判断是否进入低内存渲染模式（关闭 WebView2 硬件加速）。
-fn should_disable_gpu(app_state: &AppState) -> bool {
-    // 命令行 --low-memory 始终强制低内存渲染，供排障和自动化内存对照测试直接启用。
-    if std::env::args().any(|arg| arg == "--low-memory") {
+// 判断是否使用软件渲染兼容模式（关闭 WebView2 硬件加速）。
+fn should_use_software_rendering(app_state: &AppState) -> bool {
+    // --software-rendering 是语义准确的主参数；继续兼容旧 --low-memory，避免已有脚本和快捷方式失效。
+    if std::env::args().any(|arg| arg == "--software-rendering" || arg == "--low-memory") {
         return true;
     }
     // 开发模式默认保留 GPU，避免软件渲染干扰调试；仅 release 按持久化设置执行。
@@ -24,13 +24,14 @@ fn should_disable_gpu(app_state: &AppState) -> bool {
         .unwrap_or(false)
 }
 
-// 追加 --disable-gpu 到 WebView2 浏览器参数。
-fn apply_low_memory_webview_args() {
+// 追加 --disable-gpu 到 WebView2 浏览器参数，切换为软件渲染兼容模式。
+fn apply_software_rendering_webview_args() {
     // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS 由 WebView2 加载器识别并追加到浏览器进程参数，
     // 与 Wry 自身默认参数（--disable-features=...）叠加而非覆盖，因此不必重复声明默认项。
     const DISABLE_GPU: &str = "--disable-gpu";
     let mut args = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
-    if args.contains(DISABLE_GPU) {
+    // 只匹配完整参数，不能把 --disable-gpu-compositing 等其它开关误判成已经关闭 GPU。
+    if args.split_ascii_whitespace().any(|arg| arg == DISABLE_GPU) {
         return;
     }
     if !args.is_empty() {
@@ -43,9 +44,9 @@ fn apply_low_memory_webview_args() {
 fn main() {
     let app_state = AppState::new().expect("failed to initialize app state");
 
-    // WebView2 创建前决定渲染模式；关闭硬件加速可显著降低 GPU 进程私有内存。
-    if should_disable_gpu(&app_state) {
-        apply_low_memory_webview_args();
+    // WebView2 创建前决定渲染模式；软件渲染用于兼容与本机对照，不保证一定降低总内存。
+    if should_use_software_rendering(&app_state) {
+        apply_software_rendering_webview_args();
     }
 
     tauri::Builder::default()

@@ -98,7 +98,7 @@ fn default_show_command_ghost() -> bool {
     true
 }
 
-// Windows 硬件加速默认开启：保持升级用户既有渲染体验不变，需要省内存的用户可在设置页手动关闭。
+// Windows 硬件加速默认开启；软件渲染只作为兼容模式，不能假定在所有显卡和负载下都更省内存。
 fn default_hardware_acceleration() -> bool {
     true
 }
@@ -342,7 +342,7 @@ pub struct AppSettings {
     pub compact_sidebar: bool,
     #[serde(default = "default_show_command_ghost")]
     pub show_command_ghost: bool,
-    /// Windows 硬件加速开关（重启生效）；关闭时给 WebView2 追加 --disable-gpu 进入低内存渲染模式。
+    /// Windows 硬件加速开关（重启生效）；关闭时给 WebView2 追加 --disable-gpu 使用软件渲染兼容模式。
     #[serde(default = "default_hardware_acceleration")]
     pub hardware_acceleration: bool,
     /// 连接分组需要独立持久化，保证空分组也能在连接管理中保留。
