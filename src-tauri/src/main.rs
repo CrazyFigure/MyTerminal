@@ -85,6 +85,7 @@ fn main() {
             commands::save_app_settings,
             commands::load_local_terminal_settings,
             commands::save_local_terminal_settings,
+            commands::list_system_fonts,
             commands::agent_bridge_status,
             commands::list_agent_bridge_requests,
             commands::approve_agent_bridge_request,
