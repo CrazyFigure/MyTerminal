@@ -37,8 +37,8 @@ use crate::{
         UpdateCheckResult, WebDavSettings,
     },
     state::{
-        AppState, AuxiliarySshSession, RuntimeSession, SessionControl, TunnelRuntime,
-        TunnelSshPool, TunnelSshPoolSession, TunnelSshPoolState,
+        AppState, AuxiliarySshSession, RuntimeSession, SessionControl, TerminalOutputQueue,
+        TunnelRuntime, TunnelSshPool, TunnelSshPoolSession, TunnelSshPoolState,
     },
 };
 
@@ -133,14 +133,21 @@ const TUNNEL_MAX_IDLE_SSH_SESSIONS_PER_CONNECTION: usize = 2;
 const TUNNEL_POOL_WAIT: Duration = Duration::from_millis(50);
 // 隧道转发采用较大块读写，避免 8KB 小块和固定 sleep 把吞吐人为压低。
 const TUNNEL_TRANSFER_BUFFER_BYTES: usize = 64 * 1024;
-// 单方向待写缓冲上限，给浏览器突发请求留余量，同时避免远端慢读时无界占内存。
-const TUNNEL_MAX_PENDING_BYTES: usize = 2 * 1024 * 1024;
+// 单方向待写缓冲上限。收紧到 256 KiB：慢读端由 TCP 背压自然限速，无需在进程内堆积 2 MiB；
+// 大量并发 channel 时峰值和保留内存都随之下降。若吞吐测试证明不足再上调。
+const TUNNEL_MAX_PENDING_BYTES: usize = 256 * 1024;
+// 待写队列排空后若容量远超上限则收缩，避免一次突发把大容量 VecDeque 永久保留在每个 channel 上。
+const TUNNEL_PENDING_SHRINK_THRESHOLD: usize = TUNNEL_MAX_PENDING_BYTES;
 // 非阻塞转发只有在本轮没有任何进展时短暂退避，不能像旧实现那样每轮固定延迟。
 const TUNNEL_TRANSFER_IDLE_WAIT: Duration = Duration::from_millis(1);
 // 辅助会话（文件/运行状态/历史）阻塞操作超时；后台挂起导致连接静默失效时，切 tab 最多卡这么久即快速失败重连，而非默认握手期的 20 秒。
 const AUXILIARY_IO_TIMEOUT: Duration = Duration::from_secs(10);
 // 后台保活守护线程的最小轮询周期；保活间隔更小时以设置值为准，间隔为 0（关闭）时按此周期空转检查。
 const KEEPALIVE_DAEMON_MIN_TICK: Duration = Duration::from_secs(10);
+// 辅助 SSH/SFTP 连接空闲多久后回收；访问越多常驻资源越多，用 TTL 给“复用性能 vs 常驻内存”划边界。
+const AUXILIARY_IDLE_TTL: Duration = Duration::from_secs(10 * 60);
+// 允许常驻的空闲辅助连接上限；超过此数时优先回收最久未使用者，保留少量热连接以复用握手。
+const AUXILIARY_MAX_IDLE_SESSIONS: usize = 4;
 
 #[cfg(windows)]
 const DEFAULT_LOCAL_SHELL_CANDIDATES: &[&str] = &[
@@ -661,31 +668,27 @@ fn is_transient_channel_write_error(error: &std::io::Error) -> bool {
 }
 
 fn queue_output(
-    queue: &Arc<std::sync::Mutex<Vec<TerminalOutputChunk>>>,
+    queue: &Arc<std::sync::Mutex<TerminalOutputQueue>>,
     app_handle: &tauri::AppHandle,
     session_id: &str,
     content: impl Into<String>,
 ) {
     if let Ok(mut output) = queue.lock() {
-        output.push(TerminalOutputChunk {
-            session_id: session_id.to_string(),
-            cwd: None,
-            status: None,
-            content: content.into(),
-        });
+        // 内容分片走有界入队：自动合并相邻内容并在超限时淘汰最旧内容。
+        output.push_content(session_id, content.into());
     }
     // 数据入队后立即通知前端拉取当前会话，替代全局定时轮询，实现低延迟回显。
     let _ = app_handle.emit("terminal-output-ready", session_id);
 }
 
 fn queue_session_status(
-    queue: &Arc<std::sync::Mutex<Vec<TerminalOutputChunk>>>,
+    queue: &Arc<std::sync::Mutex<TerminalOutputQueue>>,
     app_handle: &tauri::AppHandle,
     session_id: &str,
     status: impl Into<String>,
 ) {
     if let Ok(mut output) = queue.lock() {
-        output.push(TerminalOutputChunk {
+        output.push_meta(TerminalOutputChunk {
             session_id: session_id.to_string(),
             cwd: None,
             // 连接状态只交给前端标签栏展示，不再写入终端可见内容。
@@ -738,13 +741,13 @@ const TERMINAL_CURSOR_SHOW_SEQUENCE: &str = "\x1b[?25h";
 const TERMINAL_CURSOR_CONTROL_TAIL_BYTES: usize = TERMINAL_CURSOR_HIDE_SEQUENCE.len() - 1;
 
 fn queue_cwd(
-    queue: &Arc<std::sync::Mutex<Vec<TerminalOutputChunk>>>,
+    queue: &Arc<std::sync::Mutex<TerminalOutputQueue>>,
     app_handle: &tauri::AppHandle,
     session_id: &str,
     cwd: impl Into<String>,
 ) {
     if let Ok(mut output) = queue.lock() {
-        output.push(TerminalOutputChunk {
+        output.push_meta(TerminalOutputChunk {
             session_id: session_id.to_string(),
             cwd: Some(cwd.into()),
             status: None,
@@ -956,6 +959,28 @@ mod shell_output_filter_tests {
         assert_eq!(
             command,
             "cp -rp -- '/ology/hello.txt' '/ology/ology dir' '/backup' && printf ok"
+        );
+    }
+
+    #[test]
+    fn dedupe_font_names_trims_dedupes_and_sorts() {
+        let names = [
+            "  JetBrains Mono ",
+            "Microsoft YaHei",
+            "jetbrains mono",
+            "",
+            "Cascadia Mono",
+        ]
+        .into_iter()
+        .map(str::to_string);
+        // 去空白、按小写去重（保留首次出现的大小写）、按字母排序。
+        assert_eq!(
+            dedupe_font_names(names),
+            vec![
+                "Cascadia Mono".to_string(),
+                "JetBrains Mono".to_string(),
+                "Microsoft YaHei".to_string(),
+            ]
         );
     }
 
@@ -1563,6 +1588,10 @@ impl TunnelPendingBytes {
         let amount = amount.min(self.bytes.len());
         if amount > 0 {
             let _ = self.bytes.drain(..amount);
+        }
+        // 队列排空后若底层容量因突发扩得过大则收回，避免每个 channel 长期占用大缓冲。
+        if self.bytes.is_empty() && self.bytes.capacity() > TUNNEL_PENDING_SHRINK_THRESHOLD {
+            self.bytes.shrink_to(TUNNEL_PENDING_SHRINK_THRESHOLD);
         }
     }
 }
@@ -2204,6 +2233,7 @@ fn get_or_connect_auxiliary_session(
         sftp: None,
         user_names: None,
         group_names: None,
+        last_used_at: std::time::Instant::now(),
     }));
 
     let mut sessions = lock_auxiliary_sessions(state)?;
@@ -2225,6 +2255,64 @@ fn clear_auxiliary_sessions(state: &AppState) {
     }
 }
 
+/// 保活守护线程每轮顺带执行的辅助连接淘汰：回收空闲超过 TTL 的连接，并在空闲连接过多时
+/// 保留最近使用的若干个、淘汰其余最久未用者。只回收当前无人持有（Arc strong_count==1）
+/// 且能立即 try_lock 的连接，避免误删正在进行文件/资源操作的活跃会话。
+fn evict_idle_auxiliary_sessions(state: &AppState) {
+    let mut removed_ids: Vec<String> = Vec::new();
+    if let Ok(mut sessions) = state.auxiliary_sessions.lock() {
+        let now = Instant::now();
+        // 候选：无外部持有者且未被占用的空闲连接，连同其空闲时长，供 TTL 与数量上限判定。
+        let mut idle: Vec<(String, Duration)> = Vec::new();
+        for (id, session) in sessions.iter() {
+            // strong_count>1 说明有操作线程已克隆出 Arc 正在或即将使用，跳过不回收。
+            if Arc::strong_count(session) > 1 {
+                continue;
+            }
+            // try_lock 失败说明正被持有；能锁住才读取 last_used_at 判定空闲时长。
+            if let Ok(guard) = session.try_lock() {
+                idle.push((id.clone(), now.saturating_duration_since(guard.last_used_at)));
+            }
+        }
+
+        // 先按 TTL 回收长时间空闲的连接。
+        for (id, idle_for) in &idle {
+            if *idle_for >= AUXILIARY_IDLE_TTL {
+                removed_ids.push(id.clone());
+            }
+        }
+
+        // 再按数量上限回收：TTL 未到但空闲连接数仍超过上限时，淘汰最久未用的直到回落到上限。
+        let mut survivors: Vec<&(String, Duration)> = idle
+            .iter()
+            .filter(|(id, _)| !removed_ids.contains(id))
+            .collect();
+        if survivors.len() > AUXILIARY_MAX_IDLE_SESSIONS {
+            // 空闲时长降序：最久未用的排在前面优先淘汰。
+            survivors.sort_by(|a, b| b.1.cmp(&a.1));
+            for (id, _) in survivors.iter().take(survivors.len() - AUXILIARY_MAX_IDLE_SESSIONS) {
+                removed_ids.push(id.clone());
+            }
+        }
+
+        for id in &removed_ids {
+            sessions.remove(id);
+        }
+    }
+
+    // 同步清理已无对应会话、且无人持有的连接锁，避免连接 ID 长期在锁表里积累。
+    if !removed_ids.is_empty() {
+        if let Ok(mut locks) = state.auxiliary_session_locks.lock() {
+            if let Ok(sessions) = state.auxiliary_sessions.lock() {
+                locks.retain(|id, lock| {
+                    // 会话仍在或仍有等待者（strong_count>1）时保留该锁。
+                    sessions.contains_key(id) || Arc::strong_count(lock) > 1
+                });
+            }
+        }
+    }
+}
+
 fn with_auxiliary_session<T>(
     state: &AppState,
     connection: &ConnectionProfile,
@@ -2235,6 +2323,8 @@ fn with_auxiliary_session<T>(
         let mut session = cached
             .lock()
             .map_err(|_| AppError::Validation("auxiliary ssh session is unavailable".into()))?;
+        // 记录访问时刻，供保活守护线程按空闲 TTL 判定回收；活跃连接不会被误淘汰。
+        session.last_used_at = std::time::Instant::now();
         match operation(&mut session) {
             Ok(value) => return Ok(value),
             Err(error @ (AppError::Ssh(_) | AppError::Io(_))) => {
@@ -2267,6 +2357,8 @@ fn with_auxiliary_session_once<T>(
     let mut session = cached
         .lock()
         .map_err(|_| AppError::Validation("auxiliary ssh session is unavailable".into()))?;
+    // 记录访问时刻，供保活守护线程按空闲 TTL 判定回收。
+    session.last_used_at = std::time::Instant::now();
     let result = operation(&mut session);
     if result
         .as_ref()
@@ -2414,7 +2506,7 @@ fn spawn_shell_thread(
     ssh_session: Session,
     cols: u16,
     rows: u16,
-    output_queue: Arc<std::sync::Mutex<Vec<TerminalOutputChunk>>>,
+    output_queue: Arc<std::sync::Mutex<TerminalOutputQueue>>,
     control_rx: mpsc::Receiver<SessionControl>,
     app_handle: tauri::AppHandle,
     // 保活间隔（秒，0=关闭）由设置驱动；交互终端每轮读取，实现设置热更新。
@@ -2712,7 +2804,7 @@ fn spawn_local_terminal_thread(
     profile: LocalTerminalProfile,
     cols: u16,
     rows: u16,
-    output_queue: Arc<std::sync::Mutex<Vec<TerminalOutputChunk>>>,
+    output_queue: Arc<std::sync::Mutex<TerminalOutputQueue>>,
     control_rx: mpsc::Receiver<SessionControl>,
     app_handle: tauri::AppHandle,
 ) {
@@ -3944,6 +4036,10 @@ fn list_remote_entries(
     Ok(entries)
 }
 
+/// 远程文件可直接进入 Monaco 编辑的字节上限。超过后拒绝加载并提示下载，避免大文件在
+/// Rust/IPC/React/Monaco 中多份复制造成内存峰值和渲染阻塞。
+const MAX_EDITABLE_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
 fn read_remote_file_bytes(
     state: &AppState,
     connection: &ConnectionProfile,
@@ -3952,6 +4048,21 @@ fn read_remote_file_bytes(
     with_auxiliary_session(state, connection, |auxiliary| {
         let sftp = auxiliary_sftp(auxiliary)?;
         let remote_path = normalize_remote_path(path);
+        // 读取前先 stat 拿到文件大小，超过可编辑上限直接拒绝，避免把几十 MB 内容 read_to_end 后
+        // 再经 IPC、React、Monaco 多份复制，导致峰值内存达到文件大小的数倍并阻塞渲染。
+        // ponytail: 目前是单一硬上限（10 MiB 一刀切）。后续如需 2–10 MiB“只读预览/下载/强制打开”
+        // 的分级交互，可在此返回大小元数据并由前端选择，而不是直接拒绝。
+        if let Ok(stat) = sftp.stat(Path::new(&remote_path)) {
+            if let Some(size) = stat.size {
+                if size > MAX_EDITABLE_FILE_BYTES {
+                    return Err(AppError::Validation(format!(
+                        "文件大小 {:.1} MiB 超过编辑器上限 {} MiB，请下载后在本地打开。",
+                        size as f64 / (1024.0 * 1024.0),
+                        MAX_EDITABLE_FILE_BYTES / (1024 * 1024)
+                    )));
+                }
+            }
+        }
         let mut remote_file = sftp.open(Path::new(&remote_path)).map_err(ssh_error)?;
         let mut bytes = Vec::new();
         remote_file.read_to_end(&mut bytes)?;
@@ -4550,7 +4661,9 @@ pub fn spawn_keepalive_daemon(app_handle: tauri::AppHandle) {
         if state.is_shutting_down.load(Ordering::Relaxed) {
             return;
         }
-        // 间隔为 0 表示用户关闭了保活，本轮什么都不做，仅保持线程存活等待重新开启。
+        // 无论保活是否开启，每轮都顺带回收空闲超时或超量的辅助连接，收敛长时间运行的常驻内存。
+        evict_idle_auxiliary_sessions(&state);
+        // 间隔为 0 表示用户关闭了保活，本轮不再发 keepalive，仅保持线程存活等待重新开启。
         if state.ssh_keepalive_interval_sec.load(Ordering::Relaxed) == 0 {
             continue;
         }
@@ -4685,6 +4798,98 @@ pub fn save_local_terminal_settings(
     // 本地终端配置包含本机目录和 shell 路径，只写入 local-terminals.json，不进入 WebDAV 同步包。
     state.storage.save_local_terminals(&settings)?;
     Ok(state.storage.load_local_terminals()?)
+}
+
+#[tauri::command(async)]
+pub fn list_system_fonts() -> Result<Vec<String>, String> {
+    // 字体设置下拉需要覆盖本机已安装的全部字体，交由平台原生方式枚举，失败时返回空列表由前端补齐推荐字体。
+    Ok(enumerate_system_fonts()?)
+}
+
+#[cfg(windows)]
+fn enumerate_system_fonts() -> Result<Vec<String>, AppError> {
+    // 字体名取自 WPF SystemFontFamilies（DirectWrite），得到 WebView2 前端真正用于匹配的完整 typographic
+    // 族名，不受 GDI 32 字符 LF_FACESIZE 截断（如 "Maple Mono Normal NF CN" 这类超长 Nerd 字体名）。
+    // 再用 GDI EnumFontFamiliesEx 读取字符集，识别"只有符号字符集（SYMBOL_CHARSET）"的纯图标字体
+    // （Wingdings/Marlett 等，在终端只会显示成方块）并从列表剔除；Nerd 等含正常字符集的字体全部保留。
+    // 强制 UTF-8 输出，保证中文字体名不乱码。
+    let script = r#"[Console]::OutputEncoding=[System.Text.Encoding]::UTF8
+Add-Type -AssemblyName PresentationCore
+Add-Type @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+public class FontSym {
+    const int SYMBOL_CHARSET = 2;
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    struct LOGFONT {
+        public int lfHeight; public int lfWidth; public int lfEscapement; public int lfOrientation;
+        public int lfWeight; public byte lfItalic; public byte lfUnderline; public byte lfStrikeOut;
+        public byte lfCharSet; public byte lfOutPrecision; public byte lfClipPrecision; public byte lfQuality;
+        public byte lfPitchAndFamily;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string lfFaceName;
+    }
+    [DllImport("gdi32.dll", CharSet=CharSet.Unicode)]
+    static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+    [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr hdc);
+    delegate int EnumProc(ref LOGFONT lf, IntPtr tm, uint type, IntPtr p);
+    [DllImport("gdi32.dll", CharSet=CharSet.Unicode)]
+    static extern int EnumFontFamiliesEx(IntPtr hdc, ref LOGFONT lf, EnumProc cb, IntPtr p, uint flags);
+    // 记录每个字体族是否出现过非符号字符集；@ 开头是竖排变体，终端用不到，直接跳过。
+    static Dictionary<string, bool> hasText = new Dictionary<string, bool>();
+    static int Callback(ref LOGFONT lf, IntPtr tm, uint type, IntPtr p) {
+        string name = lf.lfFaceName;
+        if (string.IsNullOrEmpty(name) || name[0] == '@') return 1;
+        bool prev; hasText.TryGetValue(name, out prev);
+        hasText[name] = prev || lf.lfCharSet != SYMBOL_CHARSET;
+        return 1;
+    }
+    // 返回"仅符号字符集"的字体名集合（图标字体名较短，不会触及 GDI 32 字符截断）。
+    public static HashSet<string> SymbolOnly() {
+        IntPtr dc = CreateCompatibleDC(IntPtr.Zero);
+        LOGFONT lf = new LOGFONT(); lf.lfCharSet = 1; // DEFAULT_CHARSET
+        EnumFontFamiliesEx(dc, ref lf, Callback, IntPtr.Zero, 0);
+        DeleteDC(dc);
+        var s = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in hasText) if (!kv.Value) s.Add(kv.Key);
+        return s;
+    }
+}
+'@
+$symbol = [FontSym]::SymbolOnly()
+[System.Windows.Media.Fonts]::SystemFontFamilies | ForEach-Object { $_.Source } | Where-Object { -not $symbol.Contains($_) }"#;
+    let output = Command::new("powershell")
+        .creation_flags(WINDOWS_CREATE_NO_WINDOW)
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .output()
+        .map_err(AppError::from)?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(dedupe_font_names(text.lines().map(str::to_string)))
+}
+
+#[cfg(not(windows))]
+fn enumerate_system_fonts() -> Result<Vec<String>, AppError> {
+    // 非 Windows 平台使用 fontconfig 的 fc-list 读取字体族名；不可用时回退空列表由前端补齐推荐字体。
+    let Ok(output) = Command::new("fc-list").args([":", "family"]).output() else {
+        return Ok(Vec::new());
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    // fc-list 每行形如 "Family A,Family B"，取首个别名即可。
+    Ok(dedupe_font_names(
+        text.lines()
+            .filter_map(|line| line.split(',').next().map(str::to_string)),
+    ))
+}
+
+// 统一去除空白、按小写去重并按字母排序，得到稳定可展示的字体族列表。
+fn dedupe_font_names(names: impl Iterator<Item = String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut result: Vec<String> = names
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty() && seen.insert(name.to_lowercase()))
+        .collect();
+    result.sort_by_key(|name| name.to_lowercase());
+    result
 }
 
 #[tauri::command]
@@ -4932,7 +5137,7 @@ pub fn open_ssh_session(
 ) -> Result<TerminalSession, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
     let session_id = uuid::Uuid::new_v4().to_string();
-    let output_queue = Arc::new(std::sync::Mutex::new(Vec::<TerminalOutputChunk>::new()));
+    let output_queue = Arc::new(std::sync::Mutex::new(TerminalOutputQueue::new()));
     let (control_tx, control_rx) = mpsc::channel();
     let stop_flag = Arc::new(AtomicBool::new(false));
 
@@ -5052,7 +5257,7 @@ pub fn open_local_terminal_session(
     let settings = state.storage.load_local_terminals()?;
 
     let session_id = uuid::Uuid::new_v4().to_string();
-    let output_queue = Arc::new(std::sync::Mutex::new(Vec::<TerminalOutputChunk>::new()));
+    let output_queue = Arc::new(std::sync::Mutex::new(TerminalOutputQueue::new()));
     let (control_tx, control_rx) = mpsc::channel();
     let stop_flag = Arc::new(AtomicBool::new(false));
     let runtime = RuntimeSession {
@@ -5131,7 +5336,8 @@ pub fn read_terminal_output(
         .lock()
         .map_err(|_| AppError::Validation("terminal output buffer is unavailable".into()))?;
 
-    Ok(output.drain(..).collect())
+    // take 交换出队列内容并按需补截断提示，随后立即释放锁，缩短读端持锁时间。
+    Ok(output.take(&session_id))
 }
 
 #[tauri::command]
@@ -5309,6 +5515,8 @@ pub fn load_editor_document(
     let connection = ensure_connection_exists(&state, &connection_id)?;
     let bytes = match read_remote_file_bytes(&state, &connection, &path) {
         Ok(bytes) => bytes,
+        // 文件超限属于确定性拒绝，直接返回错误提示，不能回退到本地缓存草稿误导用户以为能编辑。
+        Err(error @ AppError::Validation(_)) => return Err(error.into()),
         Err(error) => {
             if let Some(mut cached) = state.storage.load_editor_cache(&connection_id, &path)? {
                 cached.dirty = true;

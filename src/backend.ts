@@ -470,6 +470,8 @@ export const backend = {
     const normalized = normalizeLocalTerminalSettings(settings);
     return call<LocalTerminalSettings>('save_local_terminal_settings', { settings: normalized }, normalized);
   },
+  // 枚举本机已安装字体，供字体设置下拉全量选择；Web 预览或后端失败时返回空列表由前端补齐推荐字体。
+  listSystemFonts: () => call<string[]>('list_system_fonts', undefined, []),
   agentBridgeStatus: () => call<AgentBridgeStatus>('agent_bridge_status', undefined, mockAgentBridgeStatus),
   listAgentBridgeRequests: () => call<AgentBridgeRequest[]>('list_agent_bridge_requests', undefined, []),
   approveAgentBridgeRequest: (requestId: string, editedCommand?: string) =>
