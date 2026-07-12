@@ -3287,10 +3287,14 @@ function SettingsModal({
                           type="checkbox"
                           onChange={(event) => updateDraftSettings((current) => ({ ...current, hardwareAcceleration: event.target.checked }))}
                         />
-                        <strong>{(draftSettings.hardwareAcceleration ?? true) ? t('enabled') : t('disabled')}</strong>
+                        <strong>
+                          {(draftSettings.hardwareAcceleration ?? true)
+                            ? t('hardwareAccelerationEnabled')
+                            : t('hardwareAccelerationDisabled')}
+                        </strong>
                       </div>
                     </div>
-                    {/* 关闭硬件加速属于重启生效项，用提示文本明确告知用户需要重启才能应用低内存渲染。 */}
+                    {/* 渲染模式在 WebView2 创建前决定；提示用户重启生效，并明确软件渲染不保证更省内存。 */}
                     <p className="field-hint">{t('hardwareAccelerationHint')}</p>
                   </div>
                 </section>

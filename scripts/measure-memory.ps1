@@ -1,9 +1,9 @@
 # MyTerminal 内存采样脚本
 # 启动指定 exe，按 10/30/60 秒采样 MyTerminal 及其真实 WebView2 子进程，
-# 输出 Working Set / Private Bytes / 线程数 / 进程类型，支持 -LowMemory 自动对照。
+# 输出 Working Set / Private Bytes / 线程数 / 进程类型，支持软件渲染与硬件加速自动对照。
 # 用法示例：
 #   pwsh -File scripts/measure-memory.ps1 -ExePath "C:\Path\MyTerminal.exe"
-#   pwsh -File scripts/measure-memory.ps1 -ExePath "C:\Path\MyTerminal.exe" -LowMemory
+#   pwsh -File scripts/measure-memory.ps1 -ExePath "C:\Path\MyTerminal.exe" -SoftwareRendering
 #   pwsh -File scripts/measure-memory.ps1 -ExePath "C:\Path\MyTerminal.exe" -Compare
 
 param(
@@ -11,9 +11,10 @@ param(
     [string]$ExePath,
     # 采样时刻（秒），默认覆盖启动、稳定、冷却三个阶段。
     [int[]]$SampleSeconds = @(10, 30, 60),
-    # 仅低内存模式（关闭 WebView2 硬件加速）单次采样。
-    [switch]$LowMemory,
-    # 同时跑正常模式与低内存模式并打印对照。
+    # 仅软件渲染兼容模式（关闭 WebView2 硬件加速）单次采样；LowMemory 作为旧参数别名继续兼容。
+    [Alias('LowMemory')]
+    [switch]$SoftwareRendering,
+    # 同时跑硬件加速与软件渲染模式并打印对照。
     [switch]$Compare,
     # 采样结果输出目录，默认写到仓库 .memory-samples。
     [string]$OutDir
@@ -145,13 +146,13 @@ function Measure-ProcessTree {
 
 # 启动一次应用，按时间点采样后停止自己启动的全部进程。
 function Invoke-Measurement {
-    param([string]$Mode, [bool]$DisableGpu)
+    param([string]$Mode, [bool]$UseSoftwareRendering)
 
     Write-Host "==== 模式：$Mode ===="
-    # 低内存模式通过命令行 --low-memory 触发 Rust 侧关闭 GPU；不改系统或用户设置。
+    # 软件渲染通过命令行主参数 --software-rendering 触发；不修改系统或用户持久化设置。
     $procArgs = @()
-    if ($DisableGpu) {
-        $procArgs += '--low-memory'
+    if ($UseSoftwareRendering) {
+        $procArgs += '--software-rendering'
     }
 
     $started = if ($procArgs.Count -gt 0) {
@@ -191,18 +192,18 @@ function Invoke-Measurement {
 
 $runs = @()
 if ($Compare) {
-    $runs += ,@('normal', $false)
-    $runs += ,@('low-memory', $true)
-} elseif ($LowMemory) {
-    $runs += ,@('low-memory', $true)
+    $runs += ,@('hardware-accelerated', $false)
+    $runs += ,@('software-rendering', $true)
+} elseif ($SoftwareRendering) {
+    $runs += ,@('software-rendering', $true)
 } else {
-    $runs += ,@('normal', $false)
+    $runs += ,@('hardware-accelerated', $false)
 }
 
 $allRows = New-Object System.Collections.Generic.List[object]
 $allSummaries = New-Object System.Collections.Generic.List[object]
 foreach ($run in $runs) {
-    $result = Invoke-Measurement -Mode $run[0] -DisableGpu $run[1]
+    $result = Invoke-Measurement -Mode $run[0] -UseSoftwareRendering $run[1]
     foreach ($row in $result.Rows) { $allRows.Add($row) }
     foreach ($summary in $result.Summaries) { $allSummaries.Add($summary) }
 }
@@ -218,12 +219,13 @@ Write-Host '==== 汇总 ===='
 $allSummaries | Format-Table -AutoSize
 
 if ($Compare) {
-    $normal = $allSummaries | Where-Object { $_.mode -eq 'normal' } | Sort-Object elapsedSec | Select-Object -Last 1
-    $low = $allSummaries | Where-Object { $_.mode -eq 'low-memory' } | Sort-Object elapsedSec | Select-Object -Last 1
-    if ($normal -and $low) {
-        $delta = [math]::Round($normal.totalPrivateMB - $low.totalPrivateMB, 1)
-        $pct = if ($normal.totalPrivateMB -gt 0) { [math]::Round($delta / $normal.totalPrivateMB * 100, 1) } else { 0 }
-        Write-Host ("低内存模式相对正常模式私有内存下降：{0} MB（{1}%）" -f $delta, $pct)
+    $hardware = $allSummaries | Where-Object { $_.mode -eq 'hardware-accelerated' } | Sort-Object elapsedSec | Select-Object -Last 1
+    $software = $allSummaries | Where-Object { $_.mode -eq 'software-rendering' } | Sort-Object elapsedSec | Select-Object -Last 1
+    if ($hardware -and $software) {
+        # 正数表示软件渲染占用更多，负数表示软件渲染占用更少；保持中性表述，不预设哪种模式必然更省内存。
+        $delta = [math]::Round($software.totalPrivateMB - $hardware.totalPrivateMB, 1)
+        $pct = if ($hardware.totalPrivateMB -gt 0) { [math]::Round($delta / $hardware.totalPrivateMB * 100, 1) } else { 0 }
+        Write-Host ("软件渲染相对硬件加速的私有内存差值：{0} MB（{1}%）" -f $delta, $pct)
     }
 }
 
