@@ -488,11 +488,33 @@ const extractCompletedTerminalInputLines = (sessionId: string, data: string) => 
 let remoteFilesRefreshSeq = 0;
 let runtimeOverviewRefreshSeq = 0;
 let remoteHistoryRefreshSeq = 0;
-let remoteFilesAutoRefreshTimer: number | undefined;
+type RemoteFilesRefreshRequest = { connectionId: string; path: string; seq: number };
 let remoteFilesRefreshInFlight = false;
-let remoteFilesQueuedRequest: { connectionId: string; path: string; seq: number } | undefined;
-// cwd 自动同步只做轻量延迟，给用户连续输入留出优先级，避免刚 cd 就立刻抢占远端 SFTP 连接。
-const remoteFilesAutoRefreshDelayMs = 360;
+// 当前执行项与最后排队项共同描述文件管理器的真实目标，cwd 回传据此避免重复列举同一路径，并能覆盖错误预判。
+let remoteFilesActiveRequest: RemoteFilesRefreshRequest | undefined;
+let remoteFilesQueuedRequest: RemoteFilesRefreshRequest | undefined;
+
+// 文件管理请求统一路径格式，避免 /ology 与 /ology/ 被误判为两个目录并重复触发 SFTP 列举。
+const normalizeRemoteFilesPath = (path: string) => {
+  const normalized = path.trim().replace(/\\/g, '/').replace(/\/+/g, '/');
+  if (!normalized) {
+    return '~';
+  }
+  return normalized === '/' ? normalized : normalized.replace(/\/+$/, '');
+};
+
+const isSameRemoteFilesTarget = (
+  request: Pick<RemoteFilesRefreshRequest, 'connectionId' | 'path'> | undefined,
+  connectionId: string,
+  path: string,
+) => Boolean(
+  request
+  && request.connectionId === connectionId
+  && normalizeRemoteFilesPath(request.path) === normalizeRemoteFilesPath(path),
+);
+
+// 排队项代表最新意图；没有排队项时，正在执行的请求才是当前文件管理目标。
+const latestPendingRemoteFilesRequest = () => remoteFilesQueuedRequest ?? remoteFilesActiveRequest;
 
 const statusText = (
   settings: AppSettings,
@@ -1566,7 +1588,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
       return;
     }
     const nextRemotePath = isUsableRemoteSession(session) && session?.connectionId === state.activeConnectionId
-      ? guessNextRemotePath(state.currentRemotePath, rawCommand)
+      // cd 相对路径必须以终端 Shell 的 cwd 为基准，不能使用可能已被用户单独浏览到别处的文件管理路径。
+      ? guessNextRemotePath(session.cwd || state.currentRemotePath || '~', rawCommand)
       : undefined;
 
     await flushQueuedTerminalInput(sessionId);
@@ -1596,7 +1619,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
 
     let nextRemotePath: string | undefined;
     if (isUsableRemoteSession(session) && session.connectionId === state.activeConnectionId) {
-      let pathCursor = state.currentRemotePath || session.cwd || '~';
+      // 文件管理器允许独立浏览；终端内连续 cd 的相对路径始终从 Shell cwd 推导，避免 cd .. 被面板路径带偏。
+      let pathCursor = session.cwd || state.currentRemotePath || '~';
       for (const completedLine of extractCompletedTerminalInputLines(sessionId, data)) {
         const guessedPath = guessNextRemotePath(pathCursor, completedLine);
         if (guessedPath) {
@@ -1691,6 +1715,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
       return;
     }
 
+    let activeCwdToDisplay: string | undefined;
     let activeCwdToRefresh: string | undefined;
     set((state) => {
       let sessionsChanged = false;
@@ -1712,11 +1737,24 @@ export const useAppStore = create<StoreState>((set, get) => ({
           cwd &&
           session.id === state.activeSessionId &&
           session.connectionId === state.activeConnectionId &&
-          isUsableRemoteSession(nextSession) &&
-          state.currentRemotePath !== cwd
+          isUsableRemoteSession(nextSession)
         ) {
-          // cwd 元数据来自交互 Shell 的真实 PWD，先更新路径栏；文件列表随后异步刷新，慢 SFTP 不应挡住路径同步。
-          activeCwdToRefresh = cwd;
+          const pendingRequest = latestPendingRemoteFilesRequest();
+          const pendingMatchesCwd = isSameRemoteFilesTarget(pendingRequest, session.connectionId, cwd);
+          const pendingConflictsWithCwd = Boolean(
+            pendingRequest
+            && pendingRequest.connectionId === session.connectionId
+            && !pendingMatchesCwd,
+          );
+
+          if (state.currentRemotePath !== cwd) {
+            // cwd 元数据来自交互 Shell 的真实 PWD，路径栏先同步；慢 SFTP 只影响列表内容，不应拖住路径反馈。
+            activeCwdToDisplay = cwd;
+          }
+          if (!pendingMatchesCwd && (state.currentRemotePath !== cwd || pendingConflictsWithCwd)) {
+            // 即使面板此刻恰好已在 cwd，也必须覆盖尚未完成的错误预判，防止旧请求稍后把列表带到错误目录。
+            activeCwdToRefresh = cwd;
+          }
         }
 
         return nextSession;
@@ -1733,7 +1771,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
 
       return {
         ...(sessionsChanged ? { sessions: nextSessions } : {}),
-        ...(activeCwdToRefresh ? { currentRemotePath: activeCwdToRefresh } : {}),
+        ...(activeCwdToDisplay ? { currentRemotePath: activeCwdToDisplay } : {}),
         // 会话变为不可用（断开/异常）时清掉残留的远端数据，避免继续展示上一台主机的内容。
         ...(shouldClearActiveRemoteData ? { files: [], runtimeOverview: undefined, currentRemotePath: '' } : {}),
         // 加载动画的熄灭独立判断，覆盖“无旧数据可清但动画已点亮”的握手失败场景。
@@ -1742,14 +1780,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
     });
 
     if (activeCwdToRefresh) {
-      if (remoteFilesAutoRefreshTimer !== undefined) {
-        window.clearTimeout(remoteFilesAutoRefreshTimer);
-      }
-      // cwd 来自远端提示符，延迟刷新文件树可以吸收快速 cd/ls 连续输入，避免 SFTP 刷新阻塞终端输入反馈。
-      remoteFilesAutoRefreshTimer = window.setTimeout(() => {
-        remoteFilesAutoRefreshTimer = undefined;
-        void get().refreshFiles(activeCwdToRefresh);
-      }, remoteFilesAutoRefreshDelayMs);
+      // 刷新队列本身只保留最新目录，因此真实 cwd 可以立即校正列表，无需再额外等待固定防抖时间。
+      void get().refreshFiles(activeCwdToRefresh);
     }
   },
 
@@ -1799,33 +1831,43 @@ export const useAppStore = create<StoreState>((set, get) => ({
   },
 
   refreshFiles: async (path) => {
-    const resolveRefreshRequest = () => {
-      const { activeConnectionId, activeSessionId, currentRemotePath, sessions } = get();
-      const activeSession = sessions.find((item) => item.id === activeSessionId);
-      const activeRemoteConnectionId = isUsableRemoteSession(activeSession) ? activeSession?.connectionId : undefined;
-      // 文件管理必须绑定已打开的终端会话；只选中连接时不展示也不刷新远端文件。
-      if (!activeConnectionId || activeConnectionId !== activeRemoteConnectionId) {
-        return undefined;
+    const { activeConnectionId, activeSessionId, currentRemotePath, sessions } = get();
+    const activeSession = sessions.find((item) => item.id === activeSessionId);
+    const activeRemoteConnectionId = isUsableRemoteSession(activeSession) ? activeSession?.connectionId : undefined;
+    // 文件管理必须绑定已打开的终端会话；只选中连接时不展示也不刷新远端文件。
+    if (!activeConnectionId || activeConnectionId !== activeRemoteConnectionId) {
+      return;
+    }
+
+    const requestedPath = normalizeRemoteFilesPath(path ?? currentRemotePath);
+    if (remoteFilesRefreshInFlight) {
+      if (isSameRemoteFilesTarget(remoteFilesQueuedRequest, activeConnectionId, requestedPath)) {
+        // 最新排队项已经覆盖同一路径，无需再次增加序号或重复列举。
+        return;
+      }
+      if (isSameRemoteFilesTarget(remoteFilesActiveRequest, activeConnectionId, requestedPath)) {
+        if (remoteFilesQueuedRequest && remoteFilesActiveRequest) {
+          // 真实 cwd 回到当前执行路径时，撤销冲突的排队项，并把执行项提升为最新请求以允许其结果落地。
+          remoteFilesQueuedRequest = undefined;
+          remoteFilesActiveRequest.seq = ++remoteFilesRefreshSeq;
+        }
+        return;
       }
 
-      return {
+      // SFTP 刷新串行执行，正在刷新时只保留最后一次目标路径，避免快速 cd/双击目录堆出多条 SSH 请求。
+      remoteFilesQueuedRequest = {
         connectionId: activeConnectionId,
-        path: path ?? currentRemotePath,
+        path: requestedPath,
         seq: ++remoteFilesRefreshSeq,
       };
+      return;
+    }
+
+    const firstRequest: RemoteFilesRefreshRequest = {
+      connectionId: activeConnectionId,
+      path: requestedPath,
+      seq: ++remoteFilesRefreshSeq,
     };
-
-    const firstRequest = resolveRefreshRequest();
-    if (!firstRequest) {
-      return;
-    }
-
-    if (remoteFilesRefreshInFlight) {
-      // SFTP 刷新串行执行，正在刷新时只保留最后一次目标路径，避免快速 cd/双击目录堆出多条 SSH 连接。
-      remoteFilesQueuedRequest = firstRequest;
-      return;
-    }
-
     // 当前列表为空时才显示加载动画；已有旧文件内容时静默刷新，避免闪烁。
     if (!get().files.length) {
       set({ filesLoading: true });
@@ -1835,6 +1877,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
     try {
       while (request) {
         const currentRequest = request;
+        remoteFilesActiveRequest = currentRequest;
         remoteFilesQueuedRequest = undefined;
         try {
           const files = await backend.listRemoteFiles(currentRequest.connectionId, currentRequest.path);
@@ -1862,6 +1905,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
       }
     } finally {
       remoteFilesRefreshInFlight = false;
+      remoteFilesActiveRequest = undefined;
+      remoteFilesQueuedRequest = undefined;
       // 兜底：无论中途 continue 还是异常，最终都清掉加载态，避免动画卡死。
       if (get().filesLoading) {
         set({ filesLoading: false });
