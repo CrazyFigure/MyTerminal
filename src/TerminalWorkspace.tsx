@@ -103,16 +103,21 @@ const terminalGutterWrappedLineSymbol = '-';
 // 每个会话最多缓存这么多条逻辑行的到达时刻，超出后从最旧端回收并用 base 记录已丢弃数量。
 const terminalGutterMaxTrackedLines = 5000;
 
-// 每条逻辑行（两次硬换行之间）用一个 xterm marker 锚定其起始 buffer 行；marker 会随滚动、reflow
-// 自动跟随，被 scrollback 裁剪时自动 dispose（marker.line 变为 -1），渲染时惰性回收。marker 只负责
-// 定位，编号按“存活 marker 从末端对齐到累计计数”推算，到达时刻由按会话持久保存的时间线按编号提供，
-// 这样切换会话重放缓存、后台会话继续产出时，历史行的编号与真实时间都保持不变。
+// 每条稳定逻辑行用一个 xterm marker 锚定其起始 buffer 行；marker 会随滚动、reflow 自动跟随，
+// 被 scrollback 裁剪时自动 dispose。ANSI 光标移动重新落到已有 buffer 行时复用原 marker 和行号，
+// 从根源上避免 Docker Compose 等动态进度内容每次重画都把同一显示行当成新行。
 
-// 按会话持久缓存的逻辑行时间线：times[i] 是累计编号为 (base + i + 1) 的逻辑行到达时刻（ms）。
+// 按会话持久缓存的稳定逻辑行时间线：times[i] 是累计编号为 (base + i + 1) 的逻辑行首次出现时刻（ms）。
 // base 记录已从最旧端回收的行数，保证累计编号（行号）持续增长且不回退。
 type TerminalGutterSessionData = {
   times: number[];
   base: number;
+};
+
+// 每个 marker 直接携带稳定逻辑行号；动态进度输出反复覆盖同一 buffer 行时复用原 marker，禁止重新编号。
+type TerminalGutterMarkerEntry = {
+  marker: IMarker;
+  logicalNumber: number;
 };
 
 // 行号栏时间戳固定使用本地时区 HH:MM:SS，与常见远程终端展示保持一致。
@@ -1003,8 +1008,11 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
   const terminalGutterFrameRef = useRef<number | null>(null);
   const terminalGutterClockTimerRef = useRef<number | null>(null);
   const terminalGutterWidthRef = useRef(0);
-  // 按注册顺序保存的逻辑行 marker（仅定位）；每次硬换行追加一个，被裁剪的自动 dispose。
-  const terminalGutterMarkersRef = useRef<IMarker[]>([]);
+  // 按注册顺序保存逻辑行 marker 与稳定行号；同一 buffer 行被 ANSI 控制序列覆盖时不重复登记。
+  const terminalGutterMarkersRef = useRef<TerminalGutterMarkerEntry[]>([]);
+  // 缓存重放期间先按重放顺序建立临时编号，完成后再与会话累计编号从末端对齐。
+  const terminalGutterReplayActiveRef = useRef(false);
+  const terminalGutterReplayNextLogicalNumberRef = useRef(1);
   // 按会话持久保存的逻辑行时间线；切换会话不清空，保证历史时间恒定。
   const terminalGutterSessionDataRef = useRef<Record<string, TerminalGutterSessionData>>({});
   const terminalSelectionDragActiveRef = useRef(false);
@@ -1016,6 +1024,12 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
   const terminalImeCompositionFrameRef = useRef<number | null>(null);
   const terminalImeComposingRef = useRef(false);
   const lastLocalTerminalInputAtRef = useRef(0);
+  // 横向模式的渲染列数在单个会话内只允许增长，避免竖向翻页时因当前页长短不同反复 resize/reflow。
+  const terminalHorizontalRenderColsRef = useRef(0);
+  // 会话切走再切回时恢复原高水位，避免缓存重放只看底部短行而丢失历史长行的横向宽度。
+  const terminalHorizontalRenderColsBySessionRef = useRef<Record<string, number>>({});
+  // 缓存重放结束后仅执行一次全缓冲测量，之后高频输出仍只测当前窗口，控制扫描开销。
+  const terminalHorizontalFullBufferMeasurePendingRef = useRef(false);
   const remoteTerminalSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const pendingFocusSessionIdRef = useRef<string | null>(session?.id ?? null);
   const terminalLineWrapMode = settings.terminalLineWrapMode ?? 'wrap';
@@ -1654,34 +1668,28 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     terminalVerticalScrollbarRef.current?.classList.remove('is-dragging');
   };
 
-  // 会话切换或缓存重放前只回收 marker（定位信息），不触碰按会话持久保存的时间线，
-  // 保证重放后历史行的编号与真实到达时刻原样恢复。
+  // 会话切换或缓存重放前只回收 marker（定位信息），不触碰按会话持久保存的稳定行号与时间线。
   const resetTerminalGutterMarkers = () => {
-    for (const marker of terminalGutterMarkersRef.current) {
-      marker.dispose();
+    for (const entry of terminalGutterMarkersRef.current) {
+      entry.marker.dispose();
     }
     terminalGutterMarkersRef.current = [];
   };
 
-  // 取（必要时初始化）某会话的逻辑行时间线；首行（序号 1，从不触发硬换行）在创建时即打上时刻。
-  const ensureTerminalGutterSessionData = (sessionId: string, nowMs: number) => {
+  // 取（必要时初始化）某会话的稳定逻辑行时间线；只有首次占用新 buffer 行时才追加时间。
+  const ensureTerminalGutterSessionData = (sessionId: string) => {
     let data = terminalGutterSessionDataRef.current[sessionId];
     if (!data) {
-      data = { times: [nowMs], base: 0 };
+      data = { times: [], base: 0 };
       terminalGutterSessionDataRef.current[sessionId] = data;
     }
     return data;
   };
 
-  // 由原始输出流推进某会话的时间线：内容里每个硬换行都新起一条逻辑行并记录到达时刻。
-  // 对后台（非活动）会话同样生效，保证切回来时这些行仍是真实时间。
-  const appendTerminalGutterSessionTimes = (sessionId: string, content: string, nowMs: number) => {
-    const data = ensureTerminalGutterSessionData(sessionId, nowMs);
-    for (let index = 0; index < content.length; index += 1) {
-      if (content.charCodeAt(index) === 10) {
-        data.times.push(nowMs);
-      }
-    }
+  // 新逻辑行首次落到屏幕或 scrollback 时追加时间；回车覆盖、光标上移后重画同一行都不能推进编号。
+  const appendTerminalGutterLogicalLine = (sessionId: string, nowMs: number) => {
+    const data = ensureTerminalGutterSessionData(sessionId);
+    data.times.push(nowMs);
     // 超出上限时从最旧端回收，并累加 base，保证累计序号不回退。
     if (data.times.length > terminalGutterMaxTrackedLines) {
       const drop = data.times.length - terminalGutterMaxTrackedLines;
@@ -1691,16 +1699,24 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
   };
 
   // 硬换行后光标已落到新的一行，为该行注册一个 marker 作为逻辑行位置锚点。
-  const registerTerminalGutterLine = () => {
+  const registerTerminalGutterLine = (nowMs = Date.now()) => {
     const terminal = terminalRef.current;
-    if (!terminal) {
+    const sessionId = sessionRef.current?.id;
+    if (!terminal || !sessionId) {
       return;
     }
 
     // 防护：若光标落到的新行是软换行续行（部分 xterm 版本自动折行也会触发 onLineFeed），则不建 marker，
-    // 使 marker 仅对应逻辑行，既让续行正确显示为占位符，也与按 \n 计数的时间线严格对齐。
+    // 使 marker 仅对应逻辑行，让续行正确显示为占位符，也避免折行片段重复占用稳定行号。
     const buffer = terminal.buffer.active;
-    if (buffer.getLine(buffer.baseY + buffer.cursorY)?.isWrapped) {
+    const bufferRow = buffer.baseY + buffer.cursorY;
+    if (buffer.getLine(bufferRow)?.isWrapped) {
+      return;
+    }
+
+    // Docker Compose 等程序会反复“上移光标 + LF”覆盖同一组进度行；已有存活 marker 时必须复用原行号。
+    const existingEntry = terminalGutterMarkersRef.current.find((entry) => entry.marker.line === bufferRow);
+    if (existingEntry) {
       return;
     }
 
@@ -1708,13 +1724,48 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     if (!marker) {
       return;
     }
-    terminalGutterMarkersRef.current.push(marker);
+
+    let logicalNumber: number;
+    if (terminalGutterReplayActiveRef.current) {
+      // 重放期间只建立相对顺序，完成后统一对齐到会话已有累计编号，避免切换会话时重复累加。
+      logicalNumber = terminalGutterReplayNextLogicalNumberRef.current;
+      terminalGutterReplayNextLogicalNumberRef.current += 1;
+    } else {
+      appendTerminalGutterLogicalLine(sessionId, nowMs);
+      logicalNumber = resolveTerminalGutterCounter();
+    }
+    terminalGutterMarkersRef.current.push({ marker, logicalNumber });
 
     // 缓存重放会同步触发大量换行；超过阈值时惰性回收已被裁剪（line<0）的 marker，避免数组无界增长。
     const markers = terminalGutterMarkersRef.current;
     if (markers.length > terminal.rows + terminalScrollbackRowsRef.current + 64) {
-      terminalGutterMarkersRef.current = markers.filter((item) => item.line >= 0);
+      terminalGutterMarkersRef.current = markers.filter((entry) => entry.marker.line >= 0);
     }
+  };
+
+  // 缓存重放结束后把存活 marker 从末端对齐到会话累计编号；首次展示的缓存则补齐缺少的稳定行记录。
+  const finishTerminalGutterReplay = (nowMs: number) => {
+    const sessionId = sessionRef.current?.id;
+    if (!terminalGutterReplayActiveRef.current || !sessionId) {
+      return;
+    }
+
+    terminalGutterReplayActiveRef.current = false;
+    const liveEntries = terminalGutterMarkersRef.current.filter((entry) => entry.marker.line >= 0);
+    const data = ensureTerminalGutterSessionData(sessionId);
+    const trackedTotal = data.base + data.times.length;
+    if (trackedTotal < liveEntries.length) {
+      const missingLineCount = liveEntries.length - trackedTotal;
+      for (let index = 0; index < missingLineCount; index += 1) {
+        appendTerminalGutterLogicalLine(sessionId, nowMs);
+      }
+    }
+
+    const totalLogical = Math.max(resolveTerminalGutterCounter(), liveEntries.length);
+    for (let index = 0; index < liveEntries.length; index += 1) {
+      liveEntries[index].logicalNumber = totalLogical - (liveEntries.length - 1 - index);
+    }
+    terminalGutterMarkersRef.current = liveEntries;
   };
 
   // 当前会话累计逻辑行数（= 最新一行的编号）。
@@ -1804,17 +1855,15 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     const firstVisibleRow = buffer.viewportY;
     const cursorBufferRow = buffer.baseY + buffer.cursorY;
 
-    // 存活 marker 按注册顺序即逻辑行顺序排列，最后一个对应“最新逻辑行”，其编号 = 会话累计行数。
-    // 以此从末端对齐，推算每个存活 marker 对应的绝对逻辑编号，避免依赖易漂移的即时计数。
-    const liveMarkers = terminalGutterMarkersRef.current.filter((entry) => entry.line >= 0);
+    // 存活 marker 自带稳定逻辑行号；重放完成时已从末端对齐，日常动态覆盖不会再次改号。
+    const liveMarkers = terminalGutterMarkersRef.current.filter((entry) => entry.marker.line >= 0);
     // 时间线尚未建立（会话刚打开）时用存活 marker 数兜底，避免最旧行推出非正编号。
     const totalLogical = Math.max(resolveTerminalGutterCounter(), liveMarkers.length);
     const sessionData = sessionRef.current?.id ? terminalGutterSessionDataRef.current[sessionRef.current.id] : undefined;
     // buffer 行 -> 逻辑行编号；同一 buffer 行可能有多个历史 marker（reflow 后），取最新（末端）的编号。
     const logicalNumberByBufferRow = new Map<number, number>();
     for (let index = 0; index < liveMarkers.length; index += 1) {
-      const logicalNumber = totalLogical - (liveMarkers.length - 1 - index);
-      logicalNumberByBufferRow.set(liveMarkers[index].line, logicalNumber);
+      logicalNumberByBufferRow.set(liveMarkers[index].marker.line, liveMarkers[index].logicalNumber);
     }
     const digits = Math.max(terminalGutterMinDigits, String(Math.max(1, totalLogical)).length);
 
@@ -2321,7 +2370,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     syncTerminalAuxiliaryLayerSizes();
   };
 
-  // 当前可视缓冲区通过 isWrapped 合并软换行片段，避免历史里的 Docker 进度长行永久撑大后续终端。
+  // 缓冲区测量通过 isWrapped 合并软换行片段；通常只扫可视窗口，缓存重放后允许一次全量扫描恢复历史长行宽度。
   const measureVisibleTerminalBufferLongestLineColumns = () => {
     const terminal = terminalRef.current;
     if (!terminal) {
@@ -2331,9 +2380,13 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     const buffer = terminal.buffer.active;
     let longestColumns = 0;
     let currentLineColumns = 0;
-    // 横向滚动只服务当前看得见的内容；用户滚回历史时 onScroll 会重新测量对应窗口。
-    const firstVisibleLine = Math.max(0, buffer.viewportY);
-    const lastVisibleLine = Math.min(buffer.length, firstVisibleLine + terminal.rows);
+    const measureEntireBuffer = terminalHorizontalFullBufferMeasurePendingRef.current;
+    terminalHorizontalFullBufferMeasurePendingRef.current = false;
+    // 输出到达或显式布局变化时测量当前窗口；缓存重放完成时测量一次全缓冲，竖向滚动本身不触发 resize。
+    const firstVisibleLine = measureEntireBuffer ? 0 : Math.max(0, buffer.viewportY);
+    const lastVisibleLine = measureEntireBuffer
+      ? buffer.length
+      : Math.min(buffer.length, firstVisibleLine + terminal.rows);
     for (let lineIndex = firstVisibleLine; lineIndex < lastVisibleLine; lineIndex += 1) {
       const line = buffer.getLine(lineIndex);
       if (!line) {
@@ -2352,7 +2405,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     return longestColumns;
   };
 
-  // 横向模式不固定扩到最大列数，而是按缓冲区最长逻辑行和光标余量动态计算目标列数。
+  // 横向模式按当前内容和光标余量扩列，但会话内使用高水位列数，短页面不能把宽页面重新压窄。
   const resolveHorizontalTerminalColumns = (visibleCols: number) => {
     const terminal = terminalRef.current;
     if (!terminalLineWrapModeRef.current || terminalLineWrapModeRef.current !== 'horizontal' || !terminal) {
@@ -2369,7 +2422,14 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
       longestLineColumns + terminalHorizontalLinePaddingColumns,
       cursorRequiredColumns,
     );
-    return roundHorizontalColumns(requiredColumns, visibleCols);
+    const measuredColumns = roundHorizontalColumns(requiredColumns, visibleCols);
+    const stableColumns = Math.max(visibleCols, terminalHorizontalRenderColsRef.current, measuredColumns);
+    terminalHorizontalRenderColsRef.current = stableColumns;
+    const sessionId = sessionRef.current?.id;
+    if (sessionId) {
+      terminalHorizontalRenderColsBySessionRef.current[sessionId] = stableColumns;
+    }
+    return stableColumns;
   };
 
   // 横向模式不使用 fitAddon.fit 直接改列数，而是按可视行数 + 动态目标列数手动 resize。
@@ -2459,9 +2519,10 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
 
     clearTerminalSelectionSnapshot();
     applyTerminalSessionBehaviorOptions();
-    // 只回收 marker（定位）并清空 buffer，保留按会话持久保存的时间线；缓存重放触发的 onLineFeed
-    // 会按同样顺序重建 marker，再由时间线按编号还原历史真实到达时刻。
+    // 只回收 marker（定位）并清空 buffer，保留按会话持久保存的稳定时间线；重放完成后从末端恢复编号。
     resetTerminalGutterMarkers();
+    terminalGutterReplayActiveRef.current = true;
+    terminalGutterReplayNextLogicalNumberRef.current = 1;
     terminal.reset();
     const nextLayoutSize = resolveTerminalLayoutSize();
     if (nextLayoutSize) {
@@ -2474,6 +2535,9 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
       : [];
     if (replayChunks.length > 0) {
       const runReplayCompletion = () => {
+        finishTerminalGutterReplay(Date.now());
+        // 重放结束后全量扫描一次 scrollback，恢复该会话历史长行对应的横向高水位。
+        terminalHorizontalFullBufferMeasurePendingRef.current = true;
         scheduleTerminalSizeSync();
         syncLocalCursorVisibility();
         scheduleTerminalCursorFollow();
@@ -2491,6 +2555,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
       return;
     }
 
+    finishTerminalGutterReplay(Date.now());
     scheduleTerminalSizeSync();
     syncLocalCursorVisibility();
     scheduleTerminalCursorFollow();
@@ -2728,10 +2793,10 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     // 每次硬换行落到新行时登记一条逻辑行 marker（仅定位）；始终登记，与开关无关，保证切换显示项后
     // 历史行仍能定位。软换行不触发，天然显示为续行占位。
     const lineFeedDisposable = terminal.onLineFeed(() => {
-      registerTerminalGutterLine();
+      registerTerminalGutterLine(Date.now());
     });
     const scrollDisposable = terminal.onScroll(() => {
-      scheduleTerminalSizeSync();
+      // 竖向翻页只能刷新依赖 viewportY 的覆盖层，禁止按当前页最长行 resize；否则会 reflow 出空行并造成页面跳动。
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
       scheduleTerminalImeCompositionAnchorSync();
@@ -2910,10 +2975,6 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
         sessionRef.current?.id === chunk.sessionId,
       );
 
-      // 由原始输出流推进该会话的逻辑行时间线（含后台会话），记录每条命令行的真实到达时刻，
-      // 切换会话或改字号/主题后重放缓存时按编号还原，历史时间恒定不变。
-      appendTerminalGutterSessionTimes(chunk.sessionId, chunk.content, Date.now());
-
       if (sessionRef.current?.id === chunk.sessionId) {
         terminalRef.current?.write(chunk.content, () => {
           scheduleTerminalSizeSync();
@@ -2941,6 +3002,11 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     for (const sessionId of Object.keys(terminalGutterSessionDataRef.current)) {
       if (!live.has(sessionId)) {
         delete terminalGutterSessionDataRef.current[sessionId];
+      }
+    }
+    for (const sessionId of Object.keys(terminalHorizontalRenderColsBySessionRef.current)) {
+      if (!live.has(sessionId)) {
+        delete terminalHorizontalRenderColsBySessionRef.current[sessionId];
       }
     }
   }, [liveSessionIds]);
@@ -3004,6 +3070,11 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     pendingFocusSessionIdRef.current = session?.id ?? null;
     // 会话切换后重放缓存属于历史画面恢复，不能继承上一会话的本地输入跟随状态。
     lastLocalTerminalInputAtRef.current = 0;
+    // 恢复目标会话自己的横向列宽高水位，避免上一会话串宽，也避免切回来后历史长行宽度丢失。
+    terminalHorizontalRenderColsRef.current = session?.id
+      ? terminalHorizontalRenderColsBySessionRef.current[session.id] ?? 0
+      : 0;
+    terminalHorizontalFullBufferMeasurePendingRef.current = false;
     terminalImeComposingRef.current = false;
     hideTerminalControlledInputCursor();
     replayCurrentSessionOutput();
@@ -3025,6 +3096,12 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
 
     // 长行展示模式改变会影响 xterm 渲染列数；AI Agent 始终使用 wrap，远端仍重推真实可视列宽。
     remoteTerminalSizeRef.current = null;
+    // 显式切换模式允许重新建立列宽基线；正常竖向滚动期间仍禁止缩列。
+    terminalHorizontalRenderColsRef.current = 0;
+    if (sessionRef.current?.id) {
+      delete terminalHorizontalRenderColsBySessionRef.current[sessionRef.current.id];
+    }
+    terminalHorizontalFullBufferMeasurePendingRef.current = false;
     // 模式切换触发的是缓存重排，不是用户正在编辑命令，避免切换后按旧光标位置自动横移。
     lastLocalTerminalInputAtRef.current = 0;
     window.requestAnimationFrame(() => {
