@@ -26,6 +26,7 @@ import {
   ChevronUp,
   CloudDownload,
   Copy,
+  CornerDownLeft,
   Download,
   Eye,
   EyeOff,
@@ -5957,8 +5958,15 @@ export default function App() {
                   }
                 }}
               />
-              <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles(pathInput.trim() || '~')} type="button">
-                {t('goToPath')}
+              <button
+                className="secondary-button slim address-go-button"
+                disabled={!hasActiveRemoteSession}
+                onClick={() => void refreshFiles(pathInput.trim() || '~')}
+                title={t('goToPath')}
+                type="button"
+              >
+                {/* 重要逻辑：使用 CornerDownLeft ↩︎ 图标作为前往按钮，文字收起以提高美观度，悬浮显示前往 */}
+                <CornerDownLeft size={14} />
               </button>
             </div>
           </div>

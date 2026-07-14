@@ -184,18 +184,25 @@ select:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 32px;
+  margin: 0 2px;
   border: none;
+  border-radius: 8px;
   background: transparent;
   color: var(--app-subtle-text);
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
 }
 
+/* 系统图标按钮 hover：浅色下为淡灰，深色下为深灰，形成明显的圆角矩形背景 */
 .titlebar-icon-button:hover {
-  background: var(--app-item-bg);
-  color: var(--app-text);
+  background: rgba(15, 23, 42, 0.08) !important;
+  color: var(--app-text) !important;
+}
+
+.app-shell.theme-dark .titlebar-icon-button:hover {
+  background: rgba(255, 255, 255, 0.12) !important;
 }
 
 .titlebar-icon-button:disabled {
@@ -231,18 +238,25 @@ select:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 46px;
-  height: 40px;
+  width: 40px;
+  height: 32px;
+  margin: 0 2px;
   border: none;
+  border-radius: 8px;
   background: transparent;
   color: var(--app-subtle-text);
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
 }
 
-.titlebar-window-button:hover {
-  background: var(--app-item-bg);
-  color: var(--app-text);
+/* 窗口控制按钮 hover（排除关闭按钮）：浅色下为淡灰，深色下为深灰，形成明显的圆角矩形背景 */
+.titlebar-window-button:not(.titlebar-window-close):hover {
+  background: rgba(15, 23, 42, 0.08) !important;
+  color: var(--app-text) !important;
+}
+
+.app-shell.theme-dark .titlebar-window-button:not(.titlebar-window-close):hover {
+  background: rgba(255, 255, 255, 0.12) !important;
 }
 
 /* 关闭按钮沿用系统习惯，hover 呈红底白字。 */
@@ -341,6 +355,22 @@ select:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 重要逻辑：运行状态区域刷新按钮：平时透明无边框，与右上角系统按钮风格一致 */
+.runtime-header .icon-button {
+  background: transparent !important;
+  border-color: transparent !important;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.runtime-header .icon-button:hover:not(:disabled) {
+  background: rgba(15, 23, 42, 0.08) !important;
+  color: var(--app-text) !important;
+}
+
+.app-shell.theme-dark .runtime-header .icon-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12) !important;
 }
 
 .runtime-list {
@@ -756,6 +786,19 @@ select:disabled {
   height: 26px;
   border-color: rgba(148, 163, 184, 0.22);
   background: var(--app-input-bg);
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+/* 左下角侧栏开关（文件管理图标） hover：进一步增加对比度，确保视觉效果极其清晰 */
+.workspace-toolbar .toolbar-sidebar-toggle.icon-button:hover {
+  background: rgba(15, 23, 42, 0.15) !important;
+  border-color: rgba(15, 23, 42, 0.25) !important;
+  color: var(--app-text) !important;
+}
+
+.app-shell.theme-dark .workspace-toolbar .toolbar-sidebar-toggle.icon-button:hover {
+  background: rgba(255, 255, 255, 0.20) !important;
+  border-color: rgba(255, 255, 255, 0.3) !important;
 }
 
 .workspace-toolbar h1,
@@ -1495,6 +1538,22 @@ select:disabled {
   font-size: 0.8rem;
 }
 
+/* 重要逻辑：地址栏前往按钮 hover 明显灰色 */
+.address-go-button {
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.address-go-button:hover:not(:disabled) {
+  background: rgba(15, 23, 42, 0.15) !important;
+  border-color: rgba(15, 23, 42, 0.25) !important;
+  color: var(--app-text) !important;
+}
+
+.app-shell.theme-dark .address-go-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.20) !important;
+  border-color: rgba(255, 255, 255, 0.3) !important;
+}
+
 .explorer-toolbar-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1505,6 +1564,30 @@ select:disabled {
 /* 文件管理器改为扁平表格，避免旧版块状目录导航占用扫描空间。 */
 .explorer-toolbar-spacer {
   flex: 1;
+}
+
+/* 文件管理工具栏按钮去掉边框和默认背景，仅在 hover 时显示圆角灰色背景。 */
+.explorer-toolbar .secondary-button {
+  border-color: transparent;
+  background: transparent;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+/* 文件管理工具栏图标 hover：使用明显的灰色圆矩形背景，与其它系统按钮保持同步 */
+.explorer-toolbar .secondary-button:hover:not(:disabled):not(.is-drop-target) {
+  border-color: transparent !important;
+  background: rgba(15, 23, 42, 0.08) !important;
+  color: var(--app-text) !important;
+}
+
+.app-shell.theme-dark .explorer-toolbar .secondary-button:hover:not(:disabled):not(.is-drop-target) {
+  border-color: transparent !important;
+  background: rgba(255, 255, 255, 0.12) !important;
+}
+
+.explorer-toolbar .secondary-button:disabled {
+  border-color: transparent;
+  background: transparent;
 }
 
 .explorer-breadcrumb {
