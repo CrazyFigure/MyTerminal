@@ -112,47 +112,55 @@ export function UpdateModal({
             </div>
           </div>
 
-          {downloading || progress ? (
-            <div className="update-modal-progress">
-              <div className="update-modal-progress-header">
-                <span>{t('updateDownloadProgress')}</span>
-                <span>{progressText}</span>
-              </div>
-              <div className="update-modal-progress-bar">
-                <div
-                  className="update-modal-progress-fill"
-                  style={{ width: `${progressPercent}%` }}
-                />
-              </div>
-              <div className="update-modal-progress-percent">{progressPercent}%</div>
-            </div>
-          ) : null}
-          {error ? (
-            <div className="update-modal-error">{error}</div>
-          ) : null}
         </div>
 
-        <div className="modal-actions">
-          <button className="secondary-button" disabled={downloading} onClick={onClose} type="button">
-            {t('updateCancel')}
-          </button>
-          <button
-            className="secondary-button"
-            disabled={downloading}
-            onClick={() => onOpenRelease(result.releaseUrl)}
-            type="button"
-          >
-            <ExternalLink size={16} /> {t('openRelease')}
-          </button>
-          <button
-            className="primary-button"
-            disabled={downloading || !result.installerDownloadUrl || !result.installerAssetName}
-            onClick={onDownload}
-            type="button"
-          >
-            <Download size={16} />
-            {downloading ? t('updateDownloading') : t('updateDownloadAndInstall')}
-          </button>
+        <div className="update-modal-footer">
+          {/* 下载进度条与错误提示（置于外层以防在慢速网络或大日志下被滚动遮挡） */}
+          {(downloading || progress || error) && (
+            <div className="update-modal-footer-info">
+              {downloading || progress ? (
+                <div className="update-modal-progress">
+                  <div className="update-modal-progress-header">
+                    <span>{t('updateDownloadProgress')}</span>
+                    <span>{progressText}</span>
+                  </div>
+                  <div className="update-modal-progress-bar">
+                    <div
+                      className="update-modal-progress-fill"
+                      style={{ width: `${progressPercent}%` }}
+                    />
+                  </div>
+                  <div className="update-modal-progress-percent">{progressPercent}%</div>
+                </div>
+              ) : null}
+              {error ? (
+                <div className="update-modal-error">{error}</div>
+              ) : null}
+            </div>
+          )}
+
+          <div className="modal-actions">
+            <button className="secondary-button" disabled={downloading} onClick={onClose} type="button">
+              {t('updateCancel')}
+            </button>
+            <button
+              className="secondary-button"
+              disabled={downloading}
+              onClick={() => onOpenRelease(result.releaseUrl)}
+              type="button"
+            >
+              <ExternalLink size={16} /> {t('openRelease')}
+            </button>
+            <button
+              className="primary-button"
+              disabled={downloading || !result.installerDownloadUrl || !result.installerAssetName}
+              onClick={onDownload}
+              type="button"
+            >
+              <Download size={16} />
+              {downloading ? t('updateDownloading') : t('updateDownloadAndInstall')}
+            </button>
+          </div>
         </div>
       </div>
     </div>
