@@ -19,7 +19,7 @@ export const messages = {
     localTerminalOpenTerminal: '打开终端',
     localTerminalOpen: '打开',
     localTerminalSave: '保存',
-    localTerminalShellPath: '终端路径',
+    localTerminalShellPath: '终端命令路径',
     localTerminalShellPathPlaceholder: '留空时自动使用 PowerShell / bash',
     localTerminalCommandManagement: '命令管理',
     localTerminalNewCommandPlaceholder: '新增命令，例如 qwen',

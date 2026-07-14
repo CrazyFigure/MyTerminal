@@ -2089,7 +2089,7 @@ select:disabled {
 .local-terminal-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.08fr) minmax(250px, 0.92fr);
-  grid-template-rows: minmax(0, 220px) minmax(220px, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
   min-height: 0;
 }
@@ -2138,6 +2138,16 @@ select:disabled {
 .local-terminal-form-row input:focus {
   border-color: var(--app-active-border);
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
+}
+
+.local-terminal-form-row input,
+.local-terminal-form-row .custom-select-trigger,
+.local-terminal-panel button,
+.local-terminal-history-row .custom-select-trigger,
+.local-terminal-history-row button {
+  height: 34px;
+  box-sizing: border-box;
+  border-radius: 10px;
 }
 
 .local-terminal-command-list,
@@ -4611,21 +4621,22 @@ select:disabled {
   padding: 6px 10px;
   border-radius: 6px;
   color: var(--app-text);
-  font-size: 0.92rem;
+  font-size: 0.9rem;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Microsoft YaHei", sans-serif;
   cursor: pointer;
   user-select: none;
   transition: background 0.15s, color 0.15s;
   box-sizing: border-box;
 }
 
-.custom-select-item:hover {
+.custom-select-item:hover,
+.custom-select-item.is-selected:hover {
   background: var(--app-active-bg);
 }
 
 .custom-select-item.is-selected {
   background: transparent;
   color: var(--app-active-text);
-  font-weight: 500;
 }
 
 .custom-select-item-check-wrapper {

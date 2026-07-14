@@ -2461,7 +2461,7 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
             <div className="section-row compact">
               <strong>{t('localTerminalShellPath')}</strong>
               <button
-                className="secondary-button slim"
+                className="secondary-button"
                 onClick={() => void persistDraft(draft)}
                 type="button"
               >
