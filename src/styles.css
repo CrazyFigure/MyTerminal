@@ -357,20 +357,26 @@ select:disabled {
   white-space: nowrap;
 }
 
-/* 重要逻辑：运行状态区域刷新按钮：平时透明无边框，与右上角系统按钮风格一致 */
+/* 重要逻辑：运行状态区域刷新按钮：加上圆角矩形细边框与默认背景，使其在平时有明显的按钮外观 */
 .runtime-header .icon-button {
-  background: transparent !important;
-  border-color: transparent !important;
-  transition: background 0.15s ease, color 0.15s ease;
+  background: var(--app-panel-bg) !important;
+  border: 1px solid rgba(148, 163, 184, 0.24) !important;
+  border-radius: 7px !important;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
+/* 运行状态区域刷新按钮 hover 状态：背景与边框颜色加深 */
 .runtime-header .icon-button:hover:not(:disabled) {
-  background: rgba(15, 23, 42, 0.08) !important;
+  background: rgba(15, 23, 42, 0.15) !important;
+  border-color: rgba(15, 23, 42, 0.25) !important;
   color: var(--app-text) !important;
 }
 
+/* 深色模式下运行状态刷新按钮 hover 状态加深 */
 .app-shell.theme-dark .runtime-header .icon-button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.12) !important;
+  background: rgba(255, 255, 255, 0.20) !important;
+  border-color: rgba(255, 255, 255, 0.30) !important;
+  color: var(--app-text) !important;
 }
 
 .runtime-list {
@@ -408,14 +414,15 @@ select:disabled {
   cursor: pointer;
 }
 
+/* 左上角运行状态可点击展开项：平时不填充背景色，保留圆矩形细边框 */
 .runtime-row.is-expandable-metric-row.is-clickable {
   border-color: rgba(79, 70, 229, 0.22);
-  background: rgba(238, 242, 255, 0.72);
+  background: transparent;
 }
 
 .app-shell.theme-dark .runtime-row.is-expandable-metric-row.is-clickable {
   border-color: rgba(129, 140, 248, 0.32);
-  background: rgba(99, 102, 241, 0.14);
+  background: transparent;
 }
 
 .runtime-row.is-clickable:hover {
@@ -552,6 +559,21 @@ select:disabled {
 .runtime-segmented-control button.is-active {
   background: var(--app-active-bg);
   color: var(--app-active-text);
+}
+
+/* 分段选择器激活态按钮 hover 状态：降低亮度以加深背景 */
+.runtime-segmented-control button.is-active:hover {
+  filter: brightness(0.9);
+}
+
+/* 分段选择器非激活态按钮 hover 状态：背景变深 */
+.runtime-segmented-control button:hover:not(.is-active) {
+  background: rgba(15, 23, 42, 0.15);
+}
+
+/* 深色模式下分段选择器非激活态按钮 hover 状态 */
+.app-shell.theme-dark .runtime-segmented-control button:hover:not(.is-active) {
+  background: rgba(255, 255, 255, 0.20);
 }
 
 .runtime-resource-header {
@@ -1492,6 +1514,13 @@ select:disabled {
   background: linear-gradient(135deg, #4f46e5, #2563eb);
   color: #fff;
   border-color: transparent;
+  transition: background 0.15s ease, color 0.15s ease, filter 0.15s ease;
+}
+
+/* 重色主按钮 hover 状态：使用变暗滤镜和加深渐变背景 */
+.primary-button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #4338ca, #1d4ed8) !important;
+  filter: brightness(0.9) !important;
 }
 
 .ghost-button {
@@ -1502,6 +1531,34 @@ select:disabled {
   width: 30px;
   height: 30px;
   padding: 0;
+}
+
+/* 统一普通按钮与交互标签/行（次要按钮、幽灵按钮、图标按钮、未激活会话标签、未激活面板标签、历史列表行）在 hover 状态下背景与边框颜色加深 */
+.secondary-button:hover:not(:disabled),
+.ghost-button:hover:not(:disabled),
+.icon-button:hover:not(:disabled),
+.session-tab:hover:not(.is-active),
+.panel-tab:hover:not(.is-active),
+.history-row:hover:not(:disabled) {
+  background: rgba(15, 23, 42, 0.15) !important;
+  border-color: rgba(15, 23, 42, 0.25) !important;
+}
+
+/* 深色模式下统一按钮、标签与交互行 hover 状态下背景与边框加深 */
+.app-shell.theme-dark .secondary-button:hover:not(:disabled),
+.app-shell.theme-dark .ghost-button:hover:not(:disabled),
+.app-shell.theme-dark .icon-button:hover:not(:disabled),
+.app-shell.theme-dark .session-tab:hover:not(.is-active),
+.app-shell.theme-dark .panel-tab:hover:not(.is-active),
+.app-shell.theme-dark .history-row:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.20) !important;
+  border-color: rgba(255, 255, 255, 0.30) !important;
+}
+
+/* 激活态会话标签与面板标签 hover 状态：降低亮度以加深背景 */
+.session-tab.is-active:hover,
+.panel-tab.is-active:hover {
+  filter: brightness(0.9) !important;
 }
 
 .icon-button.tiny {
@@ -1566,27 +1623,30 @@ select:disabled {
   flex: 1;
 }
 
-/* 文件管理工具栏按钮去掉边框和默认背景，仅在 hover 时显示圆角灰色背景。 */
+/* 文件管理工具栏按钮：平时保留圆角矩形细边框与默认背景 */
 .explorer-toolbar .secondary-button {
-  border-color: transparent;
-  background: transparent;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 7px;
+  background: var(--app-panel-bg);
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
-/* 文件管理工具栏图标 hover：使用明显的灰色圆矩形背景，与其它系统按钮保持同步 */
+/* 文件管理工具栏图标 hover：背景与边框颜色加深，与其它系统按钮保持同步 */
 .explorer-toolbar .secondary-button:hover:not(:disabled):not(.is-drop-target) {
-  border-color: transparent !important;
-  background: rgba(15, 23, 42, 0.08) !important;
+  border-color: rgba(15, 23, 42, 0.25) !important;
+  background: rgba(15, 23, 42, 0.15) !important;
   color: var(--app-text) !important;
 }
 
+/* 深色模式下文件管理工具栏图标 hover 加深 */
 .app-shell.theme-dark .explorer-toolbar .secondary-button:hover:not(:disabled):not(.is-drop-target) {
-  border-color: transparent !important;
-  background: rgba(255, 255, 255, 0.12) !important;
+  border-color: rgba(255, 255, 255, 0.30) !important;
+  background: rgba(255, 255, 255, 0.20) !important;
 }
 
+/* 文件管理工具栏按钮禁用状态：边框淡化，背景透明 */
 .explorer-toolbar .secondary-button:disabled {
-  border-color: transparent;
+  border-color: rgba(148, 163, 184, 0.12);
   background: transparent;
 }
 
