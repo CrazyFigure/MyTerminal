@@ -26,7 +26,7 @@ jobs:
       - name: Generate star history SVG
         run: node scripts/generate-star-history.mjs
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT_STAR_HISTORY || secrets.GITHUB_TOKEN }}
 
       - name: Commit updated SVG
         shell: bash
