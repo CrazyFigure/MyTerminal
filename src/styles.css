@@ -4487,3 +4487,16 @@ select:disabled {
   line-height: 1.5;
   word-break: break-word;
 }
+
+/* 更新弹窗底部的固定承载容器（包含进度条、错误提示和动作按钮） */
+.update-modal-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+/* 进度条与动作按钮区域的间距由父容器 flex gap 控制，清除按钮原先自带的 margin-top */
+.update-modal-footer .modal-actions {
+  margin-top: 0;
+}

@@ -97,10 +97,10 @@ const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
 const SSH_IO_TIMEOUT: Duration = Duration::from_secs(20);
 // 更新检查和安装包下载要快速失败，避免 GitHub 直连或代理异常时设置页长时间停在处理中。
 const UPDATE_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
-// Release 下载通常只有几 MB，读超时用于识别连接已建立但后续没有数据的卡死场景。
-const UPDATE_HTTP_READ_TIMEOUT: Duration = Duration::from_secs(15);
-// 安装包总下载时长设置为人可接受的上限；超时后让用户检查代理或稍后重试。
-const UPDATE_INSTALLER_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(45);
+// 增加更新包数据读取的超时时间，提升慢速网络环境下的连接稳定性
+const UPDATE_HTTP_READ_TIMEOUT: Duration = Duration::from_secs(40);
+// 极大调高下载超时上限至 600 秒（10分钟），确保在慢速网络下也能完整下载安装包
+const UPDATE_INSTALLER_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 const UPDATE_DOWNLOAD_PROGRESS_EVENT: &str = "myterminal-update-download-progress";
 const UPDATE_DOWNLOAD_PROGRESS_THROTTLE: Duration = Duration::from_millis(100);
 
