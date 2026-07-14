@@ -5830,17 +5830,24 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
     let release_url = "https://github.com/CrazyFigure/MyTerminal/releases/latest".to_string();
     let client = build_update_http_client(UPDATE_HTTP_READ_TIMEOUT)?;
     // GitHub API 要求明确 User-Agent；这里仅读取最新 Release 元数据，并挑出后续可安装的 Windows 安装包。
-    let release = client
+    let response = client
         .get("https://api.github.com/repos/CrazyFigure/MyTerminal/releases/latest")
         .header(reqwest::header::USER_AGENT, "MyTerminal")
         .send()
         .await
-        .map_err(AppError::from)?
+        .map_err(|err| format!("网络请求失败，检测更新超时或被重置。请检查网络连接或代理设置。错误原因: {err}"))?;
+
+    // 针对 GitHub 接口返回 403 Forbidden 进行拦截，由于通常是 API Rate Limit 频率超限导致
+    if response.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err("由于 GitHub 接口访问频率限制（Rate Limit Exceeded），当前 IP 暂时被 GitHub 拒绝对 API 的请求。您可以稍后再试，或者直接点击右上角「GitHub 仓库」前往 Release 页面手动下载新版本。".to_string());
+    }
+
+    let release = response
         .error_for_status()
-        .map_err(AppError::from)?
+        .map_err(|err| format!("HTTP 状态码错误: {err}"))?
         .json::<GitHubReleaseResponse>()
         .await
-        .map_err(AppError::from)?;
+        .map_err(|err| format!("解析 Release 数据失败: {err}"))?;
 
     let latest_version = release.tag_name.trim_start_matches(['v', 'V']).to_string();
     let update_available = is_newer_version(&release.tag_name, &current_version);
