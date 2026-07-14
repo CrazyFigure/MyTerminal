@@ -2126,6 +2126,18 @@ select:disabled {
 .local-terminal-form-row input {
   width: 100%;
   min-width: 0;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: var(--app-input-bg);
+  padding: 8px 10px;
+  outline: none;
+  color: var(--app-text);
+  box-sizing: border-box;
+}
+
+.local-terminal-form-row input:focus {
+  border-color: var(--app-active-border);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
 }
 
 .local-terminal-command-list,
@@ -3333,6 +3345,19 @@ select:disabled {
   min-height: 68px;
   resize: vertical;
   font-family: 'JetBrains Mono', Consolas, monospace;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: var(--app-input-bg);
+  padding: 8px 10px;
+  outline: none;
+  color: var(--app-text);
+  box-sizing: border-box;
+}
+
+.agent-bridge-code-grid textarea:focus,
+.agent-request-card textarea:focus {
+  border-color: var(--app-active-border);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
 }
 
 .agent-toggle-field {
@@ -4500,3 +4525,203 @@ select:disabled {
 .update-modal-footer .modal-actions {
   margin-top: 0;
 }
+
+/* ── Custom Select Component ───────────────────────────────────────────── */
+.custom-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: var(--app-input-bg);
+  padding: 8px 10px;
+  outline: none;
+  color: var(--app-text);
+  font: inherit;
+  box-sizing: border-box;
+  user-select: none;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.custom-select-trigger:hover:not(.is-disabled) {
+  border-color: var(--app-active-border);
+}
+
+.custom-select-trigger.is-active {
+  border-color: var(--app-active-border);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
+}
+
+.custom-select-trigger.is-disabled {
+  cursor: not-allowed !important;
+  opacity: 0.6;
+}
+
+.custom-select-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  text-align: left;
+}
+
+.custom-select-arrow {
+  color: var(--app-muted);
+  transition: transform 0.2s ease;
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+.custom-select-arrow.is-open {
+  transform: rotate(180deg);
+  color: var(--app-text);
+}
+
+/* 下拉菜单 Portal 样式 */
+.custom-select-portal-options {
+  background: var(--app-overlay-bg);
+  border: 1px solid var(--app-card-border);
+  border-radius: 10px;
+  box-shadow: var(--app-shadow);
+  overflow: hidden;
+  box-sizing: border-box;
+  animation: custom-select-fade-in 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: top center;
+}
+
+.custom-select-portal-options.placement-top {
+  transform-origin: bottom center;
+  animation: custom-select-fade-in-up 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.custom-select-scroll-container {
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px;
+  scrollbar-width: thin;
+}
+
+/* 选项条目 */
+.custom-select-item {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: var(--app-text);
+  font-size: 0.92rem;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, color 0.15s;
+  box-sizing: border-box;
+}
+
+.custom-select-item:hover {
+  background: var(--app-active-bg);
+}
+
+.custom-select-item.is-selected {
+  background: transparent;
+  color: var(--app-active-text);
+  font-weight: 500;
+}
+
+.custom-select-item-check-wrapper {
+  width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-shrink: 0;
+}
+
+.custom-select-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.custom-select-item-check {
+  color: var(--app-text);
+  flex-shrink: 0;
+}
+
+.custom-select-item.is-selected .custom-select-item-check {
+  color: var(--app-active-text);
+}
+
+@keyframes custom-select-fade-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes custom-select-fade-in-up {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* 全局复选框美化：使其与文字差不多大，精致的圆矩形，并排除特殊的滑动开关 */
+input[type="checkbox"]:not([class*="toggle"]):not(.agent-toggle-field input) {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  border: 1.5px solid rgba(148, 163, 184, 0.48);
+  border-radius: 4px;
+  background: var(--app-input-bg);
+  cursor: pointer;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.16s ease, border-color 0.16s ease, box-shadow 0.16s;
+  vertical-align: middle;
+  margin: 0;
+}
+
+input[type="checkbox"]:not([class*="toggle"]):not(.agent-toggle-field input):hover:not(:disabled) {
+  border-color: var(--app-active-border);
+}
+
+input[type="checkbox"]:not([class*="toggle"]):not(.agent-toggle-field input):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.2);
+}
+
+input[type="checkbox"]:not([class*="toggle"]):not(.agent-toggle-field input):checked {
+  background: var(--app-active-text, #4f46e5);
+  border-color: var(--app-active-text, #4f46e5);
+}
+
+input[type="checkbox"]:not([class*="toggle"]):not(.agent-toggle-field input):checked::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 7px;
+  border: solid #ffffff;
+  border-width: 0 1.8px 1.8px 0;
+  transform: rotate(45deg);
+}
+
+input[type="checkbox"]:not([class*="toggle"]):not(.agent-toggle-field input):disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+  background: var(--app-item-bg);
+}
+

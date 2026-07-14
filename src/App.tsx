@@ -70,6 +70,7 @@ import { useAppStore } from './store';
 import { useShallow } from 'zustand/react/shallow';
 import { UpdateModal, type UpdateDownloadProgress } from './UpdateModal';
 import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, RemoteFileEntry, RuntimeResourceMetric, RuntimeResourceTarget, RuntimeResourceUsage, RuntimeResourceSource, RuntimeStorageFiles, SshJumpHost, TerminalSession, UiLanguage, UpdateCheckResult } from './types';
+import { CustomSelect } from './CustomSelect';
 
 const MonacoEditor = lazy(() => import('./MonacoEditor'));
 
@@ -1371,14 +1372,15 @@ function ConnectionFormModal() {
               </label>
               <div className="form-field">
                 <span>{t('fieldAuthMethod')}</span>
-                <select
+                <CustomSelect
                   aria-label={t('fieldAuthMethod')}
                   value={connectionDraft.authMethod}
-                  onChange={(event) => updateConnectionDraft('authMethod', event.target.value === 'privateKey' ? 'privateKey' : 'password')}
-                >
-                  <option value="password">{t('authMethodPassword')}</option>
-                  <option value="privateKey">{t('authMethodPrivateKey')}</option>
-                </select>
+                  onChange={(val) => updateConnectionDraft('authMethod', val === 'privateKey' ? 'privateKey' : 'password')}
+                  options={[
+                    { value: 'password', label: t('authMethodPassword') },
+                    { value: 'privateKey', label: t('authMethodPrivateKey') },
+                  ]}
+                />
               </div>
               {isPrivateKeyMode ? (
                 <>
@@ -1511,16 +1513,17 @@ function ConnectionFormModal() {
                         </label>
                         <div className="form-field">
                           <span>{t('fieldAuthMethod')}</span>
-                          <select
+                          <CustomSelect
                             aria-label={t('fieldAuthMethod')}
                             value={jumpHost.authMethod}
-                            onChange={(event) => updateJumpHost(jumpHost.id, {
-                              authMethod: event.target.value === 'privateKey' ? 'privateKey' : 'password',
+                            onChange={(val) => updateJumpHost(jumpHost.id, {
+                              authMethod: val === 'privateKey' ? 'privateKey' : 'password',
                             })}
-                          >
-                            <option value="password">{t('authMethodPassword')}</option>
-                            <option value="privateKey">{t('authMethodPrivateKey')}</option>
-                          </select>
+                            options={[
+                              { value: 'password', label: t('authMethodPassword') },
+                              { value: 'privateKey', label: t('authMethodPrivateKey') },
+                            ]}
+                          />
                         </div>
                         {isPrivateKeyModeForJump ? (
                           <>
@@ -1590,15 +1593,16 @@ function ConnectionFormModal() {
             <div className="form-grid">
               <div className="form-field">
                 <span>{t('fieldProxyType')}</span>
-                <select
+                <CustomSelect
                   aria-label={t('fieldProxyType')}
                   disabled={!connectionDraft.proxy.enabled}
                   value={connectionDraft.proxy.type}
-                  onChange={(event) => updateProxy({ type: event.target.value === 'http' ? 'http' : 'socks5' })}
-                >
-                  <option value="socks5">{t('proxyTypeSocks5')}</option>
-                  <option value="http">{t('proxyTypeHttp')}</option>
-                </select>
+                  onChange={(val) => updateProxy({ type: val === 'http' ? 'http' : 'socks5' })}
+                  options={[
+                    { value: 'socks5', label: t('proxyTypeSocks5') },
+                    { value: 'http', label: t('proxyTypeHttp') },
+                  ]}
+                />
               </div>
               <label>
                 <span>{t('fieldHost')}</span>
@@ -2441,11 +2445,14 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
               <strong>{t('localTerminalStartupCommand')}</strong>
             </div>
             <div className="local-terminal-form-row">
-              <select value={command} onChange={(event) => setCommand(event.target.value)}>
-                {commandOptions.map((item) => (
-                  <option key={item.id} value={item.command}>{getLocalTerminalCommandName(item)}</option>
-                ))}
-              </select>
+              <CustomSelect
+                value={command}
+                onChange={setCommand}
+                options={commandOptions.map((item) => ({
+                  value: item.command,
+                  label: getLocalTerminalCommandName(item),
+                }))}
+              />
               <button className="primary-button" onClick={() => void openCurrentTerminal()} type="button">
                 <Play size={15} /> {t('localTerminalOpenTerminal')}
               </button>
@@ -2524,15 +2531,15 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
                     <strong>{profile.cwd}</strong>
                     <span>{profile.command || t('localTerminalTitle')}</span>
                   </div>
-                  <select
+                  <CustomSelect
                     className="local-terminal-history-command"
                     value={profileCommands[profile.id] ?? profile.command ?? ''}
-                    onChange={(event) => setProfileCommands((current) => ({ ...current, [profile.id]: event.target.value }))}
-                  >
-                    {commandOptions.map((item) => (
-                      <option key={item.id} value={item.command}>{getLocalTerminalCommandName(item)}</option>
-                    ))}
-                  </select>
+                    onChange={(val) => setProfileCommands((current) => ({ ...current, [profile.id]: val }))}
+                    options={commandOptions.map((item) => ({
+                      value: item.command,
+                      label: getLocalTerminalCommandName(item),
+                    }))}
+                  />
                   <button
                     className="secondary-button slim"
                     onClick={() => openProfile(profile, profileCommands[profile.id] ?? profile.command ?? '')}
@@ -3120,17 +3127,27 @@ function SettingsModal({
                   <div className="form-grid">
                     <div className="form-field">
                       <span>{t('fieldTheme')}</span>
-                      <select aria-label={t('fieldTheme')} value={draftSettings.themeMode} onChange={(event) => updateDraftSettings((current) => ({ ...current, themeMode: event.target.value as 'light' | 'dark' }))}>
-                        <option value="light">{t('light')}</option>
-                        <option value="dark">{t('dark')}</option>
-                      </select>
+                      <CustomSelect
+                        aria-label={t('fieldTheme')}
+                        value={draftSettings.themeMode}
+                        onChange={(val) => updateDraftSettings((current) => ({ ...current, themeMode: val as 'light' | 'dark' }))}
+                        options={[
+                          { value: 'light', label: t('light') },
+                          { value: 'dark', label: t('dark') },
+                        ]}
+                      />
                     </div>
                     <div className="form-field">
                       <span>{t('fieldLanguage')}</span>
-                      <select aria-label={t('fieldLanguage')} value={draftSettings.uiLanguage} onChange={(event) => updateDraftSettings((current) => ({ ...current, uiLanguage: event.target.value as UiLanguage }))}>
-                        <option value="zh-CN">{t('languageZhCn')}</option>
-                        <option value="en-US">{t('languageEnUs')}</option>
-                      </select>
+                      <CustomSelect
+                        aria-label={t('fieldLanguage')}
+                        value={draftSettings.uiLanguage}
+                        onChange={(val) => updateDraftSettings((current) => ({ ...current, uiLanguage: val as UiLanguage }))}
+                        options={[
+                          { value: 'zh-CN', label: t('languageZhCn') },
+                          { value: 'en-US', label: t('languageEnUs') },
+                        ]}
+                      />
                     </div>
                   </div>
                 </section>
@@ -3143,23 +3160,27 @@ function SettingsModal({
                   <div className="form-grid">
                     <div className="form-field">
                       <span>{t('fieldLatinFontFamily')}</span>
-                      <select aria-label={t('fieldLatinFontFamily')} value={selectedLatinFontFamily} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellLatinFontFamily: event.target.value }))}>
-                        {latinOptions.map((fontFamily) => (
-                          <option key={fontFamily} value={fontFamily}>
-                            {fontFamily}
-                          </option>
-                        ))}
-                      </select>
+                      <CustomSelect
+                        aria-label={t('fieldLatinFontFamily')}
+                        value={selectedLatinFontFamily}
+                        onChange={(val) => updateDraftSettings((current) => ({ ...current, shellLatinFontFamily: val }))}
+                        options={latinOptions.map((fontFamily) => ({
+                          value: fontFamily,
+                          label: fontFamily,
+                        }))}
+                      />
                     </div>
                     <div className="form-field">
                       <span>{t('fieldCjkFontFamily')}</span>
-                      <select aria-label={t('fieldCjkFontFamily')} value={selectedCjkFontFamily} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellCjkFontFamily: event.target.value }))}>
-                        {cjkOptions.map((fontFamily) => (
-                          <option key={fontFamily} value={fontFamily}>
-                            {fontFamily}
-                          </option>
-                        ))}
-                      </select>
+                      <CustomSelect
+                        aria-label={t('fieldCjkFontFamily')}
+                        value={selectedCjkFontFamily}
+                        onChange={(val) => updateDraftSettings((current) => ({ ...current, shellCjkFontFamily: val }))}
+                        options={cjkOptions.map((fontFamily) => ({
+                          value: fontFamily,
+                          label: fontFamily,
+                        }))}
+                      />
                     </div>
                     <label>
                       <span>{t('fieldFontSize')}</span>
@@ -3219,22 +3240,20 @@ function SettingsModal({
                     </label>
                     <div className="form-field">
                       <span>{t('fieldTerminalBackgroundImageFit')}</span>
-                      <select
+                      <CustomSelect
                         aria-label={t('fieldTerminalBackgroundImageFit')}
                         value={draftSettings.terminalBackgroundImageFit ?? 'cover'}
-                        onChange={(event) =>
+                        onChange={(val) =>
                           updateDraftSettings((current) => ({
                             ...current,
-                            terminalBackgroundImageFit: event.target.value as NonNullable<AppSettings['terminalBackgroundImageFit']>,
+                            terminalBackgroundImageFit: val as NonNullable<AppSettings['terminalBackgroundImageFit']>,
                           }))
                         }
-                      >
-                        {terminalBackgroundFitOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {t(option.labelKey)}
-                          </option>
-                        ))}
-                      </select>
+                        options={terminalBackgroundFitOptions.map((option) => ({
+                          value: option.value,
+                          label: t(option.labelKey),
+                        }))}
+                      />
                     </div>
                   </div>
                 </section>
@@ -3247,25 +3266,27 @@ function SettingsModal({
                   <div className="form-grid settings-single-column-grid settings-compact-form-grid">
                     <div className="form-field">
                       <span>{t('fieldTerminalRightClickBehavior')}</span>
-                      <select
+                      <CustomSelect
                         aria-label={t('fieldTerminalRightClickBehavior')}
                         value={draftSettings.terminalRightClickBehavior}
-                        onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalRightClickBehavior: event.target.value as AppSettings['terminalRightClickBehavior'] }))}
-                      >
-                        <option value="paste">{t('rightClickPaste')}</option>
-                        <option value="menu">{t('rightClickMenu')}</option>
-                      </select>
+                        onChange={(val) => updateDraftSettings((current) => ({ ...current, terminalRightClickBehavior: val as AppSettings['terminalRightClickBehavior'] }))}
+                        options={[
+                          { value: 'paste', label: t('rightClickPaste') },
+                          { value: 'menu', label: t('rightClickMenu') },
+                        ]}
+                      />
                     </div>
                     <div className="form-field">
                       <span>{t('fieldTerminalLineWrapMode')}</span>
-                      <select
+                      <CustomSelect
                         aria-label={t('fieldTerminalLineWrapMode')}
                         value={draftSettings.terminalLineWrapMode ?? 'wrap'}
-                        onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalLineWrapMode: event.target.value as AppSettings['terminalLineWrapMode'] }))}
-                      >
-                        <option value="wrap">{t('terminalLineWrapModeWrap')}</option>
-                        <option value="horizontal">{t('terminalLineWrapModeHorizontal')}</option>
-                      </select>
+                        onChange={(val) => updateDraftSettings((current) => ({ ...current, terminalLineWrapMode: val as AppSettings['terminalLineWrapMode'] }))}
+                        options={[
+                          { value: 'wrap', label: t('terminalLineWrapModeWrap') },
+                          { value: 'horizontal', label: t('terminalLineWrapModeHorizontal') },
+                        ]}
+                      />
                     </div>
                     <div className="agent-toggle-field settings-toggle-row settings-inline-toggle settings-centered-toggle">
                       <span id="terminal-match-selection-label">{t('fieldTerminalMatchSelection')}</span>
@@ -3378,21 +3399,22 @@ function SettingsModal({
                     </label>
                     <div className="form-field">
                       <span>{t('fieldRuntimeResourceSource')}</span>
-                      <select
+                      <CustomSelect
                         aria-label={t('fieldRuntimeResourceSource')}
                         value={draftSettings.runtimeResourceSource ?? 'system'}
-                        onChange={(event) =>
+                        onChange={(val) =>
                           updateDraftSettings((current) => ({
                             ...current,
                             // 资源来源只作为内存行展开明细的默认采集策略，不影响常规运行状态轮询。
-                            runtimeResourceSource: event.target.value as RuntimeResourceSource,
+                            runtimeResourceSource: val as RuntimeResourceSource,
                           }))
                         }
-                      >
-                        <option value="system">{t('runtimeResourceSourceSystem')}</option>
-                        <option value="docker">{t('runtimeResourceSourceDocker')}</option>
-                        <option value="kubernetes">{t('runtimeResourceSourceKubernetes')}</option>
-                      </select>
+                        options={[
+                          { value: 'system', label: t('runtimeResourceSourceSystem') },
+                          { value: 'docker', label: t('runtimeResourceSourceDocker') },
+                          { value: 'kubernetes', label: t('runtimeResourceSourceKubernetes') },
+                        ]}
+                      />
                     </div>
                   </div>
                 </section>
