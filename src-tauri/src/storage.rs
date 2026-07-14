@@ -429,8 +429,16 @@ fn normalize_local_terminal_settings(settings: LocalTerminalSettings) -> LocalTe
     let mut command_ids = std::collections::HashSet::new();
     let mut commands = Vec::<LocalTerminalCommand>::new();
 
-    // 内置命令始终保留；旧配置或手动编辑文件丢失时在加载阶段补齐，避免管理页没有默认 CLI。
-    for command in settings.commands.into_iter().chain(LocalTerminalSettings::default().commands) {
+    // 内置命令只强制补齐“本地终端”（id == "shell"），其余内置项如被用户删除则不予补回。
+    let default_cmds = vec![
+        LocalTerminalCommand {
+            id: "shell".into(),
+            name: "本地终端".into(),
+            command: String::new(),
+            built_in: true,
+        }
+    ];
+    for command in settings.commands.into_iter().chain(default_cmds) {
         let name = command.name.trim();
         let command_text = command.command.trim();
         if name.is_empty() || (!command.built_in && command_text.is_empty()) {

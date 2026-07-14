@@ -222,12 +222,9 @@ const normalizeTunnelRequest = (request: TunnelOpenRequest): TunnelOpenRequest =
 
 // 本地终端配置在 Web stub 和 Tauri 后端之间保持同一套归一化规则，空命令表示纯 shell。
 const normalizeLocalTerminalSettings = (settings: LocalTerminalSettings): LocalTerminalSettings => {
-  // 内置命令始终补齐，避免旧配置缺失“本地终端”导致无法直接打开 shell。
+  // 内置命令只强制补齐“本地终端”（id == "shell"），避免旧配置缺失本地终端，其余内置命令被删除后不强行补齐。
   const defaultCommands: LocalTerminalSettings['commands'] = [
     { id: 'shell', name: '本地终端', command: '', builtIn: true },
-    { id: 'claude', name: 'claude', command: 'claude', builtIn: true },
-    { id: 'codex', name: 'codex', command: 'codex', builtIn: true },
-    { id: 'opencode', name: 'opencode', command: 'opencode', builtIn: true },
   ];
   const commandMap = new Map<string, LocalTerminalSettings['commands'][number]>();
   [...(settings.commands ?? []), ...defaultCommands].forEach((item) => {

@@ -306,6 +306,81 @@ const nowIso = () => new Date().toISOString();
 // 空命令代表直接打开本地 shell，是本地终端和 AI CLI 之间的兜底启动项。
 const localTerminalShellCommand = { id: 'shell', name: '本地终端', command: '', builtIn: true };
 
+// 根据命令名称和实际命令内容，动态匹配对应的高清彩色图标路径。
+// 若匹配到专属 AI 工具，返回其图标路径；若是纯本地终端，则返回本地终端默认图标；其余自定义或未匹配命令返回 null。
+const getLocalTerminalIcon = (name: string, command: string) => {
+  const lowerName = name.toLowerCase();
+  const lowerCmd = command.toLowerCase();
+  if (lowerName.includes('claude') || lowerCmd.includes('claude')) {
+    return '/icons/claude.svg';
+  }
+  if (lowerName.includes('codex') || lowerCmd.includes('codex')) {
+    return '/icons/codex.svg';
+  }
+  if (lowerName.includes('opencode') || lowerCmd.includes('opencode')) {
+    return '/icons/opencode.svg';
+  }
+  if (lowerName.includes('qwen') || lowerCmd.includes('qwen')) {
+    return '/icons/qwen.svg';
+  }
+  if (lowerName.includes('gemini') || lowerCmd.includes('gemini')) {
+    return '/icons/gemini.svg';
+  }
+  if (lowerName.includes('deepseek') || lowerCmd.includes('deepseek')) {
+    return '/icons/deepseek.svg';
+  }
+  if (lowerName.includes('copilot') || lowerCmd.includes('copilot')) {
+    return '/icons/copilot.svg';
+  }
+  if (lowerName.includes('amazon') || lowerCmd.includes('amazon') || lowerName.includes('aws') || lowerCmd.includes('aws')) {
+    return '/icons/amazon.svg';
+  }
+  if (lowerName.includes('groq') || lowerCmd.includes('groq')) {
+    return '/icons/groq.svg';
+  }
+  if (lowerName.includes('kimi') || lowerCmd.includes('kimi') || lowerName.includes('moonshot') || lowerCmd.includes('moonshot')) {
+    return '/icons/kimi.svg';
+  }
+  if (lowerName.includes('mistral') || lowerCmd.includes('mistral')) {
+    return '/icons/mistral.svg';
+  }
+  if (lowerName.includes('cline') || lowerCmd.includes('cline')) {
+    return '/icons/cline.svg';
+  }
+  if (lowerName.includes('cursor') || lowerCmd.includes('cursor')) {
+    return '/icons/cursor.svg';
+  }
+  if (lowerName.includes('grok') || lowerCmd.includes('grok')) {
+    return '/icons/grok.svg';
+  }
+  if (lowerName === '本地终端' || !command.trim()) {
+    return '/icons/local.svg';
+  }
+  return null;
+};
+
+// 判定某个命令是否拥有专属的高清 AI 工具图标
+const hasExclusiveLocalTerminalIcon = (name: string, command: string) => {
+  const lowerName = name.toLowerCase();
+  const lowerCmd = command.toLowerCase();
+  return (
+    lowerName.includes('claude') || lowerCmd.includes('claude') ||
+    lowerName.includes('codex') || lowerCmd.includes('codex') ||
+    lowerName.includes('opencode') || lowerCmd.includes('opencode') ||
+    lowerName.includes('qwen') || lowerCmd.includes('qwen') ||
+    lowerName.includes('gemini') || lowerCmd.includes('gemini') ||
+    lowerName.includes('deepseek') || lowerCmd.includes('deepseek') ||
+    lowerName.includes('copilot') || lowerCmd.includes('copilot') ||
+    lowerName.includes('amazon') || lowerCmd.includes('amazon') || lowerName.includes('aws') || lowerCmd.includes('aws') ||
+    lowerName.includes('groq') || lowerCmd.includes('groq') ||
+    lowerName.includes('kimi') || lowerCmd.includes('kimi') || lowerName.includes('moonshot') || lowerCmd.includes('moonshot') ||
+    lowerName.includes('mistral') || lowerCmd.includes('mistral') ||
+    lowerName.includes('cline') || lowerCmd.includes('cline') ||
+    lowerName.includes('cursor') || lowerCmd.includes('cursor') ||
+    lowerName.includes('grok') || lowerCmd.includes('grok')
+  );
+};
+
 // 本地终端标题要兼容空命令，避免纯 shell 会话显示成“ · 目录”。
 const normalizeLocalTerminalProfileTitle = (cwd: string, command: string) => command ? `${command} · ${cwd}` : cwd;
 
@@ -319,14 +394,20 @@ const getLocalTerminalDirectoryName = (cwd?: string, fallbackLabel = '本地终�
   return parts.at(-1) || normalized;
 };
 
-// 本地终端 tab 用短标题展示，命令为空时只显示目录名，避免纯 shell 标签过长。
+// 本地终端 tab 用短标题展示，若匹配专属工具图标或无启动命令，则隐藏命令前缀以节省空间；否则加上命令前缀。
 const formatLocalTerminalTabLabel = (session: TerminalSession, fallbackLabel = '本地终端') => {
   const directoryName = getLocalTerminalDirectoryName(session.cwd, fallbackLabel);
   const fullCwd = session.cwd?.trim();
   const command = fullCwd && session.title.endsWith(` · ${fullCwd}`)
     ? session.title.slice(0, -` · ${fullCwd}`.length).trim()
     : '';
-  return command ? `${command} · ${directoryName}` : directoryName;
+  if (!command) {
+    return directoryName;
+  }
+  if (hasExclusiveLocalTerminalIcon(session.title, session.localCommand ?? '')) {
+    return directoryName;
+  }
+  return `${command} · ${directoryName}`;
 };
 
 // 新建历史目录时同步生成标题和最近使用时间，后端会再次校验目录有效性。
@@ -2288,15 +2369,58 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
   // 历史目录保留最近一次选择的命令，打开时允许单独切换，不把历史固定死成单一入口。
   const [profileCommands, setProfileCommands] = useState<Record<string, string>>({});
 
+  // 尊重 draft.commands 的自定义拖拽排序，同时如果 commands 列表里没有本地终端则进行兜底补全。
   const commandOptions = useMemo(() => {
     const map = new Map<string, LocalTerminalCommand>();
-    [localTerminalShellCommand, ...draft.commands].forEach((item) => {
+    draft.commands.forEach((item) => {
       if (!map.has(item.id)) {
         map.set(item.id, item);
       }
     });
+    if (!map.has(localTerminalShellCommand.id)) {
+      map.set(localTerminalShellCommand.id, localTerminalShellCommand);
+    }
     return Array.from(map.values());
   }, [draft.commands]);
+
+  // 原生 HTML5 拖拽状态与处理逻辑
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+
+  // 借助 useRef 同步保持 commands 的最新引用，规避拖拽释放事件里可能产生的闭包旧值问题
+  const latestCommandsRef = useRef(draft.commands);
+  useEffect(() => {
+    latestCommandsRef.current = draft.commands;
+  }, [draft.commands]);
+
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    setDraggedIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    if (draggedIndex === null || draggedIndex === index) {
+      return;
+    }
+    const nextCommands = [...draft.commands];
+    const draggedItem = nextCommands[draggedIndex];
+    nextCommands.splice(draggedIndex, 1);
+    nextCommands.splice(index, 0, draggedItem);
+    setDraft((current) => ({
+      ...current,
+      commands: nextCommands,
+    }));
+    setDraggedIndex(index);
+  };
+
+  const handleDragEnd = async () => {
+    setDraggedIndex(null);
+    const nextDraft = {
+      ...draft,
+      commands: latestCommandsRef.current,
+    };
+    await persistDraft(nextDraft);
+  };
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements);
   const getLocalTerminalCommandName = (item: LocalTerminalCommand) => {
@@ -2389,7 +2513,8 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
 
   const deleteCommand = async (commandId: string) => {
     const target = draft.commands.find((item) => item.id === commandId);
-    if (!target || target.builtIn) {
+    // 仅锁定本地终端（shell），其余内置和自定义命令均允许被删除。
+    if (!target || target.id === 'shell') {
       return;
     }
     const nextCommands = draft.commands.filter((item) => item.id !== commandId);
@@ -2448,10 +2573,18 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
               <CustomSelect
                 value={command}
                 onChange={setCommand}
-                options={commandOptions.map((item) => ({
-                  value: item.command,
-                  label: getLocalTerminalCommandName(item),
-                }))}
+                options={commandOptions.map((item) => {
+                  const iconPath = getLocalTerminalIcon(item.name, item.command);
+                  return {
+                    value: item.command,
+                    label: (
+                      <div className="local-terminal-select-option">
+                        {iconPath && <img src={iconPath} className="local-terminal-select-icon" alt="" />}
+                        <span>{getLocalTerminalCommandName(item)}</span>
+                      </div>
+                    ),
+                  };
+                })}
               />
               <button className="primary-button" onClick={() => void openCurrentTerminal()} type="button">
                 <Play size={15} /> {t('localTerminalOpenTerminal')}
@@ -2501,15 +2634,31 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
               </button>
             </div>
             <div className="local-terminal-command-list">
-              {draft.commands.map((item) => (
-                <div key={item.id} className="local-terminal-command-row">
-                  <span>{getLocalTerminalCommandName(item)}</span>
-                  <code>{item.command || 'shell'}</code>
+              {draft.commands.map((item, index) => (
+                <div
+                  key={item.id}
+                  className={`local-terminal-command-row ${draggedIndex === index ? 'is-dragging' : ''}`}
+                  draggable={true}
+                  onDragStart={(e) => handleDragStart(e, index)}
+                  onDragOver={(e) => handleDragOver(e, index)}
+                  onDragEnd={handleDragEnd}
+                  onDrop={handleDragEnd}
+                >
+                  <div className="local-terminal-command-row-left">
+                    <GripVertical className="local-terminal-drag-handle" size={14} />
+                    {(() => {
+                      const iconPath = getLocalTerminalIcon(item.name, item.command);
+                      return iconPath ? (
+                        <img src={iconPath} className="local-terminal-row-icon" alt="" />
+                      ) : null;
+                    })()}
+                    <span>{getLocalTerminalCommandName(item)}</span>
+                  </div>
                   <button
                     className="icon-button"
-                    disabled={item.builtIn}
+                    disabled={item.id === 'shell'}
                     onClick={() => void deleteCommand(item.id)}
-                    title={item.builtIn ? t('localTerminalBuiltInCommandLocked') : t('localTerminalDeleteCommand')}
+                    title={item.id === 'shell' ? t('localTerminalBuiltInCommandLocked') : t('localTerminalDeleteCommand')}
                     type="button"
                   >
                     <Trash2 size={14} />
@@ -2535,10 +2684,18 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
                     className="local-terminal-history-command"
                     value={profileCommands[profile.id] ?? profile.command ?? ''}
                     onChange={(val) => setProfileCommands((current) => ({ ...current, [profile.id]: val }))}
-                    options={commandOptions.map((item) => ({
-                      value: item.command,
-                      label: getLocalTerminalCommandName(item),
-                    }))}
+                    options={commandOptions.map((item) => {
+                      const iconPath = getLocalTerminalIcon(item.name, item.command);
+                      return {
+                        value: item.command,
+                        label: (
+                          <div className="local-terminal-select-option">
+                            {iconPath && <img src={iconPath} className="local-terminal-select-icon" alt="" />}
+                            <span>{getLocalTerminalCommandName(item)}</span>
+                          </div>
+                        ),
+                      };
+                    })}
                   />
                   <button
                     className="secondary-button slim"
@@ -6248,7 +6405,20 @@ export default function App() {
                       onPointerDown={(event) => startSessionTabDrag(event, session, sessionLabel)}
                     >
                       <button className="session-tab-trigger" onClick={() => selectSession(session.id)} type="button">
-                        <span aria-label={translateStatus(settings.uiLanguage, session.status)} className={sessionStatusClassName(session.status)} title={translateStatus(settings.uiLanguage, session.status)} />
+                        {session.kind === 'local' && getLocalTerminalIcon(session.title, session.localCommand ?? '') ? (
+                          <img
+                            src={getLocalTerminalIcon(session.title, session.localCommand ?? '')!}
+                            className="session-status-icon-image"
+                            alt=""
+                            title={translateStatus(settings.uiLanguage, session.status)}
+                          />
+                        ) : (
+                          <span
+                            aria-label={translateStatus(settings.uiLanguage, session.status)}
+                            className={sessionStatusClassName(session.status)}
+                            title={translateStatus(settings.uiLanguage, session.status)}
+                          />
+                        )}
                         <span>{sessionLabel}</span>
                       </button>
                       <button
