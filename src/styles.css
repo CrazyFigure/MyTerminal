@@ -2234,9 +2234,11 @@ select:disabled {
   scrollbar-width: thin;
 }
 
+/* 命令 Preset 列表整体高度延伸，填补面板下方的空白区域，并调整行距 */
 .local-terminal-command-list {
-  max-height: 126px;
+  max-height: 232px;
   gap: 4px;
+  overflow-y: auto;
 }
 
 .local-terminal-command-row,
@@ -2249,13 +2251,62 @@ select:disabled {
   padding: 7px;
 }
 
+/* 命令 Preset 单行修改为两列网格布局，高度紧凑，带明显的行边界和阴影 */
 .local-terminal-command-row {
-  grid-template-columns: minmax(80px, 0.7fr) minmax(0, 1fr) auto;
-  padding: 5px 6px;
+  grid-template-columns: 1fr auto;
+  padding: 5px 8px;
+  cursor: grab;
+  user-select: none;
+  border: 1px solid var(--app-border-color);
+  background: var(--app-surface-bg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: opacity 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.local-terminal-command-row:active {
+  cursor: grabbing;
+}
+
+.local-terminal-command-row:hover {
+  background-color: var(--app-item-hover-bg);
+  border-color: var(--app-accent-color);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+}
+
+/* 拖拽手柄样式 */
+.local-terminal-drag-handle {
+  color: var(--app-subtle-text);
+  flex-shrink: 0;
+  cursor: grab;
+}
+
+.local-terminal-drag-handle:active {
+  cursor: grabbing;
+}
+
+/* 拖拽排序中的半透明预览与边界虚线效果 */
+.local-terminal-command-row.is-dragging {
+  opacity: 0.4;
+  border: 1px dashed var(--app-accent-color);
+  background-color: var(--app-item-hover-bg);
+}
+
+/* 行内左侧布局 */
+.local-terminal-command-row-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.local-terminal-row-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  object-fit: contain;
 }
 
 .local-terminal-command-row span,
-.local-terminal-command-row code,
 .local-terminal-history-main strong,
 .local-terminal-history-main span {
   min-width: 0;
@@ -2264,9 +2315,30 @@ select:disabled {
   white-space: nowrap;
 }
 
-.local-terminal-command-row code {
-  color: var(--app-subtle-text);
-  font-size: 0.82rem;
+/* 下拉菜单中选项的图标加文字样式 */
+.local-terminal-select-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.local-terminal-select-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+/* 会话 Tab 标签页左侧替代绿点的本地终端图标样式 */
+.session-status-icon-image {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  object-fit: contain;
+  border-radius: 2px;
+  margin-right: 6px;
 }
 
 .local-terminal-history-row {
