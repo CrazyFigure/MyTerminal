@@ -1156,7 +1156,17 @@ select:disabled {
   resize: vertical;
 }
 
+/* 命令面板：容器以 flex 布局填满可用空间 */
+.command-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* 文本编辑器：高度撑满命令面板，占满所有剩余空间 */
 .command-editor {
+  flex: 1 1 auto;
+  height: 100%;
   min-height: 88px;
   resize: none;
   font-family: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
@@ -4017,9 +4027,18 @@ select:disabled {
   cursor: not-allowed;
 }
 
+/* 会话右键菜单：缩小规格（比文件右键稍宽、字号和间距略大，避免文案显得太拥挤） */
 .session-context-menu {
   z-index: 120;
-  min-width: 190px;
+  min-width: 168px;
+  padding: 5px;
+}
+
+.session-context-menu .context-menu-item {
+  min-height: 26px;
+  border-radius: 7px;
+  padding: 5px 9px;
+  font-size: 0.8rem;
 }
 
 .file-context-menu {
