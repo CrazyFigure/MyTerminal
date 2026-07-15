@@ -128,6 +128,7 @@ fn main() {
             commands::append_command_history,
             commands::get_command_suggestions,
             commands::check_for_updates,
+            commands::fetch_remote_background_image,
             commands::download_and_install_update,
             commands::open_external_url,
             commands::export_local_config,

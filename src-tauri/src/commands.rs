@@ -5823,6 +5823,89 @@ pub fn get_command_suggestions(
     Ok(suggestions)
 }
 
+// 远程背景图最大下载体积，避免误填超大文件或非图片资源撑爆内存与 data URL。
+const REMOTE_BACKGROUND_IMAGE_MAX_BYTES: usize = 20 * 1024 * 1024;
+
+#[tauri::command]
+pub async fn fetch_remote_background_image(url: String) -> Result<String, String> {
+    let trimmed = url.trim();
+    // 只处理 http(s) 远程地址；本地路径、data:、asset: 等由前端自行渲染，不该进后端下载。
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err("仅支持 http(s) 远程图片地址".to_string());
+    }
+
+    // 走后端 reqwest 下载可绕开 WebView 自动附带的 tauri.localhost Referer，避免被图床防盗链拦截返回 403。
+    let client = build_update_http_client(UPDATE_HTTP_READ_TIMEOUT)?;
+    let response = client
+        .get(trimmed)
+        .header(reqwest::header::USER_AGENT, "Mozilla/5.0")
+        .send()
+        .await
+        .map_err(|err| format!("背景图下载失败，请检查网络或链接是否有效。错误原因: {err}"))?;
+
+    let response = response
+        .error_for_status()
+        .map_err(|err| format!("背景图请求返回错误状态: {err}"))?;
+
+    // 响应头 Content-Type 仅作兜底：部分图床(如 haowallpaper)声称 jpeg 实际却是 webp，data URL 的 MIME 与真实字节不符时浏览器会拒绝渲染。
+    let header_content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().unwrap_or(value).trim().to_string())
+        .filter(|value| value.starts_with("image/"));
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|err| format!("背景图数据读取失败: {err}"))?;
+
+    if bytes.is_empty() {
+        return Err("背景图内容为空".to_string());
+    }
+    if bytes.len() > REMOTE_BACKGROUND_IMAGE_MAX_BYTES {
+        return Err("背景图体积过大，请更换更小的图片".to_string());
+    }
+
+    // 以真实字节的魔术数字识别图片类型，避免服务器 Content-Type 与内容不符导致 data URL 无法渲染。
+    let content_type = detect_image_mime(&bytes)
+        .map(|mime| mime.to_string())
+        .or(header_content_type)
+        .unwrap_or_else(|| "image/jpeg".to_string());
+
+    // 转成 data URL 返回；CSP 已允许 img-src data:，前端可直接用作 background-image。
+    let encoded = STANDARD.encode(&bytes);
+    Ok(format!("data:{content_type};base64,{encoded}"))
+}
+
+// 通过文件头魔术字节判断常见图片格式，返回标准 MIME；识别不出时返回 None 交由调用方兜底。
+fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() < 12 {
+        return None;
+    }
+    // JPEG: FF D8 FF
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+    // PNG: 89 50 4E 47 0D 0A 1A 0A
+    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some("image/png");
+    }
+    // GIF: "GIF8"
+    if bytes.starts_with(b"GIF8") {
+        return Some("image/gif");
+    }
+    // WebP: "RIFF"...."WEBP"
+    if bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    // BMP: "BM"
+    if bytes.starts_with(b"BM") {
+        return Some("image/bmp");
+    }
+    None
+}
+
 #[tauri::command]
 pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
