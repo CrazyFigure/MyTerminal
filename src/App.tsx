@@ -2592,23 +2592,28 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
             </div>
 
             <div className="section-row compact">
+              {/* 终端命令路径标题 */}
               <strong>{t('localTerminalShellPath')}</strong>
+            </div>
+            {/* 三列网格布局，包含：路径输入框、浏览按钮、保存按钮 */}
+            <div className="local-terminal-form-row-three-cols">
+              {/* 终端命令路径输入框 */}
+              <input
+                placeholder={t('localTerminalShellPathPlaceholder')}
+                value={draft.shellPath}
+                onChange={(event) => setDraft((current) => ({ ...current, shellPath: event.target.value }))}
+              />
+              {/* 浏览选择文件的按钮 */}
+              <button className="secondary-button" onClick={() => void browseShellPath()} type="button">
+                <FolderOpen size={15} /> {t('localTerminalBrowse')}
+              </button>
+              {/* 保存终端路径配置的按钮 */}
               <button
                 className="secondary-button"
                 onClick={() => void persistDraft(draft)}
                 type="button"
               >
                 <Save size={14} /> {t('localTerminalSave')}
-              </button>
-            </div>
-            <div className="local-terminal-form-row">
-              <input
-                placeholder={t('localTerminalShellPathPlaceholder')}
-                value={draft.shellPath}
-                onChange={(event) => setDraft((current) => ({ ...current, shellPath: event.target.value }))}
-              />
-              <button className="secondary-button" onClick={() => void browseShellPath()} type="button">
-                <FolderOpen size={15} /> {t('localTerminalBrowse')}
               </button>
             </div>
           </section>
