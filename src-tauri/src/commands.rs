@@ -999,6 +999,33 @@ mod shell_output_filter_tests {
     }
 
     #[test]
+    fn parses_available_tcp_and_ssh_connection_counts() {
+        // 正常采集结果必须同时保留 TCP 总数和最终 sshd 端口对应的连接数。
+        assert_eq!(
+            parse_connection_counts("tcp=18 ssh=2"),
+            Some("TCP 18 / SSH 2".to_string())
+        );
+    }
+
+    #[test]
+    fn marks_ssh_connection_count_unavailable_instead_of_zero() {
+        // 端口无法识别或网络表不可见时远端返回 --，前端展示也不能回退成误导性的 SSH 0。
+        assert_eq!(
+            parse_connection_counts("tcp=18 ssh=--"),
+            Some("TCP 18 / SSH --".to_string())
+        );
+    }
+
+    #[test]
+    fn runtime_overview_discovers_the_final_remote_ssh_port() {
+        let command = runtime_overview_command();
+        // 跳板和端口映射场景必须依据最终 sshd 注入的会话环境，不能再嵌入客户端 connection.port。
+        assert!(command.contains("SSH_CONNECTION"));
+        assert!(command.contains("SSH_CLIENT"));
+        assert!(command.contains("[ \"$connection_ssh\" = \"0\" ] && connection_ssh=\"\""));
+    }
+
+    #[test]
     fn restores_cursor_when_prompt_marker_arrives_after_hidden_cursor() {
         let mut filter = ShellOutputFilter::default();
         let input = format!(
@@ -3414,8 +3441,94 @@ fn parse_connection_counts(contents: &str) -> Option<String> {
         }
     }
 
-    // 连接数用于观察机器整体 TCP 压力，同时保留当前 SSH 端口连接数方便判断终端侧负载。
-    tcp_count.map(|tcp| format!("TCP {tcp} / SSH {}", ssh_count.unwrap_or(0)))
+    // SSH 数量缺失表示远端无法可靠识别当前 sshd 端口，必须展示不可用，不能用 0 混淆真实结果。
+    tcp_count.map(|tcp| {
+        let ssh = ssh_count
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| String::from("--"));
+        format!("TCP {tcp} / SSH {ssh}")
+    })
+}
+
+/// 构造运行状态采集命令。SSH 端口必须从最终远端会话的环境变量中读取，不能使用客户端配置端口：
+/// 跳板机、NAT 或端口转发会让连接入口端口与目标机 sshd 实际监听端口不同。
+fn runtime_overview_command() -> &'static str {
+    r#"sh -lc '
+printf "__MYTERMINAL_OS__\n"
+(uname -srmo 2>/dev/null || uname -a 2>/dev/null || true)
+printf "\n__MYTERMINAL_CPUSTAT__\n"
+(grep -E "^cpu[0-9 ]" /proc/stat 2>/dev/null; sleep 0.2; grep -E "^cpu[0-9 ]" /proc/stat 2>/dev/null) || true
+printf "\n__MYTERMINAL_MEMINFO__\n"
+cat /proc/meminfo 2>/dev/null || true
+printf "\n__MYTERMINAL_DF__\n"
+df -Pk / 2>/dev/null || true
+printf "\n__MYTERMINAL_CONNECTIONS__\n"
+
+# SSH_CONNECTION 的第 4 段是最终 sshd 实际接收连接的本地端口；SSH_CLIENT 第 3 段作为兼容兜底。
+ssh_port=""
+if [ -n "${SSH_CONNECTION:-}" ]; then
+  set -- $SSH_CONNECTION
+  [ "$#" -ge 4 ] && ssh_port="$4"
+fi
+if [ -z "$ssh_port" ] && [ -n "${SSH_CLIENT:-}" ]; then
+  set -- $SSH_CLIENT
+  [ "$#" -ge 3 ] && ssh_port="$3"
+fi
+case "$ssh_port" in
+  ""|*[!0-9]*) ssh_port="" ;;
+esac
+
+connection_total=""
+connection_ssh=""
+if [ -r /proc/net/tcp ] || [ -r /proc/net/tcp6 ]; then
+  port_hex=""
+  [ -n "$ssh_port" ] && port_hex=$(printf "%04X" "$ssh_port" 2>/dev/null || printf "")
+  total=0
+  ssh=""
+  [ -n "$port_hex" ] && ssh=0
+  for file in /proc/net/tcp /proc/net/tcp6; do
+    [ -r "$file" ] || continue
+    while read sl local_addr remote_addr state rest; do
+      [ "$sl" = "sl" ] && continue
+      [ "$state" = "01" ] || continue
+      total=$((total + 1))
+      if [ -n "$port_hex" ]; then
+        case "$local_addr" in
+          *":$port_hex") ssh=$((ssh + 1)) ;;
+        esac
+      fi
+    done < "$file"
+  done
+  connection_total=$total
+  connection_ssh=$ssh
+elif command -v ss >/dev/null 2>&1; then
+  connection_total=$(ss -Htan state established 2>/dev/null | wc -l | tr -d " ")
+  if [ -n "$ssh_port" ]; then
+    connection_ssh=$(ss -Htan state established 2>/dev/null | grep -Ec ":$ssh_port[[:space:]]" 2>/dev/null || true)
+  fi
+elif command -v netstat >/dev/null 2>&1; then
+  connection_total=$(netstat -tan 2>/dev/null | grep -c "ESTABLISHED" 2>/dev/null || true)
+  if [ -n "$ssh_port" ]; then
+    connection_ssh=$(netstat -tan 2>/dev/null | grep "ESTABLISHED" 2>/dev/null | grep -Ec "[:.]$ssh_port[[:space:]]" 2>/dev/null || true)
+  fi
+fi
+
+# 当前采集命令本身就在 SSH 会话中执行，识别到端口却统计为 0 说明网络表不可见或被隔离，应标记不可用。
+[ "$connection_ssh" = "0" ] && connection_ssh=""
+if [ -n "$connection_total" ]; then
+  printf "tcp=%s" "$connection_total"
+  if [ -n "$connection_ssh" ]; then
+    printf " ssh=%s\n" "$connection_ssh"
+  else
+    printf " ssh=--\n"
+  fi
+fi
+
+printf "\n__MYTERMINAL_HOSTIP__\n"
+hostname -I 2>/dev/null || true
+printf "\n__MYTERMINAL_UPTIME__\n"
+cat /proc/uptime 2>/dev/null || true
+'"#
 }
 
 fn parse_cpu_sample(line: &str) -> Option<(u64, u64)> {
@@ -3490,11 +3603,7 @@ fn query_runtime_overview_with_session(
     session: &Session,
 ) -> Result<RuntimeOverview, AppError> {
     // 运行状态一次性读取所有需要的远端文本，避免 CPU/内存/磁盘等指标各自开 channel 导致刷新发慢。
-    let runtime_command = format!(
-        r#"sh -lc 'ssh_port={}; printf "__MYTERMINAL_OS__\n"; (uname -srmo 2>/dev/null || uname -a 2>/dev/null || true); printf "\n__MYTERMINAL_CPUSTAT__\n"; (grep -E "^cpu[0-9 ]" /proc/stat 2>/dev/null; sleep 0.2; grep -E "^cpu[0-9 ]" /proc/stat 2>/dev/null) || true; printf "\n__MYTERMINAL_MEMINFO__\n"; cat /proc/meminfo 2>/dev/null || true; printf "\n__MYTERMINAL_DF__\n"; df -Pk / 2>/dev/null || true; printf "\n__MYTERMINAL_CONNECTIONS__\n"; connection_total=""; connection_ssh=""; if [ -r /proc/net/tcp ] || [ -r /proc/net/tcp6 ]; then port_hex=$(printf "%04X" "$ssh_port" 2>/dev/null || printf ""); total=0; ssh=0; for file in /proc/net/tcp /proc/net/tcp6; do [ -r "$file" ] || continue; while read sl local_addr remote_addr state rest; do [ "$sl" = "sl" ] && continue; [ "$state" = "01" ] || continue; total=$((total + 1)); case "$local_addr" in *":$port_hex") ssh=$((ssh + 1));; esac; done < "$file"; done; connection_total=$total; connection_ssh=$ssh; elif command -v ss >/dev/null 2>&1; then connection_total=$(ss -Htan state established 2>/dev/null | wc -l | tr -d " "); connection_ssh=$(ss -Htan state established 2>/dev/null | grep -Ec ":$ssh_port[[:space:]]" 2>/dev/null || true); elif command -v netstat >/dev/null 2>&1; then connection_total=$(netstat -tan 2>/dev/null | grep -c "ESTABLISHED" 2>/dev/null || true); connection_ssh=$(netstat -tan 2>/dev/null | grep "ESTABLISHED" 2>/dev/null | grep -Ec "[:.]$ssh_port[[:space:]]" 2>/dev/null || true); fi; if [ -n "$connection_total" ]; then [ -n "$connection_ssh" ] || connection_ssh=0; printf "tcp=%s ssh=%s\n" "$connection_total" "$connection_ssh"; fi; printf "\n__MYTERMINAL_HOSTIP__\n"; hostname -I 2>/dev/null || true; printf "\n__MYTERMINAL_UPTIME__\n"; cat /proc/uptime 2>/dev/null || true'"#,
-        connection.port
-    );
-    let sections = exec_remote_command(session, &runtime_command)
+    let sections = exec_remote_command(session, runtime_overview_command())
         .map(|contents| parse_marked_sections(&contents))
         .unwrap_or_default();
 

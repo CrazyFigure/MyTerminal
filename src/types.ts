@@ -191,7 +191,7 @@ export interface RuntimeOverview {
   }>;
   memory: string;
   storage: string;
-  /** 远端主机已建立 TCP 连接数，并附带当前 SSH 端口连接数。 */
+  /** 远端主机已建立 TCP 连接数，并附带最终 sshd 实际端口的连接数；无法可靠采集时 SSH 显示不可用。 */
   connections: string;
   network: string;
   uptime: string;
