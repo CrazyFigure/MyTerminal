@@ -2253,8 +2253,8 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
 
           <section className="connection-table-shell">
             <div className="section-row compact">
+              {/* 连接列表标题，去掉了右上角的连接数量统计 */}
               <strong>{t('connectionItemsTitle')}</strong>
-              <span>{visibleConnections.length}</span>
             </div>
 
             <div className="connection-table-scroll">
@@ -2675,8 +2675,8 @@ function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: 
 
           <section className="local-terminal-panel local-terminal-history-panel">
             <div className="section-row compact">
+              {/* 历史目录列表标题，去掉了右上角历史记录数量统计 */}
               <strong>{t('localTerminalHistoryTitle')}</strong>
-              <span>{draft.profiles.length}</span>
             </div>
             <div className="local-terminal-history-list">
               {draft.profiles.length ? draft.profiles.map((profile) => (
