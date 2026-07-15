@@ -2161,7 +2161,7 @@ select:disabled {
 
 .local-terminal-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.08fr) minmax(250px, 0.92fr);
+  grid-template-columns: minmax(0, 1.3fr) minmax(220px, 0.7fr);
   grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
   min-height: 0;
@@ -2195,8 +2195,16 @@ select:disabled {
   align-items: center;
 }
 
+.local-terminal-form-row-three-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
 .local-terminal-form-row select,
-.local-terminal-form-row input {
+.local-terminal-form-row input,
+.local-terminal-form-row-three-cols input {
   width: 100%;
   min-width: 0;
   border-radius: 10px;
@@ -2208,12 +2216,14 @@ select:disabled {
   box-sizing: border-box;
 }
 
-.local-terminal-form-row input:focus {
+.local-terminal-form-row input:focus,
+.local-terminal-form-row-three-cols input:focus {
   border-color: var(--app-active-border);
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
 }
 
 .local-terminal-form-row input,
+.local-terminal-form-row-three-cols input,
 .local-terminal-form-row .custom-select-trigger,
 .local-terminal-panel button,
 .local-terminal-history-row .custom-select-trigger,
@@ -2236,7 +2246,10 @@ select:disabled {
 
 /* 命令 Preset 列表整体高度延伸，填补面板下方的空白区域，并调整行距 */
 .local-terminal-command-list {
-  max-height: 232px;
+  /* 固定高度展示 4 行命令 (4 * 42px 行高 + 3 * 4px 间距 = 180px) */
+  height: 180px;
+  /* 禁用弹性伸缩以保持固定高度 */
+  flex: none;
   gap: 4px;
   overflow-y: auto;
 }
@@ -2255,6 +2268,9 @@ select:disabled {
 .local-terminal-command-row {
   grid-template-columns: 1fr auto;
   padding: 5px 8px;
+  /* 固定单行高度为 42px (包含 1px 上下边框和 5px 上下内边距) */
+  height: 42px;
+  box-sizing: border-box;
   cursor: grab;
   user-select: none;
   border: 1px solid var(--app-border-color);
