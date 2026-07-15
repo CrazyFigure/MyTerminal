@@ -34,7 +34,7 @@ MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP 
 - **Local cursor fallback** - The frontend restores xterm cursor visibility when switching sessions or replaying cached output, without sending control characters back to SSH.
 - **Search and fit behavior** - xterm.js powers terminal rendering, sizing, and terminal search support.
 - **Focus-aware session switching** - Switching sessions, reconnecting, and delayed SSH startup restore input focus when the target terminal is ready.
-- **Long-line display modes** - Choose automatic wrapping or a horizontal-scroll mode that keeps long output on one line and follows the cursor.
+- **SSH long-line display modes** - SSH sessions can wrap automatically or keep long output on one horizontally scrolling line; local terminals and TUIs always wrap.
 - **Path-aware terminal output** - The shell injects a cwd sync hook so the app can follow remote directory changes made with `cd`, `pushd`, or `popd`.
 - **Direct-input cwd refresh** - Typed or pasted `cd` commands refresh the file panel early, then backend cwd markers correct the path if needed.
 - **Child-shell cwd sync** - Bash child shells inherit the cwd sync hook, while non-interactive scripts avoid emitting MyTerminal sync markers.

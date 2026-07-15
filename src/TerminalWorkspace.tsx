@@ -619,7 +619,7 @@ const extractTerminalExecutableName = (commandText: string) => {
   return executableName.replace(/\.(?:cmd|exe|ps1|bat)$/i, '').toLowerCase();
 };
 
-// AI Agent 会话按全屏 TUI 处理，不继承“同一行横向滚动”设置，避免 Claude Code 等界面错位。
+// AI Agent 会话按全屏 TUI 处理，用于套用光标、滚轮和对比度等专用渲染策略。
 const isTerminalAiAgentSession = (session?: TerminalSession) => {
   const executableName = extractTerminalExecutableName(resolveLocalSessionCommandText(session));
   return executableName ? terminalAiAgentCommandNames.has(executableName) : false;
@@ -1070,7 +1070,8 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     () => shouldUseControlledInputCursor(session),
     [session?.kind, session?.localCommand, session?.title],
   );
-  const effectiveTerminalLineWrapMode: AppSettings['terminalLineWrapMode'] = isAiAgentTerminalSession ? 'wrap' : terminalLineWrapMode;
+  // 本地终端（包含纯 Shell 与 AI TUI）必须始终按可视宽度自动换行；长行展示设置只影响 SSH 会话。
+  const effectiveTerminalLineWrapMode: AppSettings['terminalLineWrapMode'] = session?.kind === 'local' ? 'wrap' : terminalLineWrapMode;
   const terminalScrollbackRows = isAiAgentTerminalSession ? terminalAiAgentScrollbackRows : terminalDefaultScrollbackRows;
   const terminalLineWrapModeRef = useRef<AppSettings['terminalLineWrapMode']>(effectiveTerminalLineWrapMode);
   const terminalScrollbackRowsRef = useRef(terminalScrollbackRows);
@@ -3135,7 +3136,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
       return;
     }
 
-    // 长行展示模式改变会影响 xterm 渲染列数；AI Agent 始终使用 wrap，远端仍重推真实可视列宽。
+    // SSH 长行展示模式或会话类型改变会影响 xterm 渲染列数；本地终端始终使用 wrap。
     remoteTerminalSizeRef.current = null;
     // 显式切换模式允许重新建立列宽基线；正常竖向滚动期间仍禁止缩列。
     terminalHorizontalRenderColsRef.current = 0;
