@@ -6,7 +6,7 @@ export type WorkspacePanel = 'files' | 'editor' | 'tunnels' | 'sync' | 'settings
 export type SessionStatus = 'idle' | 'connecting' | 'connected' | 'stub' | 'error' | 'closed';
 export type TerminalSessionKind = 'ssh' | 'local';
 export type TerminalRightClickBehavior = 'paste' | 'menu';
-/** 终端长行展示模式，horizontal 表示用横向滚动保留同一输出行。 */
+/** SSH 终端长行展示模式；本地终端与 TUI 始终自动换行。 */
 export type TerminalLineWrapMode = 'wrap' | 'horizontal';
 /** 运行状态资源明细来源；Docker 同时覆盖 Docker Compose 容器场景。 */
 export type RuntimeResourceSource = 'system' | 'docker' | 'kubernetes';
@@ -110,7 +110,7 @@ export interface AppSettings {
   terminalBackgroundImageFit?: 'cover' | 'contain' | 'stretch' | 'tile' | 'center';
   /** 终端区域右键行为：直接粘贴，或弹出复制/粘贴菜单。 */
   terminalRightClickBehavior: TerminalRightClickBehavior;
-  /** 终端长行展示方式：按窗口自动换行，或使用横向滚动保留同一输出行。 */
+  /** SSH 终端长行展示方式；本地终端与 TUI 不读取该设置，始终按窗口自动换行。 */
   terminalLineWrapMode: TerminalLineWrapMode;
   /** 选中终端文本时，自动高亮可滚动缓冲区中完全一致的匹配内容。 */
   terminalMatchSelection: boolean;
