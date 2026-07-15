@@ -730,8 +730,17 @@ const resolveTerminalBackgroundImage = (value?: string) => {
   return trimmed;
 };
 
-const buildTerminalBackgroundImageStyle = (settings: AppSettings): CSSProperties | undefined => {
-  const resolvedImage = resolveTerminalBackgroundImage(settings.backgroundImage);
+// 远程 http(s) 背景图需要走后端下载绕开防盗链，其余(本地路径、data:、asset:)由 CSS 直接加载。
+const isRemoteHttpImage = (value?: string) => {
+  const trimmed = value?.trim().toLowerCase();
+  return Boolean(trimmed && (trimmed.startsWith('http://') || trimmed.startsWith('https://')));
+};
+
+// resolvedImage 由调用方决定：本地/asset 直接解析，远程 http(s) 图片先经后端下载成 data URL 再传入。
+const buildTerminalBackgroundImageStyle = (
+  settings: AppSettings,
+  resolvedImage: string | undefined,
+): CSSProperties | undefined => {
   if (!resolvedImage) {
     return undefined;
   }
@@ -1090,14 +1099,46 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     ],
   );
   const terminalThemeRef = useRef(terminalTheme);
-  const backgroundImageStyle = useMemo(
-    () => buildTerminalBackgroundImageStyle(settings),
-    [
-      settings.backgroundImage,
-      settings.terminalBackgroundImageFit,
-      settings.terminalBackgroundImageOpacity,
-    ],
-  );
+  // 远程 http(s) 背景图经后端下载后缓存的 data URL；null 表示无远程图或下载失败(回退到原始行为)。
+  const [remoteBackgroundDataUrl, setRemoteBackgroundDataUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const rawUrl = settings.backgroundImage?.trim();
+    // 非远程图片(本地/asset/data)无需下载，清空缓存交给下方直接解析。
+    if (!isRemoteHttpImage(rawUrl) || !rawUrl) {
+      setRemoteBackgroundDataUrl(null);
+      return;
+    }
+    let cancelled = false;
+    setRemoteBackgroundDataUrl(null);
+    backend
+      .fetchRemoteBackgroundImage(rawUrl)
+      .then((dataUrl) => {
+        if (!cancelled) {
+          setRemoteBackgroundDataUrl(dataUrl);
+        }
+      })
+      .catch(() => {
+        // 下载失败时回退为直接使用原始 URL，保持与旧行为一致(仍可能被防盗链拦截，但不影响其它功能)。
+        if (!cancelled) {
+          setRemoteBackgroundDataUrl(rawUrl);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.backgroundImage]);
+  const backgroundImageStyle = useMemo(() => {
+    // 远程图片用下载得到的 data URL；本地/asset/data 走原解析逻辑。
+    const resolvedImage = isRemoteHttpImage(settings.backgroundImage)
+      ? remoteBackgroundDataUrl ?? undefined
+      : resolveTerminalBackgroundImage(settings.backgroundImage);
+    return buildTerminalBackgroundImageStyle(settings, resolvedImage);
+  }, [
+    settings.backgroundImage,
+    settings.terminalBackgroundImageFit,
+    settings.terminalBackgroundImageOpacity,
+    remoteBackgroundDataUrl,
+  ]);
   // 外层容器的实际背景色：跟随主题自动切换，xterm canvas 始终透明以便选区覆盖层透出。
   const terminalBackgroundColor = useMemo(
     () => resolveTerminalColors(settings).background,

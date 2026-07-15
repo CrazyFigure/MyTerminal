@@ -667,4 +667,7 @@ export const backend = {
     ),
   // 外链打开在桌面端交给后端调用系统浏览器；Web 预览下保持成功返回，方便本地界面调试。
   openExternalUrl: (url: string) => call<boolean>('open_external_url', { url }, true),
+  // 远程背景图经后端 reqwest 下载并转为 data URL，绕开 WebView 自动附带的 Referer，避免图床防盗链返回 403。Web 预览无后端时回退为原始地址。
+  fetchRemoteBackgroundImage: (url: string) =>
+    call<string>('fetch_remote_background_image', { url }, url),
 };
