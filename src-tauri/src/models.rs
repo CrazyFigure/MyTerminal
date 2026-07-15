@@ -653,7 +653,7 @@ pub struct RuntimeOverview {
     pub memory: String,
     #[serde(default)]
     pub storage: String,
-    /// 远端主机当前已建立 TCP 连接数，附带 SSH 端口连接数用于判断 SSH 负载。
+    /// 远端主机当前已建立 TCP 连接数，附带最终 sshd 实际端口的连接数；无法可靠采集时 SSH 显示不可用。
     #[serde(default)]
     pub connections: String,
     #[serde(default)]
