@@ -58,6 +58,8 @@ pub struct AgentBridgeStatus {
     pub discovery_path: String,
     pub cli_command: String,
     pub mcp_command: String,
+    /// 随应用一同分发的 myterminal-cli 可执行文件绝对路径，供前端拼出直连 stdio 的 MCP 配置。
+    pub cli_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -406,6 +408,20 @@ fn remove_discovery(storage: &StorageService) {
     let _ = fs::remove_file(storage.agent_bridge_discovery_path());
 }
 
+/// 解析随应用一同分发的 myterminal-cli 可执行文件路径。
+/// 安装版把 CLI 与主程序放在同一目录，`tauri dev` 也会把两者输出到 target/debug；
+/// 找到后 MCP 配置可直接以该可执行文件作为 stdio server，免去 npx 与本地 launcher 包依赖。
+fn resolve_cli_executable() -> Option<PathBuf> {
+    let exe_name = if cfg!(windows) {
+        "myterminal-cli.exe"
+    } else {
+        "myterminal-cli"
+    };
+    let current = std::env::current_exe().ok()?;
+    let candidate = current.parent()?.join(exe_name);
+    candidate.exists().then_some(candidate)
+}
+
 pub fn bridge_status(
     runtime: &AgentBridgeRuntime,
     storage: &StorageService,
@@ -430,6 +446,7 @@ pub fn bridge_status(
             .to_string(),
         cli_command,
         mcp_command,
+        cli_path: resolve_cli_executable().map(|path| path.to_string_lossy().to_string()),
     })
 }
 
