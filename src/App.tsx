@@ -432,16 +432,21 @@ const buildAgentMcpPackagePath = (discoveryPath?: string) => {
   return `${rootPath}/mcp/myterminal-mcp`;
 };
 
-const buildAgentMcpConfig = (discoveryPath?: string) => {
-  const npxArgs = ['--yes', buildAgentMcpPackagePath(discoveryPath)];
+const buildAgentMcpConfig = (status?: AgentBridgeStatus | null) => {
+  const cliPath = status?.cliPath?.trim();
+  // 安装版随应用分发 myterminal-cli，可直接作为 stdio MCP server，免去 npx 与本地 launcher 包依赖；
+  // 找不到 CLI 时才回退到项目内 npx launcher 包（仅开发态项目根目录可用）。
+  const server = cliPath
+    ? { type: 'stdio', command: cliPath, args: ['mcp', '--stdio'] }
+    : {
+        type: 'stdio',
+        command: 'npx',
+        args: ['--yes', buildAgentMcpPackagePath(status?.discoveryPath)],
+      };
   return JSON.stringify(
     {
       mcpServers: {
-        myterminal: {
-          type: 'stdio',
-          command: 'npx',
-          args: npxArgs,
-        },
+        myterminal: server,
       },
     },
     null,
@@ -2945,7 +2950,7 @@ function SettingsModal({
     }
   };
   const copyAgentMcpConfig = async () => {
-    await writeClipboardText(buildAgentMcpConfig(agentBridgeStatus?.discoveryPath));
+    await writeClipboardText(buildAgentMcpConfig(agentBridgeStatus));
     showActionFeedback('copy-agent-config', 'is-success', t('statusAgentBridgeConfigCopied'));
   };
   const showActionFeedback = (actionKey: string, kind: 'is-success' | 'is-error', message: string) => {
@@ -3856,7 +3861,7 @@ function SettingsModal({
                   <div className="agent-bridge-code-grid">
                     <label className="span-2">
                       <span>{t('agentBridgeMcpConfig')}</span>
-                      <textarea readOnly rows={9} spellCheck={false} value={buildAgentMcpConfig(agentBridgeStatus?.discoveryPath)} />
+                      <textarea readOnly rows={9} spellCheck={false} value={buildAgentMcpConfig(agentBridgeStatus)} />
                     </label>
                   </div>
                 </section>

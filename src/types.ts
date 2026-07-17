@@ -344,6 +344,7 @@ export interface AgentBridgeStatus {
   discoveryPath: string;
   cliCommand: string;
   mcpCommand: string;
+  cliPath?: string;
 }
 
 export interface AgentBridgeRequest {
