@@ -57,6 +57,8 @@ fn main() {
         .setup(|app| {
             // 启动后台 SSH 保活守护线程，防止辅助会话与隧道池会话在应用后台运行时空闲掉线。
             commands::spawn_keepalive_daemon(app.handle().clone());
+            // 启动 SSH 隧道健康监控线程，实时探测运行中隧道的底层连接并在状态变化时通知前端。
+            commands::spawn_tunnel_monitor(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
