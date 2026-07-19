@@ -257,7 +257,8 @@ export interface TunnelRecord {
   localPort: number;
   remoteHost: string;
   remotePort: number;
-  status: 'running' | 'stopped' | 'stub';
+  /** running=监听中且底层 SSH 可达；error=后台监控探测到底层连接断开；stopped=已手动停止。 */
+  status: 'running' | 'stopped' | 'stub' | 'error';
 }
 
 export interface TunnelOpenRequest {

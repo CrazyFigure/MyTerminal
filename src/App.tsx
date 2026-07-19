@@ -69,7 +69,7 @@ import { useAppStore } from './store';
 // 等高频更新触发无关组件（尤其是未打开的弹窗）重渲染。
 import { useShallow } from 'zustand/react/shallow';
 import { UpdateModal, type UpdateDownloadProgress } from './UpdateModal';
-import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, RemoteFileEntry, RuntimeResourceMetric, RuntimeResourceTarget, RuntimeResourceUsage, RuntimeResourceSource, RuntimeStorageFiles, SshJumpHost, TerminalSession, UiLanguage, UpdateCheckResult } from './types';
+import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, RemoteFileEntry, RuntimeResourceMetric, RuntimeResourceTarget, RuntimeResourceUsage, RuntimeResourceSource, RuntimeStorageFiles, SshJumpHost, TerminalSession, TunnelRecord, UiLanguage, UpdateCheckResult } from './types';
 import { CustomSelect } from './CustomSelect';
 
 const MonacoEditor = lazy(() => import('./MonacoEditor'));
@@ -4067,6 +4067,7 @@ export default function App() {
     checkForUpdates,
     closeSession,
     closeTunnel,
+    applyTunnelStatusChange,
     commandBuffers,
     connections,
     currentRemotePath,
@@ -4116,6 +4117,7 @@ export default function App() {
       checkForUpdates: state.checkForUpdates,
       closeSession: state.closeSession,
       closeTunnel: state.closeTunnel,
+      applyTunnelStatusChange: state.applyTunnelStatusChange,
       commandBuffers: state.commandBuffers,
       connections: state.connections,
       currentRemotePath: state.currentRemotePath,
@@ -4819,6 +4821,32 @@ export default function App() {
       unlistenFn?.();
     };
   }, [pollTerminalOutputs, sessions.length]);
+
+  // 监听后台隧道健康监控线程发出的状态变化事件，实时将隧道“运行中/异常”状态同步到面板。
+  useEffect(() => {
+    let unlistenFn: (() => void) | undefined;
+    let isMounted = true;
+    void import('@tauri-apps/api/event').then(({ listen }) =>
+      listen<TunnelRecord>('tunnel-status-changed', (event) => {
+        if (event.payload && typeof event.payload === 'object') {
+          applyTunnelStatusChange(event.payload);
+        }
+      }),
+    ).then((unlisten) => {
+      if (isMounted) {
+        unlistenFn = unlisten;
+      } else {
+        unlisten();
+      }
+    }).catch(() => {
+      // 非 Tauri 环境（Web 开发模式）下无事件通道，静默忽略。
+    });
+
+    return () => {
+      isMounted = false;
+      unlistenFn?.();
+    };
+  }, [applyTunnelStatusChange]);
 
 
   useEffect(() => {

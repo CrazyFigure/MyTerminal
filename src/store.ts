@@ -341,6 +341,24 @@ const clearQueuedTerminalInput = (sessionId: string) => {
   terminalInputLineBuffers.delete(sessionId);
 };
 
+// 自动重连计划：仅针对已成功连上又掉线的 SSH 会话，按指数退避有限次重试，避免永久断连。
+// 用模块级 Map（而非 React 状态）保存，重连不触发整页重渲染；会话 ID 在每次重连后变化，需迁移条目。
+type AutoReconnectEntry = { attempts: number; timer?: number; connectionId: string };
+const autoReconnectBySession = new Map<string, AutoReconnectEntry>();
+// 最多自动重连次数；超过后停止并提示用户手动重连，防止对不可达主机无限重试。
+const AUTO_RECONNECT_MAX_ATTEMPTS = 6;
+// 指数退避（首次约 1s，之后翻倍，封顶 30s）；attempt 从 1 起。
+const autoReconnectDelayMs = (attempt: number) => Math.min(30_000, 1_000 * 2 ** Math.max(0, attempt - 1));
+
+// 取消并清理某会话的自动重连计划（用户主动关闭、手动重连或已稳定连上时调用）。
+const cancelAutoReconnect = (sessionId: string) => {
+  const entry = autoReconnectBySession.get(sessionId);
+  if (entry?.timer) {
+    window.clearTimeout(entry.timer);
+  }
+  autoReconnectBySession.delete(sessionId);
+};
+
 // 输入刷新会串行写入后端，避免同一个会话出现并发写入导致字符顺序抖动。
 const flushQueuedTerminalInput = (sessionId: string) => {
   const pendingTimer = terminalInputFlushTimers.get(sessionId);
@@ -683,6 +701,10 @@ type StoreState = {
   saveLocalTerminals: (settings: LocalTerminalSettings) => Promise<LocalTerminalSettings>;
   openLocalTerminal: (profile: LocalTerminalProfile) => Promise<void>;
   reconnectSession: (sessionId: string) => Promise<void>;
+  // 为刚掉线的 SSH 会话启动自动重连计划（幂等：已在计划中则忽略）。
+  scheduleAutoReconnect: (sessionId: string) => void;
+  // 执行一次自动重连尝试并按需安排下一次；由 scheduleAutoReconnect 与看门狗定时器驱动。
+  runAutoReconnect: (sessionId: string) => Promise<void>;
   reorderSessions: (sessionIds: string[]) => void;
   closeSession: (sessionId: string) => Promise<void>;
   setCommandBuffer: (sessionId: string, value: string) => void;
@@ -726,6 +748,8 @@ type StoreState = {
   startAllTunnels: () => Promise<void>;
   stopAllTunnels: () => Promise<void>;
   closeTunnel: (tunnelId: string) => Promise<void>;
+  // 后台隧道监控探测到状态变化时由事件监听器调用，将最新状态写回面板。
+  applyTunnelStatusChange: (tunnel: TunnelRecord) => void;
 };
 
 export const useAppStore = create<StoreState>((set, get) => ({
@@ -1355,6 +1379,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
   },
 
   reconnectSession: async (sessionId) => {
+    // 手动重连会接管该会话，先取消尚在进行的自动重连计划，避免两者重复创建会话。
+    cancelAutoReconnect(sessionId);
     const state = get();
     const session = state.sessions.find((item) => item.id === sessionId);
     if (!session) {
@@ -1485,6 +1511,122 @@ export const useAppStore = create<StoreState>((set, get) => ({
     }
   },
 
+  scheduleAutoReconnect: (sessionId) => {
+    const state = get();
+    const session = state.sessions.find((item) => item.id === sessionId);
+    // 仅对远端 SSH 会话自动重连；本地终端不在此机制内。
+    if (!session || session.kind === 'local') {
+      return;
+    }
+    // 已在重连计划中则不重复调度，由既有计划/看门狗继续推进。
+    if (autoReconnectBySession.has(sessionId)) {
+      return;
+    }
+    const connection = state.connections.find((item) => item.id === session.connectionId);
+    if (!connection) {
+      return;
+    }
+    autoReconnectBySession.set(sessionId, { attempts: 0, connectionId: session.connectionId });
+    void get().runAutoReconnect(sessionId);
+  },
+
+  runAutoReconnect: async (sessionId) => {
+    const entry = autoReconnectBySession.get(sessionId);
+    if (!entry) {
+      return;
+    }
+    const state = get();
+    const session = state.sessions.find((item) => item.id === sessionId);
+    // 会话已被移除（用户关闭标签）→ 结束计划。
+    if (!session) {
+      cancelAutoReconnect(sessionId);
+      return;
+    }
+    // 已恢复到可用态 → 结束计划并复位计数，后续再掉线可重新获得完整重试次数。
+    if (session.status === 'connected' || session.status === 'stub') {
+      cancelAutoReconnect(sessionId);
+      return;
+    }
+    const connection = state.connections.find((item) => item.id === entry.connectionId);
+    if (!connection) {
+      cancelAutoReconnect(sessionId);
+      return;
+    }
+    if (entry.attempts >= AUTO_RECONNECT_MAX_ATTEMPTS) {
+      cancelAutoReconnect(sessionId);
+      set((current) => ({
+        statusMessage: statusText(current.settings, 'statusAutoReconnectGaveUp', { name: connection.name }),
+      }));
+      return;
+    }
+
+    entry.attempts += 1;
+    // 仅当掉线会话本身是当前活动标签时才转移焦点到新会话，后台标签重连不打断用户当前操作。
+    const wasActive = state.activeSessionId === sessionId;
+    const previousIndex = Math.max(0, state.sessions.findIndex((item) => item.id === sessionId));
+    clearQueuedTerminalInput(sessionId);
+    set((current) => ({
+      statusMessage: statusText(current.settings, 'statusAutoReconnecting', {
+        name: connection.name,
+        attempt: entry.attempts,
+        max: AUTO_RECONNECT_MAX_ATTEMPTS,
+      }),
+    }));
+
+    try {
+      try {
+        await backend.closeSession(sessionId);
+      } catch {
+        // 旧会话可能已断开；忽略关闭错误，继续创建新 PTY。
+      }
+      const openedSession = await backend.openSession(connection.id);
+      const nextSession = { ...openedSession, title: connection.name };
+      // 迁移重连计划到新会话 ID：保留累计尝试次数，握手期由看门狗接管后续重试。
+      autoReconnectBySession.delete(sessionId);
+      autoReconnectBySession.set(nextSession.id, entry);
+      set((current) => {
+        const filteredSessions = current.sessions.filter((item) => item.id !== sessionId && item.id !== nextSession.id);
+        const insertIndex = Math.min(previousIndex, filteredSessions.length);
+        const nextSessions = [
+          ...filteredSessions.slice(0, insertIndex),
+          nextSession,
+          ...filteredSessions.slice(insertIndex),
+        ];
+        const nextCommandBuffers = { ...current.commandBuffers };
+        const nextSuggestions = { ...current.suggestions };
+        delete nextCommandBuffers[sessionId];
+        delete nextSuggestions[sessionId];
+        return {
+          sessions: nextSessions,
+          commandBuffers: nextCommandBuffers,
+          suggestions: nextSuggestions,
+          // 只有原本处于活动标签时才把焦点与远端面板切到新会话。
+          ...(wasActive
+            ? {
+                activeSessionId: nextSession.id,
+                activeConnectionId: connection.id,
+                currentRemotePath: nextSession.cwd ?? '~',
+                files: [],
+                runtimeOverview: undefined,
+                filesLoading: true,
+                runtimeLoading: true,
+              }
+            : {}),
+        };
+      });
+      void get().pollTerminalOutputs(nextSession.id);
+      // 看门狗：给足握手时间；到点若仍未连上则由 runAutoReconnect 递增尝试后再次重连。
+      entry.timer = window.setTimeout(() => {
+        void get().runAutoReconnect(nextSession.id);
+      }, autoReconnectDelayMs(entry.attempts));
+    } catch {
+      // openSession 直接失败（如网络不可达）：按退避安排下一次尝试，会话 ID 未变。
+      entry.timer = window.setTimeout(() => {
+        void get().runAutoReconnect(sessionId);
+      }, autoReconnectDelayMs(entry.attempts));
+    }
+  },
+
   reorderSessions: (sessionIds) =>
     set((state) => {
       const orderedIds = Array.from(new Set(sessionIds));
@@ -1498,6 +1640,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
     }),
 
   closeSession: async (sessionId) => {
+    // 用户主动关闭标签：取消自动重连，避免关闭瞬间迟到的 error 事件又拉起重连。
+    cancelAutoReconnect(sessionId);
     clearQueuedTerminalInput(sessionId);
     try {
       await backend.closeSession(sessionId);
@@ -1717,6 +1861,9 @@ export const useAppStore = create<StoreState>((set, get) => ({
 
     let activeCwdToDisplay: string | undefined;
     let activeCwdToRefresh: string | undefined;
+    // 本轮状态变化中需要启动/取消自动重连的会话；在 set 之后统一处理，避免在 reducer 内触发副作用。
+    const disconnectedSessionIds: string[] = [];
+    const reconnectedSessionIds: string[] = [];
     set((state) => {
       let sessionsChanged = false;
       const nextSessions = state.sessions.map((session) => {
@@ -1731,6 +1878,18 @@ export const useAppStore = create<StoreState>((set, get) => ({
         if (status && session.status !== status) {
           nextSession = { ...nextSession, status };
           sessionsChanged = true;
+          // 仅对“已成功连上”又掉线的远端会话启动自动重连，不对初次握手失败反复重试。
+          if (
+            session.kind !== 'local'
+            && (status === 'error' || status === 'closed')
+            && session.status === 'connected'
+          ) {
+            disconnectedSessionIds.push(session.id);
+          }
+          // 重新稳定连上 → 取消重连计划并复位计数。
+          if (status === 'connected' || status === 'stub') {
+            reconnectedSessionIds.push(session.id);
+          }
         }
 
         if (
@@ -1783,6 +1942,10 @@ export const useAppStore = create<StoreState>((set, get) => ({
       // 刷新队列本身只保留最新目录，因此真实 cwd 可以立即校正列表，无需再额外等待固定防抖时间。
       void get().refreshFiles(activeCwdToRefresh);
     }
+
+    // 已恢复的会话先取消重连计划（复位计数），再为新掉线的会话启动重连。
+    reconnectedSessionIds.forEach(cancelAutoReconnect);
+    disconnectedSessionIds.forEach((id) => get().scheduleAutoReconnect(id));
   },
 
   // 历史 Tab 以远端 Shell 历史文件为来源，刷新当前连接时替换对应连接缓存。
@@ -2449,5 +2612,18 @@ export const useAppStore = create<StoreState>((set, get) => ({
       tunnels: state.tunnels.map((item) => (item.id === tunnelId ? { ...item, status: 'stopped' } : item)),
       statusMessage: statusText(state.settings, 'statusTunnelStopped'),
     }));
+  },
+
+  applyTunnelStatusChange: (tunnel) => {
+    set((state) => {
+      const existing = state.tunnels.find((item) => item.id === tunnel.id);
+      // 本地无该隧道或状态未变时不触发重渲染；用户已手动停止（stopped）时不被后台探测覆盖。
+      if (!existing || existing.status === tunnel.status || existing.status === 'stopped') {
+        return {};
+      }
+      return {
+        tunnels: state.tunnels.map((item) => (item.id === tunnel.id ? { ...item, status: tunnel.status } : item)),
+      };
+    });
   },
 }));

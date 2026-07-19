@@ -144,6 +144,10 @@ const TUNNEL_TRANSFER_IDLE_WAIT: Duration = Duration::from_millis(1);
 const AUXILIARY_IO_TIMEOUT: Duration = Duration::from_secs(10);
 // 后台保活守护线程的最小轮询周期；保活间隔更小时以设置值为准，间隔为 0（关闭）时按此周期空转检查。
 const KEEPALIVE_DAEMON_MIN_TICK: Duration = Duration::from_secs(10);
+// SSH 隧道健康监控线程的轮询周期；每轮探测各运行中隧道底层 SSH 连接的可达性并在状态变化时回传前端。
+const TUNNEL_MONITOR_TICK: Duration = Duration::from_secs(5);
+// 隧道底层连接连续探测失败达到该次数才判定为异常，过滤单次网络抖动导致的误报；恢复则立即置回运行中。
+const TUNNEL_UNHEALTHY_THRESHOLD: u32 = 2;
 // 辅助 SSH/SFTP 连接空闲多久后回收；访问越多常驻资源越多，用 TTL 给“复用性能 vs 常驻内存”划边界。
 const AUXILIARY_IDLE_TTL: Duration = Duration::from_secs(10 * 60);
 // 允许常驻的空闲辅助连接上限；超过此数时优先回收最久未使用者，保留少量热连接以复用握手。
@@ -2738,12 +2742,23 @@ fn spawn_shell_thread(
             }
 
             // 交互会话长时间无输出时主动发送 SSH keepalive，不向终端写入可见内容。
-            // 间隔由设置驱动（0=关闭）；用户改设置后下一轮循环即生效。
+            // 间隔完全由用户设置驱动（0=关闭）；发送后顺带检查底层 socket 错误码，及时发现静默断开（半开 TCP）。
+            // 因此断连检测速度 = 保活间隔：调小则更快发现掉线，关闭（0）则不做主动探测（RST/正常关闭仍由读循环即时捕获）。
             let keepalive_secs = keepalive_interval_sec.load(Ordering::Relaxed);
             if keepalive_secs > 0 && last_keepalive_at.elapsed() >= Duration::from_secs(keepalive_secs)
             {
+                // keepalive_send 在非阻塞模式下可能返回 WouldBlock 等瞬时错误，不能据此判定断连；
+                // 它只负责驱动一次协议流量，真正的存活判定交给底层 socket 错误码（与 transport 错误处理一致）。
                 let _ = ssh_session.keepalive_send();
                 last_keepalive_at = Instant::now();
+                if let Some(code) = ssh_socket_error_code(&ssh_session) {
+                    if code != 0 {
+                        eprintln!("[SSH-DIAG] keepalive detected dead socket: so_error={code}");
+                        queue_session_status(&output_queue, &app_handle, &session_id, "error");
+                        let _ = channel.close();
+                        return;
+                    }
+                }
             }
 
             // 写入成功后立即回到 read 阶段等待远端 echo；读到输出或处理控制事件时也不额外睡眠。
@@ -4812,6 +4827,150 @@ pub fn spawn_keepalive_daemon(app_handle: tauri::AppHandle) {
             let _ = session.keepalive_send();
         }
     });
+}
+
+/// SSH 隧道健康监控线程：为每个“有运行中隧道”的连接维持一条独立探测 SSH 连接（与转发池分离，
+/// 避免干扰按需扩缩的转发会话），周期性探测底层 SSH 可达性；状态在“运行中/异常”之间变化时更新持久化
+/// 并 emit "tunnel-status-changed"，使前端隧道面板实时反映真实连接状态。掉线后下一轮重连成功即自动恢复。
+pub fn spawn_tunnel_monitor(app_handle: tauri::AppHandle) {
+    thread::spawn(move || {
+        // 每连接一条探测会话；仅本监控线程访问，无需加锁。
+        let mut probes: std::collections::HashMap<String, Session> =
+            std::collections::HashMap::new();
+        // 每连接底层探测的连续失败计数，用于阈值去抖。
+        let mut fail_counts: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
+        // 每连接最近一次上报给前端的期望状态，仅在变化时写盘与 emit。
+        let mut last_reported: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        loop {
+            thread::sleep(TUNNEL_MONITOR_TICK);
+            let state = app_handle.state::<AppState>();
+            if state.is_shutting_down.load(Ordering::Relaxed) {
+                return;
+            }
+            monitor_tunnel_health(
+                &app_handle,
+                &state,
+                &mut probes,
+                &mut fail_counts,
+                &mut last_reported,
+            );
+        }
+    });
+}
+
+fn monitor_tunnel_health(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    probes: &mut std::collections::HashMap<String, Session>,
+    fail_counts: &mut std::collections::HashMap<String, u32>,
+    last_reported: &mut std::collections::HashMap<String, String>,
+) {
+    // 收集当前有运行中隧道的连接 ID（去重）；仅这些连接需要健康探测。
+    let connection_ids: Vec<String> = match state.tunnels.lock() {
+        Ok(runtimes) => {
+            let mut ids: Vec<String> = runtimes
+                .values()
+                .map(|runtime| runtime.connection_id.clone())
+                .collect();
+            ids.sort();
+            ids.dedup();
+            ids
+        }
+        Err(_) => return,
+    };
+
+    // 清理已无运行隧道的连接：丢弃探测会话（关闭底层 SSH）与相关计数缓存。
+    probes.retain(|connection_id, _| connection_ids.contains(connection_id));
+    fail_counts.retain(|connection_id, _| connection_ids.contains(connection_id));
+    last_reported.retain(|connection_id, _| connection_ids.contains(connection_id));
+
+    for connection_id in connection_ids {
+        // 复用隧道池保存的连接配置快照，避免重复从磁盘解密；池缺失（异常）时跳过本轮。
+        let connection = match lock_tunnel_ssh_pools(state) {
+            Ok(pools) => pools.get(&connection_id).map(|pool| pool.connection.clone()),
+            Err(_) => None,
+        };
+        let Some(connection) = connection else {
+            continue;
+        };
+
+        let healthy = probe_tunnel_connection(probes, &connection_id, &connection);
+        let fails = fail_counts.entry(connection_id.clone()).or_insert(0);
+        if healthy {
+            *fails = 0;
+        } else {
+            *fails = fails.saturating_add(1);
+        }
+        // 连续失败达到阈值判为异常；否则视为运行中（含单次抖动后立即恢复）。
+        let desired = if *fails >= TUNNEL_UNHEALTHY_THRESHOLD {
+            "error"
+        } else {
+            "running"
+        };
+
+        if last_reported.get(&connection_id).map(String::as_str) != Some(desired) {
+            last_reported.insert(connection_id.clone(), desired.to_string());
+            update_and_emit_tunnel_status(app_handle, state, &connection_id, desired);
+        }
+    }
+}
+
+/// 探测某连接底层 SSH 是否可达：已有探测会话则发协议 keepalive 并检查底层 socket 错误码，
+/// 会话失效则丢弃并立即尝试重新握手（既作断连检测，也作恢复检测）。
+fn probe_tunnel_connection(
+    probes: &mut std::collections::HashMap<String, Session>,
+    connection_id: &str,
+    connection: &ConnectionProfile,
+) -> bool {
+    if let Some(session) = probes.get(connection_id) {
+        // keepalive_send 可能瞬时失败，不据此判定；以底层 socket 非零错误码作为断连的可靠信号。
+        let _ = session.keepalive_send();
+        let dead = matches!(ssh_socket_error_code(session), Some(code) if code != 0);
+        if !dead {
+            return true;
+        }
+        probes.remove(connection_id);
+    }
+    match connect_ssh(connection) {
+        Ok(session) => {
+            probes.insert(connection_id.to_string(), session);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// 把某连接下处于运行/异常态的隧道统一切换为目标状态，落盘并逐条 emit "tunnel-status-changed"。
+/// 已 stopped 的隧道不受影响（用户已手动停止）。
+fn update_and_emit_tunnel_status(
+    app_handle: &tauri::AppHandle,
+    state: &AppState,
+    connection_id: &str,
+    next_status: &str,
+) {
+    let mut tunnels = match state.storage.load_tunnels() {
+        Ok(tunnels) => tunnels,
+        Err(_) => return,
+    };
+    let mut changed: Vec<TunnelRecord> = Vec::new();
+    for tunnel in &mut tunnels {
+        if tunnel.connection_id == connection_id
+            && (tunnel.status == "running" || tunnel.status == "error")
+            && tunnel.status != next_status
+        {
+            tunnel.status = next_status.to_string();
+            changed.push(tunnel.clone());
+        }
+    }
+    if changed.is_empty() {
+        return;
+    }
+    let _ = state.storage.save_tunnels(&tunnels);
+    for tunnel in changed {
+        let _ = app_handle.emit("tunnel-status-changed", tunnel);
+    }
 }
 
 pub fn shutdown_app_backends(state: &AppState) -> Result<(), AppError> {
