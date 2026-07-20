@@ -735,6 +735,8 @@ fn is_transient_ssh_error(error: &impl std::fmt::Display) -> bool {
 
 /// 目录同步标记使用 OSC 控制序列，终端可见内容会被后端过滤，仅把 cwd 元数据传给前端。
 const CWD_SYNC_MARKER_PREFIX: &str = "\x1b]6973;MyTerminalCwd=";
+/// 提示符标记只由 precmd/PROMPT_COMMAND/PS1 发出；与 cd 中途的 cwd 更新分开，才能安全修正提示符行边界。
+const PROMPT_CWD_SYNC_MARKER_PREFIX: &str = "\x1b]6973;MyTerminalPromptCwd=";
 const CWD_SYNC_MARKER_SUFFIX: char = '\x07';
 const CWD_SYNC_SETUP_NAME: &str = "__myterminal_sync_cwd";
 const CWD_SYNC_HISTORY_PREP_TOKEN: &str = "HIST_IGNORE_SPACE";
@@ -764,18 +766,20 @@ fn queue_cwd(
 
 /// 注入到交互 Shell 的目录同步与历史落盘钩子；启动期会隐藏 setup 回显、规避新历史写入，并清理 bash 内存里的旧注入项。
 fn shell_cwd_sync_command() -> String {
-    // 目录同步依赖远端 shell 主动回传 PWD；Bash 子 shell 会继承导出的函数和 PROMPT_COMMAND，避免用户进入 bash 后 cd 不再联动。
+    // 目录同步依赖远端 shell 主动回传 PWD；Bash 子 shell 会继承可导出的标量 dispatcher 与函数，避免用户进入 bash 后 cd 不再联动。
     // cd/pushd/popd 包装函数只在交互 shell 中触发同步，避免非交互脚本继承函数后把 OSC 标记写入普通命令输出。
+    // dispatcher 通过 OR-list 左项恢复失败状态，既让旧 hook 读取原 `$?`，又避免 errtrace 把内部状态构造误报成第二次 ERR。
     let setup_command = [
         "__myterminal_sync_cwd(){ printf '\\033]6973;MyTerminalCwd=%s\\a' \"$PWD\"; }",
+        "__myterminal_sync_prompt_boundary(){ printf '\\033]6973;MyTerminalPromptCwd=%s\\a' \"$PWD\"; }",
         "__myterminal_sync_history(){ if [ -n \"${ZSH_VERSION-}\" ]; then fc -AI 2>/dev/null || true; elif [ -n \"${BASH_VERSION-}\" ]; then history -a 2>/dev/null || true; fi; }",
         "__myterminal_clean_history(){ if [ -n \"${BASH_VERSION-}\" ]; then for __myterminal_history_id in $(history | sed -n '/__myterminal_sync_cwd/{s/^ *\\([0-9][0-9]*\\).*/\\1/p}' | sort -rn); do history -d \"$__myterminal_history_id\" 2>/dev/null || true; done; unset __myterminal_history_id; fi; }",
         "__myterminal_is_interactive(){ case $- in *i*) return 0;; *) return 1;; esac; }",
-        "__myterminal_install_cwd_wrappers(){ if [ -n \"${BASH_VERSION-}${ZSH_VERSION-}\" ]; then cd(){ builtin cd \"$@\"; __myterminal_status=$?; __myterminal_is_interactive && __myterminal_sync_prompt; return $__myterminal_status; }; pushd(){ builtin pushd \"$@\"; __myterminal_status=$?; __myterminal_is_interactive && __myterminal_sync_prompt; return $__myterminal_status; }; popd(){ builtin popd \"$@\"; __myterminal_status=$?; __myterminal_is_interactive && __myterminal_sync_prompt; return $__myterminal_status; }; fi; }",
-        "__myterminal_sync_prompt(){ __myterminal_install_cwd_wrappers; __myterminal_sync_history; __myterminal_sync_cwd; }",
+        "__myterminal_install_cwd_wrappers(){ if [ -n \"${BASH_VERSION-}${ZSH_VERSION-}\" ]; then cd(){ builtin cd \"$@\"; __myterminal_status=$?; __myterminal_is_interactive && __myterminal_sync_cwd; return $__myterminal_status; }; pushd(){ builtin pushd \"$@\"; __myterminal_status=$?; __myterminal_is_interactive && __myterminal_sync_cwd; return $__myterminal_status; }; popd(){ builtin popd \"$@\"; __myterminal_status=$?; __myterminal_is_interactive && __myterminal_sync_cwd; return $__myterminal_status; }; fi; }",
+        "__myterminal_sync_prompt(){ __myterminal_install_cwd_wrappers; __myterminal_sync_history; __myterminal_sync_prompt_boundary; }",
         "__myterminal_install_cwd_wrappers",
         "if [ -n \"${ZSH_VERSION-}\" ]; then autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd __myterminal_sync_prompt 2>/dev/null || PS1='$(__myterminal_sync_prompt)'\"$PS1\"",
-        "elif [ -n \"${BASH_VERSION-}\" ]; then PROMPT_COMMAND=\"__myterminal_sync_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; export PROMPT_COMMAND; export -f __myterminal_sync_cwd __myterminal_sync_history __myterminal_is_interactive __myterminal_install_cwd_wrappers __myterminal_sync_prompt cd pushd popd 2>/dev/null || true",
+        "elif [ -n \"${BASH_VERSION-}\" ]; then eval '__myterminal_sync_prompt_dispatch(){ local __myterminal_prompt_status=$? __myterminal_prompt_command; for __myterminal_prompt_command in \"${__myterminal_original_prompt_commands[@]-}\"; do [ -n \"$__myterminal_prompt_command\" ] || continue; if [ \"$__myterminal_prompt_status\" -eq 0 ]; then eval \"$__myterminal_prompt_command\"; else (exit \"$__myterminal_prompt_status\") || eval \"$__myterminal_prompt_command\"; fi; done; __myterminal_sync_prompt; return 0; }'; if declare -p PROMPT_COMMAND 2>/dev/null | grep -q '^declare -[^ ]*a[^ ]* '; then eval '__myterminal_original_prompt_commands=(\"${PROMPT_COMMAND[@]}\")'; elif [ -n \"${PROMPT_COMMAND-}\" ] && [ \"$PROMPT_COMMAND\" != \"__myterminal_sync_prompt_dispatch\" ]; then eval '__myterminal_original_prompt_commands=(\"$PROMPT_COMMAND\")'; else eval '__myterminal_original_prompt_commands=()'; fi; unset PROMPT_COMMAND; PROMPT_COMMAND=__myterminal_sync_prompt_dispatch; export PROMPT_COMMAND; export -f __myterminal_sync_cwd __myterminal_sync_prompt_boundary __myterminal_sync_history __myterminal_is_interactive __myterminal_install_cwd_wrappers __myterminal_sync_prompt __myterminal_sync_prompt_dispatch cd pushd popd 2>/dev/null || true",
         "else PS1='$(__myterminal_sync_prompt)'\"$PS1\"",
         "fi",
         "__myterminal_clean_history",
@@ -791,13 +795,62 @@ fn shell_cwd_sync_command() -> String {
     .concat()
 }
 
-/// 记录跨 SSH 分片的半截 OSC 标记，保证 cwd 标记不泄漏到终端输出。
+/// ANSI 状态跟踪只用于判断当前行是否已有可见内容；跨分片忽略 CSI/OSC 参数，避免颜色码被误判成正文。
+#[derive(Clone, Copy)]
+enum TerminalVisibleLineEscapeState {
+    Ground,
+    Escape,
+    Csi,
+    String,
+    StringEscape,
+}
+
+impl Default for TerminalVisibleLineEscapeState {
+    fn default() -> Self {
+        Self::Ground
+    }
+}
+
+/// 找到两类同步标记中最先出现的一类；提示符标记额外携带“即将绘制 PS1”的边界语义。
+fn find_next_shell_sync_marker(value: &str) -> Option<(usize, &'static str, bool)> {
+    [
+        (CWD_SYNC_MARKER_PREFIX, false),
+        (PROMPT_CWD_SYNC_MARKER_PREFIX, true),
+    ]
+    .into_iter()
+    .filter_map(|(prefix, is_prompt)| {
+        value
+            .find(prefix)
+            .map(|index| (index, prefix, is_prompt))
+    })
+    .min_by_key(|(index, _, _)| *index)
+}
+
+/// 输出分片末尾可能只包含任一标记的前半截；保留最长匹配，下一分片到达后再统一解析。
+fn trailing_shell_sync_marker_prefix_len(value: &str) -> usize {
+    let mut keep = 0;
+    for marker_prefix in [CWD_SYNC_MARKER_PREFIX, PROMPT_CWD_SYNC_MARKER_PREFIX] {
+        for (index, _) in marker_prefix.char_indices().skip(1) {
+            let prefix = &marker_prefix[..index];
+            if value.ends_with(prefix) {
+                keep = keep.max(prefix.len());
+            }
+        }
+    }
+    keep
+}
+
+/// 记录跨 SSH 分片的半截 OSC 标记和当前可见行状态，保证同步协议不泄漏且提示符总能从干净新行开始。
 struct ShellOutputFilter {
     pending: String,
     suppress_setup_echo_line: bool,
     suppress_initial_setup_echo: bool,
     cursor_hidden_by_remote_output: bool,
     cursor_control_tail: String,
+    visible_line_dirty: bool,
+    visible_line_position_uncertain: bool,
+    visible_line_escape_state: TerminalVisibleLineEscapeState,
+    visible_line_csi_parameters: String,
 }
 
 impl Default for ShellOutputFilter {
@@ -808,6 +861,10 @@ impl Default for ShellOutputFilter {
             suppress_initial_setup_echo: true,
             cursor_hidden_by_remote_output: false,
             cursor_control_tail: String::new(),
+            visible_line_dirty: false,
+            visible_line_position_uncertain: false,
+            visible_line_escape_state: TerminalVisibleLineEscapeState::default(),
+            visible_line_csi_parameters: String::new(),
         }
     }
 }
@@ -820,10 +877,12 @@ impl ShellOutputFilter {
         let mut cwd_updates = Vec::new();
 
         loop {
-            if let Some(marker_start) = self.pending.find(CWD_SYNC_MARKER_PREFIX) {
+            if let Some((marker_start, marker_prefix, is_prompt_marker)) =
+                find_next_shell_sync_marker(&self.pending)
+            {
                 let before_marker = self.pending[..marker_start].to_string();
                 self.push_filtered_visible(&mut visible, &before_marker);
-                let value_start = marker_start + CWD_SYNC_MARKER_PREFIX.len();
+                let value_start = marker_start + marker_prefix.len();
 
                 if let Some(value_end) = self.pending[value_start..].find(CWD_SYNC_MARKER_SUFFIX) {
                     let cwd = self.pending[value_start..value_start + value_end]
@@ -834,7 +893,10 @@ impl ShellOutputFilter {
                     }
                     // 第一次 cwd 标记说明启动注入已执行完毕；之后如果用户历史里出现内部函数名，不能再隐藏 readline 的重绘输出。
                     self.suppress_initial_setup_echo = false;
-                    self.restore_cursor_at_prompt_boundary(&mut visible);
+                    if is_prompt_marker {
+                        self.prepare_prompt_line(&mut visible);
+                        self.restore_cursor_at_prompt_boundary(&mut visible);
+                    }
                     let remainder_start =
                         value_start + value_end + CWD_SYNC_MARKER_SUFFIX.len_utf8();
                     self.pending = self.pending[remainder_start..].to_string();
@@ -845,15 +907,7 @@ impl ShellOutputFilter {
                 break;
             }
 
-            let keep = CWD_SYNC_MARKER_PREFIX
-                .char_indices()
-                .skip(1)
-                .filter_map(|(index, _)| {
-                    let prefix = &CWD_SYNC_MARKER_PREFIX[..index];
-                    self.pending.ends_with(prefix).then_some(prefix.len())
-                })
-                .max()
-                .unwrap_or(0);
+            let keep = trailing_shell_sync_marker_prefix_len(&self.pending);
 
             let drain_len = self.pending.len().saturating_sub(keep);
             let drainable = self.pending[..drain_len].to_string();
@@ -873,7 +927,133 @@ impl ShellOutputFilter {
         }
 
         self.track_cursor_visibility_sequences(&filtered);
+        self.track_visible_line_state(&filtered);
         visible.push_str(&filtered);
+    }
+
+    /// 跟踪真正交给 xterm 的文本：LF 完成当前行，CR 只回到行首而不会抹掉进度文本，ANSI 参数不算可见内容。
+    fn track_visible_line_state(&mut self, value: &str) {
+        for byte in value.bytes() {
+            self.visible_line_escape_state = match self.visible_line_escape_state {
+                TerminalVisibleLineEscapeState::Ground => match byte {
+                    b'\x1b' => TerminalVisibleLineEscapeState::Escape,
+                    b'\n' => {
+                        // 光标曾被定位/恢复到旧区域时，LF 可能落入已有正文行；只有顺序输出位置才可判定新行干净。
+                        self.visible_line_dirty = self.visible_line_position_uncertain;
+                        TerminalVisibleLineEscapeState::Ground
+                    }
+                    // CR/退格只移动光标，屏幕上的旧字符仍存在；Tab 会占据视觉位置，应视作非空行。
+                    b'\r' | b'\x08' => TerminalVisibleLineEscapeState::Ground,
+                    b'\t' => {
+                        self.visible_line_dirty = true;
+                        TerminalVisibleLineEscapeState::Ground
+                    }
+                    0x00..=0x1f | 0x7f => TerminalVisibleLineEscapeState::Ground,
+                    _ => {
+                        self.visible_line_dirty = true;
+                        TerminalVisibleLineEscapeState::Ground
+                    }
+                },
+                TerminalVisibleLineEscapeState::Escape => match byte {
+                    b'[' => {
+                        self.visible_line_csi_parameters.clear();
+                        TerminalVisibleLineEscapeState::Csi
+                    }
+                    b']' | b'P' | b'_' | b'^' => TerminalVisibleLineEscapeState::String,
+                    b'\x1b' => TerminalVisibleLineEscapeState::Escape,
+                    // DECRC、IND、RI 会回到或进入可能已有正文的行，保守标脏可避免后续 2K 抹掉内容。
+                    b'8' | b'D' | b'M' => {
+                        self.visible_line_dirty = true;
+                        self.visible_line_position_uncertain = true;
+                        TerminalVisibleLineEscapeState::Ground
+                    }
+                    // NEL 在顺序输出时进入干净新行；位置不确定时目标行可能已有正文，RIS 才能无条件复位。
+                    b'E' => {
+                        self.visible_line_dirty = self.visible_line_position_uncertain;
+                        TerminalVisibleLineEscapeState::Ground
+                    }
+                    b'c' => {
+                        self.visible_line_dirty = false;
+                        self.visible_line_position_uncertain = false;
+                        TerminalVisibleLineEscapeState::Ground
+                    }
+                    _ => TerminalVisibleLineEscapeState::Ground,
+                },
+                TerminalVisibleLineEscapeState::Csi => {
+                    if (0x40..=0x7e).contains(&byte) {
+                        let has_private_prefix = self
+                            .visible_line_csi_parameters
+                            .starts_with(['?', '>', '<', '=']);
+                        let first_parameter = self
+                            .visible_line_csi_parameters
+                            .trim_start_matches(['?', '>', '<', '='])
+                            .split(';')
+                            .next()
+                            .and_then(|value| value.parse::<u16>().ok());
+                        // 光标定位可能在 LF 后重新回到已有正文行；保守标脏可多留一行，但绝不能让提示符清掉最后一行输出。
+                        if !has_private_prefix
+                            && ((byte == b'J' && first_parameter == Some(2))
+                                || (byte == b'K' && first_parameter == Some(2)))
+                        {
+                            // ED 2 与 EL 2 已明确清掉当前屏/当前行；ED 3 只清 scrollback，不能把正文误判为空。
+                            self.visible_line_dirty = false;
+                            if byte == b'J' {
+                                self.visible_line_position_uncertain = false;
+                            }
+                        } else if byte == b'l'
+                            && self.visible_line_csi_parameters.starts_with('?')
+                            && matches!(first_parameter, Some(47 | 1047 | 1049))
+                        {
+                            // 退出 alternate screen 会恢复主缓冲区和旧光标，当前行可能已有启动命令或正文。
+                            self.visible_line_dirty = true;
+                            self.visible_line_position_uncertain = true;
+                        } else if matches!(
+                            byte,
+                            b'A' | b'B'
+                                | b'C'
+                                | b'D'
+                                | b'E'
+                                | b'F'
+                                | b'G'
+                                | b'H'
+                                | b'a'
+                                | b'd'
+                                | b'e'
+                                | b'f'
+                                | b'r'
+                                | b's'
+                                | b'u'
+                        ) {
+                            self.visible_line_dirty = true;
+                            self.visible_line_position_uncertain = true;
+                        }
+                        self.visible_line_csi_parameters.clear();
+                        TerminalVisibleLineEscapeState::Ground
+                    } else if byte == b'\x1b' {
+                        self.visible_line_csi_parameters.clear();
+                        TerminalVisibleLineEscapeState::Escape
+                    } else {
+                        // 参数和中间字节只用于识别完整清屏/清行；设置硬上限，异常长控制串不能无限占用内存。
+                        if self.visible_line_csi_parameters.len() < 32
+                            && (0x20..=0x3f).contains(&byte)
+                        {
+                            self.visible_line_csi_parameters.push(byte as char);
+                        }
+                        TerminalVisibleLineEscapeState::Csi
+                    }
+                }
+                TerminalVisibleLineEscapeState::String => match byte {
+                    b'\x07' => TerminalVisibleLineEscapeState::Ground,
+                    b'\x1b' => TerminalVisibleLineEscapeState::StringEscape,
+                    _ => TerminalVisibleLineEscapeState::String,
+                },
+                TerminalVisibleLineEscapeState::StringEscape => match byte {
+                    b'\\' => TerminalVisibleLineEscapeState::Ground,
+                    b'\x1b' => TerminalVisibleLineEscapeState::StringEscape,
+                    _ => TerminalVisibleLineEscapeState::String,
+                },
+            };
+        }
     }
 
     /// 解析远端输出中的光标显示/隐藏控制序列；只记录最后一次状态，实际序列仍原样交给 xterm。
@@ -908,6 +1088,23 @@ impl ShellOutputFilter {
         visible.push_str(TERMINAL_CURSOR_SHOW_SEQUENCE);
         self.cursor_hidden_by_remote_output = false;
         self.cursor_control_tail.clear();
+    }
+
+    /// 真正的 shell 提示符出现前保留未换行正文，再清空新提示符行；既修复 cat 粘连，也清掉动态重绘留下的 `ted` 等尾巴。
+    fn prepare_prompt_line(&mut self, visible: &mut String) {
+        if self.visible_line_dirty {
+            if self.visible_line_position_uncertain {
+                // 光标可能位于旧屏幕任意行；先恢复全屏滚动区并下移到底部，再 LF 滚出新空行，避免 2K 删除下一行正文。
+                visible.push_str("\x1b[r\x1b[999B");
+            }
+            visible.push_str("\r\n");
+        }
+        // marker 位于 PROMPT_COMMAND/precmd/PS1 开头，此时清行不会删除提示符，只会移除旧进度行或 resize 重绘残留。
+        visible.push_str("\r\x1b[2K");
+        self.visible_line_dirty = false;
+        self.visible_line_position_uncertain = false;
+        self.visible_line_escape_state = TerminalVisibleLineEscapeState::Ground;
+        self.visible_line_csi_parameters.clear();
     }
 
     /// 过滤我方注入命令的回显，避免用户在终端里看到同步协议细节。
@@ -953,6 +1150,10 @@ mod shell_output_filter_tests {
 
     fn cwd_marker(cwd: &str) -> String {
         format!("{CWD_SYNC_MARKER_PREFIX}{cwd}{CWD_SYNC_MARKER_SUFFIX}")
+    }
+
+    fn prompt_marker(cwd: &str) -> String {
+        format!("{PROMPT_CWD_SYNC_MARKER_PREFIX}{cwd}{CWD_SYNC_MARKER_SUFFIX}")
     }
 
     #[test]
@@ -1034,7 +1235,7 @@ mod shell_output_filter_tests {
         let mut filter = ShellOutputFilter::default();
         let input = format!(
             "docker progress{TERMINAL_CURSOR_HIDE_SEQUENCE}{}",
-            cwd_marker("/ology/ology-server")
+            prompt_marker("/ology/ology-server")
         );
 
         let (visible, cwd_updates) = filter.consume(&input);
@@ -1043,7 +1244,7 @@ mod shell_output_filter_tests {
         assert_eq!(
             visible,
             format!(
-                "docker progress{TERMINAL_CURSOR_HIDE_SEQUENCE}{TERMINAL_CURSOR_SHOW_SEQUENCE}"
+                "docker progress{TERMINAL_CURSOR_HIDE_SEQUENCE}\r\n\r\x1b[2K{TERMINAL_CURSOR_SHOW_SEQUENCE}"
             )
         );
     }
@@ -1053,7 +1254,7 @@ mod shell_output_filter_tests {
         let mut filter = ShellOutputFilter::default();
         let input = format!(
             "{TERMINAL_CURSOR_HIDE_SEQUENCE}{TERMINAL_CURSOR_SHOW_SEQUENCE}{}",
-            cwd_marker("/tmp")
+            prompt_marker("/tmp")
         );
 
         let (visible, cwd_updates) = filter.consume(&input);
@@ -1068,22 +1269,261 @@ mod shell_output_filter_tests {
 
         let (first_visible, _) = filter.consume("\x1b[?2");
         let (second_visible, _) = filter.consume("5l");
-        let (prompt_visible, cwd_updates) = filter.consume(&cwd_marker("/split"));
+        let (prompt_visible, cwd_updates) = filter.consume(&prompt_marker("/split"));
 
         assert_eq!(first_visible, "\x1b[?2");
         assert_eq!(second_visible, "5l");
         assert_eq!(cwd_updates, vec!["/split".to_string()]);
-        assert_eq!(prompt_visible, TERMINAL_CURSOR_SHOW_SEQUENCE);
+        assert_eq!(
+            prompt_visible,
+            format!("\r\x1b[2K{TERMINAL_CURSOR_SHOW_SEQUENCE}")
+        );
     }
 
     #[test]
     fn keeps_prompt_marker_without_cursor_restore_when_cursor_was_visible() {
         let mut filter = ShellOutputFilter::default();
 
-        let (visible, cwd_updates) = filter.consume(&cwd_marker("/visible"));
+        let (visible, cwd_updates) = filter.consume(&prompt_marker("/visible"));
 
-        assert_eq!(visible, "");
+        assert_eq!(visible, "\r\x1b[2K");
         assert_eq!(cwd_updates, vec!["/visible".to_string()]);
+    }
+
+    #[test]
+    fn moves_prompt_after_output_without_trailing_line_feed() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (visible, cwd_updates) = filter.consume(&format!("cat tail{}", prompt_marker("/cat")));
+
+        assert_eq!(visible, "cat tail\r\n\r\x1b[2K");
+        assert_eq!(cwd_updates, vec!["/cat".to_string()]);
+    }
+
+    #[test]
+    fn preserves_carriage_return_progress_before_clearing_prompt_line() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (visible, cwd_updates) =
+            filter.consume(&format!("Container Started\r{}", prompt_marker("/docker")));
+
+        assert_eq!(visible, "Container Started\r\r\n\r\x1b[2K");
+        assert_eq!(cwd_updates, vec!["/docker".to_string()]);
+    }
+
+    #[test]
+    fn ansi_after_completed_line_does_not_insert_an_extra_blank_line() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (visible, cwd_updates) =
+            filter.consume(&format!("done\r\n\x1b[0m{}", prompt_marker("/ansi")));
+
+        assert_eq!(visible, "done\r\n\x1b[0m\r\x1b[2K");
+        assert_eq!(cwd_updates, vec!["/ansi".to_string()]);
+    }
+
+    #[test]
+    fn cwd_marker_inside_compound_command_does_not_break_the_output_line() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (visible, cwd_updates) =
+            filter.consume(&format!("before{}after", cwd_marker("/middle")));
+
+        assert_eq!(visible, "beforeafter");
+        assert_eq!(cwd_updates, vec!["/middle".to_string()]);
+    }
+
+    #[test]
+    fn keeps_both_marker_prefixes_private_when_split_across_chunks() {
+        let mut filter = ShellOutputFilter::default();
+        let cwd_split = CWD_SYNC_MARKER_PREFIX.len() - 3;
+
+        let (cwd_prefix_visible, _) = filter.consume(&CWD_SYNC_MARKER_PREFIX[..cwd_split]);
+        let (cwd_visible, cwd_updates) = filter.consume(&format!(
+            "{}{}{}",
+            &CWD_SYNC_MARKER_PREFIX[cwd_split..],
+            "/cwd-split",
+            CWD_SYNC_MARKER_SUFFIX
+        ));
+
+        assert_eq!(cwd_prefix_visible, "");
+        assert_eq!(cwd_visible, "");
+        assert_eq!(cwd_updates, vec!["/cwd-split".to_string()]);
+
+        let prompt_split = PROMPT_CWD_SYNC_MARKER_PREFIX.len() - 4;
+        let (prompt_prefix_visible, _) =
+            filter.consume(&PROMPT_CWD_SYNC_MARKER_PREFIX[..prompt_split]);
+        let (prompt_visible, prompt_updates) = filter.consume(&format!(
+            "{}{}{}",
+            &PROMPT_CWD_SYNC_MARKER_PREFIX[prompt_split..],
+            "/prompt-split",
+            CWD_SYNC_MARKER_SUFFIX
+        ));
+
+        assert_eq!(prompt_prefix_visible, "");
+        assert_eq!(prompt_visible, "\r\x1b[2K");
+        assert_eq!(prompt_updates, vec!["/prompt-split".to_string()]);
+    }
+
+    #[test]
+    fn tracks_ansi_sequence_split_after_a_completed_line() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (first_visible, _) = filter.consume("done\r\n\x1b[3");
+        let (second_visible, _) = filter.consume("1m");
+        let (prompt_visible, cwd_updates) = filter.consume(&prompt_marker("/ansi-split"));
+
+        assert_eq!(first_visible, "done\r\n\x1b[3");
+        assert_eq!(second_visible, "1m");
+        assert_eq!(prompt_visible, "\r\x1b[2K");
+        assert_eq!(cwd_updates, vec!["/ansi-split".to_string()]);
+    }
+
+    #[test]
+    fn preserves_output_when_csi_moves_cursor_back_before_prompt() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (visible, cwd_updates) =
+            filter.consume(&format!("done\r\n\x1b[1A{}", prompt_marker("/cursor-up")));
+
+        assert_eq!(visible, "done\r\n\x1b[1A\x1b[r\x1b[999B\r\n\r\x1b[2K");
+        assert_eq!(cwd_updates, vec!["/cursor-up".to_string()]);
+    }
+
+    #[test]
+    fn clear_screen_keeps_the_next_prompt_on_the_first_clean_line() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (visible, cwd_updates) =
+            filter.consume(&format!("old\r\n\x1b[H\x1b[2J{}", prompt_marker("/clear")));
+
+        assert_eq!(visible, "old\r\n\x1b[H\x1b[2J\r\x1b[2K");
+        assert_eq!(cwd_updates, vec!["/clear".to_string()]);
+    }
+
+    #[test]
+    fn erased_progress_line_does_not_create_an_unneeded_blank_line() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (visible, cwd_updates) = filter.consume(&format!(
+            "progress\r\x1b[2K{}",
+            prompt_marker("/erased-progress")
+        ));
+
+        assert_eq!(visible, "progress\r\x1b[2K\r\x1b[2K");
+        assert_eq!(cwd_updates, vec!["/erased-progress".to_string()]);
+    }
+
+    #[test]
+    fn dec_cursor_restore_preserves_the_saved_output_line() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (visible, cwd_updates) =
+            filter.consume(&format!("body\x1b7\r\n\x1b8{}", prompt_marker("/dec-restore")));
+
+        assert_eq!(
+            visible,
+            "body\x1b7\r\n\x1b8\x1b[r\x1b[999B\r\n\r\x1b[2K"
+        );
+        assert_eq!(cwd_updates, vec!["/dec-restore".to_string()]);
+    }
+
+    #[test]
+    fn erase_scrollback_does_not_mark_visible_body_as_cleared() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (visible, cwd_updates) =
+            filter.consume(&format!("body\x1b[3J{}", prompt_marker("/scrollback")));
+
+        assert_eq!(visible, "body\x1b[3J\r\n\r\x1b[2K");
+        assert_eq!(cwd_updates, vec!["/scrollback".to_string()]);
+    }
+
+    #[test]
+    fn alternate_screen_restore_preserves_the_main_buffer_line() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (visible, cwd_updates) = filter.consume(&format!(
+            "\r\n\x1b[?1049l{}",
+            prompt_marker("/alternate-screen")
+        ));
+
+        assert_eq!(
+            visible,
+            "\r\n\x1b[?1049l\x1b[r\x1b[999B\r\n\r\x1b[2K"
+        );
+        assert_eq!(cwd_updates, vec!["/alternate-screen".to_string()]);
+    }
+
+    #[test]
+    fn line_feed_after_cursor_positioning_does_not_clear_an_existing_row() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (visible, cwd_updates) = filter.consume(&format!(
+            "top\r\nvictim\x1b[1A\n{}",
+            prompt_marker("/positioned-lf")
+        ));
+
+        assert_eq!(
+            visible,
+            "top\r\nvictim\x1b[1A\n\x1b[r\x1b[999B\r\n\r\x1b[2K"
+        );
+        assert_eq!(cwd_updates, vec!["/positioned-lf".to_string()]);
+    }
+
+    #[test]
+    fn next_line_after_cursor_positioning_does_not_clear_an_existing_row() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (visible, cwd_updates) = filter.consume(&format!(
+            "top\r\nvictim\x1b[1A\x1bE{}",
+            prompt_marker("/positioned-nel")
+        ));
+
+        assert_eq!(
+            visible,
+            "top\r\nvictim\x1b[1A\x1bE\x1b[r\x1b[999B\r\n\r\x1b[2K"
+        );
+        assert_eq!(cwd_updates, vec!["/positioned-nel".to_string()]);
+    }
+
+    #[test]
+    fn uncertain_cursor_moves_to_bottom_before_creating_prompt_line() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (visible, cwd_updates) = filter.consume(&format!(
+            "one\r\ntwo\r\nthree\x1b[2A\n{}",
+            prompt_marker("/three-lines")
+        ));
+
+        assert_eq!(
+            visible,
+            "one\r\ntwo\r\nthree\x1b[2A\n\x1b[r\x1b[999B\r\n\r\x1b[2K"
+        );
+        assert_eq!(cwd_updates, vec!["/three-lines".to_string()]);
+    }
+
+    #[test]
+    fn private_erase_display_does_not_claim_the_visible_line_is_empty() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (visible, cwd_updates) =
+            filter.consume(&format!("body\x1b[?2J{}", prompt_marker("/private-ed")));
+
+        assert_eq!(visible, "body\x1b[?2J\r\n\r\x1b[2K");
+        assert_eq!(cwd_updates, vec!["/private-ed".to_string()]);
+    }
+
+    #[test]
+    fn decstbm_reset_preserves_body_after_moving_the_cursor_home() {
+        let mut filter = ShellOutputFilter::default();
+
+        // DECSTBM 即使不带参数也会把 xterm 光标移回 Home；提示符必须先转移到底部空行，不能清掉首行正文。
+        let (visible, cwd_updates) =
+            filter.consume(&format!("body\r\n\x1b[r{}", prompt_marker("/decstbm")));
+
+        assert_eq!(visible, "body\r\n\x1b[r\x1b[r\x1b[999B\r\n\r\x1b[2K");
+        assert_eq!(cwd_updates, vec!["/decstbm".to_string()]);
     }
 
     #[test]
@@ -1092,9 +1532,80 @@ mod shell_output_filter_tests {
 
         assert!(command.contains("export PROMPT_COMMAND"));
         assert!(command.contains("export -f __myterminal_sync_cwd"));
+        // 可导出的标量 dispatcher 在父 Shell 重放原数组/标量 hook 后再发 marker，尾分号不会与我方命令拼成 `;;`。
+        assert!(command.contains("__myterminal_original_prompt_commands"));
+        assert!(command.contains("^declare -[^ ]*a[^ ]* "));
+        assert!(command.contains("PROMPT_COMMAND=__myterminal_sync_prompt_dispatch"));
+        // dispatcher 只把原退出状态提供给旧 hook；自身必须成功返回，避免失败命令二次触发用户 ERR trap。
+        assert!(command.contains(
+            "else (exit \"$__myterminal_prompt_status\") || eval \"$__myterminal_prompt_command\"; fi"
+        ));
+        assert!(!command.contains(
+            "; (exit \"$__myterminal_prompt_status\"); eval \"$__myterminal_prompt_command\";"
+        ));
+        assert!(command.contains("__myterminal_sync_prompt; return 0;"));
+        assert!(!command.contains("return \"$__myterminal_prompt_status\""));
+        assert!(!command.contains("$PROMPT_COMMAND;}__myterminal_sync_prompt"));
         assert!(command.contains("__myterminal_install_cwd_wrappers"));
         assert!(command.contains("cd pushd popd"));
         assert!(command.contains("case $- in *i*)"));
+    }
+
+    #[test]
+    fn recognizes_direct_claude_commands_for_synchronized_output() {
+        // 直接命令、脚本后缀、大小写、相对路径和 PowerShell 引号路径都必须命中 Claude 专用同步帧兜底。
+        for command in [
+            "claude",
+            "CLAUDE.EXE --permission-mode manual",
+            "./claude-code --continue",
+            r#"& "C:\Tools\claude.cmd" --model sonnet"#,
+            r#"& 'C:\Program Files\Claude\claude-code.ps1' --continue"#,
+        ] {
+            assert!(
+                should_force_claude_synchronized_output(command),
+                "command should enable synchronized output: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn recognizes_only_direct_qwen_commands_for_its_own_synchronized_output() {
+        // Qwen 必须使用自己的官方变量；直接脚本路径可命中，包管理器二次分发和相似名称不能猜测。
+        for command in [
+            "qwen",
+            "QWEN-CODE.EXE --continue",
+            r#"& "C:\Tools\qwen.cmd" --model coder"#,
+        ] {
+            assert!(
+                should_force_qwen_synchronized_output(command),
+                "command should enable Qwen synchronized output: {command}"
+            );
+        }
+        for command in ["npx qwen", "qwen-helper", "claude", "codex"] {
+            assert!(
+                !should_force_qwen_synchronized_output(command),
+                "command should keep Qwen environment unchanged: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn leaves_indirect_or_unrelated_commands_unchanged() {
+        // 无法可靠判断最终子进程的包装命令和名称相似项不能误注入 Claude 专用变量。
+        for command in [
+            "",
+            "npx claude",
+            "pnpm exec claude",
+            "echo claude",
+            "claude-helper",
+            "not-claude.exe",
+            "codex",
+        ] {
+            assert!(
+                !should_force_claude_synchronized_output(command),
+                "command should keep the default environment: {command}"
+            );
+        }
     }
 }
 
@@ -2808,6 +3319,57 @@ fn resolve_local_shell_path(settings: &LocalTerminalSettings) -> String {
         .to_string()
 }
 
+/// 从本地终端启动命令中提取首个可执行文件名，供宿主按目标 TUI 注入兼容环境变量。
+/// 这里只解析直接执行形式：兼容 PowerShell 调用运算符、单双引号路径、Windows/Unix 路径和常见脚本后缀；
+/// `npx claude` 等二次分发命令不猜测最终子进程，避免把 Claude 专用行为误施加给普通命令。
+fn extract_local_command_executable_name(command: &str) -> Option<String> {
+    let mut remaining = command.trim_start();
+    if let Some(after_call_operator) = remaining.strip_prefix('&') {
+        remaining = after_call_operator.trim_start();
+    }
+    if remaining.is_empty() {
+        return None;
+    }
+
+    let executable = match remaining.chars().next()? {
+        quote @ ('\'' | '"') => {
+            let quoted = &remaining[quote.len_utf8()..];
+            let closing_quote = quoted.find(quote)?;
+            &quoted[..closing_quote]
+        }
+        _ => remaining.split_whitespace().next()?,
+    };
+    let file_name = executable
+        .rsplit(['/', '\\'])
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let mut normalized = file_name.to_ascii_lowercase();
+    for suffix in [".exe", ".cmd", ".bat", ".ps1"] {
+        if let Some(without_suffix) = normalized.strip_suffix(suffix) {
+            normalized = without_suffix.to_string();
+            break;
+        }
+    }
+    Some(normalized)
+}
+
+/// Claude 只有在直接作为本地启动命令时才启用同步帧兜底，避免污染普通 Shell、Codex 等其它会话。
+fn should_force_claude_synchronized_output(command: &str) -> bool {
+    matches!(
+        extract_local_command_executable_name(command).as_deref(),
+        Some("claude" | "claude-code")
+    )
+}
+
+/// Qwen Code 使用独立的官方开关；只匹配直接启动命令，不能复用或全局扩散 Claude 的专用变量。
+fn should_force_qwen_synchronized_output(command: &str) -> bool {
+    matches!(
+        extract_local_command_executable_name(command).as_deref(),
+        Some("qwen" | "qwen-code")
+    )
+}
+
 #[cfg(windows)]
 fn build_local_terminal_command(shell_path: &str, command: &str) -> CommandBuilder {
     let shell_name = Path::new(shell_path)
@@ -2877,6 +3439,14 @@ fn spawn_local_terminal_thread(
         // AI CLI 通常会根据 TERM/COLORTERM 决定颜色和交互 UI，显式声明现代终端能力。
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
+        // 前端会响应标准 XTVERSION，但 Claude 2.1.129+ 的官方开关仍作为直接启动场景的兼容兜底，避免版本探测差异重现中间帧。
+        if should_force_claude_synchronized_output(&profile.command) {
+            command.env("CLAUDE_CODE_FORCE_SYNC_OUTPUT", "1");
+        }
+        // Qwen 默认只对少数终端品牌开启 DEC 2026；直接启动时使用它自己的官方开关，不能套用 Claude 环境变量。
+        if should_force_qwen_synchronized_output(&profile.command) {
+            command.env("QWEN_CODE_FORCE_SYNCHRONIZED_OUTPUT", "1");
+        }
 
         let mut child = match pair.slave.spawn_command(command) {
             Ok(child) => child,
