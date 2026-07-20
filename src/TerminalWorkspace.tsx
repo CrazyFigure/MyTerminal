@@ -8,6 +8,7 @@ import { readClipboardText, writeClipboardText } from './clipboard';
 import { translate } from './i18n';
 import { TerminalOutputCache } from './terminalCache';
 import type { AppSettings, TerminalOutputChunk, TerminalSession } from './types';
+import packageMetadata from '../package.json';
 
 import '@xterm/xterm/css/xterm.css';
 
@@ -15,6 +16,8 @@ type Props = {
   session?: TerminalSession;
   settings: AppSettings;
   onTerminalData: (data: string) => void;
+  // 终端能力协商可能来自后台会话，必须携带原始会话 ID 回写，不能误发到当前活动标签。
+  onTerminalProtocolData: (sessionId: string, data: string) => void;
   // 行号栏右键菜单切换显示项后，需要把设置写回并持久化。
   onUpdateSettings: (partial: Partial<AppSettings>) => void;
   // 当前仍存活的会话 ID 列表；用于关闭标签后显式回收对应的输出缓存与行号时间线。
@@ -24,6 +27,13 @@ type Props = {
 const terminalOutputEventName = 'myterminal-terminal-output';
 const terminalCursorShowSequence = '\x1b[?25h';
 const terminalCursorHideSequence = '\x1b[?25l';
+// bracketed paste 的边界用于区分“粘贴中的换行”和真正提交命令的 Enter，避免误清 Claude 输入行缓存。
+const terminalBracketedPasteStartSequence = '\x1b[200~';
+const terminalBracketedPasteEndSequence = '\x1b[201~';
+// xterm 支持 DEC 2026，但不内置 XTVERSION；按标准返回真实宿主身份，让 Claude 等 TUI 能继续执行能力协商。
+const terminalXtVersionResponse = `\x1bP>|MyTerminal(${packageMetadata.version})\x1b\\`;
+// 单次回写最多合并固定数量的响应，既减少后端调用，也禁止异常查询造成无上限字符串分配。
+const terminalXtVersionReplyBatchSize = 32;
 // 横向滚动模式根据当前缓冲区最长逻辑行动态扩列，上限防止异常长行拖慢渲染。
 const terminalHorizontalMaxColumns = 1000;
 // 横向列数按块增长，避免每输入一个字符都触发一次 PTY resize。
@@ -54,9 +64,11 @@ const terminalMinimumContrastRatio = 7;
 // Claude Code 用浅蓝/浅紫表达菜单选中态，使用 AA 级别兜底增强可读性，同时避免高亮色被压成黑色。
 const terminalClaudeMinimumContrastRatio = 4.5;
 // 这些命令会以 TUI 方式反复重绘同一屏，必须固定在当前可视列宽内渲染。
-const terminalAiAgentCommandNames = new Set(['claude', 'claude-code', 'codex', 'opencode', 'qwen', 'gemini', 'aider', 'cursor-agent']);
+const terminalAiAgentCommandNames = new Set(['claude', 'claude-code', 'codex', 'opencode', 'qwen', 'qwen-code', 'gemini', 'aider', 'cursor-agent']);
+// xterm 默认把 Ctrl+V 编码成控制字符；只为 Windows Claude 放行 WebView 原生粘贴，避免改变 Shell/Vim 的 Ctrl+V 语义。
+const terminalNativeCtrlVPasteCommandNames = new Set(['claude', 'claude-code']);
 // Claude/Codex 会自绘输入光标，必须隐藏 xterm 光标，避免额外出现第二个光标。
-const terminalHideLocalCursorCommandNames = new Set(['claude', 'claude-code', 'codex', 'qwen', 'gemini', 'aider', 'cursor-agent']);
+const terminalHideLocalCursorCommandNames = new Set(['claude', 'claude-code', 'codex', 'qwen', 'qwen-code', 'gemini', 'aider', 'cursor-agent']);
 // 浅色模式下 Codex 会用 ANSI black 或反色块表示输入区，映射成柔和底色避免黑块过重。
 const terminalSoftDarkBlockCommandNames = new Set(['codex']);
 const terminalLowerContrastCommandNames = new Set(['claude', 'claude-code']);
@@ -65,6 +77,12 @@ const terminalForceShowLocalCursorCommandNames = new Set(['opencode']);
 const terminalSoftDarkBlockLightBackground = '#e0e7ff';
 // Claude 自绘输入框时 xterm 真实 cursor 可能停在状态栏；中文输入法候选框需要锚到可见输入行。
 const terminalImeAnchorCommandNames = new Set(['claude', 'claude-code']);
+// 普通受控光标只在视口底部探测；Claude 可能把输入框绘制在上半屏，另由输入框边线与专用会话约束全屏搜索。
+const terminalPromptGlyphs = ['›', '❯'] as const;
+const terminalPromptSearchRows = 12;
+// 无提示符兜底只接受邻近的足够长边线：距离覆盖单行/短多行输入，最小长度排除回答里的普通短横线。
+const terminalPromptBorderSearchDistanceRows = 4;
+const terminalPromptBorderMinCharacters = 8;
 // Codex 的真实 xterm cursor 会停在状态栏，需要用前端受控光标锚到输入行。
 const terminalControlledInputCursorCommandNames = new Set(['codex']);
 // 匹配高亮只绘制当前可查看区域，滚动时重算，避免为整个 scrollback 常驻创建大量 DOM。
@@ -188,6 +206,61 @@ type TerminalPromptAnchor = {
   containerTop: number;
   cellWidth: number;
   cellHeight: number;
+};
+
+// Claude 提交首个中文词后可能临时擦掉提示符；缓存可信输入行，让下一轮组合输入仍锚在同一行。
+type TerminalPromptRowCache = {
+  sessionId: string;
+  row: number;
+};
+
+// xterm write 异步排队且 reset 不会取消旧输入；重放代次用于阻止旧会话回调提前结束新会话的重放保护。
+type TerminalReplayState = {
+  generation: number;
+  sessionId?: string;
+};
+
+type TerminalReplayDeferredOutput = TerminalReplayState & {
+  chunks: string[];
+};
+
+// 连续 resize 后若溢出量始终贴着右边界增长，说明内容很可能在响应 PTY 宽度，而不是一条固定长文本。
+type TerminalHorizontalOverflowEvidence = {
+  contentColumns: number;
+  snapshotColumns: number;
+  widthResponsive: boolean;
+};
+
+type TerminalXtVersionQueryParserState = 0 | 1 | 2 | 3;
+
+// XTVERSION 查询可能横跨后端输出分片；小状态机按会话保留未完成前缀，并返回本分片内完整查询数。
+const countTerminalXtVersionQueries = (
+  content: string,
+  initialState: TerminalXtVersionQueryParserState,
+) => {
+  let state = initialState;
+  let count = 0;
+  for (const character of content) {
+    if (state === 0) {
+      state = character === '\x1b' ? 1 : character === '\x9b' ? 2 : 0;
+      continue;
+    }
+    if (state === 1) {
+      state = character === '[' ? 2 : character === '\x1b' ? 1 : character === '\x9b' ? 2 : 0;
+      continue;
+    }
+    if (state === 2) {
+      state = character === '>' ? 3 : character === '\x1b' ? 1 : 0;
+      continue;
+    }
+    if (character === 'q') {
+      count += 1;
+      state = 0;
+    } else if (!/[0-9;]/.test(character)) {
+      state = character === '\x1b' ? 1 : 0;
+    }
+  }
+  return { count, state };
 };
 
 type TerminalVerticalScrollbarMetrics = {
@@ -611,9 +684,9 @@ const resolveLocalSessionCommandText = (session?: TerminalSession) => {
   return titleSeparatorIndex > 0 ? session.title.slice(0, titleSeparatorIndex).trim() : '';
 };
 
-// 只取命令行第一个可执行文件名，兼容 Windows 路径和 .cmd/.exe/.ps1 后缀。
+// 只取命令行第一个可执行文件名，兼容 PowerShell `&`、Windows 引号路径和 .cmd/.exe/.ps1/.bat 后缀。
 const extractTerminalExecutableName = (commandText: string) => {
-  const commandHeadMatch = commandText.match(/^\s*(?:"([^"]+)"|'([^']+)'|(\S+))/);
+  const commandHeadMatch = commandText.match(/^\s*(?:&\s*)?(?:"([^"]+)"|'([^']+)'|(\S+))/);
   const commandHead = commandHeadMatch?.[1] ?? commandHeadMatch?.[2] ?? commandHeadMatch?.[3] ?? '';
   const executableName = commandHead.replace(/\\/g, '/').split('/').pop() ?? '';
   return executableName.replace(/\.(?:cmd|exe|ps1|bat)$/i, '').toLowerCase();
@@ -655,6 +728,16 @@ const shouldForceShowLocalTerminalCursor = (session?: TerminalSession) => {
 const shouldAnchorTerminalImeToPrompt = (session?: TerminalSession) => {
   const executableName = extractTerminalExecutableName(resolveLocalSessionCommandText(session));
   return executableName ? terminalImeAnchorCommandNames.has(executableName) : false;
+};
+
+// 宿主平台只用于决定是否把 Ctrl+V 交还给 WebView 原生 paste；其它平台保留 Claude 自己的快捷键绑定。
+const isWindowsTerminalHost = () =>
+  typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
+
+// 仅直接启动的本地 Claude 会话使用 Windows 原生 Ctrl+V 粘贴，其它终端程序继续收到 \x16。
+const shouldUseNativeCtrlVPaste = (session?: TerminalSession) => {
+  const executableName = extractTerminalExecutableName(resolveLocalSessionCommandText(session));
+  return executableName ? terminalNativeCtrlVPasteCommandNames.has(executableName) : false;
 };
 
 // Codex 输入框位置由 CLI 自绘，前端光标需要跟随该输入行，而不是跟随 xterm 内部状态栏 cursor。
@@ -987,7 +1070,14 @@ const resolveTerminalRelativeLuminance = (color: TerminalRgbColor) => {
   return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
 };
 
-export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateSettings, liveSessionIds }: Props) {
+export function TerminalWorkspace({
+  session,
+  settings,
+  onTerminalData,
+  onTerminalProtocolData,
+  onUpdateSettings,
+  liveSessionIds,
+}: Props) {
   const [terminalContextMenu, setTerminalContextMenu] = useState<{ x: number; y: number; selectedText: string } | null>(null);
   // 行号栏右键菜单只承载“显示行号/时间戳”两个开关，与正文区右键复制/粘贴互不干扰。
   const [terminalGutterContextMenu, setTerminalGutterContextMenu] = useState<{ x: number; y: number } | null>(null);
@@ -1022,23 +1112,33 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
   // 缓存重放期间先按重放顺序建立临时编号，完成后再与会话累计编号从末端对齐。
   const terminalGutterReplayActiveRef = useRef(false);
   const terminalGutterReplayNextLogicalNumberRef = useRef(1);
+  const terminalReplayGenerationRef = useRef(0);
+  const terminalActiveReplayRef = useRef<TerminalReplayState | null>(null);
+  const terminalReplayDeferredOutputRef = useRef<TerminalReplayDeferredOutput | null>(null);
+  const terminalReplayInputBlockedRef = useRef(false);
+  const terminalXtVersionParserStateBySessionRef = useRef(new Map<string, TerminalXtVersionQueryParserState>());
   // 按会话持久保存的逻辑行时间线；切换会话不清空，保证历史时间恒定。
   const terminalGutterSessionDataRef = useRef<Record<string, TerminalGutterSessionData>>({});
   const terminalSelectionDragActiveRef = useRef(false);
   const terminalSelectionDragFrameRef = useRef<number | null>(null);
   const onTerminalDataRef = useRef(onTerminalData);
+  const onTerminalProtocolDataRef = useRef(onTerminalProtocolData);
   const sessionRef = useRef<TerminalSession | undefined>(session);
   const resizeFrameRef = useRef<number | null>(null);
   const cursorFollowFrameRef = useRef<number | null>(null);
   const terminalImeCompositionFrameRef = useRef<number | null>(null);
   const terminalImeComposingRef = useRef(false);
+  const terminalPromptRowCacheRef = useRef<TerminalPromptRowCache | null>(null);
   const lastLocalTerminalInputAtRef = useRef(0);
-  // 横向模式的渲染列数在单个会话内只允许增长，避免竖向翻页时因当前页长短不同反复 resize/reflow。
-  const terminalHorizontalRenderColsRef = useRef(0);
-  // 会话切走再切回时恢复原高水位，避免缓存重放只看底部短行而丢失历史长行的横向宽度。
-  const terminalHorizontalRenderColsBySessionRef = useRef<Record<string, number>>({});
+  const terminalLocalInputEditingRef = useRef(false);
+  // 横向模式只保存“软换行已证实”的内容宽度高水位；可视窗口本身变宽不能污染该值，否则缩窗后会凭空出现横向滚动。
+  const terminalHorizontalContentColsRef = useRef(0);
+  // 会话切走再切回时恢复真实长内容的高水位，避免缓存重放只看底部短行而丢失历史长行宽度。
+  const terminalHorizontalContentColsBySessionRef = useRef<Record<string, number>>({});
   // 缓存重放结束后仅执行一次全缓冲测量，之后高频输出仍只测当前窗口，控制扫描开销。
   const terminalHorizontalFullBufferMeasurePendingRef = useRef(false);
+  const terminalHorizontalOverflowEvidenceRef = useRef<TerminalHorizontalOverflowEvidence | null>(null);
+  const terminalHorizontalPostShrinkCeilingRef = useRef<number | null>(null);
   const remoteTerminalSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const pendingFocusSessionIdRef = useRef<string | null>(session?.id ?? null);
   const terminalLineWrapMode = settings.terminalLineWrapMode ?? 'wrap';
@@ -1173,13 +1273,22 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
   }, [onTerminalData]);
 
   useEffect(() => {
+    onTerminalProtocolDataRef.current = onTerminalProtocolData;
+  }, [onTerminalProtocolData]);
+
+  useEffect(() => {
     sessionRef.current = session;
   }, [session]);
 
   // 终端焦点恢复只面向可输入会话，避免关闭或异常会话重新抢占页面焦点。
   const focusTerminalInput = () => {
     const terminal = terminalRef.current;
-    if (!terminal || !canAcceptTerminalInput(sessionRef.current)) {
+    if (
+      !terminal
+      || terminalActiveReplayRef.current
+      || terminalReplayInputBlockedRef.current
+      || !canAcceptTerminalInput(sessionRef.current)
+    ) {
       return;
     }
 
@@ -1189,12 +1298,27 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
   // 点击顶部会话标签后先记住目标会话，等 SSH 从 connecting 进入可输入状态时再把焦点交回 xterm。
   const focusPendingTerminalInput = () => {
     const targetSessionId = pendingFocusSessionIdRef.current;
-    if (!targetSessionId || sessionRef.current?.id !== targetSessionId || !canAcceptTerminalInput(sessionRef.current)) {
+    if (
+      terminalActiveReplayRef.current
+      || terminalReplayInputBlockedRef.current
+      || !targetSessionId
+      || sessionRef.current?.id !== targetSessionId
+      || !canAcceptTerminalInput(sessionRef.current)
+    ) {
       return;
     }
 
     pendingFocusSessionIdRef.current = null;
     focusTerminalInput();
+  };
+
+  // 重放期间除协议自动回复外禁止真实用户输入；移出 Tab 顺序可避免隐藏 textarea 被意外聚焦并上报焦点协议。
+  const setTerminalReplayInputBlocked = (blocked: boolean) => {
+    terminalReplayInputBlockedRef.current = blocked;
+    const textarea = terminalRef.current?.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
+    if (textarea) {
+      textarea.tabIndex = blocked ? -1 : 0;
+    }
   };
 
   // AI TUI 会自己绘制输入光标，本地 xterm 光标必须隐藏，避免滚轮或重绘后出现黑蓝双光标。
@@ -1217,7 +1341,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     }
   };
 
-  // Claude/Codex 自绘输入框时，真实 xterm cursor 可能停在状态栏；用可见的 `› ...` 输入行作为锚点。
+  // Claude/Codex 自绘输入框时，真实 xterm cursor 可能停在状态栏；从视口底部识别可见输入行作为锚点。
   const resolveTerminalPromptAnchor = (): TerminalPromptAnchor | undefined => {
     const terminal = terminalRef.current;
     const container = containerRef.current;
@@ -1229,27 +1353,105 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     const buffer = terminal.buffer.active;
     const firstVisibleRow = buffer.viewportY;
     const lastVisibleRow = Math.min(buffer.length - 1, firstVisibleRow + terminal.rows - 1);
-    let promptRow = -1;
-    let promptColumn = 0;
+    // Claude 在侧栏展开、窗口 resize 或启动期重排后，输入框可能停在视口上半部；只搜底部会直接漏掉并回退到状态栏 cursor。
+    // Claude 专用会话允许扫描整个可见区，普通 Codex 受控光标仍限制在底部，避免把历史回答里的提示符误判为输入行。
+    const promptSearchStartRow = anchorImeToPromptForSessionRef.current
+      ? firstVisibleRow
+      : Math.max(firstVisibleRow, lastVisibleRow - terminalPromptSearchRows + 1);
+    let promptStartRow = -1;
 
-    for (let row = lastVisibleRow; row >= firstVisibleRow; row -= 1) {
+    // Claude 新版在首词提交后可能连提示符也一起擦掉；上下输入框边线可为无提示符行提供可信结构锚点。
+    const promptBorderRowCache = new Map<number, boolean>();
+    const isPromptBorderRow = (row: number) => {
+      const cached = promptBorderRowCache.get(row);
+      if (cached !== undefined) {
+        return cached;
+      }
+      const text = buffer.getLine(row)?.translateToString(true).replace(/\s/g, '') ?? '';
+      const isBorder = text.length >= terminalPromptBorderMinCharacters && /^[─━═-]+$/.test(text);
+      // 全视口扫描会反复检查邻近行；单次解析内缓存结果，避免每个候选行重复翻译整条 xterm buffer。
+      promptBorderRowCache.set(row, isBorder);
+      return isBorder;
+    };
+    const isFramedFallbackPrompt = (row: number) => {
+      let hasUpperBorder = false;
+      let hasLowerBorder = false;
+      for (
+        let candidate = row - 1;
+        candidate >= Math.max(promptSearchStartRow, row - terminalPromptBorderSearchDistanceRows);
+        candidate -= 1
+      ) {
+        if (isPromptBorderRow(candidate)) {
+          hasUpperBorder = true;
+          break;
+        }
+      }
+      for (
+        let candidate = row + 1;
+        candidate <= Math.min(lastVisibleRow, row + terminalPromptBorderSearchDistanceRows);
+        candidate += 1
+      ) {
+        if (isPromptBorderRow(candidate)) {
+          hasLowerBorder = true;
+          break;
+        }
+      }
+      return hasUpperBorder && hasLowerBorder;
+    };
+
+    for (let row = lastVisibleRow; row >= promptSearchStartRow; row -= 1) {
       const line = buffer.getLine(row);
       const text = line?.translateToString(true) ?? '';
-      if (!line || !text.trimStart().startsWith('›')) {
+      // 边线本身不能充当输入行；多段分隔线相邻时否则可能把中间边线误判成被框住的内容。
+      if (!line || line.isWrapped || isPromptBorderRow(row)) {
+        continue;
+      }
+      const trimmedText = text.trimStart();
+      const hasKnownPromptGlyph = terminalPromptGlyphs.some((glyph) => trimmedText.startsWith(glyph));
+      const hasFramedClaudeInputRow = anchorImeToPromptForSessionRef.current && isFramedFallbackPrompt(row);
+      if (!hasKnownPromptGlyph && !hasFramedClaudeInputRow) {
         continue;
       }
 
-      promptRow = row;
-      promptColumn = Math.min(
-        terminal.cols - 1,
-        Math.max(0, measureTerminalBufferLineContentColumns(line, terminal.cols)),
-      );
+      promptStartRow = row;
+      if (anchorImeToPromptForSessionRef.current && sessionRef.current?.id) {
+        terminalPromptRowCacheRef.current = { sessionId: sessionRef.current.id, row };
+      }
       break;
     }
 
-    if (promptRow < firstVisibleRow) {
+    // 首个中文词提交后 Claude 可能擦掉提示符；输入尚未提交时复用上一条可信输入行并重新测量当前列。
+    if (promptStartRow < 0 && anchorImeToPromptForSessionRef.current) {
+      const cachedPrompt = terminalPromptRowCacheRef.current;
+      const cachedLine = cachedPrompt && cachedPrompt.sessionId === sessionRef.current?.id
+        ? buffer.getLine(cachedPrompt.row)
+        : undefined;
+      if (
+        cachedPrompt &&
+        cachedLine &&
+        !cachedLine.isWrapped &&
+        cachedPrompt.row >= firstVisibleRow &&
+        cachedPrompt.row <= lastVisibleRow
+      ) {
+        promptStartRow = cachedPrompt.row;
+      } else {
+        terminalPromptRowCacheRef.current = null;
+      }
+    }
+    if (promptStartRow < firstVisibleRow) {
       return undefined;
     }
+
+    // 长输入按 xterm 的软换行标记走到最后一个物理行，候选窗必须跟随当前词而不是停在首行末尾。
+    let promptRow = promptStartRow;
+    while (promptRow < lastVisibleRow && buffer.getLine(promptRow + 1)?.isWrapped) {
+      promptRow += 1;
+    }
+    const promptLine = buffer.getLine(promptRow);
+    const promptColumn = Math.min(
+      terminal.cols - 1,
+      Math.max(0, promptLine ? measureTerminalBufferLineContentColumns(promptLine, terminal.cols) : 0),
+    );
 
     const screenRect = screen.getBoundingClientRect();
     const containerRect = container.getBoundingClientRect();
@@ -1269,44 +1471,53 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     };
   };
 
-  const resolveTerminalImePromptAnchor = () => {
-    const anchor = resolveTerminalPromptAnchor();
-    return anchor
-      ? {
-        left: anchor.screenLeft,
-        top: anchor.screenTop,
-        cellWidth: anchor.cellWidth,
-        cellHeight: anchor.cellHeight,
-      }
-      : undefined;
+  // 清除 CSS 级 IME 锁定；提交/切换会话时同时丢弃旧输入行，普通重绘失败则只撤销当前视觉锁定。
+  const clearTerminalImePromptAnchor = (clearCachedRow = true) => {
+    if (clearCachedRow) {
+      terminalPromptRowCacheRef.current = null;
+    }
+    const terminalElement = terminalRef.current?.element;
+    if (!terminalElement) {
+      return;
+    }
+    terminalElement.classList.remove('is-claude-ime-prompt-anchored');
+    for (const property of [
+      '--terminal-ime-anchor-left',
+      '--terminal-ime-anchor-top',
+      '--terminal-ime-anchor-width',
+      '--terminal-ime-anchor-height',
+    ]) {
+      terminalElement.style.removeProperty(property);
+    }
   };
 
-  // 输入法候选框跟随隐藏 textarea；组合输入期间把 textarea 和 composition-view 同步到可见输入框。
+  // 输入法候选框跟随隐藏 textarea；CSS 变量配合 !important 锁住坐标，阻止 xterm 的真实状态栏 cursor 抢回位置。
   const syncTerminalImeCompositionAnchor = () => {
-    if (!anchorImeToPromptForSessionRef.current || !terminalImeComposingRef.current) {
+    if (!anchorImeToPromptForSessionRef.current) {
+      clearTerminalImePromptAnchor();
       return;
     }
 
     const terminal = terminalRef.current;
     const textarea = terminal?.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
     const compositionView = terminal?.element?.querySelector<HTMLElement>('.composition-view');
-    const anchor = resolveTerminalImePromptAnchor();
-    if (!terminal || !textarea || !compositionView || !anchor) {
+    const anchor = resolveTerminalPromptAnchor();
+    if (!terminal || !terminal.element || !textarea || !compositionView || !anchor) {
+      clearTerminalImePromptAnchor(false);
       return;
     }
 
-    const left = `${anchor.left}px`;
-    const top = `${anchor.top}px`;
+    const left = `${anchor.screenLeft}px`;
+    const top = `${anchor.screenTop}px`;
     const height = `${anchor.cellHeight}px`;
-    textarea.style.left = left;
-    textarea.style.top = top;
-    textarea.style.width = `${Math.max(anchor.cellWidth, compositionView.getBoundingClientRect().width || 1)}px`;
-    textarea.style.height = height;
-    textarea.style.lineHeight = height;
-    compositionView.style.left = left;
-    compositionView.style.top = top;
-    compositionView.style.height = height;
-    compositionView.style.lineHeight = height;
+    const compositionWidth = terminalImeComposingRef.current
+      ? compositionView.getBoundingClientRect().width
+      : 0;
+    terminal.element.style.setProperty('--terminal-ime-anchor-left', left);
+    terminal.element.style.setProperty('--terminal-ime-anchor-top', top);
+    terminal.element.style.setProperty('--terminal-ime-anchor-width', `${Math.max(anchor.cellWidth, compositionWidth || 1)}px`);
+    terminal.element.style.setProperty('--terminal-ime-anchor-height', height);
+    terminal.element.classList.add('is-claude-ime-prompt-anchored');
     compositionView.style.fontFamily = terminal.options.fontFamily ?? terminalFontFamily;
     compositionView.style.fontSize = `${terminal.options.fontSize ?? settings.shellFontSize}px`;
   };
@@ -1786,13 +1997,26 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
   };
 
   // 缓存重放结束后把存活 marker 从末端对齐到会话累计编号；首次展示的缓存则补齐缺少的稳定行记录。
-  const finishTerminalGutterReplay = (nowMs: number) => {
-    const sessionId = sessionRef.current?.id;
-    if (!terminalGutterReplayActiveRef.current || !sessionId) {
-      return;
+  const finishTerminalGutterReplay = (nowMs: number, completedReplay: TerminalReplayState) => {
+    const activeReplay = terminalActiveReplayRef.current;
+    if (
+      !activeReplay
+      || activeReplay.generation !== completedReplay.generation
+      || activeReplay.sessionId !== completedReplay.sessionId
+    ) {
+      return false;
     }
 
+    terminalActiveReplayRef.current = null;
     terminalGutterReplayActiveRef.current = false;
+    // 快速切换会话时旧 write 回调即使最后到达，也不能把它的 gutter 数据归到当前会话。
+    if (sessionRef.current?.id !== completedReplay.sessionId) {
+      return false;
+    }
+    if (!completedReplay.sessionId) {
+      return true;
+    }
+    const sessionId = completedReplay.sessionId;
     const liveEntries = terminalGutterMarkersRef.current.filter((entry) => entry.marker.line >= 0);
     const data = ensureTerminalGutterSessionData(sessionId);
     const trackedTotal = data.base + data.times.length;
@@ -1808,6 +2032,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
       liveEntries[index].logicalNumber = totalLogical - (liveEntries.length - 1 - index);
     }
     terminalGutterMarkersRef.current = liveEntries;
+    return true;
   };
 
   // 当前会话累计逻辑行数（= 最新一行的编号）。
@@ -2366,6 +2591,10 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     lastLocalTerminalInputAtRef.current = performance.now();
   };
 
+  // 只有主缓冲区承载 Shell 行编辑；alternate buffer 中的 top/vim/less 按键不能伪装成长命令输入。
+  const isTerminalShellInputBufferActive = () =>
+    terminalRef.current?.buffer.active.type === 'normal';
+
   // 远端程序定时刷新也会移动 xterm 光标；超过本地输入窗口后不再把它视为需要跟随的编辑光标。
   const hasRecentLocalTerminalInputForCursorFollow = () =>
     performance.now() - lastLocalTerminalInputAtRef.current <= terminalCursorFollowAfterInputMs;
@@ -2412,66 +2641,157 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     syncTerminalAuxiliaryLayerSizes();
   };
 
-  // 缓冲区测量通过 isWrapped 合并软换行片段；通常只扫可视窗口，缓存重放后允许一次全量扫描恢复历史长行宽度。
-  const measureVisibleTerminalBufferLongestLineColumns = () => {
+  // 横向扩列只接受真实 soft-wrap 作为溢出证据：scp/top 等动态状态行会填满 PTY，但 CR 覆盖行不会产生续行，不能驱动尺寸正反馈。
+  const measureTerminalBufferConfirmedOverflowColumns = () => {
     const terminal = terminalRef.current;
     if (!terminal) {
       return 0;
     }
 
     const buffer = terminal.buffer.active;
-    let longestColumns = 0;
-    let currentLineColumns = 0;
+    const snapshotColumns = terminal.cols;
     const measureEntireBuffer = terminalHorizontalFullBufferMeasurePendingRef.current;
     terminalHorizontalFullBufferMeasurePendingRef.current = false;
     // 输出到达或显式布局变化时测量当前窗口；缓存重放完成时测量一次全缓冲，竖向滚动本身不触发 resize。
-    const firstVisibleLine = measureEntireBuffer ? 0 : Math.max(0, buffer.viewportY);
-    const lastVisibleLine = measureEntireBuffer
+    const requestedFirstLine = measureEntireBuffer ? 0 : Math.max(0, buffer.viewportY);
+    const requestedLastLine = measureEntireBuffer
       ? buffer.length
-      : Math.min(buffer.length, firstVisibleLine + terminal.rows);
-    for (let lineIndex = firstVisibleLine; lineIndex < lastVisibleLine; lineIndex += 1) {
+      : Math.min(buffer.length, requestedFirstLine + terminal.rows);
+    // isWrapped 记录在续行自身；视口切进逻辑行中段时必须向两侧补齐，否则会把真实长行测短。
+    let firstMeasuredLine = requestedFirstLine;
+    while (firstMeasuredLine > 0 && buffer.getLine(firstMeasuredLine)?.isWrapped) {
+      firstMeasuredLine -= 1;
+    }
+    let lastMeasuredLine = requestedLastLine;
+    while (lastMeasuredLine < buffer.length && buffer.getLine(lastMeasuredLine)?.isWrapped) {
+      lastMeasuredLine += 1;
+    }
+
+    let confirmedOverflowColumns = 0;
+    let currentLineColumns = 0;
+    let currentCompletedSegmentColumns = 0;
+    let currentLineStart = firstMeasuredLine;
+    let currentLineHasSoftWrap = false;
+    let currentLineStarted = false;
+    // 只提交与原请求窗口相交、且确实超过本次 xterm 折行边界的完整逻辑行。
+    const commitLogicalLine = (lineEnd: number) => {
+      const intersectsRequestedRange = lineEnd > requestedFirstLine && currentLineStart < requestedLastLine;
+      if (
+        currentLineStarted
+        && intersectsRequestedRange
+        && currentLineHasSoftWrap
+        && currentLineColumns > snapshotColumns
+      ) {
+        confirmedOverflowColumns = Math.max(confirmedOverflowColumns, currentLineColumns);
+      }
+    };
+
+    for (let lineIndex = firstMeasuredLine; lineIndex < lastMeasuredLine; lineIndex += 1) {
       const line = buffer.getLine(lineIndex);
       if (!line) {
+        commitLogicalLine(lineIndex);
+        currentLineStarted = false;
+        currentLineColumns = 0;
+        currentCompletedSegmentColumns = 0;
+        currentLineHasSoftWrap = false;
         continue;
       }
 
-      const lineColumns = measureTerminalBufferLineContentColumns(line, terminal.cols);
-      if (line.isWrapped) {
-        currentLineColumns += lineColumns;
+      const lineColumns = measureTerminalBufferLineContentColumns(line, snapshotColumns);
+      if (line.isWrapped && currentLineStarted) {
+        const previousLine = buffer.getLine(lineIndex - 1);
+        const previousLastCell = previousLine?.getCell(snapshotColumns - 1);
+        const continuationFirstCell = line.getCell(0);
+        // 已有续行说明前一物理段确实走到右边界；仅对“宽字符放不下最后一格”产生的空占位回退 1 列。
+        const hasWideCharacterWrapGap =
+          continuationFirstCell?.getWidth() === 2
+          && !previousLastCell?.getChars().trim();
+        currentCompletedSegmentColumns += Math.max(0, snapshotColumns - (hasWideCharacterWrapGap ? 1 : 0));
+        currentLineColumns = currentCompletedSegmentColumns + lineColumns;
+        currentLineHasSoftWrap = true;
       } else {
-        longestColumns = Math.max(longestColumns, currentLineColumns);
+        commitLogicalLine(lineIndex);
+        currentLineStart = lineIndex;
         currentLineColumns = lineColumns;
+        currentCompletedSegmentColumns = 0;
+        // scrollback 顶端可能裁掉逻辑行首；保留 isWrapped 证据，但仍要求剩余内容本身超过 snapshotColumns 才扩列。
+        currentLineHasSoftWrap = line.isWrapped;
+        currentLineStarted = true;
       }
-      longestColumns = Math.max(longestColumns, currentLineColumns);
     }
-    return longestColumns;
+    commitLogicalLine(lastMeasuredLine);
+    return confirmedOverflowColumns;
   };
 
-  // 横向模式按当前内容和光标余量扩列，但会话内使用高水位列数，短页面不能把宽页面重新压窄。
+  // 横向模式只根据已确认的内容溢出提高会话高水位；可视宽度和远端重绘光标都不能反向污染高水位。
   const resolveHorizontalTerminalColumns = (visibleCols: number) => {
     const terminal = terminalRef.current;
     if (!terminalLineWrapModeRef.current || terminalLineWrapModeRef.current !== 'horizontal' || !terminal) {
       return visibleCols;
     }
 
-    const longestLineColumns = measureVisibleTerminalBufferLongestLineColumns();
-    // 远端 TUI 的重绘光标只负责定位绘制，不代表用户正在编辑；只有近期本地输入才按光标列扩宽画布。
-    const cursorRequiredColumns = hasRecentLocalTerminalInputForCursorFollow()
-      ? terminal.buffer.active.cursorX + terminalCursorFollowMarginColumns
-      : visibleCols;
-    const requiredColumns = Math.max(
-      visibleCols,
-      longestLineColumns + terminalHorizontalLinePaddingColumns,
-      cursorRequiredColumns,
-    );
-    const measuredColumns = roundHorizontalColumns(requiredColumns, visibleCols);
-    const stableColumns = Math.max(visibleCols, terminalHorizontalRenderColsRef.current, measuredColumns);
-    terminalHorizontalRenderColsRef.current = stableColumns;
-    const sessionId = sessionRef.current?.id;
-    if (sessionId) {
-      terminalHorizontalRenderColsBySessionRef.current[sessionId] = stableColumns;
+    // 缩窗后的二次测量最多恢复到缩列前宽度，旧的满宽进度帧不能借 reflow 再额外推高一档。
+    const postShrinkCeiling = terminalHorizontalPostShrinkCeilingRef.current;
+    terminalHorizontalPostShrinkCeilingRef.current = null;
+    const confirmedOverflowColumns = measureTerminalBufferConfirmedOverflowColumns();
+    if (confirmedOverflowColumns > terminal.cols) {
+      const previousEvidence = terminalHorizontalOverflowEvidenceRef.current;
+      const currentEdgeOverflow = confirmedOverflowColumns - terminal.cols;
+      const previousEdgeOverflow = previousEvidence
+        ? previousEvidence.contentColumns - previousEvidence.snapshotColumns
+        : 0;
+      const followsPreviousResize = Boolean(
+        previousEvidence
+        && terminal.cols > previousEvidence.snapshotColumns
+        && confirmedOverflowColumns - previousEvidence.contentColumns
+          >= terminal.cols - previousEvidence.snapshotColumns - terminalHorizontalLinePaddingColumns
+        && Math.abs(currentEdgeOverflow - previousEdgeOverflow) <= terminalHorizontalLinePaddingColumns,
+      );
+      const repeatsResponsiveEdge = Boolean(
+        previousEvidence?.widthResponsive
+        && terminal.cols === previousEvidence.snapshotColumns
+        && confirmedOverflowColumns <= previousEvidence.contentColumns + terminalHorizontalLinePaddingColumns,
+      );
+      const isActivelyEditingLocalInput =
+        terminalLocalInputEditingRef.current && hasRecentLocalTerminalInputForCursorFollow();
+      // 紧随 resize 的同幅增长无条件视为尺寸响应；同宽重复帧仅允许真实 Shell 行编辑用后续字符突破。
+      if (followsPreviousResize || (!isActivelyEditingLocalInput && repeatsResponsiveEdge)) {
+        terminalHorizontalOverflowEvidenceRef.current = {
+          // 同一宽度的重复边缘帧固定基准，不随每个字符滑动；真正内容再增长超过余量后仍可恢复扩列。
+          contentColumns: repeatsResponsiveEdge && previousEvidence
+            ? previousEvidence.contentColumns
+            : confirmedOverflowColumns,
+          snapshotColumns: terminal.cols,
+          widthResponsive: true,
+        };
+        return Math.max(visibleCols, terminalHorizontalContentColsRef.current);
+      }
+
+      terminalHorizontalOverflowEvidenceRef.current = {
+        contentColumns: confirmedOverflowColumns,
+        snapshotColumns: terminal.cols,
+        widthResponsive: Boolean(
+          postShrinkCeiling
+          && confirmedOverflowColumns >= postShrinkCeiling - terminalHorizontalLinePaddingColumns,
+        ),
+      };
+      const measuredColumns = Math.min(
+        postShrinkCeiling ?? terminalHorizontalMaxColumns,
+        roundHorizontalColumns(
+          confirmedOverflowColumns + terminalHorizontalLinePaddingColumns,
+          visibleCols,
+        ),
+      );
+      terminalHorizontalContentColsRef.current = Math.max(
+        terminalHorizontalContentColsRef.current,
+        measuredColumns,
+      );
+      const sessionId = sessionRef.current?.id;
+      if (sessionId) {
+        terminalHorizontalContentColsBySessionRef.current[sessionId] = terminalHorizontalContentColsRef.current;
+      }
     }
-    return stableColumns;
+    return Math.max(visibleCols, terminalHorizontalContentColsRef.current);
   };
 
   // 横向模式不使用 fitAddon.fit 直接改列数，而是按可视行数 + 动态目标列数手动 resize。
@@ -2503,10 +2823,20 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     // 底部滑块和底部留白只在确实有横向溢出时启用，空会话和普通短输出保持干净画面。
     setTerminalHasHorizontalOverflow((current) => current === hasHorizontalOverflow ? current : hasHorizontalOverflow);
     applyTerminalElementWidth(nextLayoutSize.renderCols, nextLayoutSize.visibleCols);
+    const previousColumns = terminal.cols;
     if (terminal.cols !== nextLayoutSize.renderCols || terminal.rows !== nextLayoutSize.rows) {
       terminal.resize(nextLayoutSize.renderCols, nextLayoutSize.rows);
     }
     applyTerminalElementWidth(nextLayoutSize.renderCols, nextLayoutSize.visibleCols);
+    if (
+      terminalLineWrapModeRef.current === 'horizontal'
+      && !terminalActiveReplayRef.current
+      && nextLayoutSize.renderCols < previousColumns
+    ) {
+      // 缩列本身才会让此前可容纳的静态长行产生 soft-wrap；下一帧复测一次，且回扩不会再次进入该分支。
+      terminalHorizontalPostShrinkCeilingRef.current = previousColumns;
+      scheduleTerminalSizeSync();
+    }
   };
 
   // 输入、回显和程序重绘移动光标后，横向模式需要把视口跟到光标并保留右侧余量。
@@ -2559,53 +2889,138 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
       return;
     }
 
-    clearTerminalSelectionSnapshot();
-    applyTerminalSessionBehaviorOptions();
-    // 只回收 marker（定位）并清空 buffer，保留按会话持久保存的稳定时间线；重放完成后从末端恢复编号。
-    resetTerminalGutterMarkers();
-    terminalGutterReplayActiveRef.current = true;
-    terminalGutterReplayNextLogicalNumberRef.current = 1;
-    terminal.reset();
-    const nextLayoutSize = resolveTerminalLayoutSize();
-    if (nextLayoutSize) {
-      applyTerminalLayoutSize(nextLayoutSize);
-    }
-    // 为会话首行（row0，从不触发 onLineFeed）登记初始 marker；始终登记以保证第一条逻辑行也可定位。
-    registerTerminalGutterLine();
-    const replayChunks = sessionRef.current?.id
-      ? outputCacheRef.current.replayChunks(sessionRef.current.id)
-      : [];
-    if (replayChunks.length > 0) {
-      const runReplayCompletion = () => {
-        finishTerminalGutterReplay(Date.now());
-        // 重放结束后全量扫描一次 scrollback，恢复该会话历史长行对应的横向高水位。
-        terminalHorizontalFullBufferMeasurePendingRef.current = true;
-        scheduleTerminalSizeSync();
-        syncLocalCursorVisibility();
-        scheduleTerminalCursorFollow();
-        scheduleTerminalMatchHighlightRefresh();
-        scheduleTerminalSelectionOverlaySync();
-        scheduleTerminalControlledInputCursorSync();
-        scheduleTerminalVerticalScrollbarSync();
-        scheduleTerminalGutterSync();
-      };
-      // 逐块写入 xterm，不先 join 成大字符串；完成回调只挂在最后一块，行为与旧的单次 write 一致。
-      replayChunks.forEach((chunk, index) => {
-        const isLast = index === replayChunks.length - 1;
-        terminal.write(chunk, isLast ? runReplayCompletion : undefined);
-      });
-      return;
+    const replaySessionId = sessionRef.current?.id;
+    const replayState: TerminalReplayState = {
+      generation: terminalReplayGenerationRef.current + 1,
+      sessionId: replaySessionId,
+    };
+    terminalReplayGenerationRef.current = replayState.generation;
+    terminalActiveReplayRef.current = replayState;
+    terminalReplayDeferredOutputRef.current = { ...replayState, chunks: [] };
+    terminalGutterReplayActiveRef.current = Boolean(replaySessionId);
+    const wasImeComposing = terminalImeComposingRef.current;
+    // 先关闭 stdin 再暂时放行 blur/compositionend，让 xterm 清掉旧会话组合态；其延迟 finalize 仍会被 activeReplay 丢弃。
+    terminal.options.disableStdin = true;
+    setTerminalReplayInputBlocked(false);
+    terminal.blur();
+    terminalImeComposingRef.current = false;
+    clearTerminalImePromptAnchor();
+    if (terminalImeCompositionFrameRef.current !== null) {
+      // blur 的 compositionend 可能排过一次旧锚点刷新；切换会话后必须取消，避免它用旧画面重新定位新 textarea。
+      window.cancelAnimationFrame(terminalImeCompositionFrameRef.current);
+      terminalImeCompositionFrameRef.current = null;
     }
 
-    finishTerminalGutterReplay(Date.now());
-    scheduleTerminalSizeSync();
-    syncLocalCursorVisibility();
-    scheduleTerminalCursorFollow();
-    scheduleTerminalMatchHighlightRefresh();
-    scheduleTerminalSelectionOverlaySync();
-    scheduleTerminalControlledInputCursorSync();
-    scheduleTerminalVerticalScrollbarSync();
-    scheduleTerminalGutterSync();
+    const startReplayBarrier = () => {
+      const scheduledReplay = terminalActiveReplayRef.current;
+      if (
+        !scheduledReplay
+        || scheduledReplay.generation !== replayState.generation
+        || scheduledReplay.sessionId !== replayState.sessionId
+        || sessionRef.current?.id !== replayState.sessionId
+      ) {
+        return;
+      }
+      setTerminalReplayInputBlocked(true);
+      // 空 write 充当 FIFO 屏障：xterm reset 不会取消旧输入，必须等上一会话的待解析块完成后才能清屏重放新会话。
+      terminal.write('', () => {
+      const activeReplay = terminalActiveReplayRef.current;
+      if (
+        !activeReplay
+        || activeReplay.generation !== replayState.generation
+        || activeReplay.sessionId !== replayState.sessionId
+        || sessionRef.current?.id !== replayState.sessionId
+      ) {
+        return;
+      }
+
+      clearTerminalSelectionSnapshot();
+      applyTerminalSessionBehaviorOptions();
+      // 只回收 marker（定位）并清空 buffer，保留按会话持久保存的稳定时间线；重放完成后从末端恢复编号。
+      resetTerminalGutterMarkers();
+      terminalGutterReplayNextLogicalNumberRef.current = 1;
+      terminal.reset();
+      const nextLayoutSize = resolveTerminalLayoutSize();
+      if (nextLayoutSize) {
+        applyTerminalLayoutSize(nextLayoutSize);
+      }
+      // 为会话首行（row0，从不触发 onLineFeed）登记初始 marker；始终登记以保证第一条逻辑行也可定位。
+      registerTerminalGutterLine();
+      const deferredBeforeSnapshot = terminalReplayDeferredOutputRef.current;
+      if (
+        deferredBeforeSnapshot?.generation === replayState.generation
+        && deferredBeforeSnapshot.sessionId === replayState.sessionId
+      ) {
+        // 屏障前到达的实时块已经进入 outputCache，将由本次快照统一重放，不能再作为 deferred 重复写入。
+        deferredBeforeSnapshot.chunks = [];
+      }
+      const replayChunks = replaySessionId
+        ? outputCacheRef.current.replayChunks(replaySessionId)
+        : [];
+      const finishReplay = () => {
+        if (!finishTerminalGutterReplay(Date.now(), replayState)) {
+          return;
+        }
+
+        const deferredOutput = terminalReplayDeferredOutputRef.current;
+        const deferredChunks = deferredOutput?.generation === replayState.generation
+          && deferredOutput.sessionId === replayState.sessionId
+          ? deferredOutput.chunks.splice(0)
+          : [];
+        if (deferredOutput?.generation === replayState.generation) {
+          terminalReplayDeferredOutputRef.current = null;
+        }
+        // 历史解析已结束，先恢复 xterm 自动协议回包；DOM 捕获层仍阻止真实用户输入，直到 deferred 全部落屏。
+        terminal.options.disableStdin = !canAcceptTerminalInput(sessionRef.current);
+
+        const runReplayVisualCompletion = () => {
+          if (
+            terminalReplayGenerationRef.current !== replayState.generation
+            || sessionRef.current?.id !== replayState.sessionId
+          ) {
+            return;
+          }
+          // 重放和期间积累的实时块全部落屏后再测量，避免按半帧 buffer 扩列或刷新覆盖层。
+          setTerminalReplayInputBlocked(false);
+          terminal.options.disableStdin = !canAcceptTerminalInput(sessionRef.current);
+          terminalHorizontalFullBufferMeasurePendingRef.current = true;
+          scheduleTerminalSizeSync();
+          syncLocalCursorVisibility();
+          scheduleTerminalCursorFollow();
+          scheduleTerminalMatchHighlightRefresh();
+          scheduleTerminalSelectionOverlaySync();
+          scheduleTerminalControlledInputCursorSync();
+          scheduleTerminalVerticalScrollbarSync();
+          scheduleTerminalGutterSync();
+          window.requestAnimationFrame(focusPendingTerminalInput);
+        };
+        if (deferredChunks.length === 0) {
+          runReplayVisualCompletion();
+          return;
+        }
+        deferredChunks.forEach((chunk, index) => {
+          terminal.write(chunk, index === deferredChunks.length - 1 ? runReplayVisualCompletion : undefined);
+        });
+      };
+      if (replayChunks.length > 0) {
+        // 逐块写入 xterm，不先 join 成大字符串；完成回调只挂在最后一块，行为与旧的单次 write 一致。
+        replayChunks.forEach((chunk, index) => {
+          const isLast = index === replayChunks.length - 1;
+          terminal.write(chunk, isLast ? finishReplay : undefined);
+        });
+        return;
+      }
+
+      finishReplay();
+      });
+    };
+
+    if (wasImeComposing) {
+      // xterm 在 compositionend 后用 0ms 定时器提取最终文本；下一轮任务再启动屏障，确保其内部组合态先完整复位。
+      window.setTimeout(startReplayBarrier, 0);
+    } else {
+      startReplayBarrier();
+    }
   };
 
   useEffect(() => {
@@ -2623,7 +3038,13 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
 
   // 右键粘贴复用终端输入通道，并按调用场景决定是否在粘贴后把键盘焦点交回 xterm。
   const pasteClipboardToTerminal = async (restoreFocusAfterPaste = false) => {
-    if (!canAcceptTerminalInput(sessionRef.current)) {
+    const targetSessionId = sessionRef.current?.id;
+    if (
+      terminalActiveReplayRef.current
+      || terminalReplayInputBlockedRef.current
+      || !targetSessionId
+      || !canAcceptTerminalInput(sessionRef.current)
+    ) {
       if (restoreFocusAfterPaste) {
         restoreTerminalFocusAfterContextMenuAction();
       }
@@ -2633,9 +3054,17 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     try {
       // 右键粘贴直接走终端输入通道，保持和键盘粘贴完全一致的后端写入路径。
       const text = await readClipboardText().catch(() => '');
-      if (text) {
+      // 系统剪贴板读取是异步的；期间若已切换会话或开始重放，旧粘贴必须丢弃，不能落到新标签。
+      if (
+        text
+        && sessionRef.current?.id === targetSessionId
+        && !terminalActiveReplayRef.current
+        && !terminalReplayInputBlockedRef.current
+      ) {
         clearTerminalSelectionSnapshot();
         markLocalTerminalInputForCursorFollow();
+        terminalLocalInputEditingRef.current =
+          isTerminalShellInputBufferActive() && !text.includes('\r') && !text.includes('\n');
         onTerminalDataRef.current(text);
       }
     } finally {
@@ -2766,6 +3195,86 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(containerRef.current);
+    // deferred 解析期需要开放 xterm 的自动协议回复，但键盘、IME、粘贴、鼠标和焦点上报都必须在捕获阶段阻断。
+    const replayBlockedInputEventNames = [
+      'keydown',
+      'beforeinput',
+      'input',
+      'paste',
+      'compositionstart',
+      'compositionupdate',
+      'compositionend',
+      'pointerdown',
+      'pointermove',
+      'pointerup',
+      'mousedown',
+      'mousemove',
+      'mouseup',
+      'click',
+      'dblclick',
+      'contextmenu',
+      'wheel',
+      'touchstart',
+      'touchmove',
+      'touchend',
+      'focus',
+      'focusin',
+      'blur',
+      'focusout',
+    ] as const;
+    const blockUserInputDuringReplay = (event: Event) => {
+      if (!terminalReplayInputBlockedRef.current) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (event.type === 'focus' || event.type === 'focusin') {
+        // focus 事件发生时元素已取得焦点；立即 blur，且同一捕获层会吞掉对应失焦上报。
+        terminal.blur();
+      }
+    };
+    replayBlockedInputEventNames.forEach((eventName) => {
+      terminal.element?.addEventListener(eventName, blockUserInputDuringReplay, true);
+    });
+    // 实时输出状态机已经按原会话回包；xterm parser 这里只消费查询，缓存重放不得再次触发任何响应。
+    const xtVersionDisposable = terminal.parser.registerCsiHandler({ prefix: '>', final: 'q' }, () => true);
+    // 精确放行 Windows 本地 Claude 的 Ctrl+V 浏览器默认行为：xterm 随后接收可信 paste 事件并负责
+    // bracketed-paste/换行规范化；返回 false 只阻止它把该按键编码成 \x16，不能手动再读一次剪贴板。
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (terminalActiveReplayRef.current || terminalReplayInputBlockedRef.current) {
+        return false;
+      }
+      const useNativeClipboardPaste =
+        event.type === 'keydown' &&
+        event.code === 'KeyV' &&
+        event.ctrlKey &&
+        !event.shiftKey &&
+        !event.altKey &&
+        !event.metaKey &&
+        isWindowsTerminalHost() &&
+        canAcceptTerminalInput(sessionRef.current) &&
+        shouldUseNativeCtrlVPaste(sessionRef.current);
+      if (event.type === 'keydown' && !['Control', 'Shift', 'Alt', 'Meta'].includes(event.key)) {
+        markLocalTerminalInputForCursorFollow();
+        const abandonsOrSubmitsInput =
+          event.key === 'Enter'
+          || (event.ctrlKey && ['c', 'd', 'u'].includes(event.key.toLowerCase()));
+        if (abandonsOrSubmitsInput || terminal.buffer.active.type !== 'normal') {
+          terminalLocalInputEditingRef.current = false;
+        } else {
+          // 方向键、PageUp、F1 等只能延续已有编辑，不能让 top/vim 的控制键绕过宽度响应抑制。
+          const canGrowInputLine =
+            event.isComposing
+            || event.key === 'Process'
+            || event.key === 'Tab'
+            || (event.key.length === 1 && !event.ctrlKey && !event.metaKey);
+          if (canGrowInputLine) {
+            terminalLocalInputEditingRef.current = true;
+          }
+        }
+      }
+      return !useNativeClipboardPaste;
+    });
     const matchOverlay = document.createElementNS(terminalHighlightSvgNamespace, 'svg');
     matchOverlay.classList.add('terminal-match-rounded-overlay');
     containerRef.current.appendChild(matchOverlay);
@@ -2800,24 +3309,61 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     terminal.attachCustomWheelEventHandler(handleAiAgentTerminalWheel);
     const textarea = terminal.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
     const handleTerminalCompositionStart = () => {
+      if (terminalActiveReplayRef.current || terminalReplayInputBlockedRef.current) {
+        return;
+      }
       terminalImeComposingRef.current = true;
+      terminalLocalInputEditingRef.current = terminal.buffer.active.type === 'normal';
+      markLocalTerminalInputForCursorFollow();
+      // xterm 的监听器先按真实状态栏 cursor 写坐标；同一事件内立即纠偏，Windows 才不会用错误旧位置弹候选窗。
+      syncTerminalImeCompositionAnchor();
       scheduleTerminalImeCompositionAnchorSync();
     };
     const handleTerminalCompositionUpdate = () => {
+      if (terminalActiveReplayRef.current || terminalReplayInputBlockedRef.current) {
+        return;
+      }
       terminalImeComposingRef.current = true;
+      terminalLocalInputEditingRef.current = terminal.buffer.active.type === 'normal';
+      markLocalTerminalInputForCursorFollow();
+      syncTerminalImeCompositionAnchor();
       scheduleTerminalImeCompositionAnchorSync();
     };
     const handleTerminalCompositionEnd = () => {
+      if (terminalReplayInputBlockedRef.current || !terminalImeComposingRef.current) {
+        return;
+      }
       terminalImeComposingRef.current = false;
+      terminalLocalInputEditingRef.current = terminal.buffer.active.type === 'normal';
+      markLocalTerminalInputForCursorFollow();
+      // 首词结束后继续把隐藏 textarea 留在输入行，第二次 compositionstart 不再从最右侧错误位置起步。
+      syncTerminalImeCompositionAnchor();
+      scheduleTerminalImeCompositionAnchorSync();
+    };
+    const handleTerminalPaste = () => {
+      if (terminalActiveReplayRef.current || terminalReplayInputBlockedRef.current) {
+        return;
+      }
+      terminalLocalInputEditingRef.current = terminal.buffer.active.type === 'normal';
+      markLocalTerminalInputForCursorFollow();
     };
     textarea?.addEventListener('compositionstart', handleTerminalCompositionStart);
     textarea?.addEventListener('compositionupdate', handleTerminalCompositionUpdate);
     textarea?.addEventListener('compositionend', handleTerminalCompositionEnd);
+    textarea?.addEventListener('paste', handleTerminalPaste);
 
     const dataDisposable = terminal.onData((data) => {
-      if (canAcceptTerminalInput(sessionRef.current)) {
+      // 缓存重放会重新解析 DA/DSR/DECRQM 等历史查询；期间产生的自动回复和偶发键盘输入都不能写进当前活 PTY。
+      if (canAcceptTerminalInput(sessionRef.current) && !terminalActiveReplayRef.current) {
+        // bracketed paste 中的换行只扩展输入框；非 bracketed 的 CR/LF 会被 TUI 当作提交，必须结束旧锚点。
+        const isBracketedPaste =
+          data.startsWith(terminalBracketedPasteStartSequence) &&
+          data.endsWith(terminalBracketedPasteEndSequence);
+        const submittedInput = !isBracketedPaste && (data.includes('\r') || data.includes('\n'));
+        if (data === '\x03' || submittedInput) {
+          clearTerminalImePromptAnchor();
+        }
         clearTerminalSelectionSnapshot();
-        markLocalTerminalInputForCursorFollow();
         onTerminalDataRef.current(data);
         scheduleTerminalCursorFollow();
         scheduleTerminalControlledInputCursorSync();
@@ -2825,6 +3371,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     });
     const cursorMoveDisposable = terminal.onCursorMove(() => {
       scheduleTerminalCursorFollow();
+      scheduleTerminalImeCompositionAnchorSync();
       scheduleTerminalControlledInputCursorSync();
     });
     const renderDisposable = terminal.onRender(() => {
@@ -2856,6 +3403,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     const resizeDisposable = terminal.onResize(() => {
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
+      scheduleTerminalImeCompositionAnchorSync();
       scheduleTerminalControlledInputCursorSync();
       scheduleTerminalVerticalScrollbarSync();
       scheduleTerminalGutterSync();
@@ -2863,6 +3411,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     const handleTerminalSurfaceScroll = () => {
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
+      scheduleTerminalImeCompositionAnchorSync();
       scheduleTerminalControlledInputCursorSync();
       scheduleTerminalVerticalScrollbarSync();
       scheduleTerminalGutterSync();
@@ -2915,6 +3464,16 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     scheduleTerminalGutterSync();
 
     return () => {
+      // xterm 的 WriteBuffer 可能仍有定时回调；先失效代次和 deferred 状态，旧屏障回调随后只能安全退出。
+      terminalReplayGenerationRef.current += 1;
+      terminalActiveReplayRef.current = null;
+      terminalReplayDeferredOutputRef.current = null;
+      setTerminalReplayInputBlocked(false);
+      terminalGutterReplayActiveRef.current = false;
+      replayBlockedInputEventNames.forEach((eventName) => {
+        terminal.element?.removeEventListener(eventName, blockUserInputDuringReplay, true);
+      });
+      xtVersionDisposable.dispose();
       dataDisposable.dispose();
       cursorMoveDisposable.dispose();
       renderDisposable.dispose();
@@ -2925,6 +3484,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
       textarea?.removeEventListener('compositionstart', handleTerminalCompositionStart);
       textarea?.removeEventListener('compositionupdate', handleTerminalCompositionUpdate);
       textarea?.removeEventListener('compositionend', handleTerminalCompositionEnd);
+      textarea?.removeEventListener('paste', handleTerminalPaste);
       observer.disconnect();
       window.removeEventListener('resize', scheduleTerminalSizeSync);
       window.removeEventListener('mouseup', stopTerminalSelectionDragSync, true);
@@ -2980,6 +3540,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
       }
       document.removeEventListener('visibilitychange', handleTerminalGutterVisibilityRefresh);
       terminalImeComposingRef.current = false;
+      clearTerminalImePromptAnchor();
       terminalSelectionDragActiveRef.current = false;
       terminalVerticalScrollbarDragRef.current = null;
       clearTerminalSelectionSnapshot();
@@ -3009,6 +3570,27 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
         return;
       }
 
+      // 只扫描后端实时分片并立刻按原会话回包；缓存重放只经过 xterm parser，因此不会重复响应。
+      const queryProgress = countTerminalXtVersionQueries(
+        chunk.content,
+        terminalXtVersionParserStateBySessionRef.current.get(chunk.sessionId) ?? 0,
+      );
+      if (queryProgress.state === 0) {
+        terminalXtVersionParserStateBySessionRef.current.delete(chunk.sessionId);
+      } else {
+        terminalXtVersionParserStateBySessionRef.current.set(chunk.sessionId, queryProgress.state);
+      }
+      let remainingXtVersionReplies = queryProgress.count;
+      while (remainingXtVersionReplies > 0) {
+        // 每批大小固定，异常远端即使连续查询也不能触发一次巨大的 repeat 分配。
+        const replyCount = Math.min(remainingXtVersionReplies, terminalXtVersionReplyBatchSize);
+        onTerminalProtocolDataRef.current(
+          chunk.sessionId,
+          terminalXtVersionResponse.repeat(replyCount),
+        );
+        remainingXtVersionReplies -= replyCount;
+      }
+
       // 终端输出直接写入 xterm，避免每 80ms 把大字符串塞进 React 状态导致输入、滚动和选区明显卡顿。
       // 原始输出进有界分片缓存：只累加分片、不整体拼接，超限时按会话/全局上限淘汰最旧分片。
       outputCacheRef.current.append(
@@ -3018,8 +3600,22 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
       );
 
       if (sessionRef.current?.id === chunk.sessionId) {
+        const activeReplay = terminalActiveReplayRef.current;
+        const deferredOutput = terminalReplayDeferredOutputRef.current;
+        if (
+          activeReplay?.sessionId === chunk.sessionId
+          && deferredOutput?.generation === activeReplay.generation
+          && deferredOutput.sessionId === activeReplay.sessionId
+        ) {
+          // 屏障/重放期间只缓存实时块；快照前的块由 replay 覆盖，快照后的块在 finishReplay 后按原顺序补写。
+          deferredOutput.chunks.push(chunk.content);
+          return;
+        }
         terminalRef.current?.write(chunk.content, () => {
-          scheduleTerminalSizeSync();
+          // 只有 SSH 横向长行会因新内容扩列；wrap 模式的 Claude 流式帧不能每块都插入无意义的布局测量。
+          if (terminalLineWrapModeRef.current === 'horizontal') {
+            scheduleTerminalSizeSync();
+          }
           syncLocalCursorVisibility(false);
           scheduleTerminalCursorFollow();
           scheduleTerminalMatchHighlightRefresh();
@@ -3046,9 +3642,14 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
         delete terminalGutterSessionDataRef.current[sessionId];
       }
     }
-    for (const sessionId of Object.keys(terminalHorizontalRenderColsBySessionRef.current)) {
+    for (const sessionId of Object.keys(terminalHorizontalContentColsBySessionRef.current)) {
       if (!live.has(sessionId)) {
-        delete terminalHorizontalRenderColsBySessionRef.current[sessionId];
+        delete terminalHorizontalContentColsBySessionRef.current[sessionId];
+      }
+    }
+    for (const sessionId of terminalXtVersionParserStateBySessionRef.current.keys()) {
+      if (!live.has(sessionId)) {
+        terminalXtVersionParserStateBySessionRef.current.delete(sessionId);
       }
     }
   }, [liveSessionIds]);
@@ -3059,7 +3660,7 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
       return;
     }
 
-    terminal.options.disableStdin = !canAcceptTerminalInput(session);
+    terminal.options.disableStdin = Boolean(terminalActiveReplayRef.current) || !canAcceptTerminalInput(session);
     applyTerminalSessionBehaviorOptions();
     syncLocalCursorVisibility();
     scheduleTerminalControlledInputCursorSync();
@@ -3112,18 +3713,19 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     pendingFocusSessionIdRef.current = session?.id ?? null;
     // 会话切换后重放缓存属于历史画面恢复，不能继承上一会话的本地输入跟随状态。
     lastLocalTerminalInputAtRef.current = 0;
-    // 恢复目标会话自己的横向列宽高水位，避免上一会话串宽，也避免切回来后历史长行宽度丢失。
-    terminalHorizontalRenderColsRef.current = session?.id
-      ? terminalHorizontalRenderColsBySessionRef.current[session.id] ?? 0
+    terminalLocalInputEditingRef.current = false;
+    terminalHorizontalOverflowEvidenceRef.current = null;
+    terminalHorizontalPostShrinkCeilingRef.current = null;
+    // 恢复目标会话由真实软换行确认的内容高水位，避免上一会话串宽，也避免切回来后历史长行宽度丢失。
+    terminalHorizontalContentColsRef.current = session?.id
+      ? terminalHorizontalContentColsBySessionRef.current[session.id] ?? 0
       : 0;
     terminalHorizontalFullBufferMeasurePendingRef.current = false;
-    terminalImeComposingRef.current = false;
     hideTerminalControlledInputCursor();
-    replayCurrentSessionOutput();
-    // 新会话打开时立刻把当前 xterm 尺寸推给远端 PTY，避免默认 120 列和实际界面列宽不一致。
     remoteTerminalSizeRef.current = null;
+    // FIFO 屏障后的重放完成逻辑会按新会话 buffer 推送尺寸；屏障前不能拿上一会话画面测量并 resize 新 PTY。
+    replayCurrentSessionOutput();
     window.requestAnimationFrame(() => {
-      syncTerminalSizeToRemote();
       focusPendingTerminalInput();
       scheduleTerminalControlledInputCursorSync();
       scheduleTerminalVerticalScrollbarSync();
@@ -3139,13 +3741,16 @@ export function TerminalWorkspace({ session, settings, onTerminalData, onUpdateS
     // SSH 长行展示模式或会话类型改变会影响 xterm 渲染列数；本地终端始终使用 wrap。
     remoteTerminalSizeRef.current = null;
     // 显式切换模式允许重新建立列宽基线；正常竖向滚动期间仍禁止缩列。
-    terminalHorizontalRenderColsRef.current = 0;
+    terminalHorizontalContentColsRef.current = 0;
     if (sessionRef.current?.id) {
-      delete terminalHorizontalRenderColsBySessionRef.current[sessionRef.current.id];
+      delete terminalHorizontalContentColsBySessionRef.current[sessionRef.current.id];
     }
     terminalHorizontalFullBufferMeasurePendingRef.current = false;
+    terminalHorizontalOverflowEvidenceRef.current = null;
+    terminalHorizontalPostShrinkCeilingRef.current = null;
     // 模式切换触发的是缓存重排，不是用户正在编辑命令，避免切换后按旧光标位置自动横移。
     lastLocalTerminalInputAtRef.current = 0;
+    terminalLocalInputEditingRef.current = false;
     window.requestAnimationFrame(() => {
       // 模式切换只按新列宽 resize，交给 xterm 原生 reflow 重排当前缓冲区；绝不能 reset+重放原始缓存，
       // 否则历史翻页时 readline 的原地重绘序列会按新列宽错位，导致翻过的命令全部堆叠残留在屏幕上。

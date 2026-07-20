@@ -455,14 +455,16 @@ const shouldFlushTerminalInputImmediately = (data: string) =>
 // 大段文本不属于逐键交互，允许 8ms 合并；普通字符走 2ms 合并，控制序列仍立即进入远端 PTY。
 const isBulkTerminalInput = (data: string) => data.length > terminalBulkInputThreshold && !isTerminalEditingInput(data);
 
-// 命令行预测只关心用户输入的可见文本；括号粘贴边界和 CSI 控制序列必须先剥离，避免污染 cd 解析。
+// 命令行预测只关心用户输入的可见文本；终端能力响应和控制序列必须先剥离，避免 XTVERSION 等回包污染下一条 cd。
 const terminalBracketedPasteBoundaryPattern = /\x1b\[(?:200|201)~/g;
+const terminalStringEscapeSequencePattern = /\x1b(?:P|\]|\^|_|X)[\s\S]*?(?:\x07|\x1b\\)/g;
 const terminalCsiSequencePattern = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 const terminalShortEscapeSequencePattern = /\x1b./g;
 
 const normalizeTerminalInputForCommandTracking = (data: string) =>
   data
     .replace(terminalBracketedPasteBoundaryPattern, '')
+    .replace(terminalStringEscapeSequencePattern, '')
     .replace(terminalCsiSequencePattern, '')
     .replace(terminalShortEscapeSequencePattern, '');
 

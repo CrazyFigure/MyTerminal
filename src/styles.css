@@ -979,6 +979,19 @@ select:disabled {
   background: transparent !important;
 }
 
+/* Claude 的真实 xterm 光标常停在右侧状态栏；锁住 IME 辅助元素后，连续组词时 xterm 的行内坐标回写也无法挪走候选窗。 */
+.terminal-surface .xterm.is-claude-ime-prompt-anchored .xterm-helper-textarea,
+.terminal-surface .xterm.is-claude-ime-prompt-anchored .composition-view {
+  left: var(--terminal-ime-anchor-left) !important;
+  top: var(--terminal-ime-anchor-top) !important;
+  height: var(--terminal-ime-anchor-height) !important;
+  line-height: var(--terminal-ime-anchor-height) !important;
+}
+
+.terminal-surface .xterm.is-claude-ime-prompt-anchored .xterm-helper-textarea {
+  width: var(--terminal-ime-anchor-width) !important;
+}
+
 .terminal-surface .xterm {
   max-height: 100%;
 }

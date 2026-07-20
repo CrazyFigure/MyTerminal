@@ -6520,6 +6520,10 @@ export default function App() {
               }
               void sendTerminalData(activeSessionId, data);
             }}
+            onTerminalProtocolData={(sessionId, data) => {
+              // 能力查询可能来自后台标签；使用事件自带会话 ID，避免切换标签时把回包写入另一条 PTY。
+              void sendTerminalData(sessionId, data);
+            }}
             onUpdateSettings={(partial) => {
               // 行号栏右键切换的显示项直接落盘持久化，保证重启和多端同步后仍生效。
               void persistSettings({ ...settings, ...partial }).catch(() => undefined);
