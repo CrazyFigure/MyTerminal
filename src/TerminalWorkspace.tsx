@@ -7,6 +7,7 @@ import { backend } from './backend';
 import { readClipboardText, writeClipboardText } from './clipboard';
 import { translate } from './i18n';
 import { TerminalOutputCache } from './terminalCache';
+import { buildTerminalFontFamily } from './terminalFonts';
 import type { AppSettings, TerminalOutputChunk, TerminalSession } from './types';
 import packageMetadata from '../package.json';
 
@@ -744,33 +745,6 @@ const shouldUseNativeCtrlVPaste = (session?: TerminalSession) => {
 const shouldUseControlledInputCursor = (session?: TerminalSession) => {
   const executableName = extractTerminalExecutableName(resolveLocalSessionCommandText(session));
   return executableName ? terminalControlledInputCursorCommandNames.has(executableName) : false;
-};
-
-const terminalFontFallbacks = ['Cascadia Mono', 'Consolas', 'Courier New', 'monospace'];
-
-const quoteFontFamily = (fontFamily: string) => {
-  const cleaned = fontFamily.trim().replace(/^['"]|['"]$/g, '');
-  if (!cleaned) {
-    return undefined;
-  }
-  return /\s/.test(cleaned) && cleaned !== 'monospace' ? `"${cleaned.replace(/"/g, '\\"')}"` : cleaned;
-};
-
-const buildTerminalFontFamily = (latinFontFamily: string, cjkFontFamily: string) => {
-  const primaryFont = quoteFontFamily(latinFontFamily) ?? '"Cascadia Mono"';
-  const cjkFont = quoteFontFamily(cjkFontFamily);
-  const normalizedPrimary = primaryFont.replace(/^["']|["']$/g, '').toLowerCase();
-  const normalizedCjk = cjkFont?.replace(/^["']|["']$/g, '').toLowerCase();
-  const fallbackFonts = terminalFontFallbacks
-    .filter((fallback) => fallback.toLowerCase() !== normalizedPrimary && fallback.toLowerCase() !== normalizedCjk)
-    .map((fallback) => quoteFontFamily(fallback))
-    .filter((fallback): fallback is string => Boolean(fallback));
-
-  // 终端字体按英文、中文、等宽兜底排列，保证 ASCII 和 CJK 分别命中用户指定字体。
-  return [primaryFont, cjkFont, ...fallbackFonts]
-    .filter((fontFamily): fontFamily is string => Boolean(fontFamily))
-    .filter((fontFamily, index, array) => array.indexOf(fontFamily) === index)
-    .join(', ');
 };
 
 const directImageUrlPattern = /^(https?:|data:|blob:|asset:|http:\/\/asset\.localhost)/i;

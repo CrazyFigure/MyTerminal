@@ -65,6 +65,14 @@ import { TerminalWorkspace } from './TerminalWorkspace';
 import { backend } from './backend';
 import { writeClipboardText } from './clipboard';
 import { useAppStore } from './store';
+import {
+  buildTerminalFontFamily,
+  isTerminalFontFamilyAvailable,
+  isTerminalMonospaceFontFamily,
+  resolveTerminalLatinFontFamily,
+  terminalCjkFontOptions,
+  terminalLatinFontOptions,
+} from './terminalFonts';
 // useShallow 让组件按“选中字段的浅比较”订阅 store，避免订阅整个 store 导致终端 cwd/status
 // 等高频更新触发无关组件（尤其是未打开的弹窗）重渲染。
 import { useShallow } from 'zustand/react/shallow';
@@ -235,66 +243,45 @@ const getAgentRequestMachineLabel = (request: AgentBridgeRequest, connections: C
 };
 const connectionTableActionMinWidth = 220;
 
-const latinFontOptions = [
-  'JetBrains Mono',
-  'Maple Mono Normal NF CN Regular',
-  'Maple Mono Normal NF CN Light',
-  'Cascadia Mono',
-  'Consolas',
-  'Fira Code',
-  'Roboto Mono',
-  'Source Code Pro',
-  'Monaco',
-  'Courier New',
-];
-
-const cjkFontOptions = [
-  'Microsoft YaHei UI',
-  'Microsoft YaHei',
-  'Maple Mono Normal NF CN Regular',
-  'Maple Mono Normal NF CN Light',
-  'SimSun',
-  'SimHei',
-  'Microsoft JhengHei UI',
-  'Noto Sans CJK SC',
-  'Sarasa Mono SC',
-  'PingFang SC',
-];
-
-const ensureFontOption = (options: string[], current: string) => {
-  const normalized = current.trim().replace(/^['"]|['"]$/g, '');
-  return normalized && !options.includes(normalized) ? [normalized, ...options] : options;
-};
-
-// 推荐字体置顶，本机字体去重追加，保证下拉既能一键选中常用字体又覆盖全部已安装字体。
-const mergeFontOptions = (curated: string[], systemFonts: string[]) => {
-  const seen = new Set(curated.map((fontFamily) => fontFamily.toLowerCase()));
+// 推荐字体与当前旧配置都必须通过真实可用性检测；系统枚举失败时也不能重新展示未安装字体。
+const mergeInstalledFontOptions = (
+  curated: string[],
+  systemFonts: string[],
+  isFallbackAllowed: (fontFamily: string) => boolean,
+) => {
+  const installedFonts = new Map(systemFonts.map((fontFamily) => [fontFamily.toLowerCase(), fontFamily]));
+  const seen = new Set<string>();
+  const installedCurated = curated
+    .map((fontFamily) => installedFonts.get(fontFamily.toLowerCase())
+      ?? (isFallbackAllowed(fontFamily) ? fontFamily : undefined))
+    .filter((fontFamily): fontFamily is string => {
+      if (!fontFamily) {
+        return false;
+      }
+      const key = fontFamily.toLowerCase();
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
   const extras = systemFonts.filter((fontFamily) => {
     const key = fontFamily.toLowerCase();
     return !seen.has(key) && seen.add(key);
   });
-  return [...curated, ...extras];
+  return [...installedCurated, ...extras];
 };
 
-const quoteCssFontFamily = (fontFamily: string) => {
-  const cleaned = fontFamily.trim().replace(/^['"]|['"]$/g, '');
-  if (!cleaned) {
-    return undefined;
-  }
-  return /\s/.test(cleaned) ? `"${cleaned.replace(/"/g, '\\"')}"` : cleaned;
+const findFontOption = (options: string[], fontFamily: string) => {
+  const normalized = fontFamily.trim().replace(/^['"]|['"]$/g, '').toLowerCase();
+  return options.find((option) => option.toLowerCase() === normalized);
 };
 
 const buildPreviewFontFamily = (settings: AppSettings) =>
-  [
-    quoteCssFontFamily(settings.shellLatinFontFamily ?? settings.shellFontFamily),
-    quoteCssFontFamily(settings.shellCjkFontFamily ?? settings.shellFontFamily),
-    '"Cascadia Mono"',
-    'Consolas',
-    'monospace',
-  ]
-    .filter((fontFamily): fontFamily is string => Boolean(fontFamily))
-    .filter((fontFamily, index, array) => array.indexOf(fontFamily) === index)
-    .join(', ');
+  buildTerminalFontFamily(
+    settings.shellLatinFontFamily ?? settings.shellFontFamily,
+    settings.shellCjkFontFamily ?? settings.shellFontFamily,
+  );
 
 // 本地终端首次打开时默认指向当前工作区，用户仍可在弹窗内切换任意目录。
 const defaultLocalTerminalCwd = 'C:\\Software\\WorkSpace\\MyTerminal';
@@ -2875,8 +2862,9 @@ function SettingsModal({
   const [backupSelectorOpen, setBackupSelectorOpen] = useState(false);
   const [backupList, setBackupList] = useState<string[]>([]);
   const backupSelectorResolveRef = useRef<((value: string | null) => void) | null>(null);
-  // 本机已安装字体列表，进入设置时异步枚举，与推荐字体合并后供字体下拉全量选择。
+  // 本机已安装字体列表用于剔除不存在的推荐项，并限制英文字体下拉只展示真实等宽字体。
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
+  const [systemFontsLoaded, setSystemFontsLoaded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -2885,10 +2873,14 @@ function SettingsModal({
       .then((fonts) => {
         if (!cancelled) {
           setSystemFonts(fonts);
+          setSystemFontsLoaded(true);
         }
       })
       .catch(() => {
-        // 枚举失败时保持空列表，字体下拉仍回退到推荐字体。
+        // 枚举失败时只保留前端实际测量为可用的字体，不能把整份推荐列表重新当作已安装字体。
+        if (!cancelled) {
+          setSystemFontsLoaded(true);
+        }
       });
     return () => {
       cancelled = true;
@@ -2900,10 +2892,31 @@ function SettingsModal({
   // 界面版本由 Vite 从 package.json 注入，避免关于页和发布元数据出现不同版本。
   const appVersion = import.meta.env.VITE_APP_VERSION;
   const webdavPasswordToggleLabel = revealWebdavPassword ? t('hideSecret') : t('showSecret');
-  const selectedLatinFontFamily = draftSettings.shellLatinFontFamily || draftSettings.shellFontFamily.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '') || 'JetBrains Mono';
-  const selectedCjkFontFamily = draftSettings.shellCjkFontFamily || selectedLatinFontFamily;
-  const latinOptions = ensureFontOption(mergeFontOptions(latinFontOptions, systemFonts), selectedLatinFontFamily);
-  const cjkOptions = ensureFontOption(mergeFontOptions(cjkFontOptions, systemFonts), selectedCjkFontFamily);
+  const configuredLatinFontFamily = draftSettings.shellLatinFontFamily || draftSettings.shellFontFamily.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '') || 'JetBrains Mono';
+  const configuredCjkFontFamily = draftSettings.shellCjkFontFamily || configuredLatinFontFamily;
+  const monospaceSystemFonts = useMemo(
+    // 字体度量只在外观设置真正打开时执行，避免应用启动阶段为几百个系统字体做无用测量。
+    () => open ? systemFonts.filter((fontFamily) => isTerminalMonospaceFontFamily(fontFamily)) : [],
+    [open, systemFonts],
+  );
+  const latinOptions = mergeInstalledFontOptions(
+    [...terminalLatinFontOptions, configuredLatinFontFamily],
+    monospaceSystemFonts,
+    isTerminalMonospaceFontFamily,
+  );
+  const cjkOptions = mergeInstalledFontOptions(
+    [...terminalCjkFontOptions, configuredCjkFontFamily],
+    systemFonts,
+    isTerminalFontFamilyAvailable,
+  );
+  const resolvedLatinFontFamily = resolveTerminalLatinFontFamily(configuredLatinFontFamily);
+  const selectedLatinFontFamily = findFontOption(latinOptions, configuredLatinFontFamily)
+    ?? findFontOption(latinOptions, resolvedLatinFontFamily)
+    ?? latinOptions[0]
+    ?? resolvedLatinFontFamily;
+  const selectedCjkFontFamily = findFontOption(cjkOptions, configuredCjkFontFamily)
+    ?? cjkOptions[0]
+    ?? selectedLatinFontFamily;
   const agentAutoGroups = useMemo(
     () => buildConnectionGroupTree(draftSettings.connectionGroups, connections),
     [connections, draftSettings.connectionGroups],
@@ -3187,6 +3200,25 @@ function SettingsModal({
   }, [open, settings, storeUpdateCheckResult]);
 
   useEffect(() => {
+    if (!open || !systemFontsLoaded) {
+      return;
+    }
+    // 旧配置引用已卸载字体时只修正设置草稿：预览立即使用真实字体，取消仍保持原配置，保存后才正式迁移。
+    setDraftSettings((current) => {
+      const currentLatin = current.shellLatinFontFamily || current.shellFontFamily.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '');
+      const currentCjk = current.shellCjkFontFamily || currentLatin;
+      if (currentLatin === selectedLatinFontFamily && currentCjk === selectedCjkFontFamily) {
+        return current;
+      }
+      return {
+        ...current,
+        shellLatinFontFamily: selectedLatinFontFamily,
+        shellCjkFontFamily: selectedCjkFontFamily,
+      };
+    });
+  }, [open, selectedCjkFontFamily, selectedLatinFontFamily, systemFontsLoaded]);
+
+  useEffect(() => {
     return () => {
       if (settingsSaveTimerRef.current !== null) {
         window.clearTimeout(settingsSaveTimerRef.current);
@@ -3341,24 +3373,30 @@ function SettingsModal({
                       <span>{t('fieldLatinFontFamily')}</span>
                       <CustomSelect
                         aria-label={t('fieldLatinFontFamily')}
+                        emptyText={t('fontSearchEmpty')}
                         value={selectedLatinFontFamily}
                         onChange={(val) => updateDraftSettings((current) => ({ ...current, shellLatinFontFamily: val }))}
                         options={latinOptions.map((fontFamily) => ({
                           value: fontFamily,
                           label: fontFamily,
                         }))}
+                        searchable
+                        searchPlaceholder={t('fontSearchPlaceholder')}
                       />
                     </div>
                     <div className="form-field">
                       <span>{t('fieldCjkFontFamily')}</span>
                       <CustomSelect
                         aria-label={t('fieldCjkFontFamily')}
+                        emptyText={t('fontSearchEmpty')}
                         value={selectedCjkFontFamily}
                         onChange={(val) => updateDraftSettings((current) => ({ ...current, shellCjkFontFamily: val }))}
                         options={cjkOptions.map((fontFamily) => ({
                           value: fontFamily,
                           label: fontFamily,
                         }))}
+                        searchable
+                        searchPlaceholder={t('fontSearchPlaceholder')}
                       />
                     </div>
                     <label>

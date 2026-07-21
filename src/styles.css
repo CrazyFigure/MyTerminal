@@ -4789,11 +4789,67 @@ select:disabled {
   animation: custom-select-fade-in-up 0.15s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+.custom-select-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 7px 7px 3px;
+  padding: 0 9px;
+  height: 34px;
+  color: var(--app-muted);
+  background: var(--app-input-bg);
+  border: 1px solid var(--app-input-border);
+  border-radius: 8px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.custom-select-search:hover {
+  border-color: var(--app-active-border);
+}
+
+.custom-select-search:focus-within {
+  color: var(--app-text);
+  border-color: var(--app-active-border);
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.1);
+}
+
+.custom-select-search-input {
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  color: var(--app-text);
+  background: transparent;
+  border: 0;
+  outline: 0;
+  font: inherit;
+}
+
+.custom-select-search-input::placeholder {
+  color: var(--app-muted);
+}
+
+/* Chromium 的 type=search 默认清除按钮会挤压字体名，统一隐藏后由选择新条目自然清空查询。 */
+.custom-select-search-input::-webkit-search-cancel-button {
+  display: none;
+}
+
 .custom-select-scroll-container {
   max-height: 280px;
   overflow-y: auto;
   padding: 4px;
   scrollbar-width: thin;
+}
+
+.custom-select-portal-options.is-searchable .custom-select-scroll-container {
+  max-height: 232px;
+}
+
+.custom-select-empty {
+  padding: 18px 12px;
+  color: var(--app-muted);
+  text-align: center;
+  font-size: 12px;
 }
 
 /* 选项条目 */
