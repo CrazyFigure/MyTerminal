@@ -1,7 +1,7 @@
 [package]
 name = "myterminal"
 # Rust crate 版本由 scripts/sync-version.mjs 从根 package.json 同步，保持后端 env!("CARGO_PKG_VERSION") 和发布版本一致。
-version = "0.4.5"
+version = "0.4.6"
 description = "A modern Rust + Tauri 2 remote terminal manager inspired by FinalShell"
 authors = ["OpenAI"]
 edition = "2021"
