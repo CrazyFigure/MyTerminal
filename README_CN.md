@@ -140,10 +140,10 @@ MyTerminal 可以把已保存的 SSH 连接通过本地 `CLI + MCP + GUI Broker`
 
 ### 工作方式
 
-- MCP Bridge 默认关闭，需要在 **设置 > MCP** 中手动开启。
+- MCP Bridge 初始默认关闭，需要在 **设置 > MCP** 中手动开启；开启状态与自动执行策略会持久化，并在 MyTerminal 重启后按原配置恢复。
 - 开启后，MyTerminal 会在 `127.0.0.1` 启动本地 Broker，并写入包含端口与 token 的 discovery 文件。
-- MCP 客户端通过 `npx` 启动本地 MCP 包，MCP 包再启动 `myterminal-cli mcp --stdio`。
-- Agent 应先列出连接，再使用返回的连接 ID 或唯一连接名称打开 Bridge 会话，后续复用返回的 `sessionId`，任务结束后关闭会话。
+- 安装版优先由 MCP 客户端直接启动随 MyTerminal 分发的 `myterminal-cli`；开发态找不到 CLI 时才通过项目内 `npx` launcher 启动。
+- Agent 应先列出连接；简单任务可把返回的连接 ID（或唯一连接名称）直接作为远程工具的 `sessionId`，Bridge 会自动建立逻辑会话。如需独立会话，也可显式打开并复用返回的 `sessionId`，任务结束后关闭。
 - 连接列表、目录列表、文件读取等只读工具可直接执行。
 - 同一 Bridge 会话内的命令会串行执行，避免远端状态顺序错乱；不同会话可以并发。
 - 远程命令、本地上传、远端下载和写操作默认会进入 MyTerminal 的 AI 请求面板，由用户手动批准。

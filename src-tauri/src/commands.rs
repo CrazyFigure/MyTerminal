@@ -5591,7 +5591,9 @@ pub fn bootstrap_state(
     // 前端 AI 执行列表改为事件驱动，启动时先登记 AppHandle，后续 broker 线程即可主动通知请求变化。
     agent_bridge::set_app_handle(&state.agent_bridge, app_handle)?;
     let settings = state.storage.load_settings(&state.crypto)?;
-    agent_bridge::sync_server(
+    // React StrictMode 或页面恢复可能重复触发 bootstrap；只确保 Broker 已启动，
+    // 不在配置未变化时重启监听器，避免把正在执行的 MCP 请求重置为 os error 10054。
+    agent_bridge::ensure_server(
         &state.agent_bridge,
         &state.storage,
         &state.crypto,

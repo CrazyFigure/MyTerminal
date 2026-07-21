@@ -20,6 +20,9 @@ src-tauri/target-*/
 # Tauri 自动生成的 schema 只用于本地 IDE 提示，CI 可按需重新生成。
 src-tauri/gen/schemas/
 
+# myterminal-cli sidecar 由 scripts/build-cli-sidecar.mjs 在构建前生成，属平台相关产物，不进仓库。
+src-tauri/binaries/
+
 # 本地环境和编辑器文件。
 .env
 .env.*

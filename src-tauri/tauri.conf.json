@@ -4,8 +4,8 @@
   "version": "../package.json",
   "identifier": "com.myterminal.app",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run build:cli-sidecar && npm run dev",
+    "beforeBuildCommand": "npm run build:cli-sidecar && npm run build",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },
@@ -38,6 +38,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "icon": ["icons/icon.ico"]
+    "icon": ["icons/icon.ico"],
+    "externalBin": ["binaries/myterminal-cli"]
   }
 }

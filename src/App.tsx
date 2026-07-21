@@ -296,8 +296,6 @@ const buildPreviewFontFamily = (settings: AppSettings) =>
     .filter((fontFamily, index, array) => array.indexOf(fontFamily) === index)
     .join(', ');
 
-const defaultAgentMcpPackagePath = 'C:\\Software\\WorkSpace\\MyTerminal\\mcp\\myterminal-mcp';
-
 // 本地终端首次打开时默认指向当前工作区，用户仍可在弹窗内切换任意目录。
 const defaultLocalTerminalCwd = 'C:\\Software\\WorkSpace\\MyTerminal';
 
@@ -419,14 +417,15 @@ const createLocalTerminalProfile = (cwd: string, command: string): LocalTerminal
   lastUsedAt: nowIso(),
 });
 
-const buildAgentMcpPackagePath = (discoveryPath?: string) => {
+// 从 discovery 文件路径反推项目根目录，仅用于开发态 npx launcher 包的兜底路径。
+// 安装版走 cliPath 直连分支，不会用到这里。
+const deriveAgentMcpPackagePath = (discoveryPath?: string) => {
   const normalized = discoveryPath?.trim().replace(/\\/g, '/');
   const marker = '/.myterminal-data/';
   const markerIndex = normalized?.lastIndexOf(marker) ?? -1;
   if (!normalized || markerIndex < 0) {
-    return defaultAgentMcpPackagePath;
+    return null;
   }
-
   // discovery 文件位于项目数据目录下，反推项目根目录后拼出本地 npx launcher 包。
   const rootPath = normalized.slice(0, markerIndex);
   return `${rootPath}/mcp/myterminal-mcp`;
@@ -434,15 +433,28 @@ const buildAgentMcpPackagePath = (discoveryPath?: string) => {
 
 const buildAgentMcpConfig = (status?: AgentBridgeStatus | null) => {
   const cliPath = status?.cliPath?.trim();
-  // 安装版随应用分发 myterminal-cli，可直接作为 stdio MCP server，免去 npx 与本地 launcher 包依赖；
-  // 找不到 CLI 时才回退到项目内 npx launcher 包（仅开发态项目根目录可用）。
-  const server = cliPath
-    ? { type: 'stdio', command: cliPath, args: ['mcp', '--stdio'] }
-    : {
-        type: 'stdio',
-        command: 'npx',
-        args: ['--yes', buildAgentMcpPackagePath(status?.discoveryPath)],
-      };
+  const dataDir = status?.dataDir?.trim();
+  // MYTERMINAL_DATA_DIR 指向当前实际数据目录：外部客户端从任意工作目录拉起 CLI 时，
+  // 靠它精确定位 discovery 文件，避免安装版因工作目录不确定而找不到 Broker。
+  const env = dataDir ? { MYTERMINAL_DATA_DIR: dataDir } : undefined;
+
+  // 安装版随应用分发 myterminal-cli（含 target triple 后缀的 sidecar），后端解析出绝对路径后
+  // 直接作为 stdio MCP server，免去 npx 与本地 launcher 包依赖；两台机器路径天然各自正确。
+  let server: Record<string, unknown>;
+  if (cliPath) {
+    server = { type: 'stdio', command: cliPath, args: ['mcp', '--stdio'] };
+  } else {
+    // 找不到 CLI（一般是开发态未构建 sidecar）时，项目目录可回退到本地 npx launcher；
+    // 安装目录无法反推本地包时使用 PATH 中的 myterminal-cli，不能请求并未发布到 npm 的私有包。
+    const packagePath = deriveAgentMcpPackagePath(status?.discoveryPath);
+    server = packagePath
+      ? { type: 'stdio', command: 'npx', args: ['--yes', packagePath] }
+      : { type: 'stdio', command: 'myterminal-cli', args: ['mcp', '--stdio'] };
+  }
+  if (env) {
+    server.env = env;
+  }
+
   return JSON.stringify(
     {
       mcpServers: {

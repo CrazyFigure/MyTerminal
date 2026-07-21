@@ -248,7 +248,7 @@ impl Default for WebDavSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentBridgeSettings {
     /// AI Bridge 默认关闭，只有用户在设置页明确启用后才暴露本地 Broker。
