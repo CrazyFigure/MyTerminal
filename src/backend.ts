@@ -421,6 +421,7 @@ const mockAgentBridgeStatus: AgentBridgeStatus = {
   cliCommand: 'myterminal-cli bridge status --json',
   mcpCommand: 'myterminal-cli mcp --stdio',
   cliPath: 'C:/Software/WorkSpace/MyTerminal/src-tauri/target/debug/myterminal-cli.exe',
+  dataDir: 'C:/Software/WorkSpace/MyTerminal/.myterminal-data',
 };
 
 // 前端预览环境没有后端版本接口时，沿用 Vite 从 package.json 注入的版本作为展示与更新检查兜底。

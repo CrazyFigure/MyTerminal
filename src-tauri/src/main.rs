@@ -3,7 +3,7 @@
 
 use std::sync::atomic::Ordering;
 
-use myterminal::{commands, state::AppState};
+use myterminal::{agent_bridge, commands, state::AppState};
 use tauri::{Manager, WindowEvent};
 
 // 判断是否使用软件渲染兼容模式（关闭 WebView2 硬件加速）。
@@ -55,6 +55,19 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .manage(app_state)
         .setup(|app| {
+            // Broker 属于后端常驻能力，必须在 Tauri setup 阶段按持久化设置启动，
+            // 不能依赖 WebView 完成前端 bootstrap；窗口隐藏、页面加载失败时 MCP 仍应可用。
+            {
+                let state = app.state::<AppState>();
+                agent_bridge::set_app_handle(&state.agent_bridge, app.handle().clone())?;
+                let settings = state.storage.load_settings(&state.crypto)?;
+                agent_bridge::ensure_server(
+                    &state.agent_bridge,
+                    &state.storage,
+                    &state.crypto,
+                    &settings.agent_bridge,
+                )?;
+            }
             // 启动后台 SSH 保活守护线程，防止辅助会话与隧道池会话在应用后台运行时空闲掉线。
             commands::spawn_keepalive_daemon(app.handle().clone());
             // 启动 SSH 隧道健康监控线程，实时探测运行中隧道的底层连接并在状态变化时通知前端。

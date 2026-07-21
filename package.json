@@ -23,6 +23,7 @@
     "tauri": "tauri",
     "pretauri:dev": "npm run sync:version",
     "tauri:dev": "tauri dev",
+    "build:cli-sidecar": "node scripts/build-cli-sidecar.mjs",
     "pretauri:build": "npm run sync:version",
     "tauri:build": "tauri build",
     "package": "npm run tauri:build"

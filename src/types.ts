@@ -346,6 +346,8 @@ export interface AgentBridgeStatus {
   cliCommand: string;
   mcpCommand: string;
   cliPath?: string;
+  // 当前实际数据目录，前端据此在 MCP 配置里注入 MYTERMINAL_DATA_DIR，保证 CLI 无论从哪启动都能定位 Broker。
+  dataDir: string;
 }
 
 export interface AgentBridgeRequest {

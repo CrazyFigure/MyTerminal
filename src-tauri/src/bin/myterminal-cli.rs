@@ -213,7 +213,28 @@ impl BrokerClient {
             body_text
         );
         stream.write_all(request.as_bytes())?;
-        read_http_response(&mut stream)
+        // Broker 的 HTTP 状态正文统一使用 { ok, data/error } 信封；CLI 必须在这里拆包，
+        // 否则 MCP 会把 { ok: false } 当作成功文本返回，agent 便会忽略真实错误并盲目重试。
+        unwrap_broker_response(read_http_response(&mut stream)?)
+    }
+}
+
+/// 拆解 GUI Broker 的统一响应信封：成功时只向 CLI/MCP 暴露业务数据，失败时转成真正的工具错误。
+/// `data` 缺失只兼容无需结果的成功响应；`ok` 缺失则视为协议损坏，避免静默吞掉服务端异常。
+fn unwrap_broker_response(response: Value) -> Result<Value, AppError> {
+    match response.get("ok").and_then(Value::as_bool) {
+        Some(true) => Ok(response.get("data").cloned().unwrap_or_else(|| json!({}))),
+        Some(false) => {
+            let message = response
+                .get("error")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("MyTerminal AI Bridge returned an unknown error");
+            Err(AppError::Validation(message.to_string()))
+        }
+        None => Err(AppError::Validation(
+            "invalid MyTerminal AI Bridge response: missing ok flag".into(),
+        )),
     }
 }
 
@@ -521,9 +542,16 @@ fn handle_mcp_message(message: Value) -> Result<Option<Value>, AppError> {
     Ok(Some(response))
 }
 
-/// 返回给 MCP 客户端的全局使用说明，重点约束 sessionId 来源，避免 agent 把 IP、连接名误当 sessionId。
+/// 返回给 MCP 客户端的全局使用说明。远程工具允许直接使用连接 id/唯一名称，
+/// 避免客户端按需加载工具时没有发现 open_session 就完全无法执行任务。
 fn mcp_instructions() -> &'static str {
-    "MyTerminal MCP 使用流程：1. 先调用 myterminal_list_connections 查找连接，使用返回的 id 或 name。2. 调用 myterminal_open_session，传 connectionId 或 connectionName；MyTerminal 会使用已保存的账号密码、密钥、跳板机和代理配置，不需要 agent 自己登录 SSH。3. 后续 myterminal_run_command 和 myterminal_file_* 工具的 sessionId 必须使用 open_session 返回的 id；sessionId 不是 IP、主机名、连接名或用户名，不能猜。4. 同一 session 的命令会按顺序执行；不同 session 可以并发。5. 写文件请直接用 myterminal_file_write，不要用 shell echo 拼接，除非用户明确要求执行命令。"
+    "MyTerminal MCP 使用流程：1. 先调用 myterminal_list_connections 查找连接。2. 最简方式是把返回的 connections[].id 直接作为远程工具的 sessionId，Bridge 会自动建立逻辑会话；唯一的连接名称也可直接使用，但不要传 IP、主机名或用户名。3. 如需显式、可独立关闭的会话，可调用 myterminal_open_session，再复用返回的 id。4. MyTerminal 自动使用已保存的密码、密钥、跳板机和代理配置，不需要 agent 手动登录 SSH，也不要求用户先打开终端标签。5. 同一 sessionId 的命令按顺序执行；不同 sessionId 可以并发。6. 写小文件请直接用 myterminal_file_write，不要用 shell echo 拼接，除非用户明确要求执行命令。"
+}
+
+/// 所有远程工具共用的连接选择说明；保留 sessionId 字段兼容既有客户端，
+/// 同时允许直接传 list_connections 返回的连接 id/唯一名称，降低多工具编排失败率。
+fn mcp_session_selector_description() -> &'static str {
+    "推荐直接传 myterminal_list_connections 返回的 connections[].id；也可传唯一连接名称，或 myterminal_open_session 返回的 session.id。不能传 IP、主机名或用户名。"
 }
 
 fn mcp_tools() -> Value {
@@ -535,7 +563,7 @@ fn mcp_tools() -> Value {
         ),
         tool_schema(
             "myterminal_open_session",
-            "第二步调用：打开一个 AI Bridge 会话并返回 session.id。传 connectionId（推荐，来自 list_connections 的 id）或 connectionName（用户给出如“28开发”时可直接使用）。MyTerminal 会自动使用保存的账号密码/密钥/跳板机/代理配置，不需要 agent 手动 SSH 登录。后续所有 sessionId 必须使用这里返回的 session.id，绝不能用 IP、主机名、连接名或用户名代替。",
+            "可选：打开一个独立的 AI Bridge 逻辑会话并返回 session.id。远程工具也可把 list_connections 返回的连接 id/唯一名称直接作为 sessionId，因此简单任务无需先调用本工具。MyTerminal 会自动使用保存的密码、密钥、跳板机和代理配置。",
             json!({
                 "type": "object",
                 "anyOf": [
@@ -555,23 +583,23 @@ fn mcp_tools() -> Value {
         ),
         tool_schema(
             "myterminal_run_command",
-            "在远端通过独立 SSH exec channel 执行命令，默认需要 GUI 审批。同一 sessionId 的命令会按顺序执行；不同 sessionId 可并发。创建/写入小文件时优先用 myterminal_file_write。",
-            json!({ "type": "object", "required": ["sessionId", "command"], "properties": { "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" }, "command": { "type": "string" }, "cwd": { "type": "string" }, "timeoutSec": { "type": "number" } } })
+            "通过 MyTerminal 保存的 SSH 连接在远端执行命令，默认需要 GUI 审批。先 list_connections 后可把连接 id 直接作为 sessionId，不要求先打开终端或调用 open_session。同一 sessionId 的命令按顺序执行；创建/写入小文件时优先用 myterminal_file_write。",
+            json!({ "type": "object", "required": ["sessionId", "command"], "properties": { "sessionId": { "type": "string", "description": mcp_session_selector_description() }, "command": { "type": "string" }, "cwd": { "type": "string" }, "timeoutSec": { "type": "number" } } })
         ),
         tool_schema(
             "myterminal_file_list",
-            "列出远端目录。",
-            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" }, "path": { "type": "string" } } })
+            "通过 MyTerminal 保存的 SSH 连接列出远端目录；连接 id 可直接作为 sessionId，不要求先打开终端或调用 open_session。",
+            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string", "description": mcp_session_selector_description() }, "path": { "type": "string" } } })
         ),
         tool_schema(
             "myterminal_file_read",
             "读取远端文件，UTF-8 返回 content，二进制返回 contentBase64。",
-            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" }, "path": { "type": "string" } } })
+            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string", "description": mcp_session_selector_description() }, "path": { "type": "string" } } })
         ),
         tool_schema(
             "myterminal_file_write",
             "写入远端小文件内容，默认需要 GUI 审批。用户要求“新增 hello.txt”这类任务应直接调用本工具，不需要先执行 echo 命令。不要用它上传本地大文件或文件夹；本地文件/文件夹请使用 myterminal_file_upload 的 localPath/localPaths。",
-            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" }, "path": { "type": "string" }, "content": { "type": "string" }, "contentBase64": { "type": "string" } } })
+            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string", "description": mcp_session_selector_description() }, "path": { "type": "string" }, "content": { "type": "string" }, "contentBase64": { "type": "string" } } })
         ),
         tool_schema(
             "myterminal_file_upload",
@@ -584,7 +612,7 @@ fn mcp_tools() -> Value {
                     { "required": ["localPaths"] }
                 ],
                 "properties": {
-                    "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" },
+                    "sessionId": { "type": "string", "description": mcp_session_selector_description() },
                     "localPath": { "type": "string", "description": "单个本地文件或文件夹路径。" },
                     "localPaths": { "type": "array", "items": { "type": "string" }, "description": "多个本地文件或文件夹路径。" },
                     "remoteDir": { "type": "string", "description": "远端目标目录；未提供时使用会话 cwd。" },
@@ -603,7 +631,7 @@ fn mcp_tools() -> Value {
                     { "required": ["paths"] }
                 ],
                 "properties": {
-                    "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" },
+                    "sessionId": { "type": "string", "description": mcp_session_selector_description() },
                     "path": { "type": "string", "description": "单个远端文件或文件夹路径。" },
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "多个远端文件或文件夹路径。" },
                     "localDir": { "type": "string", "description": "本地目标目录。" },
@@ -614,17 +642,17 @@ fn mcp_tools() -> Value {
         tool_schema(
             "myterminal_file_delete",
             "递归删除远端文件或文件夹，默认需要 GUI 审批。",
-            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" }, "path": { "type": "string" } } })
+            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string", "description": mcp_session_selector_description() }, "path": { "type": "string" } } })
         ),
         tool_schema(
             "myterminal_file_rename",
             "重命名或移动远端路径，默认需要 GUI 审批。",
-            json!({ "type": "object", "required": ["sessionId", "path", "newPath"], "properties": { "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" }, "path": { "type": "string" }, "newPath": { "type": "string" } } })
+            json!({ "type": "object", "required": ["sessionId", "path", "newPath"], "properties": { "sessionId": { "type": "string", "description": mcp_session_selector_description() }, "path": { "type": "string" }, "newPath": { "type": "string" } } })
         ),
         tool_schema(
             "myterminal_file_mkdir",
             "创建远端目录，默认需要 GUI 审批。",
-            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string", "description": "必须是 myterminal_open_session 返回的 session.id。" }, "path": { "type": "string" } } })
+            json!({ "type": "object", "required": ["sessionId", "path"], "properties": { "sessionId": { "type": "string", "description": mcp_session_selector_description() }, "path": { "type": "string" } } })
         )
     ])
 }
@@ -690,4 +718,60 @@ fn mcp_tool_error(id: Value, message: String) -> Value {
             "content": [{ "type": "text", "text": message }]
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use myterminal::{
+        crypto::CryptoService, models::AppSettings, storage::StorageService,
+    };
+
+    #[test]
+    fn broker_success_response_unwraps_business_data() {
+        let response = unwrap_broker_response(json!({
+            "ok": true,
+            "data": { "id": "session-1" }
+        }))
+        .unwrap();
+        assert_eq!(response, json!({ "id": "session-1" }));
+    }
+
+    #[test]
+    fn broker_error_response_becomes_real_tool_error() {
+        let error = unwrap_broker_response(json!({
+            "ok": false,
+            "error": "not found: agent session connection-1 not found"
+        }))
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("agent session connection-1 not found"));
+    }
+
+    #[test]
+    fn saved_bridge_policy_survives_settings_reload() {
+        // 使用唯一临时数据目录验证真实存储链路，避免读写开发机现有的连接、密钥和 MCP 配置。
+        let test_dir = env::temp_dir().join(format!(
+            "myterminal-cli-settings-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let storage = StorageService::new(test_dir.clone()).unwrap();
+        let crypto = CryptoService::new(storage.key_path()).unwrap();
+        let mut settings = AppSettings::default();
+        settings.agent_bridge.enabled = true;
+        settings.agent_bridge.auto_execute = true;
+        storage.save_settings(&settings, &crypto).unwrap();
+
+        let loaded = storage.load_settings(&crypto).unwrap();
+        assert!(loaded.agent_bridge.enabled);
+        assert!(loaded.agent_bridge.auto_execute);
+
+        // 测试仅删除由本用例创建且带固定前缀的临时目录，不触碰用户数据目录。
+        assert!(test_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("myterminal-cli-settings-test-")));
+        fs::remove_dir_all(test_dir).unwrap();
+    }
 }

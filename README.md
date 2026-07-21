@@ -140,10 +140,10 @@ MyTerminal can expose your saved SSH connections to Claude Code, Codex, and othe
 
 ### How it works
 
-- The bridge is disabled by default. Enable it in **Settings > MCP**.
+- The bridge is disabled by default on first use. Enable it in **Settings > MCP**; both the enabled state and auto-execution policy persist and are restored when MyTerminal restarts.
 - MyTerminal starts a local Broker bound to `127.0.0.1` and writes a discovery file with the current port and token.
-- MCP clients start the local package with `npx`; the package launches `myterminal-cli mcp --stdio`.
-- Agents should list connections first, open a bridge session with the returned connection ID or a unique connection name, reuse the returned `sessionId`, and close it when done.
+- Installed builds let MCP clients start the bundled `myterminal-cli` directly. Development falls back to the repository-local `npx` launcher only when the CLI executable is unavailable.
+- Agents should list connections first. For simple tasks, pass the returned connection ID (or a unique connection name) directly as the remote tool `sessionId` and the bridge will create a logical session automatically. Agents can still open, reuse, and close an explicit session when independent lifecycle control is useful.
 - Read-only tools, such as listing connections and reading remote files, can run directly.
 - Commands sent to the same bridge session are serialized to keep remote state changes in order; separate sessions can still run concurrently.
 - Command execution, local uploads, remote downloads, and write operations are shown in the MyTerminal AI request panel for approval by default.

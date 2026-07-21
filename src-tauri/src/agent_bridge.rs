@@ -60,6 +60,8 @@ pub struct AgentBridgeStatus {
     pub mcp_command: String,
     /// 随应用一同分发的 myterminal-cli 可执行文件绝对路径，供前端拼出直连 stdio 的 MCP 配置。
     pub cli_path: Option<String>,
+    /// 当前实际使用的数据目录，供前端在 MCP 配置里注入 MYTERMINAL_DATA_DIR，保证 CLI 无论从哪启动都能定位 Broker。
+    pub data_dir: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -256,6 +258,8 @@ struct AgentBridgeServer {
     port: u16,
     token: String,
     stop_flag: Arc<AtomicBool>,
+    /// 监听线程实际持有的执行设置快照，用于判断保存设置后是否真的需要重启 Broker。
+    settings: AgentBridgeSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -412,14 +416,30 @@ fn remove_discovery(storage: &StorageService) {
 /// 安装版把 CLI 与主程序放在同一目录，`tauri dev` 也会把两者输出到 target/debug；
 /// 找到后 MCP 配置可直接以该可执行文件作为 stdio server，免去 npx 与本地 launcher 包依赖。
 fn resolve_cli_executable() -> Option<PathBuf> {
-    let exe_name = if cfg!(windows) {
-        "myterminal-cli.exe"
-    } else {
-        "myterminal-cli"
-    };
+    let ext = if cfg!(windows) { ".exe" } else { "" };
     let current = std::env::current_exe().ok()?;
-    let candidate = current.parent()?.join(exe_name);
-    candidate.exists().then_some(candidate)
+    let dir = current.parent()?;
+
+    // 1) 与主程序同名的常规 CLI 名（tauri dev 的 target 目录、以及手工放置场景）。
+    let plain = dir.join(format!("myterminal-cli{ext}"));
+    if plain.exists() {
+        return Some(plain);
+    }
+
+    // 2) Tauri externalBin 会把 sidecar 以 <name>-<target-triple><ext> 的名字随安装包分发；
+    //    安装版主程序旁只有带 triple 后缀的这个文件，需按前缀匹配后返回。
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let matches =
+                name.starts_with("myterminal-cli-") && (ext.is_empty() || name.ends_with(ext));
+            if matches {
+                return Some(entry.path());
+            }
+        }
+    }
+    None
 }
 
 pub fn bridge_status(
@@ -444,6 +464,9 @@ pub fn bridge_status(
             .agent_bridge_discovery_path()
             .to_string_lossy()
             .to_string(),
+        // 数据目录暴露给前端，用于在生成的 MCP 配置里注入 MYTERMINAL_DATA_DIR，
+        // 使 CLI 被外部客户端拉起时无论工作目录如何都能定位到 discovery 文件。
+        data_dir: storage.data_dir_path().to_string_lossy().to_string(),
         cli_command,
         mcp_command,
         cli_path: resolve_cli_executable().map(|path| path.to_string_lossy().to_string()),
@@ -457,8 +480,13 @@ pub fn sync_server(
     settings: &AgentBridgeSettings,
 ) -> Result<(), AppError> {
     if settings.enabled {
-        // Broker 线程持有设置快照；保存设置时重启监听，确保自动执行白名单和输出限制立即生效。
-        if lock_server(runtime)?.is_some() {
+        // Broker 线程持有设置快照；只有 MCP 执行设置真实变化时才重启，
+        // 避免外观保存、重复初始化等无关调用重置正在进行的 MCP 请求。
+        let settings_changed = lock_server(runtime)?
+            .as_ref()
+            .map(|server| server.settings != *settings)
+            .unwrap_or(false);
+        if settings_changed {
             restart_server(runtime, storage)?;
         }
         start_server(runtime, storage, crypto, settings)?;
@@ -466,6 +494,25 @@ pub fn sync_server(
         stop_server(runtime, storage)?;
     }
     Ok(())
+}
+
+/// 按持久化开关确保 Broker 处于正确状态，但不重启已经运行的监听器。
+/// 应用启动和前端 bootstrap 可能几乎同时触发；这里保持幂等，避免第二次初始化重置正在进行的 MCP 请求。
+pub fn ensure_server(
+    runtime: &AgentBridgeRuntime,
+    storage: &StorageService,
+    crypto: &CryptoService,
+    settings: &AgentBridgeSettings,
+) -> Result<(), AppError> {
+    if settings.enabled {
+        start_server(runtime, storage, crypto, settings)
+    } else if lock_server(runtime)?.is_some() {
+        stop_server(runtime, storage)
+    } else {
+        // Bridge 本来就是关闭状态时只清理可能由异常退出遗留的 discovery 文件，不反复清空会话。
+        remove_discovery(storage);
+        Ok(())
+    }
 }
 
 pub fn start_server(
@@ -489,6 +536,7 @@ pub fn start_server(
         port,
         token: token.clone(),
         stop_flag: Arc::clone(&stop_flag),
+        settings: settings.clone(),
     };
     *lock_server(runtime)? = Some(server_state);
 
@@ -930,7 +978,7 @@ fn submit_action(
     settings: &AgentBridgeSettings,
     action: AgentAction,
 ) -> Result<Value, AppError> {
-    let session = session_for_action(runtime, &action)?;
+    let session = session_for_action(runtime, storage, crypto, &action)?;
     if should_auto_execute(settings, &session.connection_id) {
         return execute_action(runtime, storage, crypto, settings, &action)
             .and_then(|value| serde_json::to_value(value).map_err(AppError::from));
@@ -942,6 +990,8 @@ fn submit_action(
 
 fn session_for_action(
     runtime: &AgentBridgeRuntime,
+    storage: &StorageService,
+    crypto: &CryptoService,
     action: &AgentAction,
 ) -> Result<AgentSession, AppError> {
     let session_id = match action {
@@ -953,11 +1003,7 @@ fn session_for_action(
         AgentAction::FileRename(payload) => &payload.session_id,
         AgentAction::FileMkdir(payload) => &payload.session_id,
     };
-    let sessions = lock_sessions(runtime)?;
-    sessions
-        .get(session_id)
-        .cloned()
-        .ok_or_else(|| AppError::NotFound(format!("agent session {session_id} not found")))
+    resolve_agent_session(runtime, storage, crypto, session_id)
 }
 
 fn execute_action(
@@ -1168,12 +1214,84 @@ fn connection_for_session(
     crypto: &CryptoService,
     session_id: &str,
 ) -> Result<(AgentSession, ConnectionProfile), AppError> {
-    let session = lock_sessions(runtime)?
-        .get(session_id)
-        .cloned()
-        .ok_or_else(|| AppError::NotFound(format!("agent session {session_id} not found")))?;
+    let session = resolve_agent_session(runtime, storage, crypto, session_id)?;
     let connection = find_connection(storage, crypto, &session.connection_id)?;
     Ok((session, connection))
+}
+
+/// 解析远程工具传入的 sessionId。显式会话优先；不存在时把它作为连接 id 或唯一连接名称解析，
+/// 并建立稳定的隐式逻辑会话。这样 MCP 客户端即使按需工具搜索没有发现 open_session，也能直接完成任务。
+fn resolve_agent_session(
+    runtime: &AgentBridgeRuntime,
+    storage: &StorageService,
+    crypto: &CryptoService,
+    session_id: &str,
+) -> Result<AgentSession, AppError> {
+    let selector = session_id.trim();
+    if selector.is_empty() {
+        return Err(AppError::Validation(
+            "sessionId is required; use a connection id/name from myterminal_list_connections or a session id from myterminal_open_session".into(),
+        ));
+    }
+
+    // 快路径只持有会话锁，不触发磁盘读取；绝大多数连续调用都会从这里返回。
+    if let Some(session) = lock_sessions(runtime)?.get(selector).cloned() {
+        return Ok(session);
+    }
+
+    let connection = find_connection_for_session_selector(storage, crypto, selector)?;
+    let implicit_session = AgentSession {
+        // 连接 id/名称本身作为稳定别名，后续调用无需从上一次文本响应中提取随机 UUID。
+        id: selector.to_string(),
+        connection_id: connection.id.clone(),
+        title: format!("{}@{}", connection.username, connection.host),
+        cwd: "~".into(),
+        opened_at: now_rfc3339(),
+    };
+
+    // 并发请求可能同时解析同一连接；entry 保证最终共用先写入的逻辑会话。
+    let mut sessions = lock_sessions(runtime)?;
+    Ok(sessions
+        .entry(selector.to_string())
+        .or_insert(implicit_session)
+        .clone())
+}
+
+/// 把远程工具的 sessionId 兜底解析为连接 id 或唯一名称；IP/主机名/用户名不参与匹配，
+/// 避免模型猜测含义不稳定的标识。重复名称必须回退到 list_connections 返回的稳定 id。
+fn find_connection_for_session_selector(
+    storage: &StorageService,
+    crypto: &CryptoService,
+    selector: &str,
+) -> Result<ConnectionProfile, AppError> {
+    let connections = storage.load_connections(crypto)?;
+    if let Some(connection) = connections
+        .iter()
+        .find(|connection| connection.id == selector)
+    {
+        return Ok(connection.clone());
+    }
+
+    let matches = connections
+        .into_iter()
+        .filter(|connection| connection.name == selector)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [connection] => Ok(connection.clone()),
+        [] => Err(AppError::NotFound(format!(
+            "agent session or connection {selector} not found; call myterminal_list_connections and use connections[].id"
+        ))),
+        _ => {
+            let ids = matches
+                .iter()
+                .map(|connection| format!("{} ({})", connection.id, connection.host))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(AppError::Validation(format!(
+                "connection name {selector} is ambiguous; use one of these connection ids as sessionId: {ids}"
+            )))
+        }
+    }
 }
 
 pub fn run_agent_command(

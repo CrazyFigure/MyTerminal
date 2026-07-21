@@ -32,6 +32,30 @@ impl StorageService {
     }
 
     pub fn default_data_dir() -> PathBuf {
+        // 1) 显式环境变量优先：外部 MCP 客户端拉起 CLI 时用它精确指向数据目录，安装版也可覆盖。
+        if let Ok(dir) = std::env::var("MYTERMINAL_DATA_DIR") {
+            let trimmed = dir.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed);
+            }
+        }
+
+        // 2) 开发态保持项目根下的 .myterminal-data，避免打断开发机上已有连接与密钥。
+        if cfg!(debug_assertions) {
+            return Self::legacy_cwd_data_dir();
+        }
+
+        // 3) 安装版使用每用户可写的稳定目录（Windows: %APPDATA%\com.myterminal.app）。
+        //    工作目录随快捷方式变化，且 Program Files 通常不可写，必须落到用户数据目录，
+        //    这样 discovery 文件路径确定可写，MCP 配置无论从哪启动都一致。
+        let stable = Self::platform_data_dir();
+        // 首次运行时把旧布局（可执行文件旁 / 当前目录下的 .myterminal-data）迁移过来，保留原目录便于回滚。
+        Self::migrate_legacy_data_if_needed(&stable);
+        stable
+    }
+
+    /// 旧版数据目录：基于当前工作目录（src-tauri 时取父目录）下的 .myterminal-data。
+    fn legacy_cwd_data_dir() -> PathBuf {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let base = if cwd.file_name() == Some(OsStr::new("src-tauri")) {
             cwd.parent().map(Path::to_path_buf).unwrap_or(cwd)
@@ -39,6 +63,60 @@ impl StorageService {
             cwd
         };
         base.join(".myterminal-data")
+    }
+
+    /// 每用户可写的稳定数据目录。Windows 用 %APPDATA%，其它平台回退到 HOME 下的隐藏目录。
+    fn platform_data_dir() -> PathBuf {
+        // identifier 与 tauri.conf.json 的 com.myterminal.app 保持一致，和 Tauri appDataDir 同址。
+        const APP_IDENTIFIER: &str = "com.myterminal.app";
+        if cfg!(windows) {
+            if let Ok(appdata) = std::env::var("APPDATA") {
+                let trimmed = appdata.trim();
+                if !trimmed.is_empty() {
+                    return PathBuf::from(trimmed).join(APP_IDENTIFIER);
+                }
+            }
+        } else if let Ok(home) = std::env::var("HOME") {
+            let trimmed = home.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed)
+                    .join(".local")
+                    .join("share")
+                    .join(APP_IDENTIFIER);
+            }
+        }
+        // 环境变量缺失时兜底到旧布局，至少保证功能可用。
+        Self::legacy_cwd_data_dir()
+    }
+
+    /// 若稳定目录尚不存在而旧目录存在，则整目录复制迁移一次；原目录保留不动，便于回滚。
+    fn migrate_legacy_data_if_needed(stable: &Path) {
+        // 稳定目录已初始化过（存在 master.key）就不再迁移，避免覆盖用户新数据。
+        if stable.join("master.key").exists() {
+            return;
+        }
+        // 候选旧目录：当前工作目录布局，以及可执行文件同级 / 上级目录下的 .myterminal-data。
+        let mut candidates = vec![Self::legacy_cwd_data_dir()];
+        if let Ok(exe) = std::env::current_exe() {
+            for ancestor in exe.ancestors() {
+                candidates.push(ancestor.join(".myterminal-data"));
+            }
+        }
+        for legacy in candidates {
+            if legacy == stable {
+                continue;
+            }
+            // 以 master.key 为准判断是否为有效的旧数据目录。
+            if legacy.join("master.key").exists() {
+                if copy_dir_recursive(&legacy, stable).is_ok() {
+                    return;
+                }
+            }
+        }
+    }
+
+    pub fn data_dir_path(&self) -> &Path {
+        &self.data_dir
     }
 
     pub fn key_path(&self) -> PathBuf {
@@ -154,11 +232,6 @@ impl StorageService {
             return Ok(AppSettings::default());
         };
 
-        let mut agent_bridge = stored.agent_bridge;
-        // AI Bridge 属于本机运行态入口，每次启动都默认关闭，必须由用户在设置页手动重新打开。
-        agent_bridge.enabled = false;
-        agent_bridge.auto_execute = false;
-
         Ok(AppSettings {
             ui_language: stored.ui_language,
             theme_mode: stored.theme_mode,
@@ -188,7 +261,9 @@ impl StorageService {
             connection_groups: stored.connection_groups,
             connection_order: stored.connection_order,
             quick_commands: stored.quick_commands,
-            agent_bridge,
+            // MCP Bridge 开关和自动执行策略都是用户明确保存的本机配置，重启后按原值恢复；
+            // 新安装仍使用 AgentBridgeSettings::default() 的关闭状态，不会未经授权自动暴露 Broker。
+            agent_bridge: stored.agent_bridge,
             webdav: WebDavSettings {
                 base_url: stored.webdav_base_url,
                 username: stored.webdav_username,
@@ -423,6 +498,23 @@ impl StorageService {
         let path = self.editor_cache_path(&document.connection_id, &document.path);
         self.write_json(&path, document)
     }
+}
+
+/// 递归复制目录内容，用于把旧数据目录整体迁移到新的稳定目录。
+/// 目标已存在的同名文件不覆盖，保证迁移幂等且不会破坏用户在新目录里的改动。
+fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let target = to.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else if !target.exists() {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 fn normalize_local_terminal_settings(settings: LocalTerminalSettings) -> LocalTerminalSettings {
