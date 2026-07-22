@@ -777,6 +777,8 @@ fn shell_cwd_sync_command() -> String {
         "__myterminal_is_interactive(){ case $- in *i*) return 0;; *) return 1;; esac; }",
         "__myterminal_install_cwd_wrappers(){ if [ -n \"${BASH_VERSION-}${ZSH_VERSION-}\" ]; then cd(){ builtin cd \"$@\"; __myterminal_status=$?; __myterminal_is_interactive && __myterminal_sync_cwd; return $__myterminal_status; }; pushd(){ builtin pushd \"$@\"; __myterminal_status=$?; __myterminal_is_interactive && __myterminal_sync_cwd; return $__myterminal_status; }; popd(){ builtin popd \"$@\"; __myterminal_status=$?; __myterminal_is_interactive && __myterminal_sync_cwd; return $__myterminal_status; }; fi; }",
         "__myterminal_sync_prompt(){ __myterminal_install_cwd_wrappers; __myterminal_sync_history; __myterminal_sync_prompt_boundary; }",
+        // 让本会话命令在 history 文件中带真实执行时间戳：bash 只在命令入历史时 HISTTIMEFORMAT 非空才记录时间，故须会话级 export；zsh 须开启 EXTENDED_HISTORY。仅作用于当前 shell 进程，不写入用户配置文件，会话结束即失效。
+        "if [ -n \"${BASH_VERSION-}\" ]; then export HISTTIMEFORMAT=\"%F %T \"; elif [ -n \"${ZSH_VERSION-}\" ]; then setopt EXTENDED_HISTORY 2>/dev/null || true; fi",
         "__myterminal_install_cwd_wrappers",
         "if [ -n \"${ZSH_VERSION-}\" ]; then autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd __myterminal_sync_prompt 2>/dev/null || PS1='$(__myterminal_sync_prompt)'\"$PS1\"",
         "elif [ -n \"${BASH_VERSION-}\" ]; then eval '__myterminal_sync_prompt_dispatch(){ local __myterminal_prompt_status=$? __myterminal_prompt_command; for __myterminal_prompt_command in \"${__myterminal_original_prompt_commands[@]-}\"; do [ -n \"$__myterminal_prompt_command\" ] || continue; if [ \"$__myterminal_prompt_status\" -eq 0 ]; then eval \"$__myterminal_prompt_command\"; else (exit \"$__myterminal_prompt_status\") || eval \"$__myterminal_prompt_command\"; fi; done; __myterminal_sync_prompt; return 0; }'; if declare -p PROMPT_COMMAND 2>/dev/null | grep -q '^declare -[^ ]*a[^ ]* '; then eval '__myterminal_original_prompt_commands=(\"${PROMPT_COMMAND[@]}\")'; elif [ -n \"${PROMPT_COMMAND-}\" ] && [ \"$PROMPT_COMMAND\" != \"__myterminal_sync_prompt_dispatch\" ]; then eval '__myterminal_original_prompt_commands=(\"$PROMPT_COMMAND\")'; else eval '__myterminal_original_prompt_commands=()'; fi; unset PROMPT_COMMAND; PROMPT_COMMAND=__myterminal_sync_prompt_dispatch; export PROMPT_COMMAND; export -f __myterminal_sync_cwd __myterminal_sync_prompt_boundary __myterminal_sync_history __myterminal_is_interactive __myterminal_install_cwd_wrappers __myterminal_sync_prompt __myterminal_sync_prompt_dispatch cd pushd popd 2>/dev/null || true",
@@ -3951,7 +3953,8 @@ fn parse_remote_history(connection_id: &str, contents: &str, limit: usize) -> Ve
             id: uuid::Uuid::new_v4().to_string(),
             connection_id: Some(connection_id.to_string()),
             command: command.to_string(),
-            executed_at: timestamp.unwrap_or_else(|| Utc::now().to_rfc3339()),
+            // history 文件无时间戳时留空，前端据此显示占位符；不再回退到读取时刻，避免所有命令显示成同一刷新时间。
+            executed_at: timestamp.unwrap_or_default(),
         });
     }
 

@@ -1847,6 +1847,20 @@ select:disabled {
   color: var(--app-text);
 }
 
+/* 命令文本占满剩余宽度并保留换行，完整显示长命令，不做省略截断。 */
+.history-row strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* 执行时间固定单行右对齐，不随左侧命令长度换行或位移。 */
+.history-row span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .editor-shell {
   overflow: hidden;
   border-radius: 18px;

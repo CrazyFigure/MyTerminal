@@ -6771,8 +6771,9 @@ export default function App() {
                           }}
                           type="button"
                         >
+                          {/* 命令保留换行以完整显示长命令；右侧执行时间恒定单行右对齐，无真实时间时显示占位符。 */}
                           <strong>{item.command}</strong>
-                          <span>{new Date(item.executedAt).toLocaleString()}</span>
+                          <span>{item.executedAt ? new Date(item.executedAt).toLocaleString() : '—'}</span>
                         </button>
                       ))
                     ) : historyLoading ? (
