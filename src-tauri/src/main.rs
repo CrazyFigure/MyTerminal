@@ -135,6 +135,7 @@ fn main() {
             commands::fetch_runtime_overview,
             commands::fetch_runtime_resource_usage,
             commands::fetch_runtime_storage_files,
+            commands::fetch_runtime_connection_list,
             commands::open_tunnel,
             commands::update_tunnel,
             commands::start_tunnel,

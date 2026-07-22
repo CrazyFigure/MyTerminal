@@ -745,6 +745,32 @@ pub struct RuntimeStorageFiles {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+// 连接数展开区的单条 ESTABLISHED 连接，is_ssh 标记本地端口命中最终 sshd 端口的管理连接。
+pub struct RuntimeConnectionItem {
+    #[serde(default)]
+    pub local: String,
+    #[serde(default)]
+    pub remote: String,
+    #[serde(default)]
+    pub is_ssh: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+// 连接数展开区的采集结果；total 为远端 ESTABLISHED 总数，超出单次输出上限时前端用它提示剩余条数。
+pub struct RuntimeConnectionList {
+    #[serde(default)]
+    pub items: Vec<RuntimeConnectionItem>,
+    #[serde(default)]
+    pub total: usize,
+    #[serde(default)]
+    pub captured_at: String,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct EditorDocument {
     pub connection_id: String,
     pub path: String,

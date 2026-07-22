@@ -77,7 +77,7 @@ import {
 // 等高频更新触发无关组件（尤其是未打开的弹窗）重渲染。
 import { useShallow } from 'zustand/react/shallow';
 import { UpdateModal, type UpdateDownloadProgress } from './UpdateModal';
-import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, RemoteFileEntry, RuntimeResourceMetric, RuntimeResourceTarget, RuntimeResourceUsage, RuntimeResourceSource, RuntimeStorageFiles, SshJumpHost, TerminalSession, TunnelRecord, UiLanguage, UpdateCheckResult } from './types';
+import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, RemoteFileEntry, RuntimeConnectionList, RuntimeResourceMetric, RuntimeResourceTarget, RuntimeResourceUsage, RuntimeResourceSource, RuntimeStorageFiles, SshJumpHost, TerminalSession, TunnelRecord, UiLanguage, UpdateCheckResult } from './types';
 import { CustomSelect } from './CustomSelect';
 
 const MonacoEditor = lazy(() => import('./MonacoEditor'));
@@ -4070,6 +4070,11 @@ export default function App() {
   const [runtimeStorageFiles, setRuntimeStorageFiles] = useState<RuntimeStorageFiles | null>(null);
   const [runtimeStorageFilesLoading, setRuntimeStorageFilesLoading] = useState(false);
   const [runtimeStorageFilesError, setRuntimeStorageFilesError] = useState('');
+  // 连接数展开态与明细数据独立保存；明细只在 connectionsExpanded 为 true 时触发远端采集。
+  const [connectionsExpanded, setConnectionsExpanded] = useState(false);
+  const [runtimeConnections, setRuntimeConnections] = useState<RuntimeConnectionList | null>(null);
+  const [runtimeConnectionsLoading, setRuntimeConnectionsLoading] = useState(false);
+  const [runtimeConnectionsError, setRuntimeConnectionsError] = useState('');
   const [bottomDockCollapsed, setBottomDockCollapsed] = useState(false);
   const [transferProgressItems, setTransferProgressItems] = useState<TransferProgressItem[]>([]);
   const [agentBridgeRequests, setAgentBridgeRequests] = useState<AgentBridgeRequest[]>([]);
@@ -4087,6 +4092,9 @@ export default function App() {
   const runtimeStorageFilesRefreshSeqRef = useRef(0);
   // 大文件扫描可能超过刷新间隔；同一连接同一展开态下只允许一个扫描请求在路上。
   const runtimeStorageFilesRefreshInFlightRef = useRef(false);
+  const runtimeConnectionsRefreshSeqRef = useRef(0);
+  // 连接明细轮询同样防并发重入，收起或切换连接时用序号丢弃过期响应。
+  const runtimeConnectionsRefreshInFlightRef = useRef(false);
   const sessionTabDragStateRef = useRef<SessionTabDragState>(null);
   const sessionTabDropTargetRef = useRef<SessionTabDropTarget>(null);
   const sessionTabListRef = useRef<HTMLDivElement | null>(null);
@@ -4674,6 +4682,57 @@ export default function App() {
     };
   }, [activeRemoteConnectionId, refreshRuntimeStorageFilesOnce, settings.runtimeStorageRefreshIntervalSec, storageFilesExpanded]);
 
+  // 连接明细按展开态触发；读取 /proc 网络表开销小，但仍只在本行展开时才请求，收起即停止。
+  const refreshRuntimeConnectionsOnce = useCallback(() => {
+    if (!activeRemoteConnectionId || !connectionsExpanded || runtimeConnectionsRefreshInFlightRef.current) {
+      return;
+    }
+
+    const requestSeq = ++runtimeConnectionsRefreshSeqRef.current;
+    runtimeConnectionsRefreshInFlightRef.current = true;
+    setRuntimeConnectionsLoading(true);
+    setRuntimeConnectionsError('');
+    void backend.fetchRuntimeConnectionList(activeRemoteConnectionId).then((list) => {
+      if (requestSeq !== runtimeConnectionsRefreshSeqRef.current) {
+        return;
+      }
+      setRuntimeConnections(list);
+      setRuntimeConnectionsError(list.error ?? '');
+    }).catch((error) => {
+      if (requestSeq !== runtimeConnectionsRefreshSeqRef.current) {
+        return;
+      }
+      // 刷新失败时保留旧明细，避免一次网络抖动清空已展示的连接列表。
+      setRuntimeConnectionsError(error instanceof Error ? error.message : String(error));
+    }).finally(() => {
+      if (requestSeq === runtimeConnectionsRefreshSeqRef.current) {
+        runtimeConnectionsRefreshInFlightRef.current = false;
+        setRuntimeConnectionsLoading(false);
+      }
+    });
+  }, [activeRemoteConnectionId, connectionsExpanded]);
+
+  useEffect(() => {
+    if (!connectionsExpanded || !activeRemoteConnectionId) {
+      runtimeConnectionsRefreshSeqRef.current += 1;
+      runtimeConnectionsRefreshInFlightRef.current = false;
+      setRuntimeConnectionsLoading(false);
+      return undefined;
+    }
+
+    // 展开时立即拉取一次，随后跟随运行状态主刷新频率轮询（最低 5 秒），与连接数主行保持同节奏。
+    refreshRuntimeConnectionsOnce();
+    const timer = window.setInterval(
+      refreshRuntimeConnectionsOnce,
+      Math.max(5, settings.runtimeRefreshIntervalSec) * 1000,
+    );
+    return () => {
+      runtimeConnectionsRefreshSeqRef.current += 1;
+      runtimeConnectionsRefreshInFlightRef.current = false;
+      window.clearInterval(timer);
+    };
+  }, [activeRemoteConnectionId, connectionsExpanded, refreshRuntimeConnectionsOnce, settings.runtimeRefreshIntervalSec]);
+
   // 活动远端连接变化时（关闭 SSH tab、切到其它连接或断开），收起运行状态所有下拉并清空已暂存的明细。
   // 否则下拉会停留在上一个连接的内存/存储数据上：无连接时轮询已停止无法刷新，看起来像卡死；
   // 切到其它连接时又会短暂显示旧连接数据，语义错误。收起后用户重新展开即按新连接重新拉取。
@@ -4681,10 +4740,13 @@ export default function App() {
     setCpuCoresExpanded(false);
     setMemoryResourcesExpanded(false);
     setStorageFilesExpanded(false);
+    setConnectionsExpanded(false);
     setRuntimeResourceUsage(null);
     setRuntimeResourceError('');
     setRuntimeStorageFiles(null);
     setRuntimeStorageFilesError('');
+    setRuntimeConnections(null);
+    setRuntimeConnectionsError('');
   }, [activeRemoteConnectionId]);
 
   useEffect(() => {
@@ -5951,28 +6013,34 @@ export default function App() {
               </div>
             ) : null}
             {runtimeItems.map(({ id, icon: Icon, label, percent, value }) => {
-              // CPU、内存和存储主行承担各自展开入口；行内不再放箭头，保持左侧状态区横向空间稳定。
+              // CPU、内存、存储和连接数主行承担各自展开入口；行内不再放箭头，保持左侧状态区横向空间稳定。
               const isCpuMetric = id === 'cpu';
               const isMemoryMetric = id === 'memory';
               const isStorageMetric = id === 'storage';
+              const isConnectionsMetric = id === 'connections';
               const cpuCoreCount = runtimeOverview?.cpuCores?.length ?? 0;
               const isCpuExpandable = isCpuMetric && cpuCoreCount > 0;
               const isMemoryExpandable = isMemoryMetric && Boolean(activeRemoteConnectionId);
               const isStorageExpandable = isStorageMetric && Boolean(activeRemoteConnectionId);
-              const isExpandableMetric = isCpuExpandable || isMemoryExpandable || isStorageExpandable;
+              const isConnectionsExpandable = isConnectionsMetric && Boolean(activeRemoteConnectionId);
+              const isExpandableMetric = isCpuExpandable || isMemoryExpandable || isStorageExpandable || isConnectionsExpandable;
               const expanded = isCpuMetric
                 ? cpuCoresExpanded
                 : isMemoryMetric
                   ? memoryResourcesExpanded
                   : isStorageMetric
                     ? storageFilesExpanded
-                    : undefined;
+                    : isConnectionsMetric
+                      ? connectionsExpanded
+                      : undefined;
               const controlsId = isCpuExpandable
                 ? 'runtime-cpu-core-list'
                 : isMemoryExpandable
                   ? 'runtime-memory-resource-list'
                   : isStorageExpandable
                     ? 'runtime-storage-file-list'
+                    : isConnectionsExpandable
+                      ? 'runtime-connection-list'
                   : undefined;
               return (
                 <div key={id} className="runtime-row-group">
@@ -5990,6 +6058,9 @@ export default function App() {
                       }
                       if (isStorageExpandable) {
                         setStorageFilesExpanded((current) => !current);
+                      }
+                      if (isConnectionsExpandable) {
+                        setConnectionsExpanded((current) => !current);
                       }
                     }}
                     type="button"
@@ -6130,6 +6201,53 @@ export default function App() {
                       ) : runtimeStorageFilesError || !runtimeStorageFilesLoading ? (
                         <div className="runtime-resource-empty">
                           {runtimeStorageFilesError || t('runtimeStorageFilesEmpty')}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {isConnectionsMetric && connectionsExpanded ? (
+                    <div className="runtime-connection-panel" id="runtime-connection-list">
+                      {/* 连接表读自远端主机的内核，列里的“本机”是那台主机而非用户电脑；不写清这行 127.0.0.1 极易被误读成自己的机器 */}
+                      <div className="runtime-connection-note">
+                        {t('runtimeConnectionsPerspective', { host: runtimeHostLabel })}
+                      </div>
+                      <div className="runtime-connection-header">
+                        <span>#</span>
+                        <span>{t('runtimeConnectionLocal')}</span>
+                        <span>{t('runtimeConnectionRemote')}</span>
+                      </div>
+
+                      {runtimeConnections?.items.length ? (
+                        <div className="runtime-connection-table">
+                          {runtimeConnections.items.map((item, index) => (
+                            <div
+                              className="runtime-connection-row"
+                              key={`${item.local}-${item.remote}-${index}`}
+                              title={`${item.local} ↔ ${item.remote}`}
+                            >
+                              <span className="runtime-connection-rank">{index + 1}</span>
+                              <span className="runtime-connection-addr">
+                                {/* SSH 管理连接带标签置顶，与主行 TCP/SSH 计数口径一致 */}
+                                {item.isSsh ? <em className="runtime-connection-ssh-tag">SSH</em> : null}
+                                {item.local}
+                              </span>
+                              <span className="runtime-connection-addr">{item.remote}</span>
+                            </div>
+                          ))}
+                          {/* 远端连接数超出单次采集上限时提示剩余条数，避免列表被误读为全量 */}
+                          {runtimeConnections.total > runtimeConnections.items.length ? (
+                            <div className="runtime-resource-empty">
+                              {t('runtimeConnectionsOmitted', { count: runtimeConnections.total - runtimeConnections.items.length })}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : runtimeConnectionsLoading ? (
+                        <div className="runtime-resource-empty">
+                          {t('panelRefreshing')}
+                        </div>
+                      ) : runtimeConnectionsError || !runtimeConnectionsLoading ? (
+                        <div className="runtime-resource-empty">
+                          {runtimeConnectionsError || t('runtimeConnectionsEmpty')}
                         </div>
                       ) : null}
                     </div>
