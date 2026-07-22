@@ -241,6 +241,21 @@ export interface RuntimeStorageFiles {
   error?: string;
 }
 
+// 连接明细展开区的单条 ESTABLISHED 连接；isSsh 标记本地端口命中最终 sshd 端口的管理连接。
+export interface RuntimeConnectionItem {
+  local: string;
+  remote: string;
+  isSsh: boolean;
+}
+
+// 连接明细的后端响应；total 为远端 ESTABLISHED 总数，超出单次输出上限时用它提示剩余条数。
+export interface RuntimeConnectionList {
+  items: RuntimeConnectionItem[];
+  total: number;
+  capturedAt: string;
+  error?: string;
+}
+
 export interface EditorDocument {
   connectionId: string;
   path: string;

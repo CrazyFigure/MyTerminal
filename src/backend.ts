@@ -12,6 +12,7 @@ import type {
   LocalTerminalProfile,
   LocalTerminalSettings,
   RemoteFileEntry,
+  RuntimeConnectionList,
   RuntimeOverview,
   RuntimeResourceUsage,
   RuntimeResourceUsageRequest,
@@ -392,6 +393,18 @@ const mockRuntimeStorageFiles: RuntimeStorageFiles = {
   ],
 };
 
+// 本地预览时模拟远端连接明细，SSH 管理连接置顶并带标记，便于非 Tauri 环境查看展开效果。
+const mockRuntimeConnectionList: RuntimeConnectionList = {
+  capturedAt: nowIso(),
+  total: 4,
+  items: [
+    { local: '192.168.12.28:22', remote: '192.168.12.10:54231', isSsh: true },
+    { local: '192.168.12.28:5432', remote: '192.168.12.10:48110', isSsh: false },
+    { local: '192.168.12.28:43210', remote: '10.0.0.9:3306', isSsh: false },
+    { local: '[::1]:8080', remote: '[::1]:52344', isSsh: false },
+  ],
+};
+
 const mockTunnels: TunnelRecord[] = [
   {
     id: 'tunnel-demo-1',
@@ -590,6 +603,12 @@ export const backend = {
   fetchRuntimeStorageFiles: (connectionId: string) =>
     call<RuntimeStorageFiles>('fetch_runtime_storage_files', { connectionId }, {
       ...mockRuntimeStorageFiles,
+      capturedAt: nowIso(),
+    }),
+  // 连接明细同样由连接数行展开态驱动，收起时不会读取远端网络表。
+  fetchRuntimeConnectionList: (connectionId: string) =>
+    call<RuntimeConnectionList>('fetch_runtime_connection_list', { connectionId }, {
+      ...mockRuntimeConnectionList,
       capturedAt: nowIso(),
     }),
   listTunnels: () => call<TunnelRecord[]>('list_tunnels', undefined, mockTunnels),

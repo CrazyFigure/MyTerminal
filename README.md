@@ -64,6 +64,7 @@ MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP 
 ### Runtime and Tunnels
 
 - **Runtime overview** - Fetch remote OS, CPU, memory, disk, host IP, and uptime information for the active SSH profile.
+- **Connection details** - Expand the connections metric to inspect local/peer addresses and ports of established remote connections, with SSH management connections pinned and tagged.
 - **Local port forwarding** - Create, edit, start, and stop SSH local forwarding rules with custom bind addresses and target hosts.
 - **Tunnel lifecycle management** - Running tunnel records are tracked separately from terminal sessions so they can be stopped cleanly.
 

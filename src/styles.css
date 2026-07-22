@@ -721,6 +721,95 @@ select:disabled {
   text-align: right;
 }
 
+/* 连接明细展开区：两列地址需要等宽截断，整体沿用存储明细的紧凑排版与可选中复制行为。 */
+.runtime-connection-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0 5px 14px;
+  font-size: 0.68rem;
+  color: var(--app-subtle-text);
+}
+
+/* 视角说明：连接表是远端主机内核的视图，“本机”指那台主机而非用户电脑，必须点明否则 127.0.0.1 会被误读。 */
+.runtime-connection-note {
+  padding: 0 3px;
+  color: var(--app-muted);
+  font-size: 0.62rem;
+  line-height: 1.45;
+}
+
+.runtime-connection-header,
+.runtime-connection-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+}
+
+.runtime-connection-header {
+  padding: 0 3px;
+  color: var(--app-muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.runtime-connection-table {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.runtime-connection-row {
+  min-height: 26px;
+  padding: 3px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.08);
+  cursor: text;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.runtime-connection-row * {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.runtime-connection-rank {
+  color: var(--app-muted);
+  font-weight: 700;
+  text-align: right;
+}
+
+.runtime-connection-addr {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-connection-header > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* SSH 标签内联在本地地址前，用主题强调色小圆角块与管理连接形成一眼可辨的区分。 */
+.runtime-connection-ssh-tag {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(56, 189, 248, 0.16);
+  color: #38bdf8;
+  font-size: 0.6rem;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1.4;
+  vertical-align: baseline;
+}
+
 .metric-tone-neutral .metric-value {
   position: static;
   line-height: normal;

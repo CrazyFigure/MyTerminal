@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     env, fs,
     io::{ErrorKind, Read, Write},
-    net::{IpAddr, Shutdown, TcpListener, TcpStream, ToSocketAddrs},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, TcpListener, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -30,7 +30,8 @@ use crate::{
     models::{
         AppSettings, BootstrapState, ConnectionProfile, EditorDocument, HistoryEntry,
         HistoryEntryInput, LocalConfigBundle, LocalTerminalProfile, LocalTerminalSettings,
-        RemoteFileEntry, RuntimeCpuCore, RuntimeOverview, SshJumpHost, SshProxyConfig,
+        RemoteFileEntry, RuntimeConnectionItem, RuntimeConnectionList, RuntimeCpuCore,
+        RuntimeOverview, SshJumpHost, SshProxyConfig,
         RuntimeResourceUsage, RuntimeResourceUsageItem, RuntimeResourceUsageRequest,
         RuntimeStorageFileItem, RuntimeStorageFiles,
         TerminalOutputChunk, TerminalSession, TunnelOpenRequest, TunnelRecord, TunnelUpdateRequest,
@@ -1230,6 +1231,52 @@ mod shell_output_filter_tests {
         assert!(command.contains("SSH_CONNECTION"));
         assert!(command.contains("SSH_CLIENT"));
         assert!(command.contains("[ \"$connection_ssh\" = \"0\" ] && connection_ssh=\"\""));
+    }
+
+    #[test]
+    fn decodes_proc_net_hex_addresses_to_readable_ip_port() {
+        // IPv4 按主机字节序输出，0100007F 翻回网络序即 127.0.0.1；端口 0016 为大端 22。
+        assert_eq!(
+            decode_proc_net_address("0100007F:0016"),
+            Some("127.0.0.1:22".to_string())
+        );
+        // IPv6 回环按 4 个 32 位字输出，只有最后一字 01000000 携带真实字节 00000001。
+        assert_eq!(
+            decode_proc_net_address("00000000000000000000000001000000:0016"),
+            Some("[::1]:22".to_string())
+        );
+        assert_eq!(decode_proc_net_address("GGGG:0016"), None);
+    }
+
+    #[test]
+    fn parses_connection_list_marks_ssh_and_keeps_total() {
+        let contents = "conn hex 0100007F:0016 0200007F:D431\n\
+                        conn hex 0100A8C0:1F90 0201A8C0:C350\n\
+                        conn plain 10.0.0.5:43210 10.0.0.9:3306\n\
+                        ssh_port=22\n\
+                        total=3";
+        let list = parse_connection_list(contents);
+        // SSH 管理连接必须置顶，方便展开后第一眼定位当前会话。
+        assert_eq!(list.total, 3);
+        assert_eq!(list.items.len(), 3);
+        assert_eq!(list.items[0].local, "127.0.0.1:22");
+        assert_eq!(list.items[0].remote, "127.0.0.2:54321");
+        assert!(list.items[0].is_ssh);
+        // 非 SSH 连接按本地地址字典序排列。
+        assert_eq!(list.items[1].local, "10.0.0.5:43210");
+        assert!(!list.items[1].is_ssh);
+        assert_eq!(list.items[2].local, "192.168.0.1:8080");
+        assert_eq!(list.items[2].remote, "192.168.1.2:50000");
+        assert!(!list.items[2].is_ssh);
+    }
+
+    #[test]
+    fn connection_list_command_caps_output_and_detects_ssh_port() {
+        let command = connection_list_command();
+        // 输出上限与 sshd 端口识别是明细命令的两条硬性约束，测试防止后续修改意外破坏。
+        assert!(command.contains("limit=200"));
+        assert!(command.contains("SSH_CONNECTION"));
+        assert!(command.contains("conn hex %s %s"));
     }
 
     #[test]
@@ -4119,6 +4166,166 @@ cat /proc/uptime 2>/dev/null || true
 '"#
 }
 
+/// 构造连接明细采集命令。与运行状态概览不同，明细只在连接数行展开时按需执行，
+/// 因此这里可以输出完整的 ESTABLISHED 地址对；输出行数受 limit 限制，避免连接数
+/// 上万的主机把展开刷新变成大流量传输。sshd 端口识别逻辑与概览保持一致：必须取
+/// 最终 sshd 注入的会话环境，跳板机和端口映射下客户端配置端口并不可靠。
+fn connection_list_command() -> &'static str {
+    r#"sh -lc '
+limit=200
+ssh_port=""
+if [ -n "${SSH_CONNECTION:-}" ]; then
+  set -- $SSH_CONNECTION
+  [ "$#" -ge 4 ] && ssh_port="$4"
+fi
+if [ -z "$ssh_port" ] && [ -n "${SSH_CLIENT:-}" ]; then
+  set -- $SSH_CLIENT
+  [ "$#" -ge 3 ] && ssh_port="$3"
+fi
+case "$ssh_port" in
+  ""|*[!0-9]*) ssh_port="" ;;
+esac
+
+if [ -r /proc/net/tcp ] || [ -r /proc/net/tcp6 ]; then
+  total=0
+  shown=0
+  for file in /proc/net/tcp /proc/net/tcp6; do
+    [ -r "$file" ] || continue
+    while read sl local_addr remote_addr state rest; do
+      [ "$sl" = "sl" ] && continue
+      [ "$state" = "01" ] || continue
+      total=$((total + 1))
+      if [ "$shown" -lt "$limit" ]; then
+        printf "conn hex %s %s\n" "$local_addr" "$remote_addr"
+        shown=$((shown + 1))
+      fi
+    done < "$file"
+  done
+  [ -n "$ssh_port" ] && printf "ssh_port=%s\n" "$ssh_port"
+  printf "total=%s\n" "$total"
+elif command -v ss >/dev/null 2>&1; then
+  [ -n "$ssh_port" ] && printf "ssh_port=%s\n" "$ssh_port"
+  ss -Htan state established 2>/dev/null | head -n "$limit" | while read recq sendq local_addr remote_addr rest; do
+    [ -n "$local_addr" ] && printf "conn plain %s %s\n" "$local_addr" "$remote_addr"
+  done || true
+  printf "total=%s\n" "$(ss -Htan state established 2>/dev/null | wc -l | tr -d " ")"
+elif command -v netstat >/dev/null 2>&1; then
+  [ -n "$ssh_port" ] && printf "ssh_port=%s\n" "$ssh_port"
+  netstat -tan 2>/dev/null | grep "ESTABLISHED" | head -n "$limit" | while read proto recq sendq local_addr remote_addr rest; do
+    [ -n "$local_addr" ] && printf "conn plain %s %s\n" "$local_addr" "$remote_addr"
+  done || true
+  printf "total=%s\n" "$(netstat -tan 2>/dev/null | grep -c "ESTABLISHED" 2>/dev/null || true)"
+fi
+'"#
+}
+
+/// 解码 /proc/net/tcp{,6} 的十六进制地址。IP 按内核 %08X 输出规则逐字翻转回网络序
+/// （IPv4 一组、IPv6 四组），端口始终是大端十六进制；输出统一为 ip:port 文本。
+fn decode_proc_net_address(value: &str) -> Option<String> {
+    let (ip_hex, port_hex) = value.rsplit_once(':')?;
+    let port = u16::from_str_radix(port_hex, 16).ok()?;
+
+    let ip = match ip_hex.len() {
+        // /proc/net/tcp 的 IPv4 是主机字节序，swap_bytes 翻回网络序即为真实地址。
+        8 => {
+            let raw = u32::from_str_radix(ip_hex, 16).ok()?;
+            Ipv4Addr::from(raw.swap_bytes()).to_string()
+        }
+        // /proc/net/tcp6 按 4 个 32 位字输出，每个字都是主机字节序，需要逐字翻转；
+        // 展示加方括号，否则 ::1:22 这类地址无法区分主机部分和端口。
+        32 => {
+            let mut octets = [0u8; 16];
+            for group in 0..4 {
+                let word = u32::from_str_radix(ip_hex.get(group * 8..group * 8 + 8)?, 16).ok()?;
+                octets[group * 4..group * 4 + 4].copy_from_slice(&word.swap_bytes().to_be_bytes());
+            }
+            format!("[{}]", Ipv6Addr::from(octets))
+        }
+        _ => return None,
+    };
+
+    Some(format!("{ip}:{port}"))
+}
+
+/// 判断地址文本的端口是否命中；兼容 ss/netstat 的 ip:port、旧式 ip.port 以及 [::1]:port 写法。
+fn address_matches_port(address: &str, port: u16) -> bool {
+    address.ends_with(&format!(":{port}")) || address.ends_with(&format!(".{port}"))
+}
+
+fn parse_connection_list(contents: &str) -> RuntimeConnectionList {
+    // 先收集已解码的地址对；ssh_port/total 元信息在远端输出里位于 conn 行之后，
+    // 必须读完所有行才能回填 is_ssh，不能在单次遍历里边读边标记。
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut total = 0usize;
+    let mut ssh_port: Option<u16> = None;
+
+    for line in contents.lines() {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix("total=") {
+            total = value.parse().unwrap_or(0);
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("ssh_port=") {
+            ssh_port = value.parse().ok();
+            continue;
+        }
+
+        let Some(entry) = line.strip_prefix("conn ") else {
+            continue;
+        };
+        let mut parts = entry.split_whitespace();
+        let (Some(encoding), Some(local_raw), Some(remote_raw)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+
+        // hex 来自 /proc/net/tcp，需要解码；plain 来自 ss/netstat，地址已是可读文本。
+        let pair = match encoding {
+            "hex" => {
+                let (Some(local), Some(remote)) = (
+                    decode_proc_net_address(local_raw),
+                    decode_proc_net_address(remote_raw),
+                ) else {
+                    continue;
+                };
+                (local, remote)
+            }
+            "plain" => (local_raw.to_string(), remote_raw.to_string()),
+            _ => continue,
+        };
+        pairs.push(pair);
+    }
+
+    let mut items: Vec<RuntimeConnectionItem> = pairs
+        .into_iter()
+        .map(|(local, remote)| {
+            let is_ssh = ssh_port.is_some_and(|port| address_matches_port(&local, port));
+            RuntimeConnectionItem {
+                local,
+                remote,
+                is_ssh,
+            }
+        })
+        .collect();
+
+    // SSH 管理连接置顶，其余按本地地址排序，让展开列表在多次刷新间保持稳定顺序。
+    items.sort_by(|left, right| {
+        right
+            .is_ssh
+            .cmp(&left.is_ssh)
+            .then_with(|| left.local.cmp(&right.local))
+            .then_with(|| left.remote.cmp(&right.remote))
+    });
+
+    RuntimeConnectionList {
+        items,
+        total,
+        captured_at: Utc::now().to_rfc3339(),
+        error: None,
+    }
+}
+
 fn parse_cpu_sample(line: &str) -> Option<(u64, u64)> {
     let values = line
         .split_whitespace()
@@ -4818,6 +5025,30 @@ fn query_runtime_storage_files_cached(
 ) -> Result<RuntimeStorageFiles, AppError> {
     with_auxiliary_session(state, connection, |auxiliary| {
         query_runtime_storage_files_with_session(&auxiliary.session)
+    })
+}
+
+fn query_runtime_connection_list_with_session(
+    session: &Session,
+) -> Result<RuntimeConnectionList, AppError> {
+    match exec_remote_command(session, connection_list_command()) {
+        Ok(contents) => Ok(parse_connection_list(&contents)),
+        // 与存储明细一致：采集失败把错误带回前端占位区展示，保留旧列表，避免一次抖动清空界面。
+        Err(error) => Ok(RuntimeConnectionList {
+            captured_at: Utc::now().to_rfc3339(),
+            error: Some(error.to_string()),
+            ..Default::default()
+        }),
+    }
+}
+
+// 连接明细只在连接数行展开时按需执行，复用辅助会话，避免占用主终端会话或每次常规刷新都读网络表。
+fn query_runtime_connection_list_cached(
+    state: &AppState,
+    connection: &ConnectionProfile,
+) -> Result<RuntimeConnectionList, AppError> {
+    with_auxiliary_session(state, connection, |auxiliary| {
+        query_runtime_connection_list_with_session(&auxiliary.session)
     })
 }
 
@@ -6434,6 +6665,16 @@ pub fn fetch_runtime_storage_files(
 ) -> Result<RuntimeStorageFiles, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
     Ok(query_runtime_storage_files_cached(&state, &connection)?)
+}
+
+// 连接明细只在连接数行展开后由前端按需调用，复用辅助会话读取网络表，不占用主终端会话。
+#[tauri::command(async)]
+pub fn fetch_runtime_connection_list(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<RuntimeConnectionList, String> {
+    let connection = ensure_connection_exists(&state, &connection_id)?;
+    Ok(query_runtime_connection_list_cached(&state, &connection)?)
 }
 
 #[tauri::command]
