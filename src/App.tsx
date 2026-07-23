@@ -2866,26 +2866,20 @@ function SettingsModal({
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
   const [systemFontsLoaded, setSystemFontsLoaded] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
+  // 懒加载系统字体列表，仅在用户首次点击字体下拉时触发，避免打开设置时的卡顿。
+  const loadSystemFontsOnce = () => {
+    if (systemFontsLoaded) return;
     backend
       .listSystemFonts()
       .then((fonts) => {
-        if (!cancelled) {
-          setSystemFonts(fonts);
-          setSystemFontsLoaded(true);
-        }
+        setSystemFonts(fonts);
+        setSystemFontsLoaded(true);
       })
       .catch(() => {
         // 枚举失败时只保留前端实际测量为可用的字体，不能把整份推荐列表重新当作已安装字体。
-        if (!cancelled) {
-          setSystemFontsLoaded(true);
-        }
+        setSystemFontsLoaded(true);
       });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  };
 
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(draftSettings.uiLanguage ?? settings.uiLanguage, key, replacements);
@@ -3376,6 +3370,7 @@ function SettingsModal({
                         emptyText={t('fontSearchEmpty')}
                         value={selectedLatinFontFamily}
                         onChange={(val) => updateDraftSettings((current) => ({ ...current, shellLatinFontFamily: val }))}
+                        onOpen={loadSystemFontsOnce}
                         options={latinOptions.map((fontFamily) => ({
                           value: fontFamily,
                           label: fontFamily,
@@ -3391,6 +3386,7 @@ function SettingsModal({
                         emptyText={t('fontSearchEmpty')}
                         value={selectedCjkFontFamily}
                         onChange={(val) => updateDraftSettings((current) => ({ ...current, shellCjkFontFamily: val }))}
+                        onOpen={loadSystemFontsOnce}
                         options={cjkOptions.map((fontFamily) => ({
                           value: fontFamily,
                           label: fontFamily,

@@ -20,6 +20,8 @@ export interface CustomSelectProps {
   searchPlaceholder?: string;
   emptyText?: string;
   "aria-label"?: string;
+  // 下拉菜单打开时的回调，用于懒加载选项数据
+  onOpen?: () => void;
 }
 
 // 模糊匹配优先级依次为完全匹配、前缀、连续包含和字符子序列；分词后每一项都必须命中。
@@ -75,6 +77,7 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
   searchPlaceholder = 'Search',
   emptyText = 'No matching options',
   "aria-label": ariaLabel,
+  onOpen,
 }) => {
   // 控制下拉菜单的开启/关闭状态
   const [isOpen, setIsOpen] = useState(false);
@@ -193,7 +196,7 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
   // 查找到当前选中的选项，若无则默认选中第一项
   const selectedOption = options.find((opt) => opt.value === value) || options[0];
 
-  // 切换下拉菜单打开状态
+  // 切换下拉菜单打开状态，打开时触发 onOpen 回调以支持懒加载
   const handleToggle = () => {
     if (disabled) return;
     if (isOpen) {
@@ -202,6 +205,7 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
       return;
     }
     setSearchQuery('');
+    onOpen?.();
     setIsOpen(true);
   };
 
