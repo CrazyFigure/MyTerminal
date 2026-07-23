@@ -2351,7 +2351,7 @@ dependencies = [
 
 [[package]]
 name = "myterminal"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
