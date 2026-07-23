@@ -6,6 +6,16 @@ use std::sync::atomic::Ordering;
 use myterminal::{agent_bridge, commands, state::AppState};
 use tauri::{Manager, WindowEvent};
 
+// 单实例插件在第二个进程启动时聚焦已有主窗口，避免重复实例；隐藏到托盘后也能被重新拉起。
+fn focus_existing_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        // 可能此前被最小化或隐藏到托盘，需要先还原、显示再抢占前台焦点。
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 // 判断是否使用软件渲染兼容模式（关闭 WebView2 硬件加速）。
 fn should_use_software_rendering(app_state: &AppState) -> bool {
     // --software-rendering 是语义准确的主参数；继续兼容旧 --low-memory，避免已有脚本和快捷方式失效。
@@ -50,6 +60,10 @@ fn main() {
     }
 
     tauri::Builder::default()
+        // single-instance 必须第一个注册：第二个进程启动时其回调触发并聚焦已有窗口，随后新进程自行退出。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            focus_existing_main_window(app);
+        }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
