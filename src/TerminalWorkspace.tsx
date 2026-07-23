@@ -305,6 +305,19 @@ const measureTerminalBufferLineContentColumns = (line: IBufferLine, maxColumns: 
   return lastContentColumn;
 };
 
+// 在指定行内查找 Claude 自绘的反色光标块，返回其起始列号；未找到时返回 -1。
+const findTerminalInverseCursorColumn = (line: IBufferLine, maxColumns: number): number => {
+  const lineColumns = Math.min(line.length, Math.max(0, maxColumns));
+  for (let column = 0; column < lineColumns; column += 1) {
+    const cell = line.getCell(column);
+    if (!cell) break;
+    if (cell.isInverse() && cell.getWidth() > 0) {
+      return column;
+    }
+  }
+  return -1;
+};
+
 const normalizeTerminalMatchSelection = (selection: string) => {
   const normalized = selection.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   if (!normalized || !normalized.trim() || normalized.includes('\n')) {
@@ -1421,16 +1434,32 @@ export function TerminalWorkspace({
       return undefined;
     }
 
-    // 长输入按 xterm 的软换行标记走到最后一个物理行，候选窗必须跟随当前词而不是停在首行末尾。
-    let promptRow = promptStartRow;
-    while (promptRow < lastVisibleRow && buffer.getLine(promptRow + 1)?.isWrapped) {
-      promptRow += 1;
+    // 输入行的最后一个软换行物理行；无反色光标时退回这一行的行末内容列。
+    let promptEndRow = promptStartRow;
+    while (promptEndRow < lastVisibleRow && buffer.getLine(promptEndRow + 1)?.isWrapped) {
+      promptEndRow += 1;
     }
-    const promptLine = buffer.getLine(promptRow);
-    const promptColumn = Math.min(
-      terminal.cols - 1,
-      Math.max(0, promptLine ? measureTerminalBufferLineContentColumns(promptLine, terminal.cols) : 0),
-    );
+
+    // 优先在整条软换行组内定位 Claude 自绘的反色光标块：光标移到行中间/靠上的续行时，
+    // 候选窗才能跟随真实光标列，而不是笼统停在最后一行的行末。
+    let promptRow = promptEndRow;
+    let promptColumn = -1;
+    for (let row = promptStartRow; row <= promptEndRow; row += 1) {
+      const line = buffer.getLine(row);
+      const inverseCursorColumn = line ? findTerminalInverseCursorColumn(line, terminal.cols) : -1;
+      if (inverseCursorColumn >= 0) {
+        promptRow = row;
+        promptColumn = inverseCursorColumn;
+        break;
+      }
+    }
+
+    // 未找到反色光标（例如光标停在行尾空白处）时，退回最后一物理行的行末内容列。
+    if (promptColumn < 0) {
+      const promptEndLine = buffer.getLine(promptEndRow);
+      promptColumn = promptEndLine ? measureTerminalBufferLineContentColumns(promptEndLine, terminal.cols) : 0;
+    }
+    promptColumn = Math.min(terminal.cols - 1, Math.max(0, promptColumn));
 
     const screenRect = screen.getBoundingClientRect();
     const containerRect = container.getBoundingClientRect();
