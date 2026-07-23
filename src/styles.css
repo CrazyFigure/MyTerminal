@@ -4735,7 +4735,7 @@ select:disabled {
 
 .update-modal-notes-content {
   /* 更新弹窗高度压缩后，日志区域限定在正文内滚动，避免遮挡下载进度和底部按钮。 */
-  max-height: 112px;
+  max-height: 160px;
   overflow: auto;
   padding: 12px;
   border: 1px solid rgba(148, 163, 184, 0.18);
@@ -4820,6 +4820,33 @@ select:disabled {
 /* 进度条与动作按钮区域的间距由父容器 flex gap 控制，清除按钮原先自带的 margin-top */
 .update-modal-footer .modal-actions {
   margin-top: 0;
+}
+
+/* 无新版本或检测失败时的简单结果弹窗，宽度与更新详情弹窗一致，高度自适应内容。 */
+.update-result-modal {
+  width: min(520px, 92vw);
+  max-width: 520px;
+  height: auto;
+}
+
+.update-result-modal-body {
+  padding: 4px 0 16px;
+  color: var(--app-muted);
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
+.update-result-modal-body p {
+  margin: 0;
+}
+
+.modal-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--app-border);
 }
 
 /* ── Custom Select Component ───────────────────────────────────────────── */

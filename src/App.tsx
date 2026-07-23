@@ -2854,6 +2854,8 @@ function SettingsModal({
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
   const [updateDownloadProgress, setUpdateDownloadProgress] = useState<UpdateDownloadProgress | null>(null);
   const [updateModalError, setUpdateModalError] = useState<string | null>(null);
+  // 设置页手动检测失败时的错误文案，传给弹窗展示；成功但无更新时为 null（弹窗用 result 判断）。
+  const [updateCheckError, setUpdateCheckError] = useState<string | null>(null);
   const [agentBridgeStatus, setAgentBridgeStatus] = useState<AgentBridgeStatus | null>(null);
   const [agentBridgeTransition, setAgentBridgeTransition] = useState<'starting' | 'stopping' | ''>('');
   const settingsSaveTimerRef = useRef<number | null>(null);
@@ -3099,17 +3101,17 @@ function SettingsModal({
     setUpdateFeedback(null);
     setUpdateCheckResult(null);
     setUpdateDownloadProgress(null);
+    setUpdateCheckError(null);
     try {
       // 更新检测只读取 GitHub Release 元数据，用户确认后再通过 Release 页面下载新版安装包。
       const result = await checkForUpdates();
       setUpdateCheckResult(result);
-      // 发现新版本时弹出详情弹窗展示更新内容；已是最新版时保留设置页内反馈。
-      if (result.updateAvailable) {
-        setUpdateModalOpen(true);
-      }
+      // 无论是否有新版本，都弹窗展示结果；UpdateModal 内部根据 updateAvailable 决定展示详情还是简单提示。
+      setUpdateModalOpen(true);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      setUpdateFeedback({ kind: 'is-error', message: t('statusUpdateCheckFailed', { reason }) });
+      setUpdateCheckError(t('statusUpdateCheckFailed', { reason }));
+      setUpdateModalOpen(true);
     } finally {
       setUpdateChecking(false);
     }
@@ -3974,12 +3976,14 @@ function SettingsModal({
       </div>
 
       <UpdateModal
+        checkError={updateCheckError}
         downloading={updateInstalling}
         error={updateModalError}
         onClose={() => {
           setUpdateModalOpen(false);
           setUpdateDownloadProgress(null);
           setUpdateModalError(null);
+          setUpdateCheckError(null);
         }}
         onDownload={() => void handleInstallUpdate()}
         onOpenRelease={(url) => openExternalLink(url)}
@@ -4110,8 +4114,10 @@ export default function App() {
   const [appUpdateInstalling, setAppUpdateInstalling] = useState(false);
   const [appUpdateProgress, setAppUpdateProgress] = useState<UpdateDownloadProgress | null>(null);
   const [appUpdateError, setAppUpdateError] = useState<string | null>(null);
-  // 标题栏“更新”按钮主动检测时的进行态，用于图标旋转反馈并避免重复点击。
+  // 标题栏”更新”按钮主动检测时的进行态，用于图标旋转反馈并避免重复点击。
   const [appUpdateChecking, setAppUpdateChecking] = useState(false);
+  // 标题栏手动检测失败时的错误文案，传给弹窗展示。
+  const [appUpdateCheckError, setAppUpdateCheckError] = useState<string | null>(null);
 
   const {
     activeConnectionId,
@@ -4260,23 +4266,25 @@ export default function App() {
     }
   }, [installUpdate, t, updateCheckResult]);
 
-  // 标题栏更新按钮：用户主动点击时立即检测一次；发现新版本则打开详情弹窗，否则由 store 写入“已是最新”状态提示。
+  // 标题栏更新按钮：用户主动点击时立即检测一次；无论结果如何都弹窗展示，否则由 store 写入”已是最新”状态提示。
   const handleTitlebarCheckUpdate = useCallback(async () => {
     if (appUpdateChecking) {
       return;
     }
     setAppUpdateChecking(true);
+    setAppUpdateCheckError(null);
     try {
-      const result = await checkForUpdates();
-      if (result.updateAvailable) {
-        setAppUpdateModalOpen(true);
-      }
+      await checkForUpdates();
+      // 无论是否有新版本，都弹窗展示结果。
+      setAppUpdateModalOpen(true);
     } catch {
-      // 网络异常或 GitHub 不可达时静默失败，状态提示已由 store 层处理。
+      // 网络异常或 GitHub 不可达时弹窗展示错误。
+      setAppUpdateCheckError(t('statusUpdateCheckFailed', { reason: t('metricUnavailable') }));
+      setAppUpdateModalOpen(true);
     } finally {
       setAppUpdateChecking(false);
     }
-  }, [appUpdateChecking, checkForUpdates]);
+  }, [appUpdateChecking, checkForUpdates, t]);
 
   // 标题栏主题按钮：在深浅色之间切换并立即持久化，无需打开设置页。
   const handleToggleTheme = useCallback(() => {
@@ -6945,12 +6953,14 @@ export default function App() {
       <LocalTerminalManagerModal open={localTerminalsOpen} onClose={() => setLocalTerminalsOpen(false)} />
       <SettingsModal open={settingsOpen} activeTab={settingsTab} onClose={() => setSettingsOpen(false)} onTabChange={setSettingsTab} />
       <UpdateModal
+        checkError={appUpdateCheckError}
         downloading={appUpdateInstalling}
         error={appUpdateError}
         onClose={() => {
           setAppUpdateModalOpen(false);
           setAppUpdateProgress(null);
           setAppUpdateError(null);
+          setAppUpdateCheckError(null);
         }}
         onDownload={() => void handleAppInstallUpdate()}
         onOpenRelease={(url) => openAppExternalLink(url)}
