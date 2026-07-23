@@ -12,6 +12,8 @@ default-run = "myterminal"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Ctrl+C 信号处理：在开发态终端按 Ctrl+C 时触发正常窗口关闭流程，避免 WebView 检测到后端断连而弹出错误框。
+ctrlc = "3"
 aes-gcm = "0.10"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde", "clock"] }

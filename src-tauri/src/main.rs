@@ -82,6 +82,27 @@ fn main() {
                     &settings.agent_bridge,
                 )?;
             }
+            // 开发态在终端按 Ctrl+C 时，Windows 只终止 npm/cargo 进程链而不通知 GUI 进程，
+            // 导致 WebView 检测到 dev server 断连而弹出崩溃框。这里捕获信号并触发正常窗口关闭，
+            // 复用 CloseRequested 的后端清理路径，让开发态退出与点击关闭按钮表现一致。
+            {
+                let ctrlc_handle = app.handle().clone();
+                // 忽略重复注册错误：热重载或多次 setup 时不应因已存在处理器而 panic 中断启动。
+                let _ = ctrlc::set_handler(move || {
+                    // 窗口操作需回到主线程执行；先隐藏窗口再关闭，避免 dev server 被同时杀掉时
+                    // WebView2 检测到页面断连并弹出崩溃上报框。
+                    let handle = ctrlc_handle.clone();
+                    let inner = handle.clone();
+                    let _ = handle.run_on_main_thread(move || {
+                        if let Some(window) = inner.get_webview_window("main") {
+                            let _ = window.hide();
+                            let _ = window.close();
+                        } else {
+                            inner.exit(0);
+                        }
+                    });
+                });
+            }
             // 启动后台 SSH 保活守护线程，防止辅助会话与隧道池会话在应用后台运行时空闲掉线。
             commands::spawn_keepalive_daemon(app.handle().clone());
             // 启动 SSH 隧道健康监控线程，实时探测运行中隧道的底层连接并在状态变化时通知前端。
