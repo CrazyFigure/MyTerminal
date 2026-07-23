@@ -28,6 +28,8 @@ type Props = {
 const terminalOutputEventName = 'myterminal-terminal-output';
 const terminalCursorShowSequence = '\x1b[?25h';
 const terminalCursorHideSequence = '\x1b[?25l';
+// 远端隐藏光标后若长时间无新输出,判定其进度渲染已结束/被打断,自动补发显示序列做自愈。
+const terminalCursorRecoveryIdleMs = 400;
 // bracketed paste 的边界用于区分“粘贴中的换行”和真正提交命令的 Enter，避免误清 Claude 输入行缓存。
 const terminalBracketedPasteStartSequence = '\x1b[200~';
 const terminalBracketedPasteEndSequence = '\x1b[201~';
@@ -1100,6 +1102,9 @@ export function TerminalWorkspace({
   const sessionRef = useRef<TerminalSession | undefined>(session);
   const resizeFrameRef = useRef<number | null>(null);
   const cursorFollowFrameRef = useRef<number | null>(null);
+  // 追踪远端最近一次 DECTCEM 是否把光标设为隐藏,配合空闲看门狗做悬空隐藏光标的自愈。
+  const terminalRemoteCursorHiddenRef = useRef(false);
+  const terminalCursorRecoveryTimerRef = useRef<number | null>(null);
   const terminalImeCompositionFrameRef = useRef<number | null>(null);
   const terminalImeComposingRef = useRef(false);
   const terminalPromptRowCacheRef = useRef<TerminalPromptRowCache | null>(null);
@@ -2856,6 +2861,34 @@ export function TerminalWorkspace({
     });
   };
 
+  // 远端悬空隐藏光标的自愈:输出空闲后,若仍处于 Shell 主缓冲区且光标被判定为隐藏,补发一次显示序列。
+  const recoverTerminalCursorIfStuck = () => {
+    const terminal = terminalRef.current;
+    if (
+      !terminal
+      || terminalActiveReplayRef.current                   // 重放期不介入
+      || !canAcceptTerminalInput(sessionRef.current)       // 只处理可交互会话
+      || hideLocalCursorForSessionRef.current              // AI TUI 自绘光标,保持隐藏
+      || !isTerminalShellInputBufferActive()               // 仅主缓冲区(排除 top/vim/less)
+      || !terminalRemoteCursorHiddenRef.current             // 仅在确实隐藏时补写
+    ) {
+      return;
+    }
+    terminal.write(terminalCursorShowSequence);
+    terminalRemoteCursorHiddenRef.current = false;
+  };
+
+  // 每来一块输出重置计时;输出真正停止 idle 时长后才触发自愈检查,避免高频进度帧期间误触发。
+  const scheduleTerminalCursorRecovery = () => {
+    if (terminalCursorRecoveryTimerRef.current !== null) {
+      window.clearTimeout(terminalCursorRecoveryTimerRef.current);
+    }
+    terminalCursorRecoveryTimerRef.current = window.setTimeout(() => {
+      terminalCursorRecoveryTimerRef.current = null;
+      recoverTerminalCursorIfStuck();
+    }, terminalCursorRecoveryIdleMs);
+  };
+
   // 设置切换或会话切换后重放当前会话缓存，让已显示内容立即按新的列宽重新排版。
   const replayCurrentSessionOutput = () => {
     const terminal = terminalRef.current;
@@ -3212,6 +3245,21 @@ export function TerminalWorkspace({
     });
     // 实时输出状态机已经按原会话回包；xterm parser 这里只消费查询，缓存重放不得再次触发任何响应。
     const xtVersionDisposable = terminal.parser.registerCsiHandler({ prefix: '>', final: 'q' }, () => true);
+    // 观测远端私有模式 25(DECTCEM)的开关,handler 返回 false 让 xterm 继续正常处理,自身仅记录状态用于自愈判断。
+    const paramsIncludeCursorMode = (params: (number | number[])[]) =>
+      params.some((value) => (Array.isArray(value) ? value.includes(25) : value === 25));
+    const cursorHideObserverDisposable = terminal.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (params) => {
+      if (paramsIncludeCursorMode(params)) {
+        terminalRemoteCursorHiddenRef.current = true;
+      }
+      return false;
+    });
+    const cursorShowObserverDisposable = terminal.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
+      if (paramsIncludeCursorMode(params)) {
+        terminalRemoteCursorHiddenRef.current = false;
+      }
+      return false;
+    });
     // 精确放行 Windows 本地 Claude 的 Ctrl+V 浏览器默认行为：xterm 随后接收可信 paste 事件并负责
     // bracketed-paste/换行规范化；返回 false 只阻止它把该按键编码成 \x16，不能手动再读一次剪贴板。
     terminal.attachCustomKeyEventHandler((event) => {
@@ -3448,6 +3496,8 @@ export function TerminalWorkspace({
         terminal.element?.removeEventListener(eventName, blockUserInputDuringReplay, true);
       });
       xtVersionDisposable.dispose();
+      cursorHideObserverDisposable.dispose();
+      cursorShowObserverDisposable.dispose();
       dataDisposable.dispose();
       cursorMoveDisposable.dispose();
       renderDisposable.dispose();
@@ -3511,6 +3561,10 @@ export function TerminalWorkspace({
       if (terminalGutterClockTimerRef.current !== null) {
         window.clearInterval(terminalGutterClockTimerRef.current);
         terminalGutterClockTimerRef.current = null;
+      }
+      if (terminalCursorRecoveryTimerRef.current !== null) {
+        window.clearTimeout(terminalCursorRecoveryTimerRef.current);
+        terminalCursorRecoveryTimerRef.current = null;
       }
       document.removeEventListener('visibilitychange', handleTerminalGutterVisibilityRefresh);
       terminalImeComposingRef.current = false;
@@ -3591,6 +3645,7 @@ export function TerminalWorkspace({
             scheduleTerminalSizeSync();
           }
           syncLocalCursorVisibility(false);
+          scheduleTerminalCursorRecovery();
           scheduleTerminalCursorFollow();
           scheduleTerminalMatchHighlightRefresh();
           scheduleTerminalSelectionOverlaySync();

@@ -28,6 +28,10 @@ tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-clipboard-manager = "2.3.0"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-notification = "2.3.3"
+# 单实例守卫：只允许同一副本运行一个进程，第二次双击图标时聚焦已有窗口而非再开一个。
+# target_os 限定桌面平台，与官方示例一致，避免移动端目标编译该插件。
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2"
 thiserror = "1"
 urlencoding = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
