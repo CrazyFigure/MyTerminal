@@ -1,7 +1,7 @@
 {
   "name": "myterminal",
   "private": true,
-  "version": "0.4.9",
+  "version": "0.5.0",
   "description": "A modern Rust + Tauri 2 remote terminal manager inspired by FinalShell.",
   "type": "module",
   "scripts": {
