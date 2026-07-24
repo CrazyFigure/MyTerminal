@@ -5527,17 +5527,16 @@ fn stop_all_runtimes(state: &AppState) -> Result<(), AppError> {
 
 #[cfg(windows)]
 fn terminate_myterminal_cli_processes() -> Result<(), AppError> {
-    let mut cli_path = env::current_exe()?;
-    cli_path.set_file_name("myterminal-cli.exe");
-    let target = cli_path.to_string_lossy().replace('\'', "''");
-    let script = format!(
-        "$target = '{target}'; \
-         Get-CimInstance Win32_Process -Filter \"name = 'myterminal-cli.exe'\" | \
-         Where-Object {{ $_.ExecutablePath -eq $target }} | \
-         ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
-    );
+    let script = "Get-CimInstance Win32_Process -Filter \"name like 'myterminal-cli%.exe'\" | \
+         Where-Object { \
+             ($_.Name -eq 'myterminal-cli.exe' -or $_.Name -like 'myterminal-cli-*.exe') -and \
+             $_.CommandLine -match '(?i)(?:^|\\s)mcp\\s+--stdio(?:\\s|$)' \
+         } | \
+         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
 
-    // 只清理当前安装/开发目录旁边的 CLI，避免误杀其他 MyTerminal 副本或同名调试程序。
+    // MCP stdio 进程由 Codex/Claude 等外部客户端启动，可执行文件可能来自安装目录、
+    // 开发 target 目录或带 target-triple 后缀的 sidecar，不能再用主程序旁的固定路径筛选。
+    // 同时校验进程名和完整 `mcp --stdio` 参数，避免影响正在执行普通 CLI 命令的进程。
     // 发布版主进程没有控制台，关闭应用时启动 PowerShell 必须隐藏窗口，避免退出瞬间闪出黑框。
     Command::new("powershell")
         .creation_flags(WINDOWS_CREATE_NO_WINDOW)
