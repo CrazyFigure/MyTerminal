@@ -25,7 +25,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+# Windows 必须显式启用 OpenSSL 后端；仅启用 vendored-openssl 仍会让 libssh2 选用 WinCNG，
+# 导致常见 OpenSSH/RSA 私钥在签名阶段返回无有效上下文的 Session(-1) unknown error。
+ssh2 = { version = "0.9", features = ["vendored-openssl", "openssl-on-win32"] }
 tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-clipboard-manager = "2.3.0"
 tauri-plugin-dialog = "2.7.1"
