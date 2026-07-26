@@ -70,24 +70,28 @@ const terminalClaudeMinimumContrastRatio = 4.5;
 const terminalAiAgentCommandNames = new Set(['claude', 'claude-code', 'codex', 'opencode', 'qwen', 'qwen-code', 'gemini', 'aider', 'cursor-agent']);
 // xterm 默认把 Ctrl+V 编码成控制字符；只为 Windows Claude 放行 WebView 原生粘贴，避免改变 Shell/Vim 的 Ctrl+V 语义。
 const terminalNativeCtrlVPasteCommandNames = new Set(['claude', 'claude-code']);
-// Claude/Codex 会自绘输入光标，必须隐藏 xterm 光标，避免额外出现第二个光标。
-const terminalHideLocalCursorCommandNames = new Set(['claude', 'claude-code', 'codex', 'qwen', 'qwen-code', 'gemini', 'aider', 'cursor-agent']);
+// 仅隐藏已确认会自行绘制光标、且终端真实光标会停在状态栏的 TUI；OpenCode 等依赖标准光标协议的程序保持原样。
+const terminalHideLocalCursorCommandNames = new Set(['claude', 'claude-code', 'qwen', 'qwen-code', 'gemini', 'aider', 'cursor-agent']);
+// Codex 重绘帧会反复恢复原生光标；协议层持续隐藏它，并按真实 buffer 坐标绘制经过输入区校验的替代光标。
+const terminalManagedCursorCommandNames = new Set(['codex']);
 // 浅色模式下 Codex 会用 ANSI black 或反色块表示输入区，映射成柔和底色避免黑块过重。
 const terminalSoftDarkBlockCommandNames = new Set(['codex']);
 const terminalLowerContrastCommandNames = new Set(['claude', 'claude-code']);
-// 这些 TUI 不会稳定自绘光标，输出重绘后也要把 xterm 光标恢复出来。
-const terminalForceShowLocalCursorCommandNames = new Set(['opencode']);
 const terminalSoftDarkBlockLightBackground = '#e0e7ff';
 // Claude 自绘输入框时 xterm 真实 cursor 可能停在状态栏；中文输入法候选框需要锚到可见输入行。
 const terminalImeAnchorCommandNames = new Set(['claude', 'claude-code']);
-// 普通受控光标只在视口底部探测；Claude 可能把输入框绘制在上半屏，另由输入框边线与专用会话约束全屏搜索。
+// 输入框探测默认只看视口底部；Claude 可能把输入框绘制在上半屏，另由输入框边线与专用会话约束全屏搜索。
 const terminalPromptGlyphs = ['›', '❯'] as const;
 const terminalPromptSearchRows = 12;
 // 无提示符兜底只接受邻近的足够长边线：距离覆盖单行/短多行输入，最小长度排除回答里的普通短横线。
 const terminalPromptBorderSearchDistanceRows = 4;
 const terminalPromptBorderMinCharacters = 8;
-// Codex 的真实 xterm cursor 会停在状态栏，需要用前端受控光标锚到输入行。
-const terminalControlledInputCursorCommandNames = new Set(['codex']);
+// 光标与所在单元格低于非文本 UI 的最低可辨识对比度时，叠加同位置反色细线作为通用兜底。
+const terminalCursorMinimumContrastRatio = 3;
+// Codex 输入动作后的短暂保护期内，重绘输出不能立即隐藏正在操作的光标。
+const terminalManagedCursorInputGraceMs = 600;
+// Codex 输出停止一小段时间后再结算光标状态，避免流式回复的短间隙造成反复闪现。
+const terminalManagedCursorOutputIdleMs = 700;
 // 匹配高亮只绘制当前可查看区域，滚动时重算，避免为整个 scrollback 常驻创建大量 DOM。
 const terminalMatchHighlightOverscanRows = 24;
 // 单字符选择可能命中非常多内容，硬上限用于保护 WebView 内存和滚动帧率。
@@ -203,6 +207,9 @@ type TerminalHighlightPoint = {
 type TerminalPromptAnchor = {
   row: number;
   column: number;
+  // 输入框首尾行用于校验 Codex 重绘途中的临时 cursor，禁止状态栏中间帧触发替代光标。
+  promptStartRow: number;
+  promptEndRow: number;
   screenLeft: number;
   screenTop: number;
   containerLeft: number;
@@ -734,12 +741,6 @@ const resolveTerminalMinimumContrastRatio = (session?: TerminalSession) => {
     : terminalMinimumContrastRatio;
 };
 
-// 某些 TUI 依赖 xterm 自己的输入光标，不能只靠程序输出的光标状态。
-const shouldForceShowLocalTerminalCursor = (session?: TerminalSession) => {
-  const executableName = extractTerminalExecutableName(resolveLocalSessionCommandText(session));
-  return executableName ? terminalForceShowLocalCursorCommandNames.has(executableName) : false;
-};
-
 // 只有自绘输入框且 xterm cursor 与可见输入框分离的 CLI 需要重定位中文输入法锚点。
 const shouldAnchorTerminalImeToPrompt = (session?: TerminalSession) => {
   const executableName = extractTerminalExecutableName(resolveLocalSessionCommandText(session));
@@ -754,12 +755,6 @@ const isWindowsTerminalHost = () =>
 const shouldUseNativeCtrlVPaste = (session?: TerminalSession) => {
   const executableName = extractTerminalExecutableName(resolveLocalSessionCommandText(session));
   return executableName ? terminalNativeCtrlVPasteCommandNames.has(executableName) : false;
-};
-
-// Codex 输入框位置由 CLI 自绘，前端光标需要跟随该输入行，而不是跟随 xterm 内部状态栏 cursor。
-const shouldUseControlledInputCursor = (session?: TerminalSession) => {
-  const executableName = extractTerminalExecutableName(resolveLocalSessionCommandText(session));
-  return executableName ? terminalControlledInputCursorCommandNames.has(executableName) : false;
 };
 
 const directImageUrlPattern = /^(https?:|data:|blob:|asset:|http:\/\/asset\.localhost)/i;
@@ -1059,6 +1054,46 @@ const resolveTerminalRelativeLuminance = (color: TerminalRgbColor) => {
   return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
 };
 
+// 仅对会在重绘中暴露临时原生光标位置的 TUI 启用宿主光标层，其它 TUI 保持协议原样。
+const shouldUseManagedTerminalCursor = (session?: TerminalSession) => {
+  const executableName = extractTerminalExecutableName(resolveLocalSessionCommandText(session));
+  if (executableName && terminalManagedCursorCommandNames.has(executableName)) {
+    return true;
+  }
+  // 老会话或异常回包可能缺少 localCommand；标题仍保留“codex · cwd”，严格限制在行首以避免误伤同名目录。
+  return Boolean(session?.kind === 'local' && /^\s*codex(?:\s|·|$)/i.test(session.title));
+};
+
+// OSC 12 除普通 CSS 十六进制外还允许 rgb:RR/GG/BB 或 16 位分量；统一折算为 8 位 RGB 供光标对比度判断。
+const parseTerminalOscRgbColor = (value: string): TerminalRgbColor | undefined => {
+  const parsedCssColor = parseTerminalRgbColor(value);
+  if (parsedCssColor) {
+    return parsedCssColor;
+  }
+
+  const rgbMatch = value.trim().match(/^rgb:([\da-f]{1,4})\/([\da-f]{1,4})\/([\da-f]{1,4})$/i);
+  if (!rgbMatch) {
+    return undefined;
+  }
+  const normalizeChannel = (channel: string) => {
+    const rawValue = parseInt(channel, 16);
+    const maximum = (16 ** channel.length) - 1;
+    return Math.round((rawValue / maximum) * 255);
+  };
+  return {
+    red: normalizeChannel(rgbMatch[1]),
+    green: normalizeChannel(rgbMatch[2]),
+    blue: normalizeChannel(rgbMatch[3]),
+  };
+};
+
+// 光标属于非文本交互指示物，按 WCAG 非文本对比度算法判断是否需要反色兜底。
+const resolveTerminalColorContrastRatio = (first: TerminalRgbColor, second: TerminalRgbColor) => {
+  const lighter = Math.max(resolveTerminalRelativeLuminance(first), resolveTerminalRelativeLuminance(second));
+  const darker = Math.min(resolveTerminalRelativeLuminance(first), resolveTerminalRelativeLuminance(second));
+  return (lighter + 0.05) / (darker + 0.05);
+};
+
 export function TerminalWorkspace({
   session,
   settings,
@@ -1084,8 +1119,12 @@ export function TerminalWorkspace({
   const terminalSelectionOverlayFrameRef = useRef<number | null>(null);
   const terminalSelectionSnapshotRef = useRef<TerminalSelectionSnapshot | null>(null);
   const terminalSelectionRestoreActiveRef = useRef(false);
-  const terminalControlledCursorRef = useRef<HTMLDivElement | null>(null);
-  const terminalControlledCursorFrameRef = useRef<number | null>(null);
+  const terminalContrastCursorRef = useRef<HTMLDivElement | null>(null);
+  const terminalContrastCursorFrameRef = useRef<number | null>(null);
+  // Codex 托管光标只在提交和持续输出期间暂停；输出稳定后即使输入框为空也必须自动恢复。
+  const terminalManagedCursorSuppressedRef = useRef(false);
+  const terminalManagedCursorInputGraceUntilRef = useRef(0);
+  const terminalManagedCursorOutputIdleTimerRef = useRef<number | null>(null);
   const terminalVerticalScrollbarRef = useRef<HTMLDivElement | null>(null);
   const terminalVerticalScrollbarThumbRef = useRef<HTMLDivElement | null>(null);
   const terminalVerticalScrollbarFrameRef = useRef<number | null>(null);
@@ -1142,6 +1181,10 @@ export function TerminalWorkspace({
     () => shouldHideLocalTerminalCursor(session),
     [session?.kind, session?.localCommand, session?.title],
   );
+  const useManagedCursorForSession = useMemo(
+    () => shouldUseManagedTerminalCursor(session),
+    [session?.kind, session?.localCommand, session?.title],
+  );
   const useSoftDarkBlocksForSession = useMemo(
     () => shouldUseSoftDarkBlocks(session),
     [session?.kind, session?.localCommand, session?.title],
@@ -1150,16 +1193,8 @@ export function TerminalWorkspace({
     () => resolveTerminalMinimumContrastRatio(session),
     [session?.kind, session?.localCommand, session?.title],
   );
-  const forceShowLocalCursorForSession = useMemo(
-    () => shouldForceShowLocalTerminalCursor(session),
-    [session?.kind, session?.localCommand, session?.title],
-  );
   const anchorImeToPromptForSession = useMemo(
     () => shouldAnchorTerminalImeToPrompt(session),
-    [session?.kind, session?.localCommand, session?.title],
-  );
-  const useControlledInputCursorForSession = useMemo(
-    () => shouldUseControlledInputCursor(session),
     [session?.kind, session?.localCommand, session?.title],
   );
   // 本地终端（包含纯 Shell 与 AI TUI）必须始终按可视宽度自动换行；长行展示设置只影响 SSH 会话。
@@ -1170,9 +1205,8 @@ export function TerminalWorkspace({
   const terminalMinimumContrastRatioRef = useRef(minimumContrastRatioForSession);
   const isAiAgentTerminalSessionRef = useRef(isAiAgentTerminalSession);
   const hideLocalCursorForSessionRef = useRef(hideLocalCursorForSession);
-  const forceShowLocalCursorForSessionRef = useRef(forceShowLocalCursorForSession);
+  const useManagedCursorForSessionRef = useRef(useManagedCursorForSession);
   const anchorImeToPromptForSessionRef = useRef(anchorImeToPromptForSession);
-  const useControlledInputCursorForSessionRef = useRef(useControlledInputCursorForSession);
   const terminalMatchSelectionRef = useRef(settings.terminalMatchSelection ?? true);
   // 行号栏两个开关缓存进 ref，命令式同步逻辑读取时无需依赖闭包中的最新 props。
   const gutterShowLineNumber = settings.terminalGutterShowLineNumber !== false;
@@ -1192,6 +1226,8 @@ export function TerminalWorkspace({
     ],
   );
   const terminalThemeRef = useRef(terminalTheme);
+  // 记录 xterm 当前真实光标色；TUI 可通过 OSC 12 覆盖主题值，低对比兜底必须使用协议生效后的颜色。
+  const terminalCursorColorRef = useRef<TerminalRgbColor | undefined>(parseTerminalRgbColor(terminalTheme.cursor));
   // 远程 http(s) 背景图经后端下载后缓存的 data URL；null 表示无远程图或下载失败(回退到原始行为)。
   const [remoteBackgroundDataUrl, setRemoteBackgroundDataUrl] = useState<string | null>(null);
   useEffect(() => {
@@ -1252,9 +1288,8 @@ export function TerminalWorkspace({
   terminalBackgroundColorRef.current = terminalBackgroundColor;
   isAiAgentTerminalSessionRef.current = isAiAgentTerminalSession;
   hideLocalCursorForSessionRef.current = hideLocalCursorForSession;
-  forceShowLocalCursorForSessionRef.current = forceShowLocalCursorForSession;
+  useManagedCursorForSessionRef.current = useManagedCursorForSession;
   anchorImeToPromptForSessionRef.current = anchorImeToPromptForSession;
-  useControlledInputCursorForSessionRef.current = useControlledInputCursorForSession;
   terminalMatchSelectionRef.current = settings.terminalMatchSelection ?? true;
   gutterShowLineNumberRef.current = gutterShowLineNumber;
   gutterShowTimestampRef.current = gutterShowTimestamp;
@@ -1313,27 +1348,19 @@ export function TerminalWorkspace({
     }
   };
 
-  // AI TUI 会自己绘制输入光标，本地 xterm 光标必须隐藏，避免滚轮或重绘后出现黑蓝双光标。
-  const syncLocalCursorVisibility = (restoreNormalCursor = true) => {
+  // 自绘型 TUI 与 Codex 托管模式都在协议层隐藏 xterm 原生光标；其它程序的显隐仍由标准终端协议接管。
+  const syncLocalCursorVisibility = () => {
     const terminal = terminalRef.current;
     if (!terminal || !canAcceptTerminalInput(sessionRef.current)) {
       return;
     }
 
-    if (hideLocalCursorForSessionRef.current) {
+    if (hideLocalCursorForSessionRef.current || useManagedCursorForSessionRef.current) {
       terminal.write(terminalCursorHideSequence);
-      return;
-    }
-
-    // 部分 CLI 会通过 OSC 修改光标色；每次恢复光标时重新应用主题色，确保浅色黑、深色白。
-    terminal.options.theme = { ...terminalThemeRef.current };
-
-    if (restoreNormalCursor || forceShowLocalCursorForSessionRef.current) {
-      terminal.write(terminalCursorShowSequence);
     }
   };
 
-  // Claude/Codex 自绘输入框时，真实 xterm cursor 可能停在状态栏；从视口底部识别可见输入行作为锚点。
+  // Claude 自绘输入框时真实 xterm cursor 可能停在状态栏；从可见输入行解析中文输入法锚点。
   const resolveTerminalPromptAnchor = (): TerminalPromptAnchor | undefined => {
     const terminal = terminalRef.current;
     const container = containerRef.current;
@@ -1345,8 +1372,8 @@ export function TerminalWorkspace({
     const buffer = terminal.buffer.active;
     const firstVisibleRow = buffer.viewportY;
     const lastVisibleRow = Math.min(buffer.length - 1, firstVisibleRow + terminal.rows - 1);
-    // Claude 在侧栏展开、窗口 resize 或启动期重排后，输入框可能停在视口上半部；只搜底部会直接漏掉并回退到状态栏 cursor。
-    // Claude 专用会话允许扫描整个可见区，普通 Codex 受控光标仍限制在底部，避免把历史回答里的提示符误判为输入行。
+    // Claude 在侧栏展开、窗口 resize 或启动期重排后，输入框可能停在视口上半部；专用会话扫描整个可见区。
+    // 默认分支仍限制在底部，避免未来复用此解析器时把历史回答里的提示符误判为输入行。
     const promptSearchStartRow = anchorImeToPromptForSessionRef.current
       ? firstVisibleRow
       : Math.max(firstVisibleRow, lastVisibleRow - terminalPromptSearchRows + 1);
@@ -1470,6 +1497,8 @@ export function TerminalWorkspace({
     return {
       row: promptRow,
       column: promptColumn,
+      promptStartRow,
+      promptEndRow,
       screenLeft,
       screenTop,
       containerLeft: screenRect.left - containerRect.left + container.scrollLeft + screenLeft,
@@ -1541,66 +1570,155 @@ export function TerminalWorkspace({
     });
   };
 
-  const hideTerminalControlledInputCursor = () => {
-    const cursor = terminalControlledCursorRef.current;
+  const hideTerminalContrastCursor = () => {
+    const cursor = terminalContrastCursorRef.current;
     if (cursor) {
       cursor.style.display = 'none';
     }
   };
 
-  // Codex 的真实 xterm cursor 会落在状态栏；这里只在可见输入行绘制一个不参与选区的前端光标。
-  const syncTerminalControlledInputCursor = () => {
+  // 所有 TUI 都以 xterm 的真实 buffer cursor 为唯一位置来源；Codex 额外过滤输入区外的重绘中间坐标。
+  const syncTerminalContrastCursor = () => {
     const terminal = terminalRef.current;
-    const cursor = terminalControlledCursorRef.current;
+    const container = containerRef.current;
+    const cursor = terminalContrastCursorRef.current;
+    const screen = terminal?.element?.querySelector<HTMLElement>('.xterm-screen');
+    const useManagedCursor = useManagedCursorForSessionRef.current;
+    const terminalHasFocus = Boolean(terminal?.element?.classList.contains('focus'));
     if (
       !terminal ||
+      !container ||
       !cursor ||
-      !useControlledInputCursorForSessionRef.current ||
-      !canAcceptTerminalInput(sessionRef.current)
+      !screen ||
+      !canAcceptTerminalInput(sessionRef.current) ||
+      hideLocalCursorForSessionRef.current ||
+      (!useManagedCursor && terminalRemoteCursorHiddenRef.current) ||
+      (useManagedCursor && terminalManagedCursorSuppressedRef.current) ||
+      !terminalHasFocus ||
+      terminal.cols <= 0 ||
+      terminal.rows <= 0
     ) {
-      hideTerminalControlledInputCursor();
+      hideTerminalContrastCursor();
       return;
     }
 
-    const anchor = resolveTerminalPromptAnchor();
-    if (!anchor) {
-      hideTerminalControlledInputCursor();
+    const buffer = terminal.buffer.active;
+    const absoluteCursorRow = buffer.baseY + buffer.cursorY;
+    const visibleCursorRow = absoluteCursorRow - buffer.viewportY;
+    if (visibleCursorRow < 0 || visibleCursorRow >= terminal.rows) {
+      hideTerminalContrastCursor();
       return;
     }
 
-    const line = terminal.buffer.active.getLine(anchor.row);
-    const cursorCell = line?.getCell(Math.min(Math.max(anchor.column, 0), terminal.cols - 1));
+    // Codex 绘制状态栏时 buffer cursor 会短暂落到状态栏末尾；输入框仍存在时持续隐藏原生层，
+    // 只有最终 cursor 回到提示符及其软换行组内才显示替代光标，从根源上消除中间帧闪烁。
+    const promptAnchor = useManagedCursor ? resolveTerminalPromptAnchor() : undefined;
+    if (
+      useManagedCursor &&
+      (!promptAnchor || absoluteCursorRow < promptAnchor.promptStartRow || absoluteCursorRow > promptAnchor.promptEndRow)
+    ) {
+      hideTerminalContrastCursor();
+      return;
+    }
+
+    const cursorColumn = Math.min(Math.max(buffer.cursorX, 0), terminal.cols - 1);
+    const line = buffer.getLine(absoluteCursorRow);
+    const cursorCell = line?.getCell(cursorColumn);
     const background = resolveTerminalCellVisualBackgroundRgb(
       cursorCell,
       terminalThemeRef.current,
       terminalBackgroundColorRef.current,
     );
-    const useDarkCursor = !background || resolveTerminalRelativeLuminance(background) > 0.45;
+    const nativeCursorColor = terminalCursorColorRef.current;
+    if (
+      !useManagedCursor &&
+      background &&
+      nativeCursorColor &&
+      resolveTerminalColorContrastRatio(background, nativeCursorColor) >= terminalCursorMinimumContrastRatio
+    ) {
+      hideTerminalContrastCursor();
+      return;
+    }
+
+    const screenRect = screen.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    const cellWidth = screenRect.width / terminal.cols;
+    const cellHeight = screenRect.height / terminal.rows;
+    if (cellWidth <= 0 || cellHeight <= 0) {
+      hideTerminalContrastCursor();
+      return;
+    }
+
+    const blackCursor: TerminalRgbColor = { red: 17, green: 24, blue: 39 };
+    const whiteCursor: TerminalRgbColor = { red: 248, green: 250, blue: 252 };
+    const useDarkCursor = !background || resolveTerminalColorContrastRatio(background, blackCursor)
+      >= resolveTerminalColorContrastRatio(background, whiteCursor);
     const cursorColor = useDarkCursor ? '#111827' : '#f8fafc';
     const outlineColor = useDarkCursor ? 'rgba(248, 250, 252, 0.9)' : 'rgba(17, 24, 39, 0.9)';
-    const cursorWidth = Math.max(2, Math.min(3, anchor.cellWidth * 0.18));
-    const cursorHeight = Math.max(10, anchor.cellHeight * 0.78);
-    const container = containerRef.current;
-    const maxLeft = container ? Math.max(0, container.scrollWidth - cursorWidth) : anchor.containerLeft;
+    const cursorWidth = Math.max(2, Math.min(3, cellWidth * 0.18));
+    const cursorHeight = Math.max(10, cellHeight * 0.78);
+    const cursorLeft = screenRect.left - containerRect.left + container.scrollLeft + cursorColumn * cellWidth;
+    const cursorTop = screenRect.top - containerRect.top + container.scrollTop + visibleCursorRow * cellHeight;
+    const maxLeft = Math.max(0, container.scrollWidth - cursorWidth);
 
     cursor.style.display = 'block';
-    cursor.style.left = `${Math.min(anchor.containerLeft, maxLeft)}px`;
-    cursor.style.top = `${anchor.containerTop + (anchor.cellHeight - cursorHeight) / 2}px`;
+    cursor.style.left = `${Math.min(cursorLeft, maxLeft)}px`;
+    cursor.style.top = `${cursorTop + (cellHeight - cursorHeight) / 2}px`;
     cursor.style.width = `${cursorWidth}px`;
     cursor.style.height = `${cursorHeight}px`;
     cursor.style.background = cursorColor;
     cursor.style.boxShadow = `0 0 0 1px ${outlineColor}`;
   };
 
-  const scheduleTerminalControlledInputCursorSync = () => {
-    if (terminalControlledCursorFrameRef.current !== null) {
+  const scheduleTerminalContrastCursorSync = () => {
+    if (terminalContrastCursorFrameRef.current !== null) {
       return;
     }
 
-    terminalControlledCursorFrameRef.current = window.requestAnimationFrame(() => {
-      terminalControlledCursorFrameRef.current = null;
-      syncTerminalControlledInputCursor();
+    terminalContrastCursorFrameRef.current = window.requestAnimationFrame(() => {
+      terminalContrastCursorFrameRef.current = null;
+      syncTerminalContrastCursor();
     });
+  };
+
+  // 提交后立即暂停 Codex 光标；普通编辑、取消或方向键则开启短暂保护期，保证交互时光标即时可见。
+  const updateTerminalManagedCursorForInput = (inputAction: 'submit' | 'cancel' | 'edit') => {
+    if (!useManagedCursorForSessionRef.current) {
+      return;
+    }
+    if (terminalManagedCursorOutputIdleTimerRef.current !== null) {
+      window.clearTimeout(terminalManagedCursorOutputIdleTimerRef.current);
+      terminalManagedCursorOutputIdleTimerRef.current = null;
+    }
+    terminalManagedCursorInputGraceUntilRef.current = inputAction === 'submit'
+      ? 0
+      : performance.now() + terminalManagedCursorInputGraceMs;
+    terminalManagedCursorSuppressedRef.current = inputAction === 'submit';
+    scheduleTerminalContrastCursorSync();
+  };
+
+  // Codex 流式帧持续到达时保持光标暂停；输出稳定后恢复输入区光标，空输入框无需等到首次按键才出现。
+  const updateTerminalManagedCursorForOutput = () => {
+    if (!useManagedCursorForSessionRef.current) {
+      return;
+    }
+    if (terminalManagedCursorOutputIdleTimerRef.current !== null) {
+      window.clearTimeout(terminalManagedCursorOutputIdleTimerRef.current);
+    }
+    if (performance.now() >= terminalManagedCursorInputGraceUntilRef.current) {
+      terminalManagedCursorSuppressedRef.current = true;
+      scheduleTerminalContrastCursorSync();
+    }
+    terminalManagedCursorOutputIdleTimerRef.current = window.setTimeout(() => {
+      terminalManagedCursorOutputIdleTimerRef.current = null;
+      if (!useManagedCursorForSessionRef.current) {
+        return;
+      }
+      // 最后一帧稳定后由输入框锚点继续校验位置；这里只结束输出抑制，确保空提示行也能显示稳定光标。
+      terminalManagedCursorSuppressedRef.current = false;
+      terminalManagedCursorInputGraceUntilRef.current = 0;
+      scheduleTerminalContrastCursorSync();
+    }, terminalManagedCursorOutputIdleMs);
   };
 
   // 右键菜单动作完成后延后一帧恢复焦点，确保 React 已经卸载菜单按钮。
@@ -2614,6 +2732,15 @@ export function TerminalWorkspace({
       return;
     }
 
+    // Codex 从启动加载起就完全托管光标，避免输入框尚未出现时 xterm 原生光标在重绘位置闪烁；切出后立即恢复。
+    const useManagedCursor = useManagedCursorForSessionRef.current;
+    terminal.element?.classList.toggle('is-managed-tui-cursor-active', useManagedCursor);
+    terminalContrastCursorRef.current?.classList.toggle('is-managed-tui-cursor', useManagedCursor);
+    // xterm 会动态注入光标动画，不能只靠外层 CSS 隐藏；渲染选项同步禁用 Codex 原生闪烁作为第二层兜底。
+    if (terminal.options.cursorBlink === useManagedCursor) {
+      terminal.options.cursorBlink = !useManagedCursor;
+    }
+
     if (terminal.options.scrollback !== terminalScrollbackRowsRef.current) {
       terminal.options.scrollback = terminalScrollbackRowsRef.current;
     }
@@ -2897,7 +3024,8 @@ export function TerminalWorkspace({
       !terminal
       || terminalActiveReplayRef.current                   // 重放期不介入
       || !canAcceptTerminalInput(sessionRef.current)       // 只处理可交互会话
-      || hideLocalCursorForSessionRef.current              // AI TUI 自绘光标,保持隐藏
+      || isAiAgentTerminalSessionRef.current               // AI TUI 自行管理光标显隐，宿主不能在忙碌态强行显示
+      || hideLocalCursorForSessionRef.current              // 已确认自绘光标的 TUI 保持宿主级隐藏
       || !isTerminalShellInputBufferActive()               // 仅主缓冲区(排除 top/vim/less)
       || !terminalRemoteCursorHiddenRef.current             // 仅在确实隐藏时补写
     ) {
@@ -2976,6 +3104,13 @@ export function TerminalWorkspace({
       resetTerminalGutterMarkers();
       terminalGutterReplayNextLogicalNumberRef.current = 1;
       terminal.reset();
+      // reset 会恢复 xterm 内部的主题光标色和显示状态；Codex 托管模式必须在重放缓存前立刻重新隐藏，避免 reset 与首个输出块之间漏出原生块光标。
+      if (useManagedCursorForSessionRef.current) {
+        terminal.write(terminalCursorHideSequence);
+      }
+      // 同步观测值后，缓存里的 OSC/DECTCEM 会按原顺序重新覆盖；托管模式的自绘光标不依赖该远端显隐值。
+      terminalCursorColorRef.current = parseTerminalRgbColor(terminalThemeRef.current.cursor);
+      terminalRemoteCursorHiddenRef.current = useManagedCursorForSessionRef.current;
       const nextLayoutSize = resolveTerminalLayoutSize();
       if (nextLayoutSize) {
         applyTerminalLayoutSize(nextLayoutSize);
@@ -3025,7 +3160,7 @@ export function TerminalWorkspace({
           scheduleTerminalCursorFollow();
           scheduleTerminalMatchHighlightRefresh();
           scheduleTerminalSelectionOverlaySync();
-          scheduleTerminalControlledInputCursorSync();
+          scheduleTerminalContrastCursorSync();
           scheduleTerminalVerticalScrollbarSync();
           scheduleTerminalGutterSync();
           window.requestAnimationFrame(focusPendingTerminalInput);
@@ -3191,7 +3326,7 @@ export function TerminalWorkspace({
     }
     scheduleTerminalCursorFollow();
     scheduleTerminalSelectionOverlaySync();
-    scheduleTerminalControlledInputCursorSync();
+    scheduleTerminalContrastCursorSync();
     scheduleTerminalVerticalScrollbarSync();
   };
 
@@ -3217,7 +3352,7 @@ export function TerminalWorkspace({
       allowTransparency: true,
       // 交互 SSH PTY 必须保留远端原始 CR/LF 与 ANSI 行编辑序列；convertEol 会破坏长行历史重绘。
       convertEol: false,
-      cursorBlink: true,
+      cursorBlink: !useManagedCursorForSessionRef.current,
       disableStdin: !canAcceptTerminalInput(sessionRef.current),
       fontFamily: terminalFontFamily,
       fontSize: settings.shellFontSize,
@@ -3231,6 +3366,8 @@ export function TerminalWorkspace({
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(containerRef.current);
+    // 首帧输出前就隐藏 Codex 原生光标，加载画面不能先漏出一次 xterm 默认闪烁光标。
+    terminal.element?.classList.toggle('is-managed-tui-cursor-active', useManagedCursorForSessionRef.current);
     // deferred 解析期需要开放 xterm 的自动协议回复，但键盘、IME、粘贴、鼠标和焦点上报都必须在捕获阶段阻断。
     const replayBlockedInputEventNames = [
       'keydown',
@@ -3274,20 +3411,72 @@ export function TerminalWorkspace({
     });
     // 实时输出状态机已经按原会话回包；xterm parser 这里只消费查询，缓存重放不得再次触发任何响应。
     const xtVersionDisposable = terminal.parser.registerCsiHandler({ prefix: '>', final: 'q' }, () => true);
-    // 观测远端私有模式 25(DECTCEM)的开关,handler 返回 false 让 xterm 继续正常处理,自身仅记录状态用于自愈判断。
+    // 识别远端私有模式 25（DECTCEM）；普通会话继续交给 xterm，Codex 托管模式则在解析阶段阻止原生光标被重新显示。
     const paramsIncludeCursorMode = (params: (number | number[])[]) =>
       params.some((value) => (Array.isArray(value) ? value.includes(25) : value === 25));
+    // 只有纯 ?25h 才能安全整条消费；组合 DECSET 还可能携带 alternate buffer 等模式，必须继续交给 xterm 完整处理。
+    const paramsOnlyIncludeCursorMode = (params: (number | number[])[]) =>
+      params.length > 0 && params.every((value) => (
+        Array.isArray(value)
+          ? value.length > 0 && value.every((nestedValue) => nestedValue === 25)
+          : value === 25
+      ));
     const cursorHideObserverDisposable = terminal.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (params) => {
       if (paramsIncludeCursorMode(params)) {
         terminalRemoteCursorHiddenRef.current = true;
+        scheduleTerminalContrastCursorSync();
       }
       return false;
     });
     const cursorShowObserverDisposable = terminal.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
       if (paramsIncludeCursorMode(params)) {
         terminalRemoteCursorHiddenRef.current = false;
+        scheduleTerminalContrastCursorSync();
+      }
+      // Codex 会在加载和等待回复的重绘帧反复发送 ?25h；在 xterm 绘制前消费它，彻底消除提示文字首字符上的块光标闪烁。
+      return useManagedCursorForSessionRef.current && paramsOnlyIncludeCursorMode(params);
+    });
+    // parser 注册完成后立即从协议层隐藏首帧原生光标；后续 Codex 的单独 ?25h 会由上面的 handler 持续拦截。
+    if (useManagedCursorForSessionRef.current) {
+      terminal.write(terminalCursorHideSequence);
+    }
+    // OSC 12 是 TUI 设置原生光标色的标准通道；只观测其最终颜色并继续交给 xterm 处理，绝不吞掉程序自身协议。
+    const cursorColorObserverDisposable = terminal.parser.registerOscHandler(12, (data) => {
+      const normalizedColor = data.trim();
+      if (normalizedColor !== '?') {
+        terminalCursorColorRef.current = normalizedColor.toLowerCase() === 'default'
+          ? parseTerminalRgbColor(terminalThemeRef.current.cursor)
+          : parseTerminalOscRgbColor(normalizedColor);
+        scheduleTerminalContrastCursorSync();
       }
       return false;
+    });
+    // OSC 112 恢复主题默认光标色；同步清除上一个 TUI 留下的颜色，避免后续 Shell 沿用错误判断。
+    const cursorColorResetObserverDisposable = terminal.parser.registerOscHandler(112, () => {
+      terminalCursorColorRef.current = parseTerminalRgbColor(terminalThemeRef.current.cursor);
+      scheduleTerminalContrastCursorSync();
+      return false;
+    });
+    // Codex 可通过 DECSCUSR 在任意帧恢复闪烁光标；托管会话吞掉该序列并只保留对应的稳态形状。
+    const cursorStyleObserverDisposable = terminal.parser.registerCsiHandler({ intermediates: ' ', final: 'q' }, (params) => {
+      if (!useManagedCursorForSessionRef.current) {
+        return false;
+      }
+      const firstParam = params[0];
+      const cursorStyleParam = Array.isArray(firstParam) ? firstParam[0] : firstParam;
+      const steadyCursorStyle = cursorStyleParam === 1 || cursorStyleParam === 2
+        ? 'block'
+        : cursorStyleParam === 3 || cursorStyleParam === 4
+          ? 'underline'
+          : cursorStyleParam === 5 || cursorStyleParam === 6
+            ? 'bar'
+            : undefined;
+      terminal.options.cursorBlink = false;
+      if (steadyCursorStyle) {
+        terminal.options.cursorStyle = steadyCursorStyle;
+      }
+      scheduleTerminalContrastCursorSync();
+      return true;
     });
     // 精确放行 Windows 本地 Claude 的 Ctrl+V 浏览器默认行为：xterm 随后接收可信 paste 事件并负责
     // bracketed-paste/换行规范化；返回 false 只阻止它把该按键编码成 \x16，不能手动再读一次剪贴板。
@@ -3306,6 +3495,13 @@ export function TerminalWorkspace({
         canAcceptTerminalInput(sessionRef.current) &&
         shouldUseNativeCtrlVPaste(sessionRef.current);
       if (event.type === 'keydown' && !['Control', 'Shift', 'Alt', 'Meta'].includes(event.key)) {
+        // 直接依据浏览器键盘事件判断提交，兼容 Codex 启用 Kitty/CSI-u 后 Enter 不再编码为 CR/LF 的情况。
+        const submitsManagedInput = event.key === 'Enter' && !event.shiftKey && !event.isComposing;
+        const cancelsManagedInput = event.key === 'Escape'
+          || (event.ctrlKey && ['c', 'd'].includes(event.key.toLowerCase()));
+        updateTerminalManagedCursorForInput(
+          submitsManagedInput ? 'submit' : cancelsManagedInput ? 'cancel' : 'edit',
+        );
         markLocalTerminalInputForCursorFollow();
         const abandonsOrSubmitsInput =
           event.key === 'Enter'
@@ -3334,10 +3530,11 @@ export function TerminalWorkspace({
     selectionOverlay.classList.add('terminal-selection-rounded-overlay');
     containerRef.current.appendChild(selectionOverlay);
     terminalSelectionOverlayRef.current = selectionOverlay;
-    const controlledCursor = document.createElement('div');
-    controlledCursor.classList.add('terminal-controlled-input-cursor');
-    containerRef.current.appendChild(controlledCursor);
-    terminalControlledCursorRef.current = controlledCursor;
+    const contrastCursor = document.createElement('div');
+    contrastCursor.classList.add('terminal-contrast-cursor');
+    contrastCursor.classList.toggle('is-managed-tui-cursor', useManagedCursorForSessionRef.current);
+    containerRef.current.appendChild(contrastCursor);
+    terminalContrastCursorRef.current = contrastCursor;
     const verticalScrollbar = document.createElement('div');
     verticalScrollbar.classList.add('terminal-vertical-scrollbar');
     const verticalScrollbarThumb = document.createElement('div');
@@ -3359,12 +3556,16 @@ export function TerminalWorkspace({
     terminalGutterRef.current = gutter;
     terminal.attachCustomWheelEventHandler(handleAiAgentTerminalWheel);
     const textarea = terminal.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
+    const handleTerminalFocusVisibilityChange = () => scheduleTerminalContrastCursorSync();
+    terminal.element?.addEventListener('focusin', handleTerminalFocusVisibilityChange);
+    terminal.element?.addEventListener('focusout', handleTerminalFocusVisibilityChange);
     const handleTerminalCompositionStart = () => {
       if (terminalActiveReplayRef.current || terminalReplayInputBlockedRef.current) {
         return;
       }
       terminalImeComposingRef.current = true;
       terminalLocalInputEditingRef.current = terminal.buffer.active.type === 'normal';
+      updateTerminalManagedCursorForInput('edit');
       markLocalTerminalInputForCursorFollow();
       // xterm 的监听器先按真实状态栏 cursor 写坐标；同一事件内立即纠偏，Windows 才不会用错误旧位置弹候选窗。
       syncTerminalImeCompositionAnchor();
@@ -3376,6 +3577,7 @@ export function TerminalWorkspace({
       }
       terminalImeComposingRef.current = true;
       terminalLocalInputEditingRef.current = terminal.buffer.active.type === 'normal';
+      updateTerminalManagedCursorForInput('edit');
       markLocalTerminalInputForCursorFollow();
       syncTerminalImeCompositionAnchor();
       scheduleTerminalImeCompositionAnchorSync();
@@ -3386,6 +3588,7 @@ export function TerminalWorkspace({
       }
       terminalImeComposingRef.current = false;
       terminalLocalInputEditingRef.current = terminal.buffer.active.type === 'normal';
+      updateTerminalManagedCursorForInput('edit');
       markLocalTerminalInputForCursorFollow();
       // 首词结束后继续把隐藏 textarea 留在输入行，第二次 compositionstart 不再从最右侧错误位置起步。
       syncTerminalImeCompositionAnchor();
@@ -3396,6 +3599,7 @@ export function TerminalWorkspace({
         return;
       }
       terminalLocalInputEditingRef.current = terminal.buffer.active.type === 'normal';
+      updateTerminalManagedCursorForInput('edit');
       markLocalTerminalInputForCursorFollow();
     };
     textarea?.addEventListener('compositionstart', handleTerminalCompositionStart);
@@ -3417,17 +3621,17 @@ export function TerminalWorkspace({
         clearTerminalSelectionSnapshot();
         onTerminalDataRef.current(data);
         scheduleTerminalCursorFollow();
-        scheduleTerminalControlledInputCursorSync();
+        scheduleTerminalContrastCursorSync();
       }
     });
     const cursorMoveDisposable = terminal.onCursorMove(() => {
       scheduleTerminalCursorFollow();
       scheduleTerminalImeCompositionAnchorSync();
-      scheduleTerminalControlledInputCursorSync();
+      scheduleTerminalContrastCursorSync();
     });
     const renderDisposable = terminal.onRender(() => {
       scheduleTerminalImeCompositionAnchorSync();
-      scheduleTerminalControlledInputCursorSync();
+      scheduleTerminalContrastCursorSync();
       scheduleTerminalGutterSync();
     });
     // 每次硬换行落到新行时登记一条逻辑行 marker（仅定位）；始终登记，与开关无关，保证切换显示项后
@@ -3440,7 +3644,7 @@ export function TerminalWorkspace({
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
       scheduleTerminalImeCompositionAnchorSync();
-      scheduleTerminalControlledInputCursorSync();
+      scheduleTerminalContrastCursorSync();
       scheduleTerminalVerticalScrollbarSync();
       scheduleTerminalGutterSync();
     });
@@ -3455,7 +3659,7 @@ export function TerminalWorkspace({
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
       scheduleTerminalImeCompositionAnchorSync();
-      scheduleTerminalControlledInputCursorSync();
+      scheduleTerminalContrastCursorSync();
       scheduleTerminalVerticalScrollbarSync();
       scheduleTerminalGutterSync();
     });
@@ -3463,7 +3667,7 @@ export function TerminalWorkspace({
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
       scheduleTerminalImeCompositionAnchorSync();
-      scheduleTerminalControlledInputCursorSync();
+      scheduleTerminalContrastCursorSync();
       scheduleTerminalVerticalScrollbarSync();
       scheduleTerminalGutterSync();
     };
@@ -3527,6 +3731,9 @@ export function TerminalWorkspace({
       xtVersionDisposable.dispose();
       cursorHideObserverDisposable.dispose();
       cursorShowObserverDisposable.dispose();
+      cursorColorObserverDisposable.dispose();
+      cursorColorResetObserverDisposable.dispose();
+      cursorStyleObserverDisposable.dispose();
       dataDisposable.dispose();
       cursorMoveDisposable.dispose();
       renderDisposable.dispose();
@@ -3538,6 +3745,8 @@ export function TerminalWorkspace({
       textarea?.removeEventListener('compositionupdate', handleTerminalCompositionUpdate);
       textarea?.removeEventListener('compositionend', handleTerminalCompositionEnd);
       textarea?.removeEventListener('paste', handleTerminalPaste);
+      terminal.element?.removeEventListener('focusin', handleTerminalFocusVisibilityChange);
+      terminal.element?.removeEventListener('focusout', handleTerminalFocusVisibilityChange);
       observer.disconnect();
       window.removeEventListener('resize', scheduleTerminalSizeSync);
       window.removeEventListener('mouseup', stopTerminalSelectionDragSync, true);
@@ -3575,9 +3784,9 @@ export function TerminalWorkspace({
         window.cancelAnimationFrame(terminalImeCompositionFrameRef.current);
         terminalImeCompositionFrameRef.current = null;
       }
-      if (terminalControlledCursorFrameRef.current !== null) {
-        window.cancelAnimationFrame(terminalControlledCursorFrameRef.current);
-        terminalControlledCursorFrameRef.current = null;
+      if (terminalContrastCursorFrameRef.current !== null) {
+        window.cancelAnimationFrame(terminalContrastCursorFrameRef.current);
+        terminalContrastCursorFrameRef.current = null;
       }
       if (terminalVerticalScrollbarFrameRef.current !== null) {
         window.cancelAnimationFrame(terminalVerticalScrollbarFrameRef.current);
@@ -3595,6 +3804,10 @@ export function TerminalWorkspace({
         window.clearTimeout(terminalCursorRecoveryTimerRef.current);
         terminalCursorRecoveryTimerRef.current = null;
       }
+      if (terminalManagedCursorOutputIdleTimerRef.current !== null) {
+        window.clearTimeout(terminalManagedCursorOutputIdleTimerRef.current);
+        terminalManagedCursorOutputIdleTimerRef.current = null;
+      }
       document.removeEventListener('visibilitychange', handleTerminalGutterVisibilityRefresh);
       terminalImeComposingRef.current = false;
       clearTerminalImePromptAnchor();
@@ -3602,15 +3815,15 @@ export function TerminalWorkspace({
       terminalVerticalScrollbarDragRef.current = null;
       clearTerminalSelectionSnapshot();
       resetTerminalGutterMarkers();
-      hideTerminalControlledInputCursor();
+      hideTerminalContrastCursor();
       matchOverlay.remove();
       selectionOverlay.remove();
-      controlledCursor.remove();
+      contrastCursor.remove();
       verticalScrollbar.remove();
       gutter.remove();
       terminalMatchOverlayRef.current = null;
       terminalSelectionOverlayRef.current = null;
-      terminalControlledCursorRef.current = null;
+      terminalContrastCursorRef.current = null;
       terminalVerticalScrollbarRef.current = null;
       terminalVerticalScrollbarThumbRef.current = null;
       terminalGutterRef.current = null;
@@ -3673,13 +3886,14 @@ export function TerminalWorkspace({
           if (terminalLineWrapModeRef.current === 'horizontal') {
             scheduleTerminalSizeSync();
           }
-          syncLocalCursorVisibility(false);
+          updateTerminalManagedCursorForOutput();
+          syncLocalCursorVisibility();
           scheduleTerminalCursorRecovery();
           scheduleTerminalCursorFollow();
           scheduleTerminalMatchHighlightRefresh();
           scheduleTerminalSelectionOverlaySync();
           scheduleTerminalImeCompositionAnchorSync();
-          scheduleTerminalControlledInputCursorSync();
+          scheduleTerminalContrastCursorSync();
           scheduleTerminalVerticalScrollbarSync();
           scheduleTerminalGutterSync();
         });
@@ -3721,9 +3935,9 @@ export function TerminalWorkspace({
     terminal.options.disableStdin = Boolean(terminalActiveReplayRef.current) || !canAcceptTerminalInput(session);
     applyTerminalSessionBehaviorOptions();
     syncLocalCursorVisibility();
-    scheduleTerminalControlledInputCursorSync();
+    scheduleTerminalContrastCursorSync();
     window.requestAnimationFrame(focusPendingTerminalInput);
-  }, [minimumContrastRatioForSession, session?.id, session?.status, terminalScrollbackRows, useControlledInputCursorForSession]);
+  }, [minimumContrastRatioForSession, session?.id, session?.status, terminalScrollbackRows]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -3736,13 +3950,14 @@ export function TerminalWorkspace({
     terminal.options.fontSize = settings.shellFontSize;
     terminal.options.letterSpacing = 0;
     terminal.options.theme = terminalTheme;
+    terminalCursorColorRef.current = parseTerminalRgbColor(terminalTheme.cursor);
     terminal.clearTextureAtlas();
 
     window.requestAnimationFrame(() => {
       syncTerminalSizeToRemote();
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
-      scheduleTerminalControlledInputCursorSync();
+      scheduleTerminalContrastCursorSync();
       scheduleTerminalVerticalScrollbarSync();
     });
   }, [settings.shellFontSize, terminalFontFamily, terminalTheme]);
@@ -3772,6 +3987,14 @@ export function TerminalWorkspace({
     // 会话切换后重放缓存属于历史画面恢复，不能继承上一会话的本地输入跟随状态。
     lastLocalTerminalInputAtRef.current = 0;
     terminalLocalInputEditingRef.current = false;
+    // 每个会话独立开始托管光标生命周期，禁止上一 Codex 会话的提交态或 idle 定时器串到新标签。
+    if (terminalManagedCursorOutputIdleTimerRef.current !== null) {
+      window.clearTimeout(terminalManagedCursorOutputIdleTimerRef.current);
+      terminalManagedCursorOutputIdleTimerRef.current = null;
+    }
+    // Codex 新标签在加载输出稳定前不显示光标；稳定后由输出状态机自动恢复，不要求输入框先出现文字。
+    terminalManagedCursorSuppressedRef.current = useManagedCursorForSessionRef.current;
+    terminalManagedCursorInputGraceUntilRef.current = 0;
     terminalHorizontalOverflowEvidenceRef.current = null;
     terminalHorizontalPostShrinkCeilingRef.current = null;
     // 恢复目标会话由真实软换行确认的内容高水位，避免上一会话串宽，也避免切回来后历史长行宽度丢失。
@@ -3779,13 +4002,13 @@ export function TerminalWorkspace({
       ? terminalHorizontalContentColsBySessionRef.current[session.id] ?? 0
       : 0;
     terminalHorizontalFullBufferMeasurePendingRef.current = false;
-    hideTerminalControlledInputCursor();
+    hideTerminalContrastCursor();
     remoteTerminalSizeRef.current = null;
     // FIFO 屏障后的重放完成逻辑会按新会话 buffer 推送尺寸；屏障前不能拿上一会话画面测量并 resize 新 PTY。
     replayCurrentSessionOutput();
     window.requestAnimationFrame(() => {
       focusPendingTerminalInput();
-      scheduleTerminalControlledInputCursorSync();
+      scheduleTerminalContrastCursorSync();
       scheduleTerminalVerticalScrollbarSync();
     });
   }, [session?.id]);
@@ -3816,7 +4039,7 @@ export function TerminalWorkspace({
       syncTerminalSizeToRemote();
       scheduleTerminalMatchHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
-      scheduleTerminalControlledInputCursorSync();
+      scheduleTerminalContrastCursorSync();
       scheduleTerminalVerticalScrollbarSync();
     });
   }, [effectiveTerminalLineWrapMode]);
