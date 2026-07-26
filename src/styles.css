@@ -1085,6 +1085,21 @@ select:disabled {
   max-height: 100%;
 }
 
+/* Codex 会话从加载首帧起完全由宿主绘制光标，隐藏重绘途中经过任意位置的 xterm 原生光标。 */
+.terminal-surface .xterm.is-managed-tui-cursor-active .xterm-cursor {
+  animation: none !important;
+}
+
+.terminal-surface .xterm.is-managed-tui-cursor-active .xterm-cursor.xterm-cursor-bar,
+.terminal-surface .xterm.is-managed-tui-cursor-active .xterm-cursor.xterm-cursor-underline {
+  box-shadow: none !important;
+}
+
+.terminal-surface .xterm.is-managed-tui-cursor-active .xterm-cursor.xterm-cursor-block {
+  color: inherit !important;
+  background-color: transparent !important;
+}
+
 /* 匹配和选区圆角层放在 xterm 文字层下方，只画底色，不覆盖终端字符。 */
 .terminal-match-rounded-overlay,
 .terminal-selection-rounded-overlay {
@@ -1102,17 +1117,22 @@ select:disabled {
   z-index: 2;
 }
 
-/* Codex 输入区使用独立细光标，放在字符层上方但不接管鼠标事件和选区背景。 */
-.terminal-controlled-input-cursor {
+/* 原生光标与当前单元格对比度不足时，在完全相同的位置叠加反色细线；不接管鼠标和选区。 */
+.terminal-contrast-cursor {
   position: absolute;
   z-index: 4;
   display: none;
   pointer-events: none;
   border-radius: 1px;
-  animation: terminal-controlled-input-cursor-blink 1s steps(2, start) infinite;
+  animation: terminal-contrast-cursor-blink 1s steps(2, start) infinite;
 }
 
-@keyframes terminal-controlled-input-cursor-blink {
+/* Codex 光标由输入/提交状态驱动，不播放永久 CSS 闪烁动画。 */
+.terminal-contrast-cursor.is-managed-tui-cursor {
+  animation: none;
+}
+
+@keyframes terminal-contrast-cursor-blink {
   0%,
   45% {
     opacity: 1;

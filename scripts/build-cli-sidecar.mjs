@@ -9,6 +9,51 @@ const srcTauriDir = join(repoRoot, 'src-tauri');
 // Tauri externalBin 约定：sidecar 二进制放在此目录，文件名带 host target triple 后缀。
 const binariesDir = join(srcTauriDir, 'binaries');
 
+// Windows 不允许覆盖正在运行的 exe。开发态 Codex MCP 可能仍占用 target/debug 下由 Tauri 复制的 sidecar，
+// 因此只在显式 --stop-locked-dev-mcp 模式下，按绝对路径和 mcp --stdio 参数精确停止该旧进程。
+function stopLockedDevMcpSidecar() {
+  if (process.platform !== 'win32') {
+    return;
+  }
+
+  const debugCliPath = join(srcTauriDir, 'target', 'debug', 'myterminal-cli.exe');
+  if (!existsSync(debugCliPath)) {
+    return;
+  }
+
+  const powerShellScript = `
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+$targetPath = [System.IO.Path]::GetFullPath($env:MYTERMINAL_LOCKED_DEV_CLI)
+$lockedProcesses = @(
+  Get-CimInstance -ClassName Win32_Process -Filter "Name = 'myterminal-cli.exe'" |
+    Where-Object {
+      $_.ExecutablePath -and
+      ([System.IO.Path]::GetFullPath($_.ExecutablePath) -ieq $targetPath) -and
+      ($_.CommandLine -match '\\smcp\\s+--stdio(?:\\s|$)')
+    }
+)
+foreach ($lockedProcess in $lockedProcesses) {
+  Stop-Process -Id $lockedProcess.ProcessId -Force -ErrorAction Stop
+  Wait-Process -Id $lockedProcess.ProcessId -Timeout 5 -ErrorAction SilentlyContinue
+}
+if ($lockedProcesses.Count -gt 0) {
+  $processIds = ($lockedProcesses | ForEach-Object { $_.ProcessId }) -join ', '
+  Write-Output "Stopped locked dev MCP sidecar process(es): $processIds"
+}
+`;
+  const output = execFileSync(
+    'powershell',
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', powerShellScript],
+    {
+      encoding: 'utf8',
+      env: { ...process.env, MYTERMINAL_LOCKED_DEV_CLI: debugCliPath },
+    },
+  ).trim();
+  if (output) {
+    console.log(output);
+  }
+}
+
 // 通过 rustc -vV 动态探测 host target triple，绝不写死平台，保证跨机器/跨平台构建正确。
 function detectHostTriple() {
   const output = execFileSync('rustc', ['-vV'], { encoding: 'utf8' });
@@ -20,6 +65,9 @@ function detectHostTriple() {
 }
 
 function main() {
+  if (process.argv.includes('--stop-locked-dev-mcp')) {
+    stopLockedDevMcpSidecar();
+  }
   const triple = detectHostTriple();
   const isWindows = process.platform === 'win32';
   const exeSuffix = isWindows ? '.exe' : '';
