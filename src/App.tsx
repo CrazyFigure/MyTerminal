@@ -67,6 +67,9 @@ import { backend } from './backend';
 import { writeClipboardText } from './clipboard';
 import { useAppStore } from './store';
 import {
+  agentChatCjkFontOptions,
+  agentChatLatinFontOptions,
+  buildAgentChatFontFamily,
   buildTerminalFontFamily,
   isTerminalFontFamilyAvailable,
   isTerminalMonospaceFontFamily,
@@ -3003,6 +3006,17 @@ function SettingsModal({
   const selectedCjkFontFamily = findFontOption(cjkOptions, configuredCjkFontFamily)
     ?? cjkOptions[0]
     ?? selectedLatinFontFamily;
+  // AI 对话正文允许比例字体，选项直接对全部系统字体做可用性筛选，不做等宽约束。
+  const agentChatLatinOptions = mergeInstalledFontOptions(
+    [...agentChatLatinFontOptions, draftSettings.agentChatLatinFontFamily].filter((item): item is string => Boolean(item)),
+    systemFonts,
+    isTerminalFontFamilyAvailable,
+  );
+  const agentChatCjkOptions = mergeInstalledFontOptions(
+    [...agentChatCjkFontOptions, draftSettings.agentChatCjkFontFamily].filter((item): item is string => Boolean(item)),
+    systemFonts,
+    isTerminalFontFamilyAvailable,
+  );
   const agentAutoGroups = useMemo(
     () => buildConnectionGroupTree(draftSettings.connectionGroups, connections),
     [connections, draftSettings.connectionGroups],
@@ -3019,6 +3033,17 @@ function SettingsModal({
       color: draftSettings.terminalForeground,
     }),
     [draftSettings],
+  );
+  // AI 对话字体预览：空配置回落到终端中英文字体与字号，与右侧对话面板的实际渲染保持一致。
+  const agentChatPreviewStyle = useMemo<CSSProperties>(
+    () => ({
+      fontFamily: buildAgentChatFontFamily(
+        draftSettings.agentChatLatinFontFamily || configuredLatinFontFamily,
+        draftSettings.agentChatCjkFontFamily || configuredCjkFontFamily,
+      ),
+      fontSize: draftSettings.agentChatFontSize || draftSettings.shellFontSize,
+    }),
+    [configuredCjkFontFamily, configuredLatinFontFamily, draftSettings],
   );
   const updateDraftSettings = (updater: (settings: AppSettings) => AppSettings) => {
     setDraftSettings((current) => updater(current));
@@ -3513,7 +3538,7 @@ function SettingsModal({
 
           <div className="settings-content">
             {activeTab === 'appearance' ? (
-              <div className="stack gap-16">
+              <div className="stack gap-16 settings-appearance-pane">
                 {/* 外观页按用户认知路径分块：先配置应用偏好，再调整终端视觉与交互。 */}
                 <section className="settings-section-block">
                   <div>
@@ -3588,11 +3613,80 @@ function SettingsModal({
                     </div>
                     <label>
                       <span>{t('fieldFontSize')}</span>
-                      <input type="number" value={draftSettings.shellFontSize} onChange={(event) => updateDraftSettings((current) => ({ ...current, shellFontSize: Number(event.target.value) || 15 }))} />
+                      <input
+                        onChange={(event) => updateDraftSettings((current) => ({ ...current, shellFontSize: Number(event.target.value) || 15 }))}
+                        onWheel={(event) => event.currentTarget.blur()}
+                        type="number"
+                        value={draftSettings.shellFontSize}
+                      />
                     </label>
                     <div className="font-preview-panel span-2" style={terminalPreviewStyle}>
                       <span>0123456789 abcdefghABCDEFGH</span>
                       <strong>终端中文字体预览</strong>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="settings-section-block">
+                  <div>
+                    <h3>{t('appearanceAgentChatFontTitle')}</h3>
+                  </div>
+
+                  <div className="form-grid">
+                    <div className="form-field">
+                      <span>{t('fieldLatinFontFamily')}</span>
+                      <CustomSelect
+                        aria-label={t('fieldLatinFontFamily')}
+                        emptyText={t('fontSearchEmpty')}
+                        value={draftSettings.agentChatLatinFontFamily ?? ''}
+                        onChange={(val) => updateDraftSettings((current) => ({ ...current, agentChatLatinFontFamily: val || undefined }))}
+                        onOpen={loadSystemFontsOnce}
+                        options={[
+                          { value: '', label: t('agentChatFontFollowTerminal') },
+                          ...agentChatLatinOptions.map((fontFamily) => ({
+                            value: fontFamily,
+                            label: fontFamily,
+                          })),
+                        ]}
+                        searchable
+                        searchPlaceholder={t('fontSearchPlaceholder')}
+                      />
+                    </div>
+                    <div className="form-field">
+                      <span>{t('fieldCjkFontFamily')}</span>
+                      <CustomSelect
+                        aria-label={t('fieldCjkFontFamily')}
+                        emptyText={t('fontSearchEmpty')}
+                        value={draftSettings.agentChatCjkFontFamily ?? ''}
+                        onChange={(val) => updateDraftSettings((current) => ({ ...current, agentChatCjkFontFamily: val || undefined }))}
+                        onOpen={loadSystemFontsOnce}
+                        options={[
+                          { value: '', label: t('agentChatFontFollowTerminal') },
+                          ...agentChatCjkOptions.map((fontFamily) => ({
+                            value: fontFamily,
+                            label: fontFamily,
+                          })),
+                        ]}
+                        searchable
+                        searchPlaceholder={t('fontSearchPlaceholder')}
+                      />
+                    </div>
+                    <label>
+                      <span>{t('fieldFontSize')}</span>
+                      <input
+                        max={48}
+                        min={0}
+                        onChange={(event) => updateDraftSettings((current) => ({ ...current, agentChatFontSize: Number(event.target.value) || 0 }))}
+                        onWheel={(event) => event.currentTarget.blur()}
+                        type="number"
+                        value={draftSettings.agentChatFontSize ?? 0}
+                      />
+                    </label>
+                    {/* 空字体与 0 字号都表示跟随终端设置，老配置升级后对话区观感保持不变。 */}
+                    <p className="field-hint">{t('agentChatFontSizeHint')}</p>
+                    <div className="font-preview-panel span-2" style={agentChatPreviewStyle}>
+                      <span>0123456789 abcdefghABCDEFGH</span>
+                      <strong>AI 对话字体预览</strong>
                     </div>
                   </div>
                 </section>
@@ -3639,6 +3733,7 @@ function SettingsModal({
                           step={1}
                           value={Math.round((draftSettings.terminalBackgroundImageOpacity ?? 0.18) * 100)}
                           onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalBackgroundImageOpacity: clamp(Number(event.target.value) || 0, 0, 100) / 100 }))}
+                          onWheel={(event) => event.currentTarget.blur()}
                         />
                       </div>
                     </label>
@@ -3977,7 +4072,7 @@ function SettingsModal({
             ) : null}
 
             {activeTab === 'agent' ? (
-              <div className="stack gap-16">
+              <div className="stack gap-16 settings-mcp-pane">
                 <section className={`settings-section-block agent-bridge-control ${agentBridgeSwitchBusy ? 'is-pending' : ''}`}>
                   <div className="agent-bridge-control-main">
                     <div>
@@ -4072,6 +4167,7 @@ function SettingsModal({
                             agentBridge: { ...current.agentBridge, defaultTimeoutSec: Number(event.target.value) || 60 },
                           }))
                         }
+                        onWheel={(event) => event.currentTarget.blur()}
                       />
                     </label>
                     <label>
@@ -4086,6 +4182,7 @@ function SettingsModal({
                             agentBridge: { ...current.agentBridge, maxOutputBytes: Number(event.target.value) || 200000 },
                           }))
                         }
+                        onWheel={(event) => event.currentTarget.blur()}
                       />
                     </label>
                   </div>
@@ -7465,8 +7562,13 @@ export default function App() {
             <div className={`agent-sidebar-tab-panel ${agentSidebarTab === 'chat' ? '' : 'is-hidden'}`}>
               <AgentChatPanel
                 approvalRequests={agentChatApprovalRequests}
-                fontFamily={buildPreviewFontFamily(settings)}
-                fontSize={settings.shellFontSize}
+                codeFontFamily={buildPreviewFontFamily(settings)}
+                fontFamily={buildAgentChatFontFamily(
+                  // 对话字体独立于终端：未单独配置（空字体 / 0 字号）时回落到终端对应设置。
+                  settings.agentChatLatinFontFamily || settings.shellLatinFontFamily || settings.shellFontFamily,
+                  settings.agentChatCjkFontFamily || settings.shellCjkFontFamily || settings.shellLatinFontFamily || settings.shellFontFamily,
+                )}
+                fontSize={settings.agentChatFontSize || settings.shellFontSize}
                 onApproveRequest={approveAgentBridgeRequest}
                 onRejectRequest={rejectAgentBridgeRequest}
                 providers={agentProviders}

@@ -56,9 +56,11 @@ interface AgentChatPanelProps {
   approvalRequests: AgentBridgeRequest[];
   onApproveRequest: (request: AgentBridgeRequest) => void;
   onRejectRequest: (request: AgentBridgeRequest) => void;
-  /** 与终端一致的字体族；代码块和正文都用它，保证中英文对齐与用户偏好一致。 */
+  /** AI 对话正文字体族；跟随外观设置中的 AI 对话字体，空配置时回落到终端字体。 */
   fontFamily: string;
   fontSize: number;
+  /** 代码块与工具输出单独使用的终端等宽字体栈，避免比例字体破坏代码对齐。 */
+  codeFontFamily: string;
   t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
 }
 
@@ -170,6 +172,7 @@ export function AgentChatPanel({
   onRejectRequest,
   fontFamily,
   fontSize,
+  codeFontFamily,
   t,
 }: AgentChatPanelProps) {
   const [providerId, setProviderId] = useState('');
@@ -552,11 +555,12 @@ export function AgentChatPanel({
   return (
     <div
       className="agent-chat-panel"
-      // 字体经 CSS 变量下发：消息正文、代码块与输入框统一跟随用户在设置里选的终端字体。
+      // 字体经 CSS 变量下发：正文与输入框跟随 AI 对话字体设置，代码块与工具输出单独使用终端等宽字体栈。
       style={
         {
           '--agent-chat-font': fontFamily,
           '--agent-chat-font-size': `${fontSize}px`,
+          '--agent-chat-code-font': codeFontFamily,
         } as CSSProperties
       }
     >
