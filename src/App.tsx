@@ -703,6 +703,11 @@ const parseAgentModelLines = (value: string, previous: AgentModel[]): AgentModel
 const formatAgentModelLines = (models: AgentModel[]): string =>
   models.map((item) => `${item.id} | ${item.contextWindow} | ${item.maxTokens}`).join('\n');
 
+// 端点改动对比：后端永不下发明文密钥，基线与草稿的 apiKey 缺省形态可能不一致，
+// 统一归一为空串后再序列化，只有用户实际输入新密钥或改动其它字段才算有修改。
+const serializeAgentProvidersForCompare = (providers: AgentProvider[]): string =>
+  JSON.stringify(providers.map(({ apiKey, ...rest }) => ({ ...rest, apiKey: apiKey ?? '' })));
+
 /**
  * 预览最终会请求的完整 URL，规则必须与后端 join_url 保持一致：
  * 已填到完整端点则原样使用；结尾是重复版本段（如 /v1）则剥掉后再拼。
@@ -2956,6 +2961,8 @@ function SettingsModal({
   const [systemFontsLoaded, setSystemFontsLoaded] = useState(false);
   // AI 端点草稿：与其它设置一样先在本地编辑，点击保存才落盘。
   const [agentProviderDrafts, setAgentProviderDrafts] = useState<AgentProvider[]>([]);
+  // 端点列表的基线快照：与草稿对比判断是否存在未保存修改，从而禁用保存按钮。
+  const [agentProvidersBaseline, setAgentProvidersBaseline] = useState<AgentProvider[] | null>(null);
   // 每个端点独立控制密钥是否明文展示，与 WebDAV 密码同一交互。
   const [revealApiKeys, setRevealApiKeys] = useState<Record<string, boolean>>({});
 
@@ -2966,8 +2973,16 @@ function SettingsModal({
     }
     backend
       .listAgentProviders()
-      .then(setAgentProviderDrafts)
-      .catch(() => setAgentProviderDrafts([]));
+      .then((providers) => {
+        setAgentProviderDrafts(providers);
+        // 基线同步记录拉取结果，草稿未改动时保存按钮保持禁用。
+        setAgentProvidersBaseline(providers);
+      })
+      .catch(() => {
+        setAgentProviderDrafts([]);
+        // 拉取失败也落基线，否则新增端点后按钮会因基线缺失一直禁用。
+        setAgentProvidersBaseline([]);
+      });
   }, [open]);
 
 
@@ -3036,6 +3051,12 @@ function SettingsModal({
   const updateDraftSettings = (updater: (settings: AppSettings) => AppSettings) => {
     setDraftSettings((current) => updater(current));
   };
+  // 草稿与已保存配置相同时禁用各页保存按钮，避免重复点击触发无意义的落盘；
+  // 四个保存入口落盘的都是同一份完整设置，因此共用同一个"有修改"判断。
+  const hasSettingsChanges = JSON.stringify(draftSettings) !== JSON.stringify(settings);
+  // 端点保存按钮只在草稿相对基线有改动（含新输入密钥）时可用；基线未拉取完成前保持禁用。
+  const hasAgentProviderChanges = agentProvidersBaseline !== null
+    && serializeAgentProvidersForCompare(agentProviderDrafts) !== serializeAgentProvidersForCompare(agentProvidersBaseline);
   const toggleAgentAutoConnection = (connectionId: string, checked: boolean) => {
     updateDraftSettings((current) => {
       const currentIds = current.agentBridge.allowedConnectionIds;
@@ -3121,7 +3142,10 @@ function SettingsModal({
     try {
       const saved = await backend.saveAgentProviders(agentProviderDrafts);
       // 保存后回填后端归一化结果，并清空本地明文密钥输入框，避免密钥长期留在内存里。
-      setAgentProviderDrafts(saved.map((item) => ({ ...item, apiKey: '' })));
+      const normalized = saved.map((item) => ({ ...item, apiKey: '' }));
+      setAgentProviderDrafts(normalized);
+      // 基线与草稿同步后，未再次修改时保存按钮恢复禁用。
+      setAgentProvidersBaseline(normalized);
       onAgentProvidersSaved(saved);
       showActionFeedback('save-agent-providers', 'is-success', t('statusSettingsSaved'));
     } catch (error) {
@@ -3691,7 +3715,7 @@ function SettingsModal({
 
                 <div className="modal-actions">
                   {settingsSaveMessage ? <span className="inline-save-feedback">{settingsSaveMessage}</span> : null}
-                  <button className="primary-button" onClick={() => void persistSettingsWithFeedback()} type="button">
+                  <button className="primary-button" disabled={!hasSettingsChanges} onClick={() => void persistSettingsWithFeedback()} type="button">
                     <Save size={16} /> {t('saveAppearance')}
                   </button>
                 </div>
@@ -3789,7 +3813,7 @@ function SettingsModal({
 
                 <div className="modal-actions">
                   {settingsSaveMessage ? <span className="inline-save-feedback">{settingsSaveMessage}</span> : null}
-                  <button className="primary-button" onClick={() => void persistSettingsWithFeedback()} type="button">
+                  <button className="primary-button" disabled={!hasSettingsChanges} onClick={() => void persistSettingsWithFeedback()} type="button">
                     <Save size={16} /> {t('saveResourceSettings')}
                   </button>
                 </div>
@@ -3807,7 +3831,7 @@ function SettingsModal({
                       <button className="secondary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void runSettingsAction('test-webdav', () => testWebdavConnection(draftSettings), t('statusWebdavTestPassed'))} type="button">
                         <RefreshCw size={16} /> {settingsActionRunning === 'test-webdav' ? t('working') : t('testWebdavConnection')}
                       </button>
-                      <button className="primary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void persistSettingsWithFeedback()} type="button">
+                      <button className="primary-button" disabled={Boolean(settingsActionRunning) || !hasSettingsChanges} onClick={() => void persistSettingsWithFeedback()} type="button">
                         <Save size={16} /> {t('saveWebdavSettings')}
                       </button>
                     </div>
@@ -3967,7 +3991,7 @@ function SettingsModal({
                     </div>
                     <button
                       className="primary-button"
-                      disabled={Boolean(settingsActionRunning) || agentBridgeSwitchBusy}
+                      disabled={Boolean(settingsActionRunning) || agentBridgeSwitchBusy || !hasSettingsChanges}
                       onClick={() => void saveAgentBridgeSettings()}
                       type="button"
                     >
@@ -4227,7 +4251,7 @@ function SettingsModal({
                   ) : null}
 
                   <div className="section-row compact">
-                    <button className="primary-button" onClick={() => void saveAgentProviders()} type="button">
+                    <button className="primary-button" disabled={!hasAgentProviderChanges} onClick={() => void saveAgentProviders()} type="button">
                       <Save size={16} /> {t('agentProvidersSave')}
                     </button>
                   </div>
