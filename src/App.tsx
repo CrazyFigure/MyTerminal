@@ -4891,9 +4891,17 @@ export default function App() {
         return next;
       });
       agentRequestStatusRef.current = Object.fromEntries(requests.map((request) => [request.id, request.status]));
-      if (pendingNewRequests.length) {
+      // 内置 AI 对话的审批直接挂在原工具调用下方；侧栏被收起时重新展开到对话页，确保审批入口可见。
+      const pendingChatRequests = pendingNewRequests.filter((request) => Boolean(request.conversationId));
+      if (pendingChatRequests.length) {
+        setAgentSidebarCollapsed(false);
+        setAgentSidebarTab('chat');
+      }
+      // 只有外部 MCP 请求才进入独立审批页。
+      const pendingExternalRequests = pendingNewRequests.filter((request) => !request.conversationId);
+      if (pendingExternalRequests.length) {
         void openAgentRequestPanel(false);
-        void showAgentRequestNotification(pendingNewRequests[0]);
+        void showAgentRequestNotification(pendingExternalRequests[0]);
       }
     } catch {
       setAgentBridgeRequests([]);
@@ -6252,6 +6260,11 @@ export default function App() {
       })
       .map(({ request }) => request);
   }, [agentBridgeRequests]);
+  // AI 对话审批仍保留在执行审批列表作为审计记录，同时传回对话面板完成原位审批。
+  const agentChatApprovalRequests = useMemo(
+    () => agentBridgeRequests.filter((request) => Boolean(request.conversationId && request.toolCallId)),
+    [agentBridgeRequests],
+  );
   const newestAgentRequestId = orderedAgentBridgeRequests.length
     ? orderedAgentBridgeRequests[orderedAgentBridgeRequests.length - 1].id
     : '';
@@ -6366,7 +6379,8 @@ export default function App() {
                     <label>
                       <span>{t('agentRequestCommand')}</span>
                       <textarea
-                        disabled={request.status !== 'pending'}
+                        // 内置 AI 请求在对话内审批；这里作为审计记录只读展示，避免出现两个可操作入口。
+                        disabled={request.status !== 'pending' || Boolean(request.conversationId)}
                         rows={3}
                         spellCheck={false}
                         value={agentCommandEdits[request.id] ?? request.command ?? ''}
@@ -6387,7 +6401,10 @@ export default function App() {
                   ) : null}
                   {request.error ? <div className="sync-action-feedback is-error">{request.error}</div> : null}
                   {request.result ? <pre className="agent-request-output">{JSON.stringify(request.result, null, 2)}</pre> : null}
-                  {request.status === 'pending' ? (
+                  {request.status === 'pending' && request.conversationId ? (
+                    <div className="agent-request-record-hint">{t('agentRequestApproveInChat')}</div>
+                  ) : null}
+                  {request.status === 'pending' && !request.conversationId ? (
                     <div className="section-row compact">
                       <button className="primary-button" onClick={() => approveAgentBridgeRequest(request)} type="button">
                         <Play size={16} /> {t('approveAgentRequest')}
@@ -7400,62 +7417,68 @@ export default function App() {
         </div>
       </main>
 
-      {!agentSidebarCollapsed ? (
-        <>
-          <div
-            className="resize-handle resize-handle-main resize-handle-agent-sidebar"
-            onPointerDown={(event) => {
-              const startWidth = agentSidebarWidth;
-              beginResize(event, (moveEvent, startX) => {
-                setAgentSidebarWidth(clamp(
-                  startWidth + (startX - moveEvent.clientX),
-                  sidePanelMinWidth,
-                  resolveSidePanelMaxWidth(!sidebarCollapsed, sidebarWidth, true),
-                ));
-              });
-            }}
-          />
-          <aside className="agent-sidebar card" style={{ minWidth: sidePanelMinWidth, width: agentSidebarWidth }}>
-            <header className="agent-sidebar-header panel-tab-row">
-              <div className="tab-list">
-                <button
-                  className={`panel-tab ${agentSidebarTab === 'chat' ? 'is-active' : ''}`}
-                  onClick={() => setAgentSidebarTab('chat')}
-                  type="button"
-                >
-                  <Bot size={16} />
-                  <span>{t('panelAgentChat')}</span>
-                </button>
-                <button
-                  className={`panel-tab ${agentSidebarTab === 'requests' ? 'is-active' : ''}`}
-                  onClick={() => setAgentSidebarTab('requests')}
-                  type="button"
-                >
-                  <ShieldCheck size={16} />
-                  <span>{t('panelAgentRequests')}</span>
-                </button>
-              </div>
-              {agentSidebarTab === 'requests' ? (
-                <button className="secondary-button slim" onClick={() => clearAgentBridgeRequests()} type="button">
-                  <Trash2 size={14} /> {t('clearAgentBridgeRequests')}
-                </button>
-              ) : null}
-            </header>
-            <div ref={agentSidebarBodyRef} className="agent-sidebar-body">
-              {agentSidebarTab === 'chat' ? (
-                <AgentChatPanel
-                  fontFamily={buildPreviewFontFamily(settings)}
-                  fontSize={settings.shellFontSize}
-                  providers={agentProviders}
-                  t={t}
-                />
-              ) : (
-                agentRequestPanel
-              )}
+      {/* 对话组件始终挂载：切换审批页或收起侧栏只能隐藏 DOM，不能销毁事件监听与流式状态。 */}
+      <>
+        <div
+          className={`resize-handle resize-handle-main resize-handle-agent-sidebar ${agentSidebarCollapsed ? 'is-hidden' : ''}`}
+          onPointerDown={(event) => {
+            const startWidth = agentSidebarWidth;
+            beginResize(event, (moveEvent, startX) => {
+              setAgentSidebarWidth(clamp(
+                startWidth + (startX - moveEvent.clientX),
+                sidePanelMinWidth,
+                resolveSidePanelMaxWidth(!sidebarCollapsed, sidebarWidth, true),
+              ));
+            });
+          }}
+        />
+        <aside
+          className={`agent-sidebar card ${agentSidebarCollapsed ? 'is-hidden' : ''}`}
+          style={{ minWidth: sidePanelMinWidth, width: agentSidebarWidth }}
+        >
+          <header className="agent-sidebar-header panel-tab-row">
+            <div className="tab-list">
+              <button
+                className={`panel-tab ${agentSidebarTab === 'chat' ? 'is-active' : ''}`}
+                onClick={() => setAgentSidebarTab('chat')}
+                type="button"
+              >
+                <Bot size={16} />
+                <span>{t('panelAgentChat')}</span>
+              </button>
+              <button
+                className={`panel-tab ${agentSidebarTab === 'requests' ? 'is-active' : ''}`}
+                onClick={() => setAgentSidebarTab('requests')}
+                type="button"
+              >
+                <ShieldCheck size={16} />
+                <span>{t('panelAgentRequests')}</span>
+              </button>
             </div>
-          </aside>
-        </>
-      ) : null}
+            {agentSidebarTab === 'requests' ? (
+              <button className="secondary-button slim" onClick={() => clearAgentBridgeRequests()} type="button">
+                <Trash2 size={14} /> {t('clearAgentBridgeRequests')}
+              </button>
+            ) : null}
+          </header>
+          <div ref={agentSidebarBodyRef} className="agent-sidebar-body">
+            <div className={`agent-sidebar-tab-panel ${agentSidebarTab === 'chat' ? '' : 'is-hidden'}`}>
+              <AgentChatPanel
+                approvalRequests={agentChatApprovalRequests}
+                fontFamily={buildPreviewFontFamily(settings)}
+                fontSize={settings.shellFontSize}
+                onApproveRequest={approveAgentBridgeRequest}
+                onRejectRequest={rejectAgentBridgeRequest}
+                providers={agentProviders}
+                t={t}
+              />
+            </div>
+            <div className={`agent-sidebar-tab-panel ${agentSidebarTab === 'requests' ? '' : 'is-hidden'}`}>
+              {agentRequestPanel}
+            </div>
+          </div>
+        </aside>
+      </>
       </div>
 
       <ConnectionManagerModal open={connectionsOpen} onClose={() => setConnectionsOpen(false)} />

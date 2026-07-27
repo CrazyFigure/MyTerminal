@@ -319,6 +319,11 @@ select:disabled {
   overflow: hidden;
 }
 
+/* 收起侧栏只隐藏布局，不卸载 AI 对话组件；流式事件与审批等待状态必须持续存活。 */
+.agent-sidebar.is-hidden {
+  display: none;
+}
+
 .agent-sidebar-header {
   display: flex;
   align-items: center;
@@ -345,6 +350,15 @@ select:disabled {
   overflow: auto;
   padding: 6px;
   scrollbar-width: thin;
+}
+
+.agent-sidebar-tab-panel {
+  height: 100%;
+  min-height: 0;
+}
+
+.agent-sidebar-tab-panel.is-hidden {
+  display: none;
 }
 
 .runtime-header {
@@ -4021,6 +4035,39 @@ select:disabled {
   font-size: 0.8rem;
 }
 
+/* 内置 AI 发起的审批紧跟原工具调用展示，用户无需离开对话即可确认或拒绝。 */
+.agent-chat-approval {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid var(--app-card-border);
+  background: color-mix(in srgb, var(--app-accent, #4f46e5) 7%, transparent);
+}
+
+.agent-chat-approval.status-rejected,
+.agent-chat-approval.status-error {
+  background: color-mix(in srgb, var(--app-danger, #e5484d) 7%, transparent);
+}
+
+.agent-chat-approval-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--app-muted);
+  font-size: 0.8rem;
+}
+
+.agent-chat-approval .section-row {
+  margin: 0;
+}
+
+.agent-chat-approval .primary-button,
+.agent-chat-approval .secondary-button {
+  min-height: 28px;
+  padding: 4px 8px;
+}
+
 .agent-chat-tool-payload {
   margin: 0;
   padding: 8px;
@@ -4471,6 +4518,12 @@ select:disabled {
 .agent-request-logs {
   display: grid;
   gap: 4px;
+  color: var(--app-muted);
+  font-size: 12px;
+}
+
+/* 对话来源的请求在独立页只保留审计记录，明确提示唯一审批入口。 */
+.agent-request-record-hint {
   color: var(--app-muted);
   font-size: 12px;
 }

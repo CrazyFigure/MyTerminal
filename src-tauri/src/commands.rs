@@ -6615,6 +6615,7 @@ pub fn start_agent_chat(
                 &app_state.storage,
                 &app_state.crypto,
                 &settings.agent_bridge,
+                &conversation_id,
                 call,
             )
         };

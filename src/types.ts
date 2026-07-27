@@ -455,6 +455,10 @@ export interface AgentBridgeRequest {
   error?: string;
   createdAt: string;
   updatedAt: string;
+  /** 内置 AI 对话发起的审批会带对话 ID；外部 MCP 请求为空。 */
+  conversationId?: string;
+  /** 发起审批的工具调用 ID，用于把审批操作准确显示在原工具卡片中。 */
+  toolCallId?: string;
 }
 
 export interface ConnectionDraft {
