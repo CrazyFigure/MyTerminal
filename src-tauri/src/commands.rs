@@ -8,7 +8,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, RecvTimeoutError, TryRecvError},
-        Arc, Mutex, MutexGuard,
+        Arc, Condvar, Mutex, MutexGuard,
     },
     thread,
     time::{Duration, Instant},
@@ -25,10 +25,11 @@ use ssh2::{Channel, ExtendedData, MethodType, Session, Sftp};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
-    agent_bridge,
+    agent_bridge, agent_chat, agent_tools,
     error::AppError,
     models::{
-        AppSettings, BootstrapState, ConnectionProfile, EditorDocument, HistoryEntry,
+        AgentConversation, AgentProvider, AgentRunOptions, AppSettings, BootstrapState,
+        ConnectionProfile, EditorDocument, HistoryEntry,
         HistoryEntryInput, LocalConfigBundle, LocalTerminalProfile, LocalTerminalSettings,
         RemoteFileEntry, RuntimeConnectionItem, RuntimeConnectionList, RuntimeCpuCore,
         RuntimeOverview, SshJumpHost, SshProxyConfig,
@@ -38,8 +39,9 @@ use crate::{
         UpdateCheckResult, WebDavSettings,
     },
     state::{
-        AppState, AuxiliarySshSession, RuntimeSession, SessionControl, TerminalOutputQueue,
-        TunnelRuntime, TunnelSshPool, TunnelSshPoolSession, TunnelSshPoolState,
+        AgentPtyPhase, AgentPtyState, AppState, AuxiliarySshSession, RuntimeSession,
+        SessionControl, TerminalOutputQueue, TunnelRuntime, TunnelSshPool, TunnelSshPoolSession,
+        TunnelSshPoolState,
     },
 };
 
@@ -705,6 +707,154 @@ fn queue_session_status(
     let _ = app_handle.emit("terminal-output-ready", session_id);
 }
 
+/// 在目标终端里插入一行灰色提示，标明接下来这条命令来自 AI 而非用户手输。
+/// 命令本身仍由远端 shell 正常回显，这里只补一个来源标记，避免用户困惑“我没敲过这条命令”。
+/// 把一条 AI 活动播报到该连接对应的终端标签里。
+/// 文件类操作走 SFTP 不经过 PTY，用户在终端里看不到任何痕迹；
+/// 这里补一行灰色提示，保证"AI 做了什么"始终可见。
+pub(crate) fn announce_agent_activity(
+    state: &AppState,
+    app_handle: &tauri::AppHandle,
+    connection_id: &str,
+    text: &str,
+) {
+    // 找该连接下最近出现过提示符的标签；没有就不播报，不为了提示而强行开标签。
+    let target = {
+        let Ok(sessions) = lock_sessions(state) else {
+            return;
+        };
+        sessions
+            .values()
+            .filter(|runtime| {
+                runtime.session.kind == "ssh" && runtime.session.connection_id == connection_id
+            })
+            .filter_map(|runtime| {
+                let pty = runtime.agent_pty.lock().ok()?;
+                Some((pty.last_prompt_at, runtime.session.id.clone()))
+            })
+            .max_by_key(|(last_prompt_at, _)| *last_prompt_at)
+            .map(|(_, id)| id)
+    };
+    let Some(terminal_session_id) = target else {
+        return;
+    };
+    announce_agent_command(state, app_handle, &terminal_session_id, text);
+}
+
+pub(crate) fn announce_agent_command(
+    state: &AppState,
+    app_handle: &tauri::AppHandle,
+    terminal_session_id: &str,
+    command: &str,
+) {
+    let Ok(sessions) = lock_sessions(state) else {
+        return;
+    };
+    let Some(runtime) = sessions.get(terminal_session_id) else {
+        return;
+    };
+    let output_queue = Arc::clone(&runtime.output_queue);
+    drop(sessions);
+
+    // 单行显示，过长命令截断，避免一条超长命令把提示行刷满屏幕。
+    let preview: String = command.chars().take(160).collect();
+    let ellipsis = if command.chars().count() > 160 { "…" } else { "" };
+    queue_output(
+        &output_queue,
+        app_handle,
+        terminal_session_id,
+        format!("\r\n\x1b[2m[AI] {preview}{ellipsis}\x1b[0m\r\n"),
+    );
+}
+
+/// 跟踪用户按键对当前输入行的影响：有可见字符即视为未提交内容，回车/Ctrl+C/Ctrl+U 视为该行结束。
+/// agent 只在当前行干净且用户静默一段时间后才注入，避免与用户手敲的内容拼接成错误命令。
+fn track_user_input_activity(
+    agent_pty: &Arc<std::sync::Mutex<AgentPtyState>>,
+    agent_pty_signal: &Arc<Condvar>,
+    data: &[u8],
+) {
+    if data.is_empty() {
+        return;
+    }
+
+    let Ok(mut pty) = agent_pty.lock() else {
+        return;
+    };
+
+    pty.last_user_input_at = Some(Instant::now());
+    for byte in data {
+        match byte {
+            // 提交或放弃当前行：行内容已交给 shell 或被丢弃。
+            b'\r' | b'\n' | 0x03 | 0x15 => pty.user_line_dirty = false,
+            // 退格无法精确还原行长度，保守起见不清标记，等提示符标记回来再复位。
+            0x7f | 0x08 => {}
+            // 其余可见字符与控制序列都可能在行内留下内容。
+            _ => pty.user_line_dirty = true,
+        }
+    }
+
+    drop(pty);
+    agent_pty_signal.notify_all();
+}
+
+/// 把 shell 线程解析出的命令边界事件与提示符/TUI 状态同步到共享占用状态，并唤醒等待的命令层。
+/// 只在这里写入 AgentPtyState，保证状态机的推进点唯一、易于推理。
+fn publish_agent_pty_progress(
+    agent_pty: &Arc<std::sync::Mutex<AgentPtyState>>,
+    agent_pty_signal: &Arc<Condvar>,
+    events: Vec<ShellCommandEvent>,
+    alternate_screen_active: bool,
+    prompt_arrived: bool,
+    command_started: bool,
+) {
+    let Ok(mut pty) = agent_pty.lock() else {
+        return;
+    };
+
+    pty.alternate_screen_active = alternate_screen_active;
+    // 命令开始执行说明 shell 已离开提示符；用户跑 tail -f 这类长命令时会长期停在这个状态。
+    if command_started {
+        pty.at_prompt = false;
+    }
+    // 只在提示符标记真正到达的那一批复位：用户输入的回显同样发生在提示符状态下，
+    // 若按“当前停在提示符”复位，用户敲到一半的命令会被误判成已提交，导致注入与其拼接。
+    if prompt_arrived {
+        pty.last_prompt_at = Some(Instant::now());
+        pty.at_prompt = true;
+        pty.user_line_dirty = false;
+    }
+
+    for event in events {
+        match event {
+            ShellCommandEvent::Capable => {
+                pty.command_boundary_ready = true;
+            }
+            ShellCommandEvent::Begin => {
+                if pty.phase == AgentPtyPhase::AwaitingBegin {
+                    pty.phase = AgentPtyPhase::Running;
+                }
+            }
+            ShellCommandEvent::End {
+                exit_code,
+                captured,
+                truncated,
+            } => {
+                if let Some(run) = pty.active.as_mut() {
+                    run.exit_code = exit_code;
+                    run.captured = captured;
+                    run.truncated = truncated;
+                    run.finished = true;
+                }
+                pty.phase = AgentPtyPhase::Idle;
+            }
+        }
+    }
+
+    drop(pty);
+    agent_pty_signal.notify_all();
+}
+
 fn is_transient_transport_read_error(error: &std::io::Error) -> bool {
     let message = error.to_string().to_ascii_lowercase();
     // libssh2 非阻塞模式下 channel.read() 可能因 transport 层正在处理写入而返回多种瞬时错误；
@@ -738,6 +888,13 @@ fn is_transient_ssh_error(error: &impl std::fmt::Display) -> bool {
 const CWD_SYNC_MARKER_PREFIX: &str = "\x1b]6973;MyTerminalCwd=";
 /// 提示符标记只由 precmd/PROMPT_COMMAND/PS1 发出；与 cd 中途的 cwd 更新分开，才能安全修正提示符行边界。
 const PROMPT_CWD_SYNC_MARKER_PREFIX: &str = "\x1b]6973;MyTerminalPromptCwd=";
+/// 命令开始标记由 bash PS0 / zsh preexec 发出，标志用户或 agent 提交的命令即将执行；值为空串。
+/// 它是 agent 可见执行捕获输出的左边界，也是判定 shell 具备命令边界能力的唯一依据。
+const CMD_BEGIN_MARKER_PREFIX: &str = "\x1b]6973;MyTerminalCmdBegin=";
+/// 命令结束标记由 precmd/PROMPT_COMMAND 在最前面发出，值为上一条命令的 exit code。
+const CMD_END_MARKER_PREFIX: &str = "\x1b]6973;MyTerminalCmdEnd=";
+/// 能力标记只在 PS0/preexec 安装成功后发出一次；后端据此判定该会话能否承载 agent 可见执行。
+const CMD_CAPABLE_MARKER_PREFIX: &str = "\x1b]6973;MyTerminalCmdCapable=";
 const CWD_SYNC_MARKER_SUFFIX: char = '\x07';
 const CWD_SYNC_SETUP_NAME: &str = "__myterminal_sync_cwd";
 const CWD_SYNC_HISTORY_PREP_TOKEN: &str = "HIST_IGNORE_SPACE";
@@ -773,16 +930,29 @@ fn shell_cwd_sync_command() -> String {
     let setup_command = [
         "__myterminal_sync_cwd(){ printf '\\033]6973;MyTerminalCwd=%s\\a' \"$PWD\"; }",
         "__myterminal_sync_prompt_boundary(){ printf '\\033]6973;MyTerminalPromptCwd=%s\\a' \"$PWD\"; }",
+        // 命令边界协议：begin 由 bash PS0 / zsh preexec 在命令执行前发出，end 由提示符钩子带上一条命令的 exit code。
+        // 两者之间的可见输出即该条命令的产物，agent 可见执行据此精确截取 stdout 与退出码。
+        "__myterminal_sync_cmd_begin(){ printf '\\033]6973;MyTerminalCmdBegin=\\a'; }",
+        "__myterminal_sync_cmd_end(){ printf '\\033]6973;MyTerminalCmdEnd=%s\\a' \"$1\"; }",
+        // 能力标记只在 PS0/preexec 真正安装成功后发出；收不到它的会话一律回退隐藏 exec 通道。
+        "__myterminal_report_cmd_capable(){ printf '\\033]6973;MyTerminalCmdCapable=1\\a'; }",
         "__myterminal_sync_history(){ if [ -n \"${ZSH_VERSION-}\" ]; then fc -AI 2>/dev/null || true; elif [ -n \"${BASH_VERSION-}\" ]; then history -a 2>/dev/null || true; fi; }",
         "__myterminal_clean_history(){ if [ -n \"${BASH_VERSION-}\" ]; then for __myterminal_history_id in $(history | sed -n '/__myterminal_sync_cwd/{s/^ *\\([0-9][0-9]*\\).*/\\1/p}' | sort -rn); do history -d \"$__myterminal_history_id\" 2>/dev/null || true; done; unset __myterminal_history_id; fi; }",
         "__myterminal_is_interactive(){ case $- in *i*) return 0;; *) return 1;; esac; }",
         "__myterminal_install_cwd_wrappers(){ if [ -n \"${BASH_VERSION-}${ZSH_VERSION-}\" ]; then cd(){ builtin cd \"$@\"; __myterminal_status=$?; __myterminal_is_interactive && __myterminal_sync_cwd; return $__myterminal_status; }; pushd(){ builtin pushd \"$@\"; __myterminal_status=$?; __myterminal_is_interactive && __myterminal_sync_cwd; return $__myterminal_status; }; popd(){ builtin popd \"$@\"; __myterminal_status=$?; __myterminal_is_interactive && __myterminal_sync_cwd; return $__myterminal_status; }; fi; }",
-        "__myterminal_sync_prompt(){ __myterminal_install_cwd_wrappers; __myterminal_sync_history; __myterminal_sync_prompt_boundary; }",
+        // 退出码必须在函数体第一行捕获；bash dispatcher 会把真实状态作为 $1 显式传入，
+        // 因为它在调用本函数前已经跑过用户原有的 PROMPT_COMMAND，此时 $? 已被覆盖。
+        "__myterminal_sync_prompt(){ __myterminal_prompt_exit_status=$?; if [ -n \"${1-}\" ]; then __myterminal_prompt_exit_status=\"$1\"; fi; __myterminal_install_cwd_wrappers; __myterminal_sync_history; __myterminal_sync_cmd_end \"$__myterminal_prompt_exit_status\"; __myterminal_sync_prompt_boundary; }",
         // 让本会话命令在 history 文件中带真实执行时间戳：bash 只在命令入历史时 HISTTIMEFORMAT 非空才记录时间，故须会话级 export；zsh 须开启 EXTENDED_HISTORY。仅作用于当前 shell 进程，不写入用户配置文件，会话结束即失效。
         "if [ -n \"${BASH_VERSION-}\" ]; then export HISTTIMEFORMAT=\"%F %T \"; elif [ -n \"${ZSH_VERSION-}\" ]; then setopt EXTENDED_HISTORY 2>/dev/null || true; fi",
         "__myterminal_install_cwd_wrappers",
+        // 命令开始钩子按 shell 分别安装：zsh 用 preexec，bash 用 PS0（4.4+ 才有，展开时机为命令读取后、执行前）。
+        // 两者都安装成功才上报能力标记；bash 4.3 及以下、dash/ash/fish 收不到该标记，agent 自动回退隐藏通道。
+        "if [ -n \"${ZSH_VERSION-}\" ]; then autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook preexec __myterminal_sync_cmd_begin 2>/dev/null && __myterminal_report_cmd_capable",
+        "elif [ -n \"${BASH_VERSION-}\" ]; then case \"${BASH_VERSINFO[0]-0}.${BASH_VERSINFO[1]-0}\" in 4.[4-9]|4.[1-9][0-9]|[5-9].*|[1-9][0-9]*.*) PS0='$(__myterminal_sync_cmd_begin)'\"${PS0-}\"; export PS0; __myterminal_report_cmd_capable;; esac",
+        "fi",
         "if [ -n \"${ZSH_VERSION-}\" ]; then autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd __myterminal_sync_prompt 2>/dev/null || PS1='$(__myterminal_sync_prompt)'\"$PS1\"",
-        "elif [ -n \"${BASH_VERSION-}\" ]; then eval '__myterminal_sync_prompt_dispatch(){ local __myterminal_prompt_status=$? __myterminal_prompt_command; for __myterminal_prompt_command in \"${__myterminal_original_prompt_commands[@]-}\"; do [ -n \"$__myterminal_prompt_command\" ] || continue; if [ \"$__myterminal_prompt_status\" -eq 0 ]; then eval \"$__myterminal_prompt_command\"; else (exit \"$__myterminal_prompt_status\") || eval \"$__myterminal_prompt_command\"; fi; done; __myterminal_sync_prompt; return 0; }'; if declare -p PROMPT_COMMAND 2>/dev/null | grep -q '^declare -[^ ]*a[^ ]* '; then eval '__myterminal_original_prompt_commands=(\"${PROMPT_COMMAND[@]}\")'; elif [ -n \"${PROMPT_COMMAND-}\" ] && [ \"$PROMPT_COMMAND\" != \"__myterminal_sync_prompt_dispatch\" ]; then eval '__myterminal_original_prompt_commands=(\"$PROMPT_COMMAND\")'; else eval '__myterminal_original_prompt_commands=()'; fi; unset PROMPT_COMMAND; PROMPT_COMMAND=__myterminal_sync_prompt_dispatch; export PROMPT_COMMAND; export -f __myterminal_sync_cwd __myterminal_sync_prompt_boundary __myterminal_sync_history __myterminal_is_interactive __myterminal_install_cwd_wrappers __myterminal_sync_prompt __myterminal_sync_prompt_dispatch cd pushd popd 2>/dev/null || true",
+        "elif [ -n \"${BASH_VERSION-}\" ]; then eval '__myterminal_sync_prompt_dispatch(){ local __myterminal_prompt_status=$? __myterminal_prompt_command; for __myterminal_prompt_command in \"${__myterminal_original_prompt_commands[@]-}\"; do [ -n \"$__myterminal_prompt_command\" ] || continue; if [ \"$__myterminal_prompt_status\" -eq 0 ]; then eval \"$__myterminal_prompt_command\"; else (exit \"$__myterminal_prompt_status\") || eval \"$__myterminal_prompt_command\"; fi; done; __myterminal_sync_prompt \"$__myterminal_prompt_status\"; return 0; }'; if declare -p PROMPT_COMMAND 2>/dev/null | grep -q '^declare -[^ ]*a[^ ]* '; then eval '__myterminal_original_prompt_commands=(\"${PROMPT_COMMAND[@]}\")'; elif [ -n \"${PROMPT_COMMAND-}\" ] && [ \"$PROMPT_COMMAND\" != \"__myterminal_sync_prompt_dispatch\" ]; then eval '__myterminal_original_prompt_commands=(\"$PROMPT_COMMAND\")'; else eval '__myterminal_original_prompt_commands=()'; fi; unset PROMPT_COMMAND; PROMPT_COMMAND=__myterminal_sync_prompt_dispatch; export PROMPT_COMMAND; export -f __myterminal_sync_cwd __myterminal_sync_prompt_boundary __myterminal_sync_cmd_begin __myterminal_sync_cmd_end __myterminal_report_cmd_capable __myterminal_sync_history __myterminal_is_interactive __myterminal_install_cwd_wrappers __myterminal_sync_prompt __myterminal_sync_prompt_dispatch cd pushd popd 2>/dev/null || true",
         "else PS1='$(__myterminal_sync_prompt)'\"$PS1\"",
         "fi",
         "__myterminal_clean_history",
@@ -814,25 +984,44 @@ impl Default for TerminalVisibleLineEscapeState {
     }
 }
 
-/// 找到两类同步标记中最先出现的一类；提示符标记额外携带“即将绘制 PS1”的边界语义。
-fn find_next_shell_sync_marker(value: &str) -> Option<(usize, &'static str, bool)> {
-    [
-        (CWD_SYNC_MARKER_PREFIX, false),
-        (PROMPT_CWD_SYNC_MARKER_PREFIX, true),
-    ]
-    .into_iter()
-    .filter_map(|(prefix, is_prompt)| {
-        value
-            .find(prefix)
-            .map(|index| (index, prefix, is_prompt))
-    })
-    .min_by_key(|(index, _, _)| *index)
+/// Shell 通过 OSC 回传的同步标记类别；解析后按类别决定是更新 cwd、修正提示符行还是切分命令边界。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellSyncMarkerKind {
+    /// cd/pushd/popd 中途回传的工作目录。
+    Cwd,
+    /// 提示符即将绘制，携带工作目录，额外触发提示符行边界修正。
+    PromptCwd,
+    /// 命令开始执行，agent 可见执行的捕获左边界。
+    CommandBegin,
+    /// 命令执行结束，值为 exit code，捕获右边界。
+    CommandEnd,
+    /// 该会话已具备命令边界能力（PS0/preexec 安装成功）。
+    CommandCapable,
+}
+
+/// 所有同步标记的前缀表；解析与跨分片保留都以它为唯一来源，新增标记只需在此登记一次。
+const SHELL_SYNC_MARKERS: [(&str, ShellSyncMarkerKind); 5] = [
+    (CWD_SYNC_MARKER_PREFIX, ShellSyncMarkerKind::Cwd),
+    (PROMPT_CWD_SYNC_MARKER_PREFIX, ShellSyncMarkerKind::PromptCwd),
+    (CMD_BEGIN_MARKER_PREFIX, ShellSyncMarkerKind::CommandBegin),
+    (CMD_END_MARKER_PREFIX, ShellSyncMarkerKind::CommandEnd),
+    (CMD_CAPABLE_MARKER_PREFIX, ShellSyncMarkerKind::CommandCapable),
+];
+
+/// 找到各类同步标记中最先出现的一类。
+/// 注意 MyTerminalCmdBegin/CmdEnd/CmdCapable 互不为前缀，MyTerminalCwd 也不是 MyTerminalCmd* 的前缀，
+/// 因此按出现位置取最小即可唯一确定标记类别，不会误匹配。
+fn find_next_shell_sync_marker(value: &str) -> Option<(usize, &'static str, ShellSyncMarkerKind)> {
+    SHELL_SYNC_MARKERS
+        .into_iter()
+        .filter_map(|(prefix, kind)| value.find(prefix).map(|index| (index, prefix, kind)))
+        .min_by_key(|(index, _, _)| *index)
 }
 
 /// 输出分片末尾可能只包含任一标记的前半截；保留最长匹配，下一分片到达后再统一解析。
 fn trailing_shell_sync_marker_prefix_len(value: &str) -> usize {
     let mut keep = 0;
-    for marker_prefix in [CWD_SYNC_MARKER_PREFIX, PROMPT_CWD_SYNC_MARKER_PREFIX] {
+    for (marker_prefix, _) in SHELL_SYNC_MARKERS {
         for (index, _) in marker_prefix.char_indices().skip(1) {
             let prefix = &marker_prefix[..index];
             if value.ends_with(prefix) {
@@ -841,6 +1030,45 @@ fn trailing_shell_sync_marker_prefix_len(value: &str) -> usize {
         }
     }
     keep
+}
+
+/// agent 捕获缓冲硬上限；超限后停止累加并标记截断，绝不让一条命令的输出在后端无限驻留。
+/// 用户可见的滚动缓冲不受影响，仍由 TerminalOutputQueue 与前端 LRU 各自管理。
+const AGENT_CAPTURE_MAX_BYTES: usize = 2 * 1024 * 1024;
+/// 等待 OSC 标记结束符时 pending 的容量上限；二进制输出里出现孤立的 `\x1b]6973;` 时兜底放行，避免无限缓冲。
+const SHELL_SYNC_MARKER_MAX_PENDING_BYTES: usize = 8192;
+
+/// Shell 输出解析出的命令边界事件；agent 可见执行据此拼装 stdout 与退出码。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ShellCommandEvent {
+    /// 该会话已确认具备命令边界能力（PS0/preexec 安装成功）。
+    Capable,
+    /// 一条命令开始执行；仅在已武装捕获时才会真正开始累积输出。
+    Begin,
+    /// 一条被捕获的命令执行结束，携带 exit code、输出与截断标记。
+    End {
+        exit_code: Option<i32>,
+        captured: String,
+        truncated: bool,
+    },
+}
+
+/// `consume` 的解析结果：可见文本照常上屏，cwd 更新同步文件管理，命令事件驱动 agent 可见执行。
+#[derive(Debug, Default)]
+struct ShellConsumeOutput {
+    /// 交给 xterm 的可见内容。
+    visible: String,
+    /// 远端回传的工作目录更新。
+    cwd_updates: Vec<String>,
+    /// 命令边界事件，按出现顺序排列。
+    command_events: Vec<ShellCommandEvent>,
+    /// 本批次内是否有命令开始执行（无论是 agent 注入的还是用户手敲的）。
+    /// 用于判定 shell 已离开提示符——用户跑 `tail -f` 时必须据此拒绝注入。
+    command_started: bool,
+    /// 本批次内是否出现了提示符标记。
+    /// 必须区分“本批次刚到达提示符”与“持续停在提示符”：用户输入的回显同样发生在提示符状态下，
+    /// 若按状态而非事件复位，用户正在敲的半截命令会被误判成已提交。
+    prompt_arrived: bool,
 }
 
 /// 记录跨 SSH 分片的半截 OSC 标记和当前可见行状态，保证同步协议不泄漏且提示符总能从干净新行开始。
@@ -854,6 +1082,16 @@ struct ShellOutputFilter {
     visible_line_position_uncertain: bool,
     visible_line_escape_state: TerminalVisibleLineEscapeState,
     visible_line_csi_parameters: String,
+    /// 已武装但尚未开始：agent 注入命令前置位，等下一个 Begin 标记才真正开始捕获。
+    /// 不武装就不捕获，避免用户手敲的每条命令都在后端白白拷一份输出。
+    capture_armed: bool,
+    /// 是否处于 Begin/End 之间且已武装；为 true 时可见输出会复制一份给 agent。
+    capturing: bool,
+    /// 当前捕获缓冲与截断标记；End 时随事件一起取走。
+    capture_buffer: String,
+    capture_truncated: bool,
+    /// 远端是否处于 alternate screen（vim/top 等全屏 TUI）；此时严禁注入命令。
+    alternate_screen_active: bool,
 }
 
 impl Default for ShellOutputFilter {
@@ -868,38 +1106,77 @@ impl Default for ShellOutputFilter {
             visible_line_position_uncertain: false,
             visible_line_escape_state: TerminalVisibleLineEscapeState::default(),
             visible_line_csi_parameters: String::new(),
+            capture_armed: false,
+            capturing: false,
+            capture_buffer: String::new(),
+            capture_truncated: false,
+            alternate_screen_active: false,
         }
     }
 }
 
 impl ShellOutputFilter {
-    /// 解析普通终端输出和目录同步标记；返回值第一项写入终端，第二项更新文件管理 cwd。
-    fn consume(&mut self, content: &str) -> (String, Vec<String>) {
+    /// 解析普通终端输出、目录同步标记与命令边界标记；可见文本照常上屏，命令事件驱动 agent 可见执行。
+    fn consume(&mut self, content: &str) -> ShellConsumeOutput {
         self.pending.push_str(content);
-        let mut visible = String::new();
-        let mut cwd_updates = Vec::new();
+        let mut output = ShellConsumeOutput::default();
 
         loop {
-            if let Some((marker_start, marker_prefix, is_prompt_marker)) =
+            if let Some((marker_start, marker_prefix, kind)) =
                 find_next_shell_sync_marker(&self.pending)
             {
                 let before_marker = self.pending[..marker_start].to_string();
-                self.push_filtered_visible(&mut visible, &before_marker);
+                self.push_filtered_visible(&mut output, &before_marker);
                 let value_start = marker_start + marker_prefix.len();
 
                 if let Some(value_end) = self.pending[value_start..].find(CWD_SYNC_MARKER_SUFFIX) {
-                    let cwd = self.pending[value_start..value_start + value_end]
-                        .trim()
-                        .to_string();
-                    if !cwd.is_empty() {
-                        cwd_updates.push(cwd);
-                    }
-                    // 第一次 cwd 标记说明启动注入已执行完毕；之后如果用户历史里出现内部函数名，不能再隐藏 readline 的重绘输出。
+                    let value = self.pending[value_start..value_start + value_end].trim();
+                    // 第一次任意标记说明启动注入已执行完毕；之后如果用户历史里出现内部函数名，不能再隐藏 readline 的重绘输出。
                     self.suppress_initial_setup_echo = false;
-                    if is_prompt_marker {
-                        self.prepare_prompt_line(&mut visible);
-                        self.restore_cursor_at_prompt_boundary(&mut visible);
+
+                    match kind {
+                        ShellSyncMarkerKind::Cwd => {
+                            if !value.is_empty() {
+                                output.cwd_updates.push(value.to_string());
+                            }
+                        }
+                        ShellSyncMarkerKind::PromptCwd => {
+                            if !value.is_empty() {
+                                output.cwd_updates.push(value.to_string());
+                            }
+                            // 提示符出现说明上一条命令已彻底结束，shell 正等待输入。
+                            output.prompt_arrived = true;
+                            self.prepare_prompt_line(&mut output.visible);
+                            self.restore_cursor_at_prompt_boundary(&mut output.visible);
+                        }
+                        ShellSyncMarkerKind::CommandCapable => {
+                            output.command_events.push(ShellCommandEvent::Capable);
+                        }
+                        ShellSyncMarkerKind::CommandBegin => {
+                            // 无论谁发起，命令开始就意味着 shell 已离开提示符。
+                            output.command_started = true;
+                            // 只有 agent 注入前武装过才开始捕获；用户手敲的命令不产生后端拷贝。
+                            if self.capture_armed {
+                                self.capture_armed = false;
+                                self.capturing = true;
+                                self.capture_buffer.clear();
+                                self.capture_truncated = false;
+                                output.command_events.push(ShellCommandEvent::Begin);
+                            }
+                        }
+                        ShellSyncMarkerKind::CommandEnd => {
+                            // 没有配对 Begin 时不产生 End，避免启动注入的收尾被误判成一条命令结束。
+                            if self.capturing {
+                                self.capturing = false;
+                                output.command_events.push(ShellCommandEvent::End {
+                                    exit_code: value.parse::<i32>().ok(),
+                                    captured: std::mem::take(&mut self.capture_buffer),
+                                    truncated: std::mem::take(&mut self.capture_truncated),
+                                });
+                            }
+                        }
                     }
+
                     let remainder_start =
                         value_start + value_end + CWD_SYNC_MARKER_SUFFIX.len_utf8();
                     self.pending = self.pending[remainder_start..].to_string();
@@ -907,6 +1184,12 @@ impl ShellOutputFilter {
                 }
 
                 self.pending = self.pending[marker_start..].to_string();
+                // 二进制输出里可能出现与标记前缀相同、却永远等不到 \x07 的字节串；
+                // 超过上限就当作普通内容放行，避免 pending 无限增长把内存吃光。
+                if self.pending.len() > SHELL_SYNC_MARKER_MAX_PENDING_BYTES {
+                    let bogus = std::mem::take(&mut self.pending);
+                    self.push_filtered_visible(&mut output, &bogus);
+                }
                 break;
             }
 
@@ -914,16 +1197,17 @@ impl ShellOutputFilter {
 
             let drain_len = self.pending.len().saturating_sub(keep);
             let drainable = self.pending[..drain_len].to_string();
-            self.push_filtered_visible(&mut visible, &drainable);
+            self.push_filtered_visible(&mut output, &drainable);
             self.pending = self.pending[drain_len..].to_string();
             break;
         }
 
-        (visible, cwd_updates)
+        output
     }
 
     /// 写入真正要交给 xterm 的内容，并同步跟踪远端是否把光标切到隐藏状态。
-    fn push_filtered_visible(&mut self, visible: &mut String, value: &str) {
+    /// 处于命令执行区间时同一份内容会复制给 agent 捕获缓冲；上限由调用方按设置裁剪。
+    fn push_filtered_visible(&mut self, output: &mut ShellConsumeOutput, value: &str) {
         let filtered = self.strip_cwd_sync_setup_echo(value);
         if filtered.is_empty() {
             return;
@@ -931,7 +1215,42 @@ impl ShellOutputFilter {
 
         self.track_cursor_visibility_sequences(&filtered);
         self.track_visible_line_state(&filtered);
-        visible.push_str(&filtered);
+        if self.capturing {
+            self.append_capture(&filtered);
+        }
+        output.visible.push_str(&filtered);
+    }
+
+    /// 武装或取消 agent 捕获。武装后遇到下一个命令开始标记才真正开始累积；
+    /// 取消时立即停止捕获并丢弃缓冲，用于超时中止后不再污染下一条命令。
+    fn set_capture_armed(&mut self, armed: bool) {
+        self.capture_armed = armed;
+        if !armed {
+            self.capturing = false;
+            self.capture_buffer.clear();
+            self.capture_truncated = false;
+        }
+    }
+
+    /// 按硬上限追加 agent 捕获内容；超限后置截断标记并停止累加，可见内容不受影响。
+    fn append_capture(&mut self, value: &str) {
+        if self.capture_truncated {
+            return;
+        }
+
+        let remaining = AGENT_CAPTURE_MAX_BYTES.saturating_sub(self.capture_buffer.len());
+        if value.len() <= remaining {
+            self.capture_buffer.push_str(value);
+            return;
+        }
+
+        // 必须落在 UTF-8 字符边界上，否则截断处会产生非法序列。
+        let mut cut = remaining;
+        while cut > 0 && !value.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        self.capture_buffer.push_str(&value[..cut]);
+        self.capture_truncated = true;
     }
 
     /// 跟踪真正交给 xterm 的文本：LF 完成当前行，CR 只回到行首而不会抹掉进度文本，ANSI 参数不算可见内容。
@@ -1008,8 +1327,16 @@ impl ShellOutputFilter {
                             && matches!(first_parameter, Some(47 | 1047 | 1049))
                         {
                             // 退出 alternate screen 会恢复主缓冲区和旧光标，当前行可能已有启动命令或正文。
+                            self.alternate_screen_active = false;
                             self.visible_line_dirty = true;
                             self.visible_line_position_uncertain = true;
+                        } else if byte == b'h'
+                            && self.visible_line_csi_parameters.starts_with('?')
+                            && matches!(first_parameter, Some(47 | 1047 | 1049))
+                        {
+                            // 进入 alternate screen 说明前台是 vim/top 这类全屏 TUI；
+                            // 此时注入命令会被 TUI 当作按键吃掉，agent 必须回退隐藏通道。
+                            self.alternate_screen_active = true;
                         } else if matches!(
                             byte,
                             b'A' | b'B'
@@ -1110,6 +1437,14 @@ impl ShellOutputFilter {
         self.visible_line_csi_parameters.clear();
     }
 
+    /// 兼容既有单元测试的薄封装：只暴露可见内容与 cwd 更新。
+    /// 生产代码一律走 `consume`，确保命令事件不会被静默丢弃。
+    #[cfg(test)]
+    fn consume_visible(&mut self, content: &str) -> (String, Vec<String>) {
+        let output = self.consume(content);
+        (output.visible, output.cwd_updates)
+    }
+
     /// 过滤我方注入命令的回显，避免用户在终端里看到同步协议细节。
     fn strip_cwd_sync_setup_echo(&mut self, value: &str) -> String {
         let mut visible = String::new();
@@ -1206,6 +1541,158 @@ mod shell_output_filter_tests {
         assert!(build_remote_copy_command(&sources, "/tmp").is_none());
     }
 
+    fn cmd_begin_marker() -> String {
+        format!("{CMD_BEGIN_MARKER_PREFIX}{CWD_SYNC_MARKER_SUFFIX}")
+    }
+
+    fn cmd_end_marker(exit_code: &str) -> String {
+        format!("{CMD_END_MARKER_PREFIX}{exit_code}{CWD_SYNC_MARKER_SUFFIX}")
+    }
+
+    #[test]
+    fn captures_agent_command_output_between_boundaries() {
+        let mut filter = ShellOutputFilter::default();
+        filter.set_capture_armed(true);
+
+        let output = filter.consume(&format!(
+            "{}total 4\r\nfile.txt\r\n{}",
+            cmd_begin_marker(),
+            cmd_end_marker("0")
+        ));
+
+        // 可见内容照常上屏，协议标记不泄漏。
+        assert_eq!(output.visible, "total 4\r\nfile.txt\r\n");
+        assert!(!output.visible.contains("MyTerminalCmd"));
+        match output.command_events.last() {
+            Some(ShellCommandEvent::End {
+                exit_code,
+                captured,
+                truncated,
+            }) => {
+                assert_eq!(*exit_code, Some(0));
+                assert_eq!(captured, "total 4\r\nfile.txt\r\n");
+                assert!(!truncated);
+            }
+            other => panic!("expected End event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extracts_non_zero_exit_code_from_end_marker() {
+        let mut filter = ShellOutputFilter::default();
+        filter.set_capture_armed(true);
+
+        let output = filter.consume(&format!(
+            "{}bash: nope: command not found\r\n{}",
+            cmd_begin_marker(),
+            cmd_end_marker("127")
+        ));
+
+        let Some(ShellCommandEvent::End { exit_code, .. }) = output.command_events.last() else {
+            panic!("expected End event");
+        };
+        assert_eq!(*exit_code, Some(127));
+    }
+
+    #[test]
+    fn does_not_capture_user_commands_without_arming() {
+        let mut filter = ShellOutputFilter::default();
+
+        // 未武装时用户手敲的命令不应产生任何捕获事件，避免后端白白拷贝每条命令的输出。
+        let output = filter.consume(&format!(
+            "{}user typed this\r\n{}",
+            cmd_begin_marker(),
+            cmd_end_marker("0")
+        ));
+
+        assert_eq!(output.visible, "user typed this\r\n");
+        assert!(output.command_events.is_empty());
+    }
+
+    #[test]
+    fn keeps_command_markers_private_when_split_across_chunks() {
+        let mut filter = ShellOutputFilter::default();
+        filter.set_capture_armed(true);
+
+        // 8192 字节分片可能把标记从任意位置切断；半截前缀必须保留到下一分片再解析。
+        let split = CMD_BEGIN_MARKER_PREFIX.len() - 4;
+        let first = filter.consume(&CMD_BEGIN_MARKER_PREFIX[..split]);
+        assert_eq!(first.visible, "");
+
+        let second = filter.consume(&format!(
+            "{}{}out{}",
+            &CMD_BEGIN_MARKER_PREFIX[split..],
+            CWD_SYNC_MARKER_SUFFIX,
+            cmd_end_marker("0")
+        ));
+
+        assert_eq!(second.visible, "out");
+        assert!(!second.visible.contains("MyTerminalCmdBegin"));
+        let Some(ShellCommandEvent::End { captured, .. }) = second.command_events.last() else {
+            panic!("expected End event");
+        };
+        assert_eq!(captured, "out");
+    }
+
+    #[test]
+    fn reports_command_boundary_capability_marker() {
+        let mut filter = ShellOutputFilter::default();
+        let output = filter.consume(&format!(
+            "{CMD_CAPABLE_MARKER_PREFIX}1{CWD_SYNC_MARKER_SUFFIX}"
+        ));
+
+        assert_eq!(output.visible, "");
+        assert_eq!(output.command_events, vec![ShellCommandEvent::Capable]);
+    }
+
+    #[test]
+    fn truncates_capture_beyond_limit_but_keeps_visible_output() {
+        let mut filter = ShellOutputFilter::default();
+        filter.set_capture_armed(true);
+        filter.consume(&cmd_begin_marker());
+
+        // 超过上限后停止累加捕获，但可见内容必须完整交给 xterm。
+        let huge = "x".repeat(AGENT_CAPTURE_MAX_BYTES + 2048);
+        let flood = filter.consume(&huge);
+        assert_eq!(flood.visible.len(), huge.len());
+
+        let finished = filter.consume(&cmd_end_marker("0"));
+        let Some(ShellCommandEvent::End {
+            captured,
+            truncated,
+            ..
+        }) = finished.command_events.last()
+        else {
+            panic!("expected End event");
+        };
+        assert!(truncated);
+        assert!(captured.len() <= AGENT_CAPTURE_MAX_BYTES);
+    }
+
+    #[test]
+    fn tracks_alternate_screen_for_tui_detection() {
+        let mut filter = ShellOutputFilter::default();
+        assert!(!filter.alternate_screen_active);
+
+        // 进入 alternate screen 说明前台是 vim/top，此时不能注入命令。
+        filter.consume("\x1b[?1049h");
+        assert!(filter.alternate_screen_active);
+
+        filter.consume("\x1b[?1049l");
+        assert!(!filter.alternate_screen_active);
+    }
+
+    #[test]
+    fn releases_pending_when_marker_never_terminates() {
+        let mut filter = ShellOutputFilter::default();
+
+        // 二进制输出里可能出现同前缀却永远等不到 \x07 的字节串，必须兜底放行而不是无限缓冲。
+        let bogus = format!("{CMD_BEGIN_MARKER_PREFIX}{}", "A".repeat(9000));
+        let output = filter.consume(&bogus);
+
+        assert!(output.visible.contains(&"A".repeat(100)));
+    }
+
     #[test]
     fn parses_available_tcp_and_ssh_connection_counts() {
         // 正常采集结果必须同时保留 TCP 总数和最终 sshd 端口对应的连接数。
@@ -1287,7 +1774,7 @@ mod shell_output_filter_tests {
             prompt_marker("/ology/ology-server")
         );
 
-        let (visible, cwd_updates) = filter.consume(&input);
+        let (visible, cwd_updates) = filter.consume_visible(&input);
 
         assert_eq!(cwd_updates, vec!["/ology/ology-server".to_string()]);
         assert_eq!(
@@ -1306,7 +1793,7 @@ mod shell_output_filter_tests {
             prompt_marker("/tmp")
         );
 
-        let (visible, cwd_updates) = filter.consume(&input);
+        let (visible, cwd_updates) = filter.consume_visible(&input);
 
         assert_eq!(cwd_updates, vec!["/tmp".to_string()]);
         assert_eq!(visible.matches(TERMINAL_CURSOR_SHOW_SEQUENCE).count(), 1);
@@ -1316,9 +1803,9 @@ mod shell_output_filter_tests {
     fn tracks_cursor_hide_sequence_split_across_output_chunks() {
         let mut filter = ShellOutputFilter::default();
 
-        let (first_visible, _) = filter.consume("\x1b[?2");
-        let (second_visible, _) = filter.consume("5l");
-        let (prompt_visible, cwd_updates) = filter.consume(&prompt_marker("/split"));
+        let (first_visible, _) = filter.consume_visible("\x1b[?2");
+        let (second_visible, _) = filter.consume_visible("5l");
+        let (prompt_visible, cwd_updates) = filter.consume_visible(&prompt_marker("/split"));
 
         assert_eq!(first_visible, "\x1b[?2");
         assert_eq!(second_visible, "5l");
@@ -1333,7 +1820,7 @@ mod shell_output_filter_tests {
     fn keeps_prompt_marker_without_cursor_restore_when_cursor_was_visible() {
         let mut filter = ShellOutputFilter::default();
 
-        let (visible, cwd_updates) = filter.consume(&prompt_marker("/visible"));
+        let (visible, cwd_updates) = filter.consume_visible(&prompt_marker("/visible"));
 
         assert_eq!(visible, "\r\x1b[2K");
         assert_eq!(cwd_updates, vec!["/visible".to_string()]);
@@ -1343,7 +1830,7 @@ mod shell_output_filter_tests {
     fn moves_prompt_after_output_without_trailing_line_feed() {
         let mut filter = ShellOutputFilter::default();
 
-        let (visible, cwd_updates) = filter.consume(&format!("cat tail{}", prompt_marker("/cat")));
+        let (visible, cwd_updates) = filter.consume_visible(&format!("cat tail{}", prompt_marker("/cat")));
 
         assert_eq!(visible, "cat tail\r\n\r\x1b[2K");
         assert_eq!(cwd_updates, vec!["/cat".to_string()]);
@@ -1354,7 +1841,7 @@ mod shell_output_filter_tests {
         let mut filter = ShellOutputFilter::default();
 
         let (visible, cwd_updates) =
-            filter.consume(&format!("Container Started\r{}", prompt_marker("/docker")));
+            filter.consume_visible(&format!("Container Started\r{}", prompt_marker("/docker")));
 
         assert_eq!(visible, "Container Started\r\r\n\r\x1b[2K");
         assert_eq!(cwd_updates, vec!["/docker".to_string()]);
@@ -1365,7 +1852,7 @@ mod shell_output_filter_tests {
         let mut filter = ShellOutputFilter::default();
 
         let (visible, cwd_updates) =
-            filter.consume(&format!("done\r\n\x1b[0m{}", prompt_marker("/ansi")));
+            filter.consume_visible(&format!("done\r\n\x1b[0m{}", prompt_marker("/ansi")));
 
         assert_eq!(visible, "done\r\n\x1b[0m\r\x1b[2K");
         assert_eq!(cwd_updates, vec!["/ansi".to_string()]);
@@ -1376,7 +1863,7 @@ mod shell_output_filter_tests {
         let mut filter = ShellOutputFilter::default();
 
         let (visible, cwd_updates) =
-            filter.consume(&format!("before{}after", cwd_marker("/middle")));
+            filter.consume_visible(&format!("before{}after", cwd_marker("/middle")));
 
         assert_eq!(visible, "beforeafter");
         assert_eq!(cwd_updates, vec!["/middle".to_string()]);
@@ -1387,8 +1874,8 @@ mod shell_output_filter_tests {
         let mut filter = ShellOutputFilter::default();
         let cwd_split = CWD_SYNC_MARKER_PREFIX.len() - 3;
 
-        let (cwd_prefix_visible, _) = filter.consume(&CWD_SYNC_MARKER_PREFIX[..cwd_split]);
-        let (cwd_visible, cwd_updates) = filter.consume(&format!(
+        let (cwd_prefix_visible, _) = filter.consume_visible(&CWD_SYNC_MARKER_PREFIX[..cwd_split]);
+        let (cwd_visible, cwd_updates) = filter.consume_visible(&format!(
             "{}{}{}",
             &CWD_SYNC_MARKER_PREFIX[cwd_split..],
             "/cwd-split",
@@ -1401,8 +1888,8 @@ mod shell_output_filter_tests {
 
         let prompt_split = PROMPT_CWD_SYNC_MARKER_PREFIX.len() - 4;
         let (prompt_prefix_visible, _) =
-            filter.consume(&PROMPT_CWD_SYNC_MARKER_PREFIX[..prompt_split]);
-        let (prompt_visible, prompt_updates) = filter.consume(&format!(
+            filter.consume_visible(&PROMPT_CWD_SYNC_MARKER_PREFIX[..prompt_split]);
+        let (prompt_visible, prompt_updates) = filter.consume_visible(&format!(
             "{}{}{}",
             &PROMPT_CWD_SYNC_MARKER_PREFIX[prompt_split..],
             "/prompt-split",
@@ -1418,9 +1905,9 @@ mod shell_output_filter_tests {
     fn tracks_ansi_sequence_split_after_a_completed_line() {
         let mut filter = ShellOutputFilter::default();
 
-        let (first_visible, _) = filter.consume("done\r\n\x1b[3");
-        let (second_visible, _) = filter.consume("1m");
-        let (prompt_visible, cwd_updates) = filter.consume(&prompt_marker("/ansi-split"));
+        let (first_visible, _) = filter.consume_visible("done\r\n\x1b[3");
+        let (second_visible, _) = filter.consume_visible("1m");
+        let (prompt_visible, cwd_updates) = filter.consume_visible(&prompt_marker("/ansi-split"));
 
         assert_eq!(first_visible, "done\r\n\x1b[3");
         assert_eq!(second_visible, "1m");
@@ -1433,7 +1920,7 @@ mod shell_output_filter_tests {
         let mut filter = ShellOutputFilter::default();
 
         let (visible, cwd_updates) =
-            filter.consume(&format!("done\r\n\x1b[1A{}", prompt_marker("/cursor-up")));
+            filter.consume_visible(&format!("done\r\n\x1b[1A{}", prompt_marker("/cursor-up")));
 
         assert_eq!(visible, "done\r\n\x1b[1A\x1b[r\x1b[999B\r\n\r\x1b[2K");
         assert_eq!(cwd_updates, vec!["/cursor-up".to_string()]);
@@ -1444,7 +1931,7 @@ mod shell_output_filter_tests {
         let mut filter = ShellOutputFilter::default();
 
         let (visible, cwd_updates) =
-            filter.consume(&format!("old\r\n\x1b[H\x1b[2J{}", prompt_marker("/clear")));
+            filter.consume_visible(&format!("old\r\n\x1b[H\x1b[2J{}", prompt_marker("/clear")));
 
         assert_eq!(visible, "old\r\n\x1b[H\x1b[2J\r\x1b[2K");
         assert_eq!(cwd_updates, vec!["/clear".to_string()]);
@@ -1454,7 +1941,7 @@ mod shell_output_filter_tests {
     fn erased_progress_line_does_not_create_an_unneeded_blank_line() {
         let mut filter = ShellOutputFilter::default();
 
-        let (visible, cwd_updates) = filter.consume(&format!(
+        let (visible, cwd_updates) = filter.consume_visible(&format!(
             "progress\r\x1b[2K{}",
             prompt_marker("/erased-progress")
         ));
@@ -1468,7 +1955,7 @@ mod shell_output_filter_tests {
         let mut filter = ShellOutputFilter::default();
 
         let (visible, cwd_updates) =
-            filter.consume(&format!("body\x1b7\r\n\x1b8{}", prompt_marker("/dec-restore")));
+            filter.consume_visible(&format!("body\x1b7\r\n\x1b8{}", prompt_marker("/dec-restore")));
 
         assert_eq!(
             visible,
@@ -1482,7 +1969,7 @@ mod shell_output_filter_tests {
         let mut filter = ShellOutputFilter::default();
 
         let (visible, cwd_updates) =
-            filter.consume(&format!("body\x1b[3J{}", prompt_marker("/scrollback")));
+            filter.consume_visible(&format!("body\x1b[3J{}", prompt_marker("/scrollback")));
 
         assert_eq!(visible, "body\x1b[3J\r\n\r\x1b[2K");
         assert_eq!(cwd_updates, vec!["/scrollback".to_string()]);
@@ -1492,7 +1979,7 @@ mod shell_output_filter_tests {
     fn alternate_screen_restore_preserves_the_main_buffer_line() {
         let mut filter = ShellOutputFilter::default();
 
-        let (visible, cwd_updates) = filter.consume(&format!(
+        let (visible, cwd_updates) = filter.consume_visible(&format!(
             "\r\n\x1b[?1049l{}",
             prompt_marker("/alternate-screen")
         ));
@@ -1508,7 +1995,7 @@ mod shell_output_filter_tests {
     fn line_feed_after_cursor_positioning_does_not_clear_an_existing_row() {
         let mut filter = ShellOutputFilter::default();
 
-        let (visible, cwd_updates) = filter.consume(&format!(
+        let (visible, cwd_updates) = filter.consume_visible(&format!(
             "top\r\nvictim\x1b[1A\n{}",
             prompt_marker("/positioned-lf")
         ));
@@ -1524,7 +2011,7 @@ mod shell_output_filter_tests {
     fn next_line_after_cursor_positioning_does_not_clear_an_existing_row() {
         let mut filter = ShellOutputFilter::default();
 
-        let (visible, cwd_updates) = filter.consume(&format!(
+        let (visible, cwd_updates) = filter.consume_visible(&format!(
             "top\r\nvictim\x1b[1A\x1bE{}",
             prompt_marker("/positioned-nel")
         ));
@@ -1540,7 +2027,7 @@ mod shell_output_filter_tests {
     fn uncertain_cursor_moves_to_bottom_before_creating_prompt_line() {
         let mut filter = ShellOutputFilter::default();
 
-        let (visible, cwd_updates) = filter.consume(&format!(
+        let (visible, cwd_updates) = filter.consume_visible(&format!(
             "one\r\ntwo\r\nthree\x1b[2A\n{}",
             prompt_marker("/three-lines")
         ));
@@ -1557,7 +2044,7 @@ mod shell_output_filter_tests {
         let mut filter = ShellOutputFilter::default();
 
         let (visible, cwd_updates) =
-            filter.consume(&format!("body\x1b[?2J{}", prompt_marker("/private-ed")));
+            filter.consume_visible(&format!("body\x1b[?2J{}", prompt_marker("/private-ed")));
 
         assert_eq!(visible, "body\x1b[?2J\r\n\r\x1b[2K");
         assert_eq!(cwd_updates, vec!["/private-ed".to_string()]);
@@ -1569,7 +2056,7 @@ mod shell_output_filter_tests {
 
         // DECSTBM 即使不带参数也会把 xterm 光标移回 Home；提示符必须先转移到底部空行，不能清掉首行正文。
         let (visible, cwd_updates) =
-            filter.consume(&format!("body\r\n\x1b[r{}", prompt_marker("/decstbm")));
+            filter.consume_visible(&format!("body\r\n\x1b[r{}", prompt_marker("/decstbm")));
 
         assert_eq!(visible, "body\r\n\x1b[r\x1b[r\x1b[999B\r\n\r\x1b[2K");
         assert_eq!(cwd_updates, vec!["/decstbm".to_string()]);
@@ -1592,7 +2079,8 @@ mod shell_output_filter_tests {
         assert!(!command.contains(
             "; (exit \"$__myterminal_prompt_status\"); eval \"$__myterminal_prompt_command\";"
         ));
-        assert!(command.contains("__myterminal_sync_prompt; return 0;"));
+        // 退出码显式作为参数传给同步函数：dispatcher 此时已跑过用户原 hook，$? 不再可信。
+        assert!(command.contains("__myterminal_sync_prompt \"$__myterminal_prompt_status\"; return 0;"));
         assert!(!command.contains("return \"$__myterminal_prompt_status\""));
         assert!(!command.contains("$PROMPT_COMMAND;}__myterminal_sync_prompt"));
         assert!(command.contains("__myterminal_install_cwd_wrappers"));
@@ -3102,6 +3590,9 @@ fn spawn_shell_thread(
     app_handle: tauri::AppHandle,
     // 保活间隔（秒，0=关闭）由设置驱动；交互终端每轮读取，实现设置热更新。
     keepalive_interval_sec: Arc<AtomicU64>,
+    // agent 可见执行占用状态；shell 线程是其唯一写入方。
+    agent_pty: Arc<Mutex<AgentPtyState>>,
+    agent_pty_signal: Arc<Condvar>,
 ) {
     thread::spawn(move || {
         let mut channel = match ssh_session.channel_session() {
@@ -3155,6 +3646,13 @@ fn spawn_shell_thread(
                 match control_rx.try_recv() {
                     Ok(SessionControl::Input(data)) => {
                         handled_control_event = true;
+                        // 只跟踪用户按键：据此判断当前行是否有未提交内容、用户是否正在输入。
+                        track_user_input_activity(&agent_pty, &agent_pty_signal, data.as_bytes());
+                        pending_input.extend_from_slice(data.as_bytes());
+                    }
+                    Ok(SessionControl::AgentInput(data)) => {
+                        handled_control_event = true;
+                        // agent 自己注入的命令不更新用户活跃度，否则下一条命令会白等一个静默窗口。
                         pending_input.extend_from_slice(data.as_bytes());
                     }
                     Ok(SessionControl::Close) => {
@@ -3164,6 +3662,11 @@ fn spawn_shell_thread(
                     Ok(SessionControl::Resize { cols, rows }) => {
                         handled_control_event = true;
                         pending_resize = Some((cols, rows));
+                    }
+                    Ok(SessionControl::SetAgentCapture(armed)) => {
+                        handled_control_event = true;
+                        // 武装标志必须在 shell 线程内设置，才能保证与后续写入的命令严格有序。
+                        output_filter.set_capture_armed(armed);
                     }
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => return,
@@ -3189,13 +3692,22 @@ fn spawn_shell_thread(
                         transient_read_errors = 0;
                         transient_error_started_at = None;
                         let content = String::from_utf8_lossy(&buffer[..size]).into_owned();
-                        let (visible_content, cwd_updates) = output_filter.consume(&content);
-                        if !visible_content.is_empty() {
-                            queue_output(&output_queue, &app_handle, &session_id, visible_content);
+                        let parsed = output_filter.consume(&content);
+                        if !parsed.visible.is_empty() {
+                            queue_output(&output_queue, &app_handle, &session_id, parsed.visible);
                         }
-                        for cwd in cwd_updates {
+                        for cwd in parsed.cwd_updates {
                             queue_cwd(&output_queue, &app_handle, &session_id, cwd);
                         }
+                        // 命令边界事件与提示符/TUI 状态一起同步给命令层，驱动 agent 可见执行。
+                        publish_agent_pty_progress(
+                            &agent_pty,
+                            &agent_pty_signal,
+                            parsed.command_events,
+                            output_filter.alternate_screen_active,
+                            parsed.prompt_arrived,
+                            parsed.command_started,
+                        );
                     }
                     Err(error)
                         if matches!(
@@ -3336,10 +3848,17 @@ fn spawn_shell_thread(
             // 空闲时等待控制通道，输入到达会立即唤醒 shell 线程；超时仅用于继续轮询远端输出。
             match control_rx.recv_timeout(SSH_SHELL_IDLE_WAIT) {
                 Ok(SessionControl::Input(data)) => {
+                    track_user_input_activity(&agent_pty, &agent_pty_signal, data.as_bytes());
+                    pending_input.extend_from_slice(data.as_bytes());
+                }
+                Ok(SessionControl::AgentInput(data)) => {
                     pending_input.extend_from_slice(data.as_bytes());
                 }
                 Ok(SessionControl::Resize { cols, rows }) => {
                     pending_resize = Some((cols, rows));
+                }
+                Ok(SessionControl::SetAgentCapture(armed)) => {
+                    output_filter.set_capture_armed(armed);
                 }
                 Ok(SessionControl::Close) => {
                     let _ = channel.close();
@@ -3596,6 +4115,9 @@ fn spawn_local_terminal_thread(
                         pixel_height: 0,
                     });
                 }
+                // 本地终端不承载 agent 可见执行，捕获武装与注入指令直接忽略。
+                Ok(SessionControl::SetAgentCapture(_)) => {}
+                Ok(SessionControl::AgentInput(_)) => {}
                 Ok(SessionControl::Close) => {
                     let _ = child.kill();
                     break;
@@ -5984,6 +6506,162 @@ pub fn list_agent_bridge_requests(
     Ok(agent_bridge::list_requests(&state.agent_bridge)?)
 }
 
+/// 读取全部 AI 端点配置；API Key 被 skip_serializing 剔除，前端只拿到 hasApiKey 标记。
+#[tauri::command]
+pub fn list_agent_providers(state: State<'_, AppState>) -> Result<Vec<AgentProvider>, String> {
+    Ok(state.storage.load_agent_providers(&state.crypto)?)
+}
+
+/// 保存 AI 端点配置。前端不持有明文 Key，因此 apiKey 留空时沿用已保存的值，
+/// 只有用户真的填了新 Key 才覆盖——否则每次保存设置都会把密钥清空。
+#[tauri::command]
+pub fn save_agent_providers(
+    state: State<'_, AppState>,
+    providers: Vec<AgentProvider>,
+) -> Result<Vec<AgentProvider>, String> {
+    let existing = state.storage.load_agent_providers(&state.crypto)?;
+    let merged: Vec<AgentProvider> = providers
+        .into_iter()
+        .map(|mut provider| {
+            if provider.api_key.trim().is_empty() {
+                if let Some(previous) = existing.iter().find(|item| item.id == provider.id) {
+                    provider.api_key = previous.api_key.clone();
+                }
+            }
+            provider.has_api_key = !provider.api_key.is_empty();
+            provider
+        })
+        .collect();
+    state
+        .storage
+        .save_agent_providers(&merged, &state.crypto)?;
+    Ok(merged)
+}
+
+/// 读取全部 AI 对话历史，按更新时间倒序。
+#[tauri::command]
+pub fn list_agent_conversations(
+    state: State<'_, AppState>,
+) -> Result<Vec<AgentConversation>, String> {
+    Ok(state.storage.load_agent_conversations()?)
+}
+
+/// 保存或更新一条对话。前端在每轮结束、以及切换/关闭对话时调用。
+#[tauri::command]
+pub fn save_agent_conversation(
+    state: State<'_, AppState>,
+    conversation: AgentConversation,
+) -> Result<bool, String> {
+    let mut list = state.storage.load_agent_conversations()?;
+    match list.iter_mut().find(|item| item.id == conversation.id) {
+        Some(existing) => *existing = conversation,
+        None => list.push(conversation),
+    }
+    state.storage.save_agent_conversations(&list)?;
+    Ok(true)
+}
+
+/// 删除一条对话。
+#[tauri::command]
+pub fn delete_agent_conversation(
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<bool, String> {
+    let list: Vec<AgentConversation> = state
+        .storage
+        .load_agent_conversations()?
+        .into_iter()
+        .filter(|item| item.id != conversation_id)
+        .collect();
+    state.storage.save_agent_conversations(&list)?;
+    Ok(true)
+}
+
+/// 发起一轮内置 Agent 对话。工具执行、模型调用与 SSE 解析都在后台线程完成，
+/// 增量通过 agent-chat-event 事件推给前端，命令本身立即返回。
+#[tauri::command]
+pub fn start_agent_chat(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    conversation_id: String,
+    provider_id: String,
+    model_id: String,
+    history: Vec<agent_chat::ChatMessage>,
+    options: Option<AgentRunOptions>,
+) -> Result<bool, String> {
+    let provider = state
+        .storage
+        .load_agent_providers(&state.crypto)?
+        .into_iter()
+        .find(|item| item.id == provider_id)
+        .ok_or_else(|| AppError::NotFound(format!("agent provider {provider_id} not found")))?;
+    if provider.api_key.trim().is_empty() {
+        return Err(AppError::Validation("该端点尚未配置 API Key".into()).into());
+    }
+
+    let run_options = options.unwrap_or_default();
+    let cancel_flag = state.agent_chat.register(&conversation_id);
+    thread::spawn(move || {
+        let app_state = app_handle.state::<AppState>();
+        let settings = match app_state.storage.load_settings(&app_state.crypto) {
+            Ok(settings) => settings,
+            Err(error) => {
+                emit_agent_chat_failure(&app_handle, &conversation_id, &error.to_string());
+                app_state.agent_chat.finish(&conversation_id);
+                return;
+            }
+        };
+
+        let tools = agent_tools::build_tools();
+        let mut messages = history;
+        // 工具执行闭包复用 Bridge 的审批闸门，内置 Agent 与外部 MCP 授权策略完全一致。
+        let execute = |call: &agent_chat::ChatToolCall| {
+            agent_tools::execute_tool(
+                &app_state.agent_bridge,
+                &app_state.storage,
+                &app_state.crypto,
+                &settings.agent_bridge,
+                call,
+            )
+        };
+
+        let outcome = agent_chat::run_chat_turn(
+            &app_handle,
+            &provider,
+            &model_id,
+            &conversation_id,
+            &agent_tools::system_prompt(),
+            &mut messages,
+            &tools,
+            &run_options,
+            &cancel_flag,
+            execute,
+        );
+        if let Err(error) = outcome {
+            emit_agent_chat_failure(&app_handle, &conversation_id, &error.to_string());
+        }
+        app_state.agent_chat.finish(&conversation_id);
+    });
+
+    Ok(true)
+}
+
+/// 取消一轮进行中的对话；模型流与工具循环会在下一个安全点停止。
+#[tauri::command]
+pub fn cancel_agent_chat(state: State<'_, AppState>, conversation_id: String) -> Result<bool, String> {
+    Ok(state.agent_chat.cancel(&conversation_id))
+}
+
+fn emit_agent_chat_failure(app_handle: &tauri::AppHandle, conversation_id: &str, message: &str) {
+    let _ = app_handle.emit(
+        agent_chat::AGENT_CHAT_EVENT,
+        agent_chat::AgentChatEvent::Failed {
+            conversation_id: conversation_id.to_string(),
+            message: message.to_string(),
+        },
+    );
+}
+
 #[tauri::command]
 pub fn approve_agent_bridge_request(
     state: State<'_, AppState>,
@@ -6208,11 +6886,25 @@ pub fn open_ssh_session(
     app_handle: tauri::AppHandle,
     connection_id: String,
 ) -> Result<TerminalSession, String> {
-    let connection = ensure_connection_exists(&state, &connection_id)?;
+    // 命令层返回值本身会驱动前端登记标签，这里不需要额外广播事件。
+    Ok(start_ssh_session(&state, &app_handle, &connection_id, false)?)
+}
+
+/// 打开 SSH 终端会话的可复用实现；Tauri 命令与 agent 可见执行共用同一条路径。
+/// `announce` 为 true 时额外广播 terminal-session-opened，让前端登记由后端自行创建的标签。
+pub(crate) fn start_ssh_session(
+    state: &AppState,
+    app_handle: &tauri::AppHandle,
+    connection_id: &str,
+    announce: bool,
+) -> Result<TerminalSession, AppError> {
+    let connection = ensure_connection_exists(state, connection_id)?;
     let session_id = uuid::Uuid::new_v4().to_string();
     let output_queue = Arc::new(std::sync::Mutex::new(TerminalOutputQueue::new()));
     let (control_tx, control_rx) = mpsc::channel();
     let stop_flag = Arc::new(AtomicBool::new(false));
+    let agent_pty = Arc::new(std::sync::Mutex::new(AgentPtyState::default()));
+    let agent_pty_signal = Arc::new(Condvar::new());
 
     let runtime = RuntimeSession {
         session: TerminalSession {
@@ -6230,10 +6922,16 @@ pub fn open_ssh_session(
         output_queue: Arc::clone(&output_queue),
         control_tx: control_tx.clone(),
         stop_flag: Arc::clone(&stop_flag),
+        agent_pty: Arc::clone(&agent_pty),
+        agent_pty_signal: Arc::clone(&agent_pty_signal),
     };
 
     let session = runtime.session.clone();
-    lock_sessions(&state)?.insert(session.id.clone(), runtime);
+    lock_sessions(state)?.insert(session.id.clone(), runtime);
+    if announce {
+        // 后端自行创建的标签不经过前端 openSession 返回值，必须主动广播才能出现在标签栏。
+        let _ = app_handle.emit("terminal-session-opened", &session);
+    }
 
     let thread_session_id = session_id.clone();
     let thread_output_queue = Arc::clone(&output_queue);
@@ -6265,6 +6963,8 @@ pub fn open_ssh_session(
                     control_rx,
                     thread_app_handle,
                     keepalive_interval,
+                    agent_pty,
+                    agent_pty_signal,
                 );
             }
             Err(error) => {
@@ -6349,6 +7049,9 @@ pub fn open_local_terminal_session(
         output_queue: Arc::clone(&output_queue),
         control_tx: control_tx.clone(),
         stop_flag: Arc::clone(&stop_flag),
+        // 本地终端不承载 agent 可见执行（agent 只操作 SSH 连接），占用状态保持默认空闲即可。
+        agent_pty: Arc::new(std::sync::Mutex::new(AgentPtyState::default())),
+        agent_pty_signal: Arc::new(Condvar::new()),
     };
 
     let session = runtime.session.clone();

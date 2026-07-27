@@ -3633,6 +3633,527 @@ select:disabled {
   gap: 10px;
 }
 
+/* ── AI 对话面板 ─────────────────────────────────────────────── */
+
+/* 对话面板占满侧边栏高度：工具栏与输入框固定，消息区滚动。 */
+/* 用 flex 而非固定行数的 grid：错误提示、历史列表都是条件渲染，
+   固定 grid-template-rows 会在缺行时把 1fr 分配给输入框，导致消息区被压扁。 */
+.agent-chat-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+}
+
+.agent-chat-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+/* 工具栏是常驻但低频操作，压紧尺寸把纵向空间让给消息区。 */
+.agent-chat-toolbar .custom-select-trigger {
+  min-height: 28px;
+  padding: 3px 8px;
+  font-size: 0.84rem;
+}
+
+.agent-chat-toolbar .icon-button {
+  width: 26px;
+  height: 26px;
+}
+
+/* 展开态用实心强调色 + 白色图标，与未展开的透明底形成明确区分——
+   仅靠 20% 透明底色在浅色主题下几乎看不出差别。 */
+.agent-chat-toolbar .icon-button.is-active,
+.agent-chat-toolbar .icon-button.is-active:hover {
+  background: var(--app-accent);
+  border-color: var(--app-accent);
+  color: #fff;
+}
+
+.agent-chat-toolbar .icon-button.is-active svg {
+  color: #fff;
+  stroke: #fff;
+}
+
+/* 运行参数面板：折叠式，不占常驻空间。 */
+.agent-chat-options {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--app-card-border);
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+
+.agent-chat-options label {
+  display: grid;
+  gap: 4px;
+}
+
+.agent-chat-option-inline {
+  display: flex !important;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-chat-option-inline input {
+  width: auto;
+  margin: 0;
+}
+
+.agent-chat-option-hint {
+  margin: 0;
+  color: var(--app-muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+/* 中性提示（自动压缩等），区别于红色错误。 */
+.agent-chat-notice {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--app-surface-2, rgba(127, 127, 127, 0.1));
+  color: var(--app-muted);
+  font-size: 0.8rem;
+}
+
+/* 两个下拉平分剩余宽度，图标按钮保持原尺寸不被压缩。 */
+.agent-chat-select {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.agent-chat-toolbar .icon-button {
+  flex: 0 0 auto;
+}
+
+/* 历史对话列表：从工具栏下方展开，限高滚动，不挤占消息区。 */
+.agent-chat-history {
+  flex: 0 0 auto;
+  max-height: 220px;
+  overflow-y: auto;
+  display: grid;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--app-card-border);
+  border-radius: 8px;
+}
+
+.agent-chat-history-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 6px;
+}
+
+.agent-chat-history-item:hover {
+  background: var(--app-surface-2, rgba(127, 127, 127, 0.1));
+}
+
+.agent-chat-history-item.is-active {
+  background: color-mix(in srgb, var(--app-accent) 16%, transparent);
+}
+
+.agent-chat-history-item > button:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+  padding: 6px 8px;
+  border: none;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-chat-history-item > button:first-child span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.88rem;
+}
+
+.agent-chat-history-item > button:first-child small {
+  color: var(--app-muted);
+  font-size: 0.72rem;
+}
+
+/* 消息区吃掉全部剩余高度：flex:1 + min-height:0 才能在 flex 容器里正确滚动。 */
+.agent-chat-body {
+  flex: 1 1 auto;
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.agent-chat-message {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.agent-chat-message-role {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: var(--app-surface-2, rgba(127, 127, 127, 0.12));
+  color: var(--app-muted);
+}
+
+.agent-chat-message.is-user .agent-chat-message-role {
+  background: color-mix(in srgb, var(--app-accent) 22%, transparent);
+  color: var(--app-accent);
+}
+
+.agent-chat-message-body {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 用户输入保留换行与空格；长 URL/路径必须能折行，否则会把侧边栏撑宽。 */
+.agent-chat-user-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+  font-family: var(--agent-chat-font);
+  font-size: var(--agent-chat-font-size);
+}
+
+/* ── Markdown 渲染 ─────────────────────────────────────────── */
+
+.md-body {
+  display: grid;
+  gap: 8px;
+  font-family: var(--agent-chat-font);
+  font-size: var(--agent-chat-font-size);
+  line-height: 1.6;
+}
+
+.md-paragraph {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.md-heading {
+  margin: 4px 0 0;
+  font-size: calc(var(--agent-chat-font-size) * 1.08);
+  font-weight: 600;
+}
+
+.md-list {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 3px;
+}
+
+.md-list li {
+  overflow-wrap: anywhere;
+}
+
+.md-quote {
+  margin: 0;
+  padding: 4px 10px;
+  border-left: 3px solid color-mix(in srgb, var(--app-accent) 45%, transparent);
+  color: var(--app-muted);
+  overflow-wrap: anywhere;
+}
+
+.md-divider {
+  margin: 2px 0;
+  border: none;
+  border-top: 1px solid var(--app-card-border);
+}
+
+.md-inline-code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--app-surface-2, rgba(127, 127, 127, 0.14));
+  font-family: var(--agent-chat-font);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+
+.md-link {
+  color: var(--app-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
+.md-code-block {
+  border: 1px solid var(--app-card-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* 未闭合的代码块（模型还在输出）用强调色左边框提示"正在写入"。 */
+.md-code-block.is-streaming {
+  border-left: 3px solid var(--app-accent);
+}
+
+.md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 8px;
+  background: var(--app-surface-2, rgba(127, 127, 127, 0.1));
+  color: var(--app-muted);
+  font-size: 0.72rem;
+}
+
+.md-code-copy {
+  display: flex;
+  align-items: center;
+  padding: 2px 4px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--app-muted);
+  cursor: pointer;
+}
+
+.md-code-copy:hover {
+  color: var(--app-accent);
+}
+
+.md-code-block pre {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 360px;
+  overflow: auto;
+  font-family: var(--agent-chat-font);
+  font-size: calc(var(--agent-chat-font-size) * 0.94);
+  line-height: 1.5;
+}
+
+.md-code-block code {
+  white-space: pre;
+}
+
+/* 表格：外层 div 负责窄侧栏下的横向滚动，单元格长内容靠 overflow-wrap 折行。 */
+.md-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--app-card-border);
+  border-radius: 8px;
+}
+
+.md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--agent-chat-font);
+  font-size: var(--agent-chat-font-size);
+}
+
+.md-table th,
+.md-table td {
+  padding: 4px 8px;
+  border-right: 1px solid var(--app-card-border);
+  border-bottom: 1px solid var(--app-card-border);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.md-table th:last-child,
+.md-table td:last-child {
+  border-right: none;
+}
+
+.md-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.md-table thead th {
+  background: var(--app-surface-2, rgba(127, 127, 127, 0.1));
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.agent-chat-thinking {
+  color: var(--app-muted);
+  font-style: italic;
+}
+
+.agent-chat-tool {
+  border: 1px solid var(--app-card-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.agent-chat-tool.is-error {
+  border-color: color-mix(in srgb, var(--app-danger, #e5484d) 45%, var(--app-card-border));
+}
+
+.agent-chat-tool-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  background: var(--app-surface-2, rgba(127, 127, 127, 0.08));
+  color: inherit;
+  font-size: 0.86rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-chat-tool-header span {
+  margin-left: auto;
+  color: var(--app-muted);
+  font-size: 0.8rem;
+}
+
+.agent-chat-tool-payload {
+  margin: 0;
+  padding: 8px;
+  max-height: 220px;
+  overflow: auto;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-top: 1px solid var(--app-card-border);
+}
+
+/* 输入区仿 Cursor：单行起步、随内容增高，发送按钮内嵌右下角而不是独占一行。 */
+.agent-chat-composer {
+  flex: 0 0 auto;
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 6px 6px 6px 8px;
+  border: 1px solid var(--app-card-border);
+  border-radius: 10px;
+  background: var(--app-surface-2, rgba(127, 127, 127, 0.06));
+}
+
+.agent-chat-composer:focus-within {
+  border-color: color-mix(in srgb, var(--app-accent) 55%, var(--app-card-border));
+}
+
+/* 高度由 JS 按内容计算；这里去掉边框与背景，让整块 composer 看起来是一个输入框。 */
+.agent-chat-composer textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 38px;
+  max-height: 180px;
+  padding: 8px 0 8px 0;
+  border: none;
+  background: none;
+  resize: none;
+  overflow-y: auto;
+  line-height: 1.5;
+  font-family: var(--agent-chat-font);
+  font-size: var(--agent-chat-font-size);
+}
+
+.agent-chat-composer textarea:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+/* 提高特异性盖过 .icon-button 的通用底色，并显式指定前景色——
+   浅色主题下若继承默认深色文字，实心强调色按钮上的图标几乎看不见。 */
+/* lucide 图标用 stroke="currentColor"，必须同时把颜色作用到 svg 上，
+   否则实心强调色背景配上继承来的深色描边，在浅色主题里几乎看不见。 */
+.agent-chat-composer .icon-button.agent-chat-send {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: var(--app-accent);
+  color: #fff;
+}
+
+.agent-chat-composer .icon-button.agent-chat-send svg {
+  color: #fff;
+  stroke: #fff;
+}
+
+.agent-chat-composer .icon-button.agent-chat-send:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--app-accent) 82%, #000);
+  color: #fff;
+}
+
+/* 禁用态：灰底灰字，明确表达"不可点"，而不是把强调色调淡。 */
+.agent-chat-composer .icon-button.agent-chat-send:disabled {
+  background: var(--app-surface-2, rgba(127, 127, 127, 0.16));
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  color: var(--app-muted);
+  cursor: not-allowed;
+}
+
+.agent-chat-composer .icon-button.agent-chat-send:disabled svg {
+  color: var(--app-muted);
+  stroke: var(--app-muted);
+}
+
+.agent-chat-composer .icon-button.agent-chat-send.is-stop {
+  background: var(--app-danger, #e5484d);
+  color: #fff;
+}
+
+.agent-chat-composer .icon-button.agent-chat-send.is-stop svg {
+  color: #fff;
+  stroke: #fff;
+}
+
+.agent-chat-composer .icon-button.agent-chat-send.is-stop:hover {
+  background: color-mix(in srgb, var(--app-danger, #e5484d) 82%, #000);
+  color: #fff;
+}
+
+.agent-provider-hint {
+  color: var(--app-muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+/* 实际请求地址预览：等宽显示，长地址允许折行而不撑破卡片。 */
+.agent-provider-url-preview {
+  display: block;
+  margin-top: 2px;
+  color: var(--app-muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.agent-provider-url-preview code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--app-surface-2, rgba(127, 127, 127, 0.12));
+  font-size: 0.74rem;
+  overflow-wrap: anywhere;
+}
+
+/* 设置页里的端点卡片，与连接表单同一视觉语言。 */
+.agent-provider-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--app-card-border);
+  border-radius: 10px;
+}
+
 .agent-auto-connections-panel {
   display: grid;
   gap: 10px;

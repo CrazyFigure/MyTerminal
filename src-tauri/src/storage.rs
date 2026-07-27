@@ -11,10 +11,11 @@ use crate::{
     crypto::CryptoService,
     error::AppError,
     models::{
-        AppSettings, ConnectionProfile, EditorDocument, HistoryEntry, LocalTerminalCommand,
-        LocalTerminalProfile, LocalTerminalSettings, SshJumpHost, SshProxyConfig, StoredAppSettings,
-        StoredConnectionProfile, StoredSshJumpHost, StoredSshProxyConfig, TunnelRecord,
-        WebDavSettings,
+        AgentConversation, AgentProvider, AppSettings, ConnectionProfile, EditorDocument,
+        HistoryEntry,
+        LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, SshJumpHost,
+        SshProxyConfig, StoredAgentProvider, StoredAppSettings, StoredConnectionProfile,
+        StoredSshJumpHost, StoredSshProxyConfig, TunnelRecord, WebDavSettings,
     },
 };
 
@@ -177,6 +178,16 @@ impl StorageService {
 
     fn local_terminals_path(&self) -> PathBuf {
         self.data_dir.join("local-terminals.json")
+    }
+
+    /// AI 端点单独存文件，不并入 settings.json：避免 API Key 随配置包同步到 WebDAV。
+    fn agent_providers_path(&self) -> PathBuf {
+        self.data_dir.join("agent-providers.json")
+    }
+
+    /// AI 对话历史；与端点配置分开存，便于用户单独清理聊天记录。
+    fn agent_conversations_path(&self) -> PathBuf {
+        self.data_dir.join("agent-conversations.json")
     }
 
     fn editor_cache_dir(&self) -> PathBuf {
@@ -445,6 +456,71 @@ impl StorageService {
             })
             .collect();
         self.write_json(&self.connections_path(), &stored?)
+    }
+
+    /// 读取全部 AI 端点，API Key 解密后仅供后端调用使用。
+    pub fn load_agent_providers(
+        &self,
+        crypto: &CryptoService,
+    ) -> Result<Vec<AgentProvider>, AppError> {
+        let stored =
+            self.read_json_or_default::<Vec<StoredAgentProvider>>(&self.agent_providers_path())?;
+        stored
+            .into_iter()
+            .map(|item| {
+                let api_key = crypto.decrypt_local(&item.api_key_encrypted)?;
+                Ok(AgentProvider {
+                    id: item.id,
+                    name: item.name,
+                    protocol: item.protocol,
+                    base_url: item.base_url,
+                    has_api_key: !api_key.is_empty(),
+                    api_key,
+                    models: item.models,
+                })
+            })
+            .collect()
+    }
+
+    pub fn save_agent_providers(
+        &self,
+        providers: &[AgentProvider],
+        crypto: &CryptoService,
+    ) -> Result<(), AppError> {
+        let stored: Result<Vec<_>, AppError> = providers
+            .iter()
+            .map(|item| {
+                Ok(StoredAgentProvider {
+                    id: item.id.clone(),
+                    name: item.name.clone(),
+                    protocol: item.protocol.clone(),
+                    base_url: item.base_url.clone(),
+                    api_key_encrypted: crypto.encrypt_local(&item.api_key)?,
+                    models: item.models.clone(),
+                })
+            })
+            .collect();
+        self.write_json(&self.agent_providers_path(), &stored?)
+    }
+
+    /// 读取全部 AI 对话，按更新时间倒序。
+    pub fn load_agent_conversations(&self) -> Result<Vec<AgentConversation>, AppError> {
+        let mut list =
+            self.read_json_or_default::<Vec<AgentConversation>>(&self.agent_conversations_path())?;
+        list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(list)
+    }
+
+    /// 覆盖保存对话列表；只保留最近若干条，避免文件无限增长。
+    pub fn save_agent_conversations(
+        &self,
+        conversations: &[AgentConversation],
+    ) -> Result<(), AppError> {
+        const MAX_CONVERSATIONS: usize = 100;
+        let mut list = conversations.to_vec();
+        list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        list.truncate(MAX_CONVERSATIONS);
+        self.write_json(&self.agent_conversations_path(), &list)
     }
 
     pub fn load_history(&self) -> Result<Vec<HistoryEntry>, AppError> {

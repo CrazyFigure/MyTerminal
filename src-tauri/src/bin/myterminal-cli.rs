@@ -545,7 +545,7 @@ fn handle_mcp_message(message: Value) -> Result<Option<Value>, AppError> {
 /// 返回给 MCP 客户端的全局使用说明。远程工具允许直接使用连接 id/唯一名称，
 /// 避免客户端按需加载工具时没有发现 open_session 就完全无法执行任务。
 fn mcp_instructions() -> &'static str {
-    "MyTerminal MCP 使用流程：1. 先调用 myterminal_list_connections 查找连接。2. 最简方式是把返回的 connections[].id 直接作为远程工具的 sessionId，Bridge 会自动建立逻辑会话；唯一的连接名称也可直接使用，但不要传 IP、主机名或用户名。3. 如需显式、可独立关闭的会话，可调用 myterminal_open_session，再复用返回的 id。4. MyTerminal 自动使用已保存的密码、密钥、跳板机和代理配置，不需要 agent 手动登录 SSH，也不要求用户先打开终端标签。5. 同一 sessionId 的命令按顺序执行；不同 sessionId 可以并发。6. 写小文件请直接用 myterminal_file_write，不要用 shell echo 拼接，除非用户明确要求执行命令。"
+    "MyTerminal MCP 使用流程：1. 先调用 myterminal_list_connections 查找连接。2. 最简方式是把返回的 connections[].id 直接作为远程工具的 sessionId，Bridge 会自动建立逻辑会话；唯一的连接名称也可直接使用，但不要传 IP、主机名或用户名。3. 如需显式、可独立关闭的会话，可调用 myterminal_open_session，再复用返回的 id。4. MyTerminal 自动使用已保存的密码、密钥、跳板机和代理配置，不需要 agent 手动登录 SSH，也不要求用户先打开终端标签。5. 同一 sessionId 的命令按顺序执行；不同 sessionId 可以并发。6. 写小文件请直接用 myterminal_file_write，不要用 shell echo 拼接，除非用户明确要求执行命令。7. myterminal_run_command 默认在用户可见的终端标签里执行，用户会实时看到命令与输出；返回结果的 executionMode 字段标明本次是 terminal（可见）还是 exec（后台回退），fallbackReason 说明回退原因，请如实转述而不要臆断。"
 }
 
 /// 所有远程工具共用的连接选择说明；保留 sessionId 字段兼容既有客户端，
@@ -583,7 +583,7 @@ fn mcp_tools() -> Value {
         ),
         tool_schema(
             "myterminal_run_command",
-            "通过 MyTerminal 保存的 SSH 连接在远端执行命令，默认需要 GUI 审批。先 list_connections 后可把连接 id 直接作为 sessionId，不要求先打开终端或调用 open_session。同一 sessionId 的命令按顺序执行；创建/写入小文件时优先用 myterminal_file_write。",
+            "通过 MyTerminal 保存的 SSH 连接在远端执行命令，默认需要 GUI 审批。先 list_connections 后可把连接 id 直接作为 sessionId，不要求先打开终端或调用 open_session。同一 sessionId 的命令按顺序执行；创建/写入小文件时优先用 myterminal_file_write。命令默认在用户可见的终端标签里执行（没有可用标签时自动新开一个），用户能实时看到过程；当远端 Shell 不支持命令边界协议、终端正运行全屏程序或被用户占用时会自动回退后台通道。返回结果中的 executionMode 为 terminal 或 exec，fallbackReason 说明回退原因——请如实向用户转述，不要声称命令一定可见。",
             json!({ "type": "object", "required": ["sessionId", "command"], "properties": { "sessionId": { "type": "string", "description": mcp_session_selector_description() }, "command": { "type": "string" }, "cwd": { "type": "string" }, "timeoutSec": { "type": "number" } } })
         ),
         tool_schema(

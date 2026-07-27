@@ -21,7 +21,9 @@ libc = "0.2"
 rand = "0.8"
 portable-pty = "0.9"
 notify-rust = "4.18"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "system-proxy", "gzip"] }
+# blocking 供内置 Agent 的 SSE 流式读取使用：工具循环本身跑在独立线程里，
+# 用阻塞客户端逐行读流比引入 async 运行时更贴合现有线程模型。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "system-proxy", "gzip", "blocking", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

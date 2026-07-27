@@ -10,6 +10,7 @@ use std::{
 
 use crate::{
     agent_bridge::AgentBridgeRuntime,
+    agent_chat::AgentChatRuntime,
     crypto::CryptoService,
     error::AppError,
     models::{ConnectionProfile, TerminalOutputChunk, TerminalSession},
@@ -20,9 +21,63 @@ use ssh2::{Session, Sftp};
 
 #[derive(Debug, Clone)]
 pub enum SessionControl {
+    /// 用户按键输入；会更新“用户正在输入”的活跃度与当前行状态。
     Input(String),
+    /// agent 注入的命令；与用户输入走同一条通道保证顺序，但不计入用户活跃度，
+    /// 否则 agent 自己写入的命令会被误判成用户在敲字，导致下一条命令白等一个静默窗口。
+    AgentInput(String),
     Resize { cols: u16, rows: u16 },
     Close,
+    /// 武装/取消 agent 命令捕获：true 表示下一个命令开始标记起进入捕获，false 表示放弃当前捕获。
+    /// 必须经由控制通道下发，保证与输入写入在 shell 线程内严格有序。
+    SetAgentCapture(bool),
+}
+
+/// agent 可见执行对某个终端 PTY 的占用阶段。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AgentPtyPhase {
+    /// 无 agent 占用，可被抢占。
+    #[default]
+    Idle,
+    /// 已抢占并写入命令，等待 shell 回传命令开始标记。
+    AwaitingBegin,
+    /// 已收到开始标记，正在捕获输出。
+    Running,
+}
+
+/// 一次 agent 可见执行的结果槽位；由 shell 线程填充，命令层通过 Condvar 取走。
+#[derive(Debug, Default)]
+pub struct AgentPtyRun {
+    /// 命令执行结束时的退出码；超时中止时为 None。
+    pub exit_code: Option<i32>,
+    /// 捕获到的命令输出（已剔除 OSC 协议内容）。
+    pub captured: String,
+    /// 输出是否因超出捕获上限被截断。
+    pub truncated: bool,
+    /// 命令是否已结束（正常结束或被中止）。
+    pub finished: bool,
+}
+
+/// 终端 PTY 的 agent 占用状态；随 RuntimeSession 一同创建与销毁，无需额外清理路径。
+#[derive(Debug, Default)]
+pub struct AgentPtyState {
+    pub phase: AgentPtyPhase,
+    /// shell 是否已上报具备命令边界能力（PS0/preexec 安装成功）。
+    pub command_boundary_ready: bool,
+    /// 远端是否处于 alternate screen（vim/top 等全屏 TUI），此时严禁注入。
+    pub alternate_screen_active: bool,
+    /// 最近一次提示符出现的时刻；用于判断 shell 是否空闲在提示符上。
+    pub last_prompt_at: Option<Instant>,
+    /// shell 当前是否停在提示符上等待输入。
+    /// 提示符标记置位、命令开始标记复位——用户跑 `tail -f`、`top` 这类长命令时为 false，
+    /// 此时注入会被前台程序当作输入吃掉，必须等它结束或直接回退隐藏通道。
+    pub at_prompt: bool,
+    /// 最近一次用户按键写入 PTY 的时刻；用于避开用户正在输入的时段。
+    pub last_user_input_at: Option<Instant>,
+    /// 用户当前行是否有未提交内容；有则不注入，避免与用户输入拼接。
+    pub user_line_dirty: bool,
+    /// 当前运行中的 agent 命令结果槽位。
+    pub active: Option<AgentPtyRun>,
 }
 
 /// 每会话未读输出的字节上限；前端通常会立即拉取并 drain，但 renderer 挂起、IPC 中断或后台会话
@@ -136,6 +191,10 @@ pub struct RuntimeSession {
     pub control_tx: Sender<SessionControl>,
     /// 连接仍在后台握手时，关闭标签需要能阻止迟到的状态事件重新激活会话。
     pub stop_flag: Arc<AtomicBool>,
+    /// agent 可见执行的占用状态；shell 线程与命令层共享同一份。
+    pub agent_pty: Arc<Mutex<AgentPtyState>>,
+    /// 命令结束或状态变化时唤醒等待线程，避免命令层轮询。
+    pub agent_pty_signal: Arc<Condvar>,
 }
 
 #[derive(Debug, Clone)]
@@ -222,6 +281,8 @@ pub struct AppState {
     pub crypto: CryptoService,
     pub webdav: WebDavService,
     pub agent_bridge: AgentBridgeRuntime,
+    /// 内置 Agent 的对话运行时：登记进行中的对话并提供取消能力。
+    pub agent_chat: AgentChatRuntime,
     pub sessions: Mutex<HashMap<String, RuntimeSession>>,
     /// 关闭流程只允许启动一次；后续 CloseRequested 必须放行，让 WebView 窗口正常销毁。
     pub is_shutting_down: AtomicBool,
@@ -229,6 +290,9 @@ pub struct AppState {
     pub auxiliary_sessions: Mutex<HashMap<String, Arc<Mutex<AuxiliarySshSession>>>>,
     /// 首次建立辅助连接按连接 ID 串行化，防止文件列表和运行状态同时触发两次 SSH 握手。
     pub auxiliary_session_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// agent 会话到终端会话的粘性绑定：同一 agent 会话的后续命令固定落到同一个标签，
+    /// 保证 cd 状态与 shell 历史连贯。目标标签消失时在查找阶段惰性清理。
+    pub agent_terminal_bindings: Mutex<HashMap<String, String>>,
     pub tunnels: Mutex<HashMap<String, TunnelRuntime>>,
     /// SSH 隧道专用会话池按连接配置共享，避免每个网页请求都重新握手。
     pub tunnel_ssh_pools: Mutex<HashMap<String, Arc<TunnelSshPool>>>,
@@ -263,10 +327,12 @@ impl AppState {
             crypto,
             webdav: WebDavService::new(),
             agent_bridge: AgentBridgeRuntime::new(),
+            agent_chat: AgentChatRuntime::new(),
             sessions: Mutex::new(HashMap::new()),
             is_shutting_down: AtomicBool::new(false),
             auxiliary_sessions: Mutex::new(HashMap::new()),
             auxiliary_session_locks: Mutex::new(HashMap::new()),
+            agent_terminal_bindings: Mutex::new(HashMap::new()),
             tunnels: Mutex::new(HashMap::new()),
             tunnel_ssh_pools: Mutex::new(HashMap::new()),
             ssh_keepalive_interval_sec: Arc::new(AtomicU64::new(keepalive_interval_sec)),

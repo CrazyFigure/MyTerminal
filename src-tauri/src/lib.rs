@@ -1,4 +1,6 @@
 pub mod agent_bridge;
+pub mod agent_chat;
+pub mod agent_tools;
 pub mod commands;
 pub mod crypto;
 pub mod error;
