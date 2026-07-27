@@ -1287,6 +1287,21 @@ select:disabled {
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
 }
 
+/* 外观页与 MCP 页的数字输入框隐藏右侧增减按钮，配合 onWheel 失焦一起杜绝滚轮误改数值。 */
+.settings-appearance-pane input[type="number"]::-webkit-inner-spin-button,
+.settings-appearance-pane input[type="number"]::-webkit-outer-spin-button,
+.settings-mcp-pane input[type="number"]::-webkit-inner-spin-button,
+.settings-mcp-pane input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.settings-appearance-pane input[type="number"],
+.settings-mcp-pane input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
 .command-editor,
 .form-grid textarea {
   resize: vertical;
@@ -3895,11 +3910,12 @@ select:disabled {
   border-top: 1px solid var(--app-card-border);
 }
 
+/* 代码始终使用终端等宽字体栈：正文换成比例字体后，代码对齐也不能被破坏。 */
 .md-inline-code {
   padding: 1px 5px;
   border-radius: 4px;
   background: var(--app-surface-2, rgba(127, 127, 127, 0.14));
-  font-family: var(--agent-chat-font);
+  font-family: var(--agent-chat-code-font, var(--agent-chat-font));
   font-size: 0.92em;
   overflow-wrap: anywhere;
 }
@@ -3952,7 +3968,7 @@ select:disabled {
   padding: 8px 10px;
   max-height: 360px;
   overflow: auto;
-  font-family: var(--agent-chat-font);
+  font-family: var(--agent-chat-code-font, var(--agent-chat-font));
   font-size: calc(var(--agent-chat-font-size) * 0.94);
   line-height: 1.5;
 }
@@ -4073,6 +4089,7 @@ select:disabled {
   padding: 8px;
   max-height: 220px;
   overflow: auto;
+  font-family: var(--agent-chat-code-font, var(--agent-chat-font));
   font-size: 0.8rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

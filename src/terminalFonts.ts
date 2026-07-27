@@ -191,6 +191,84 @@ export const resolveTerminalLatinFontFamily = (
   return 'monospace';
 };
 
+// AI 对话正文允许比例字体参与，推荐列表同时覆盖常见界面字体与等宽字体。
+export const agentChatLatinFontOptions = [
+  'Segoe UI',
+  'Arial',
+  'Tahoma',
+  'Verdana',
+  'Helvetica Neue',
+  'Georgia',
+  'Times New Roman',
+  'JetBrains Mono',
+  'Cascadia Mono',
+  'Consolas',
+  'Fira Code',
+  'Source Code Pro',
+];
+
+// AI 对话中文字体允许任意字体族；代码块单独使用终端等宽字体栈，不受这里影响。
+export const agentChatCjkFontOptions = [
+  'Microsoft YaHei UI',
+  'Microsoft YaHei',
+  'PingFang SC',
+  'Noto Sans CJK SC',
+  'Noto Serif CJK SC',
+  'SimHei',
+  'SimSun',
+  'KaiTi',
+  'Microsoft JhengHei UI',
+  'Sarasa UI SC',
+  'Sarasa Mono SC',
+];
+
+// AI 对话字体栈的跨平台界面字体兜底；与终端不同，这里不要求 ASCII 等宽。
+const agentChatFallbackFonts = [
+  'Segoe UI',
+  'PingFang SC',
+  'Helvetica Neue',
+  'Noto Sans CJK SC',
+  'Arial',
+  'DejaVu Sans',
+  'Liberation Sans',
+] as const;
+
+// AI 对话正文不要求等宽：首选字体只做可用性检测，缺失时按界面字体兜底逐级回落。
+export const buildAgentChatFontFamily = (
+  latinFontFamily: string,
+  cjkFontFamily: string,
+  installedFontFamilies?: readonly string[],
+) => {
+  const installedFonts = buildInstalledFontLookup(installedFontFamilies);
+  const candidates = [normalizeTerminalFontFamily(latinFontFamily), ...agentChatFallbackFonts];
+  let primaryFont = 'sans-serif';
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const normalized = candidate.toLowerCase();
+    if (!candidate || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    const installedName = installedFonts ? installedFonts.get(normalized) : candidate;
+    if (installedName && isTerminalFontFamilyAvailable(installedName)) {
+      primaryFont = quoteTerminalFontFamily(installedName) ?? 'sans-serif';
+      break;
+    }
+  }
+  const cjkFont = quoteTerminalFontFamily(cjkFontFamily);
+  const fallbackFonts = agentChatFallbackFonts
+    .map((fallback) => quoteTerminalFontFamily(fallback))
+    .filter((fallback): fallback is string => Boolean(fallback));
+
+  return [primaryFont, cjkFont, ...fallbackFonts, 'sans-serif']
+    .filter((fontFamily): fontFamily is string => Boolean(fontFamily))
+    .filter((fontFamily, index, array) => {
+      const normalized = normalizeTerminalFontFamily(fontFamily).toLowerCase();
+      return array.findIndex((candidate) => normalizeTerminalFontFamily(candidate).toLowerCase() === normalized) === index;
+    })
+    .join(', ');
+};
+
 // 终端与设置预览必须共享同一字体栈，确保用户预览到的字符宽度就是保存后 xterm 实际采用的宽度。
 export const buildTerminalFontFamily = (
   latinFontFamily: string,

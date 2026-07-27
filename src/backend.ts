@@ -143,6 +143,16 @@ const normalizeSettings = (settings: AppSettings): AppSettings => ({
   ...settings,
   ...normalizeFontPair(settings),
   shellFontSize: clampFontSize(settings.shellFontSize),
+  // AI 对话字体为空表示跟随终端字体，字号 0 表示跟随终端字号；避免升级后对话区观感突变。
+  agentChatLatinFontFamily: trimToUndefined(settings.agentChatLatinFontFamily),
+  agentChatCjkFontFamily: trimToUndefined(settings.agentChatCjkFontFamily),
+  agentChatFontSize: (() => {
+    const value = Math.round(Number(settings.agentChatFontSize));
+    if (!Number.isFinite(value) || value <= 0) {
+      return 0;
+    }
+    return clampFontSize(value);
+  })(),
   runtimeRefreshIntervalSec: clampRefreshInterval(settings.runtimeRefreshIntervalSec),
   runtimeStorageRefreshIntervalSec: clampStorageRefreshInterval(settings.runtimeStorageRefreshIntervalSec),
   runtimeResourceRefreshIntervalSec: clampResourceRefreshInterval(settings.runtimeResourceRefreshIntervalSec),

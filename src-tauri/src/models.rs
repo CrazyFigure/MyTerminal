@@ -468,6 +468,15 @@ pub struct AppSettings {
     pub shell_font_family: String,
     #[serde(default = "default_shell_font_size")]
     pub shell_font_size: u16,
+    /// 右侧 AI 对话英文字体；None 表示跟随终端英文字体，回落由前端解析。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_chat_latin_font_family: Option<String>,
+    /// 右侧 AI 对话中文字体；None 表示跟随终端中文字体，回落由前端解析。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_chat_cjk_font_family: Option<String>,
+    /// 右侧 AI 对话字体大小（px）；0 表示跟随终端字体大小，回落由前端解析。
+    #[serde(default)]
+    pub agent_chat_font_size: u16,
     #[serde(default = "default_terminal_background")]
     pub terminal_background: String,
     #[serde(default = "default_terminal_foreground")]
@@ -529,6 +538,9 @@ impl Default for AppSettings {
             shell_cjk_font_family: default_shell_cjk_font_family(),
             shell_font_family: "JetBrains Mono".into(),
             shell_font_size: 15,
+            agent_chat_latin_font_family: None,
+            agent_chat_cjk_font_family: None,
+            agent_chat_font_size: 0,
             terminal_background: "#f7f7f7".into(),
             terminal_foreground: "#111111".into(),
             accent_color: "#4f46e5".into(),
@@ -1066,6 +1078,12 @@ pub struct StoredAppSettings {
     pub shell_font_family: String,
     #[serde(default = "default_shell_font_size")]
     pub shell_font_size: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_chat_latin_font_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_chat_cjk_font_family: Option<String>,
+    #[serde(default)]
+    pub agent_chat_font_size: u16,
     #[serde(default = "default_terminal_background")]
     pub terminal_background: String,
     #[serde(default = "default_terminal_foreground")]
