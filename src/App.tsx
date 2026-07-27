@@ -675,34 +675,6 @@ const agentProtocolUrlSpec: Record<AgentProtocol, { placeholder: string; path: s
  * 两个 token 值都省略时沿用该模型已有配置，新模型才落到默认值——
  * 上下文窗口无法可靠探测，必须让用户按自己的端点如实填写。
  */
-const parseAgentModelLines = (value: string, previous: AgentModel[]): AgentModel[] =>
-  value
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const [rawId, rawContext, rawMaxTokens] = line.split('|').map((part) => part.trim());
-      const existing = previous.find((item) => item.id === rawId);
-      const contextWindow = Number(rawContext);
-      const maxTokens = Number(rawMaxTokens);
-      return {
-        id: rawId,
-        name: existing?.name || rawId,
-        contextWindow:
-          Number.isFinite(contextWindow) && contextWindow > 0
-            ? Math.round(contextWindow)
-            : existing?.contextWindow ?? 200000,
-        maxTokens:
-          Number.isFinite(maxTokens) && maxTokens > 0
-            ? Math.round(maxTokens)
-            : existing?.maxTokens ?? 16000,
-      };
-    });
-
-/** 回显成可编辑文本；始终写出完整三段，让用户直观看到当前生效的数值。 */
-const formatAgentModelLines = (models: AgentModel[]): string =>
-  models.map((item) => `${item.id} | ${item.contextWindow} | ${item.maxTokens}`).join('\n');
-
 // 端点改动对比：后端永不下发明文密钥，基线与草稿的 apiKey 缺省形态可能不一致，
 // 统一归一为空串后再序列化，只有用户实际输入新密钥或改动其它字段才算有修改。
 const serializeAgentProvidersForCompare = (providers: AgentProvider[]): string =>
@@ -3138,6 +3110,47 @@ function SettingsModal({
     setAgentProviderDrafts((current) => current.filter((item) => item.id !== providerId));
   };
 
+  const updateAgentModel = (providerId: string, modelIndex: number, patch: Partial<AgentModel>) => {
+    setAgentProviderDrafts((current) =>
+      current.map((item) =>
+        item.id === providerId
+          ? {
+              ...item,
+              models: item.models.map((model, idx) =>
+                idx === modelIndex ? { ...model, ...patch } : model,
+              ),
+            }
+          : item,
+      ),
+    );
+  };
+
+  const removeAgentModel = (providerId: string, modelIndex: number) => {
+    setAgentProviderDrafts((current) =>
+      current.map((item) =>
+        item.id === providerId
+          ? { ...item, models: item.models.filter((_, idx) => idx !== modelIndex) }
+          : item,
+      ),
+    );
+  };
+
+  const addAgentModel = (providerId: string) => {
+    setAgentProviderDrafts((current) =>
+      current.map((item) =>
+        item.id === providerId
+          ? {
+              ...item,
+              models: [
+                ...item.models,
+                { id: '', name: '', contextWindow: 200000, maxTokens: 16000 },
+              ],
+            }
+          : item,
+      ),
+    );
+  };
+
   const saveAgentProviders = async () => {
     try {
       const saved = await backend.saveAgentProviders(agentProviderDrafts);
@@ -4219,23 +4232,73 @@ function SettingsModal({
                                 </button>
                               </div>
                             </label>
-                            <label className="span-2">
-                              <span>{t('agentProviderModels')}</span>
-                              <textarea
-                                onChange={(event) =>
-                                  updateAgentProvider(provider.id, {
-                                    models: parseAgentModelLines(event.target.value, provider.models),
-                                  })
-                                }
-                                placeholder={t('agentProviderModelsPlaceholder')}
-                                rows={5}
-                                spellCheck={false}
-                                value={formatAgentModelLines(provider.models)}
-                              />
+                            <div className="span-2">
+                              <div className="agent-model-header">
+                                <span>{t('agentProviderModels')}</span>
+                                <button
+                                  className="secondary-button slim"
+                                  onClick={() => addAgentModel(provider.id)}
+                                  type="button"
+                                >
+                                  <Plus size={14} /> {t('agentProviderModelAdd')}
+                                </button>
+                              </div>
+                              {provider.models.length > 0 ? (
+                                <div className="agent-model-list">
+                                  <div className="agent-model-row agent-model-row-header">
+                                    <span>{t('agentProviderModelId')}</span>
+                                    <span>{t('agentProviderModelContext')}</span>
+                                    <span>{t('agentProviderModelMaxTokens')}</span>
+                                    <span />
+                                  </div>
+                                  {provider.models.map((model, modelIndex) => (
+                                    <div key={modelIndex} className="agent-model-row">
+                                      <input
+                                        onChange={(event) =>
+                                          updateAgentModel(provider.id, modelIndex, { id: event.target.value })
+                                        }
+                                        placeholder={t('agentProviderModelIdPlaceholder')}
+                                        spellCheck={false}
+                                        value={model.id}
+                                      />
+                                      <input
+                                        min={1}
+                                        onChange={(event) => {
+                                          const val = parseInt(event.target.value, 10);
+                                          if (!isNaN(val) && val > 0) {
+                                            updateAgentModel(provider.id, modelIndex, { contextWindow: val });
+                                          }
+                                        }}
+                                        type="number"
+                                        value={model.contextWindow}
+                                      />
+                                      <input
+                                        min={1}
+                                        onChange={(event) => {
+                                          const val = parseInt(event.target.value, 10);
+                                          if (!isNaN(val) && val > 0) {
+                                            updateAgentModel(provider.id, modelIndex, { maxTokens: val });
+                                          }
+                                        }}
+                                        type="number"
+                                        value={model.maxTokens}
+                                      />
+                                      <button
+                                        className="icon-button"
+                                        onClick={() => removeAgentModel(provider.id, modelIndex)}
+                                        title={t('agentProviderModelRemove')}
+                                        type="button"
+                                      >
+                                        <Trash2 size={14} />
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
                               <small className="agent-provider-hint">
                                 {t('agentProviderModelsHint')}
                               </small>
-                            </label>
+                            </div>
                           </div>
                         </div>
                       ))}

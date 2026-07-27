@@ -4154,6 +4154,62 @@ select:disabled {
   border-radius: 10px;
 }
 
+/* 模型列表：标题行 + 添加按钮。 */
+.agent-model-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.agent-model-header > span {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--app-text);
+}
+
+/* 模型行：三列输入 + 删除按钮，与 form-grid 的间距对齐。 */
+.agent-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-model-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) 32px;
+  gap: 6px;
+  align-items: center;
+}
+
+.agent-model-row-header {
+  font-size: 0.72rem;
+  color: var(--app-muted);
+  padding-bottom: 2px;
+}
+
+.agent-model-row-header > span:last-child {
+  /* 占位对齐删除按钮列 */
+  width: 32px;
+}
+
+.agent-model-row input {
+  width: 100%;
+  min-width: 0;
+}
+
+.agent-model-row input[type="number"] {
+  /* 隐藏 number input 的 spinner，保持与 text input 一致的外观 */
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.agent-model-row input[type="number"]::-webkit-inner-spin-button,
+.agent-model-row input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 .agent-auto-connections-panel {
   display: grid;
   gap: 10px;
