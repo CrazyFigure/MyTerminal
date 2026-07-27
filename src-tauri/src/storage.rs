@@ -140,6 +140,10 @@ impl StorageService {
         self.tunnels_path()
     }
 
+    pub fn agent_providers_file_path(&self) -> PathBuf {
+        self.agent_providers_path()
+    }
+
     pub fn local_terminals_file_path(&self) -> PathBuf {
         self.local_terminals_path()
     }

@@ -6506,36 +6506,30 @@ pub fn list_agent_bridge_requests(
     Ok(agent_bridge::list_requests(&state.agent_bridge)?)
 }
 
-/// 读取全部 AI 端点配置；API Key 被 skip_serializing 剔除，前端只拿到 hasApiKey 标记。
+/// 读取全部 AI 端点配置；API Key 明文下发（与 WebDAV 密码同一策略），前端可切换显示。
 #[tauri::command]
 pub fn list_agent_providers(state: State<'_, AppState>) -> Result<Vec<AgentProvider>, String> {
     Ok(state.storage.load_agent_providers(&state.crypto)?)
 }
 
-/// 保存 AI 端点配置。前端不持有明文 Key，因此 apiKey 留空时沿用已保存的值，
-/// 只有用户真的填了新 Key 才覆盖——否则每次保存设置都会把密钥清空。
+/// 保存 AI 端点配置。前端持有明文 Key（与 WebDAV 密码同一策略），可查看、修改或清空，
+/// 因此以前端提交的值为准整体落盘；hasApiKey 标记按 Key 是否为空重新归一。
 #[tauri::command]
 pub fn save_agent_providers(
     state: State<'_, AppState>,
     providers: Vec<AgentProvider>,
 ) -> Result<Vec<AgentProvider>, String> {
-    let existing = state.storage.load_agent_providers(&state.crypto)?;
-    let merged: Vec<AgentProvider> = providers
+    let normalized: Vec<AgentProvider> = providers
         .into_iter()
         .map(|mut provider| {
-            if provider.api_key.trim().is_empty() {
-                if let Some(previous) = existing.iter().find(|item| item.id == provider.id) {
-                    provider.api_key = previous.api_key.clone();
-                }
-            }
             provider.has_api_key = !provider.api_key.is_empty();
             provider
         })
         .collect();
     state
         .storage
-        .save_agent_providers(&merged, &state.crypto)?;
-    Ok(merged)
+        .save_agent_providers(&normalized, &state.crypto)?;
+    Ok(normalized)
 }
 
 /// 读取全部 AI 对话历史，按更新时间倒序。
@@ -7815,6 +7809,8 @@ pub fn export_local_config(
         connections: state.storage.load_connections(&state.crypto)?,
         history: state.storage.load_history()?,
         tunnels: state.storage.load_tunnels()?,
+        // AI 端点含明文 API Key，与连接密码一样随导出文件明文保存。
+        agent_providers: Some(state.storage.load_agent_providers(&state.crypto)?),
     };
 
     let normalized_path = target_path.trim();
@@ -7866,6 +7862,12 @@ pub fn import_local_config(
         &state.storage.tunnels_file_path(),
         "tunnels-before-local-import",
     )?;
+    if bundle.agent_providers.is_some() {
+        state.storage.backup_existing_file(
+            &state.storage.agent_providers_file_path(),
+            "agent-providers-before-local-import",
+        )?;
+    }
 
     for tunnel in &mut bundle.tunnels {
         tunnel.status = "stopped".into();
@@ -7879,6 +7881,12 @@ pub fn import_local_config(
         .save_connections(&bundle.connections, &state.crypto)?;
     state.storage.save_history(&bundle.history)?;
     state.storage.save_tunnels(&bundle.tunnels)?;
+    // 旧版备份没有 AI 端点字段，缺省时保留本地端点不动。
+    if let Some(providers) = bundle.agent_providers {
+        state
+            .storage
+            .save_agent_providers(&providers, &state.crypto)?;
+    }
 
     Ok(bootstrap_from_storage(&state)?)
 }
@@ -7981,6 +7989,8 @@ pub async fn upload_config_to_webdav(state: State<'_, AppState>) -> Result<Strin
         connections,
         history,
         tunnels,
+        // AI 端点含明文 API Key，与 WebDAV 密码一样随配置包明文上传。
+        agent_providers: Some(state.storage.load_agent_providers(&state.crypto)?),
     };
     let remote_path = state
         .webdav
@@ -8042,6 +8052,12 @@ pub async fn download_config_from_webdav(
             &state.storage.tunnels_file_path(),
             "tunnels-before-webdav-import",
         )?;
+        if bundle.agent_providers.is_some() {
+            state.storage.backup_existing_file(
+                &state.storage.agent_providers_file_path(),
+                "agent-providers-before-webdav-import",
+            )?;
+        }
 
         for tunnel in &mut bundle.tunnels {
             tunnel.status = "stopped".into();
@@ -8055,6 +8071,12 @@ pub async fn download_config_from_webdav(
             .save_connections(&bundle.connections, &state.crypto)?;
         state.storage.save_history(&bundle.history)?;
         state.storage.save_tunnels(&bundle.tunnels)?;
+        // 旧版备份没有 AI 端点字段，缺省时保留本地端点不动。
+        if let Some(providers) = bundle.agent_providers {
+            state
+                .storage
+                .save_agent_providers(&providers, &state.crypto)?;
+        }
 
         return Ok(bootstrap_from_storage(&state)?);
     }

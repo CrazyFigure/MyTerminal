@@ -124,9 +124,9 @@ export interface AgentProvider {
   name: string;
   protocol: AgentProtocol;
   baseUrl: string;
-  /** 后端永不下发明文密钥，前端只知道是否已配置。 */
+  /** 是否已配置密钥（后端按密钥串是否为空归一）。 */
   hasApiKey: boolean;
-  /** 仅用于提交新密钥；留空表示沿用后端已保存的值。 */
+  /** 明文密钥：与 WebDAV 密码同一策略，后端明文下发，可随时查看或修改。 */
   apiKey?: string;
   models: AgentModel[];
 }

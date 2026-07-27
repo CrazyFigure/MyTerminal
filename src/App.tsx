@@ -675,8 +675,8 @@ const agentProtocolUrlSpec: Record<AgentProtocol, { placeholder: string; path: s
  * 两个 token 值都省略时沿用该模型已有配置，新模型才落到默认值——
  * 上下文窗口无法可靠探测，必须让用户按自己的端点如实填写。
  */
-// 端点改动对比：后端永不下发明文密钥，基线与草稿的 apiKey 缺省形态可能不一致，
-// 统一归一为空串后再序列化，只有用户实际输入新密钥或改动其它字段才算有修改。
+// 端点改动对比：apiKey 为可选字段，基线与草稿的缺省形态可能不一致（undefined 与空串），
+// 统一归一为空串后再序列化，避免刚拉取完就被误判为存在未保存修改。
 const serializeAgentProvidersForCompare = (providers: AgentProvider[]): string =>
   JSON.stringify(providers.map(({ apiKey, ...rest }) => ({ ...rest, apiKey: apiKey ?? '' })));
 
@@ -2938,7 +2938,7 @@ function SettingsModal({
   // 每个端点独立控制密钥是否明文展示，与 WebDAV 密码同一交互。
   const [revealApiKeys, setRevealApiKeys] = useState<Record<string, boolean>>({});
 
-  // 打开设置页时拉取端点列表；后端不下发明文密钥，仅返回 hasApiKey 标记。
+  // 打开设置页时拉取端点列表；密钥随列表明文下发，可通过眼睛按钮切换显示。
   useEffect(() => {
     if (!open) {
       return;
@@ -3154,11 +3154,10 @@ function SettingsModal({
   const saveAgentProviders = async () => {
     try {
       const saved = await backend.saveAgentProviders(agentProviderDrafts);
-      // 保存后回填后端归一化结果，并清空本地明文密钥输入框，避免密钥长期留在内存里。
-      const normalized = saved.map((item) => ({ ...item, apiKey: '' }));
-      setAgentProviderDrafts(normalized);
+      // 保存后回填后端归一化结果（含明文密钥），用户可继续查看或再次编辑。
+      setAgentProviderDrafts(saved);
       // 基线与草稿同步后，未再次修改时保存按钮恢复禁用。
-      setAgentProvidersBaseline(normalized);
+      setAgentProvidersBaseline(saved);
       onAgentProvidersSaved(saved);
       showActionFeedback('save-agent-providers', 'is-success', t('statusSettingsSaved'));
     } catch (error) {
@@ -3922,6 +3921,11 @@ function SettingsModal({
                       }
                       await downloadConfig(selected);
                       setDraftSettings(useAppStore.getState().settings);
+                      // 配置包可能包含 AI 端点，同步刷新端点草稿与侧栏下拉，避免继续展示旧配置。
+                      const providers = await backend.listAgentProviders();
+                      setAgentProviderDrafts(providers);
+                      setAgentProvidersBaseline(providers);
+                      onAgentProvidersSaved(providers);
                     }, t('statusDownloadedConfig'))} type="button">
                       <Download size={16} /> {settingsActionRunning === 'download-config' ? t('working') : t('downloadConfig')}
                     </button>
@@ -3956,6 +3960,11 @@ function SettingsModal({
                             void runSettingsAction('import-local', async () => {
                               await importLocalConfig(file);
                               setDraftSettings(useAppStore.getState().settings);
+                              // 导入的配置可能包含 AI 端点，同步刷新端点草稿与侧栏下拉。
+                              const providers = await backend.listAgentProviders();
+                              setAgentProviderDrafts(providers);
+                              setAgentProvidersBaseline(providers);
+                              onAgentProvidersSaved(providers);
                             });
                           }
                           event.currentTarget.value = '';
@@ -4209,9 +4218,7 @@ function SettingsModal({
                                   onChange={(event) =>
                                     updateAgentProvider(provider.id, { apiKey: event.target.value })
                                   }
-                                  placeholder={
-                                    provider.hasApiKey ? t('agentProviderApiKeySaved') : 'sk-...'
-                                  }
+                                  placeholder="sk-..."
                                   type={revealApiKeys[provider.id] ? 'text' : 'password'}
                                   value={provider.apiKey ?? ''}
                                 />
@@ -4424,7 +4431,7 @@ function SettingsModal({
 export default function App() {
   // 右侧 AI 栏分为对话与审批两个页签；默认停在对话，审批有新请求时会自动切过去。
   const [agentSidebarTab, setAgentSidebarTab] = useState<'chat' | 'requests'>('chat');
-  // AI 端点配置由后端持有明文密钥，前端只缓存去敏后的列表用于下拉选择。
+  // AI 端点列表（含明文密钥）缓存在前端，供侧边栏对话与设置页共用。
   const [agentProviders, setAgentProviders] = useState<AgentProvider[]>([]);
   // 左侧栏初始宽度默认取最小宽度稍多一点，避免打开时占用过多空间
   const [sidebarWidth, setSidebarWidth] = useState(sidePanelMinWidth + 20);
@@ -5359,7 +5366,7 @@ export default function App() {
     };
   }, [pollTerminalOutputs, sessions.length]);
 
-  // 启动时加载 AI 端点列表（不含密钥），供侧边栏对话与设置页共用。
+  // 启动时加载 AI 端点列表（含明文密钥），供侧边栏对话与设置页共用。
   const refreshAgentProviders = useCallback(async () => {
     try {
       setAgentProviders(await backend.listAgentProviders());

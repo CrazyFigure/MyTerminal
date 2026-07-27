@@ -349,7 +349,8 @@ impl AgentEffort {
     }
 }
 
-/// 一个 AI 服务端点及其下属模型。API Key 落盘前由 CryptoService 加密，且永不下发到前端。
+/// 一个 AI 服务端点及其下属模型。API Key 落盘前由 CryptoService 加密；
+/// 下发前端与导出配置时为明文，与 WebDAV 密码同一策略，用户可随时查看。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentProvider {
@@ -359,10 +360,10 @@ pub struct AgentProvider {
     pub protocol: String,
     /// 服务基址，例如 https://api.anthropic.com。
     pub base_url: String,
-    /// 明文 API Key；仅在后端内存与加密文件之间流转，序列化给前端时会被剔除。
-    #[serde(default, skip_serializing)]
+    /// 明文 API Key；落盘时加密存储，下发前端与导出配置（本地/WebDAV）时为明文。
+    #[serde(default)]
     pub api_key: String,
-    /// 前端据此显示“已配置密钥”，无需拿到密钥本身。
+    /// 前端据此显示“已配置密钥”，无需自行判断密钥串是否为空。
     #[serde(default)]
     pub has_api_key: bool,
     #[serde(default)]
@@ -996,6 +997,10 @@ pub struct LocalConfigBundle {
     pub history: Vec<HistoryEntry>,
     #[serde(default)]
     pub tunnels: Vec<TunnelRecord>,
+    /// AI 端点及明文 API Key，与连接密码一样随配置包明文保存。
+    /// 旧版备份没有该字段：导入时 None 表示不改动本地端点配置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_providers: Option<Vec<AgentProvider>>,
 }
 
 fn default_schema_version() -> u16 {
