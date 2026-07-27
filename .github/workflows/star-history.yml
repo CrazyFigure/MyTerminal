@@ -16,17 +16,22 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # v5 使用 Node.js 24，避免 GitHub 强制替换已弃用的 Node.js 20 运行时。
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        # v5 与 Node.js 24 配套，消除旧版 Action 的运行时弃用警告。
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Generate star history SVG
         run: node scripts/generate-star-history.mjs
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_STAR_HISTORY || secrets.GITHUB_TOKEN }}
+          # 自定义 PAT 仅作为首选凭据，过期后由脚本自动尝试 Actions 自带令牌。
+          STAR_HISTORY_TOKEN: ${{ secrets.PAT_STAR_HISTORY }}
+          # github.token 始终保留为独立兜底，不能再被自定义 PAT 覆盖。
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Commit updated SVG
         shell: bash

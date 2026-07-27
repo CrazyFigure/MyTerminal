@@ -8,8 +8,12 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputPath = join(repoRoot, 'assets', 'star-history.svg');
 // 本地执行时使用默认仓库，GitHub Actions 中优先使用当前仓库环境变量。
 const repository = process.env.GITHUB_REPOSITORY || 'CrazyFigure/MyTerminal';
-// GitHub stargazers 接口现在要求鉴权；Actions 中注入 GITHUB_TOKEN，本地可用 GH_TOKEN 调试。
-const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '';
+// 自定义 PAT 用于扩大接口配额或兼容特殊权限；令牌过期时不能阻断 Actions 自带令牌兜底。
+const starHistoryToken = process.env.STAR_HISTORY_TOKEN || process.env.GH_TOKEN || '';
+// Actions 自带令牌单独保留，避免 PAT_STAR_HISTORY 过期或撤销后覆盖可用凭据。
+const githubToken = process.env.GITHUB_TOKEN || '';
+// 鉴权候选按优先级去重，并保留无令牌分支以支持公开元数据和本地预览。
+const githubTokens = [...new Set([starHistoryToken, githubToken].filter(Boolean)), ''];
 // GitHub REST API 统一入口，方便后续切换企业版或代理时只改一处。
 const githubApiBaseUrl = process.env.GITHUB_API_URL || 'https://api.github.com';
 // CI 中禁止用线性兜底图覆盖真实走势图，避免自动提交不准确资产。
@@ -70,16 +74,16 @@ function formatCoord(value) {
 }
 
 // GitHub 请求头集中生成，stargazers 接口需要特殊 Accept 才会返回 starred_at。
-function buildGithubHeaders(accept) {
+function buildGithubHeaders(accept, token) {
   const headers = {
     Accept: accept,
     'User-Agent': 'CrazyFigure-MyTerminal-Star-History',
     'X-GitHub-Api-Version': '2022-11-28',
   };
 
-  // GitHub Actions 的仓库 token 用于读取 stargazers 时间戳；本地没有 token 时只允许生成兜底图。
-  if (githubToken) {
-    headers.Authorization = `Bearer ${githubToken}`;
+  // 当前候选令牌用于读取 stargazers 时间戳；空令牌仅支持公开元数据或本地兜底图。
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
   }
 
   return headers;
@@ -98,19 +102,49 @@ async function fetchJson(url, headers) {
   return JSON.parse(body);
 }
 
+// 只有鉴权或权限错误才尝试下一凭据，网络故障和响应格式异常仍立即暴露真实根因。
+function isAuthenticationError(error) {
+  return error instanceof GithubApiError && (error.status === 401 || error.status === 403);
+}
+
+// 远程调用依次尝试自定义 PAT、Actions 令牌和公开访问，避免单个过期令牌导致定时任务中断。
+async function withGithubAuthentication(operation) {
+  let lastAuthenticationError;
+
+  for (const [index, token] of githubTokens.entries()) {
+    try {
+      return await operation(token);
+    } catch (error) {
+      // 非鉴权错误通常无法通过切换令牌恢复，继续重试只会掩盖接口或网络问题。
+      if (!isAuthenticationError(error)) {
+        throw error;
+      }
+
+      lastAuthenticationError = error;
+
+      // 后续仍有候选凭据时记录安全摘要，日志中绝不输出令牌内容。
+      if (index < githubTokens.length - 1) {
+        console.warn(`GitHub credential rejected with HTTP ${error.status}; trying the next credential.`);
+      }
+    }
+  }
+
+  throw lastAuthenticationError || new Error('No GitHub authentication candidate was available.');
+}
+
 // 仓库元数据用于获取创建时间和当前 star 数，是精确和兜底图都需要的基础信息。
-async function fetchRepositoryMetadata() {
+async function fetchRepositoryMetadata(token) {
   const metadataUrl = `${githubApiBaseUrl}/repos/${repository}`;
-  return fetchJson(metadataUrl, buildGithubHeaders('application/vnd.github+json'));
+  return fetchJson(metadataUrl, buildGithubHeaders('application/vnd.github+json', token));
 }
 
 // 分页读取完整 stargazer 时间线；任一页缺少 starred_at 都视为不可生成精确走势图。
-async function fetchStargazers() {
+async function fetchStargazers(token) {
   const stars = [];
 
   for (let page = 1; page <= maxStargazerPages; page += 1) {
     const stargazersUrl = `${githubApiBaseUrl}/repos/${repository}/stargazers?per_page=${stargazersPageSize}&page=${page}`;
-    const pageItems = await fetchJson(stargazersUrl, buildGithubHeaders('application/vnd.github.star+json'));
+    const pageItems = await fetchJson(stargazersUrl, buildGithubHeaders('application/vnd.github.star+json', token));
 
     // GitHub 返回结构变化时立即失败，避免生成没有时间戳的错误走势图。
     if (!Array.isArray(pageItems)) {
@@ -365,11 +399,11 @@ function renderSvg(series) {
 
 // 主流程先取仓库元数据，再优先生成精确走势图；本地无 token 时才降级为可显示预览图。
 async function main() {
-  const repositoryMetadata = await fetchRepositoryMetadata();
+  const repositoryMetadata = await withGithubAuthentication((token) => fetchRepositoryMetadata(token));
   let series;
 
   try {
-    const stargazers = await fetchStargazers();
+    const stargazers = await withGithubAuthentication((token) => fetchStargazers(token));
     series = buildExactSeries(stargazers, repositoryMetadata);
   } catch (error) {
     // 本地无 token 时允许生成可显示的预览图；CI 中失败可避免自动提交错误趋势。
