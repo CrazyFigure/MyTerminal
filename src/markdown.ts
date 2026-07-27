@@ -11,7 +11,7 @@ export type MarkdownNode =
   | { type: 'paragraph'; spans: InlineSpan[] }
   | { type: 'heading'; level: number; spans: InlineSpan[] }
   | { type: 'code'; lang: string; text: string; closed: boolean }
-  | { type: 'list'; ordered: boolean; items: InlineSpan[][] }
+  | { type: 'list'; ordered: boolean; start: number; items: InlineSpan[][] }
   | { type: 'quote'; spans: InlineSpan[] }
   | { type: 'divider' }
   | {
@@ -230,24 +230,29 @@ export function parseMarkdown(source: string): MarkdownNode[] {
       continue;
     }
 
-    // 列表：连续的同类型条目合并成一个列表节点。
+    // 列表：连续的同类型条目合并成一个列表节点；同时保留原始起始序号。
+    // AI 常在两个有序条目之间插入说明段落，此时会生成多个列表节点，若丢弃起始序号，
+    // 每个独立的 <ol> 都会被浏览器错误地从 1 开始显示。
     const bullet = /^[-*+]\s+(.*)$/.exec(trimmed);
-    const ordered = /^\d+[.)]\s+(.*)$/.exec(trimmed);
+    const ordered = /^(\d+)[.)]\s+(.*)$/.exec(trimmed);
     if (bullet || ordered) {
       const isOrdered = Boolean(ordered);
+      // 无序列表不使用 start，但统一存为 1，保持节点结构简单且避免渲染层重复兜底。
+      const start = ordered ? Number.parseInt(ordered[1], 10) : 1;
       const items: InlineSpan[][] = [];
       while (index < lines.length) {
         const current = lines[index].trim();
         const nextBullet = /^[-*+]\s+(.*)$/.exec(current);
-        const nextOrdered = /^\d+[.)]\s+(.*)$/.exec(current);
+        const nextOrdered = /^(\d+)[.)]\s+(.*)$/.exec(current);
         const matched = isOrdered ? nextOrdered : nextBullet;
         if (!matched) {
           break;
         }
-        items.push(parseInline(matched[1]));
+        // 有序列表的第 1 个捕获组是序号，正文位于第 2 个捕获组；无序列表正文仍在第 1 组。
+        items.push(parseInline(isOrdered ? matched[2] : matched[1]));
         index += 1;
       }
-      nodes.push({ type: 'list', ordered: isOrdered, items });
+      nodes.push({ type: 'list', ordered: isOrdered, start, items });
       continue;
     }
 

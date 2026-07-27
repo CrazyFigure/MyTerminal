@@ -94,7 +94,8 @@ export function MarkdownView({ source }: { source: string }) {
             return <CodeBlock key={index} closed={node.closed} lang={node.lang} text={node.text} />;
           case 'list':
             return node.ordered ? (
-              <ol key={index} className="md-list">
+              // 列表被说明段落分隔时会形成多个 ol，必须沿用 Markdown 原文序号，避免每段都显示为 1。
+              <ol key={index} className="md-list" start={node.start}>
                 {node.items.map((item, itemIndex) => (
                   <li key={itemIndex}>
                     <InlineSpans spans={item} />
