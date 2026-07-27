@@ -18,13 +18,14 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use ssh2::{Session, Sftp};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
-    commands::connect_ssh,
+    commands::{self, connect_ssh},
     crypto::CryptoService,
     error::AppError,
     models::{AgentBridgeSettings, ConnectionProfile, RemoteFileEntry},
+    state::{AgentPtyPhase, AgentPtyRun, AgentPtyState, AppState, RuntimeSession, SessionControl},
     storage::StorageService,
 };
 
@@ -118,6 +119,12 @@ pub struct AgentCommandResult {
     pub truncated: bool,
     pub started_at: String,
     pub finished_at: String,
+    /// 本次执行通道："terminal" 表示在用户可见的终端标签里执行，"exec" 表示后台隐藏通道。
+    pub execution_mode: String,
+    /// 可见执行时的目标终端会话 id，便于 agent 在回复中引用具体标签。
+    pub terminal_session_id: Option<String>,
+    /// 回退到隐藏通道时的原因；可见执行成功时为 None。如实告知 agent 与用户本次是否可见。
+    pub fallback_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1020,29 +1027,82 @@ fn execute_action(
         .map_err(AppError::from),
         AgentAction::FileWrite(payload) => {
             write_agent_file(runtime, storage, crypto, payload)?;
+            announce_file_action(runtime, storage, crypto, &payload.session_id, "写入文件", &payload.path);
             Ok(json!({ "ok": true }))
         }
         AgentAction::FileUpload(payload) => {
-            serde_json::to_value(upload_agent_path(runtime, storage, crypto, payload)?)
-                .map_err(AppError::from)
+            let result = upload_agent_path(runtime, storage, crypto, payload)?;
+            announce_file_action(
+                runtime,
+                storage,
+                crypto,
+                &payload.session_id,
+                "上传",
+                &result.destination_path,
+            );
+            serde_json::to_value(result).map_err(AppError::from)
         }
         AgentAction::FileDownload(payload) => {
-            serde_json::to_value(download_agent_path(runtime, storage, crypto, payload)?)
-                .map_err(AppError::from)
+            let result = download_agent_path(runtime, storage, crypto, payload)?;
+            announce_file_action(
+                runtime,
+                storage,
+                crypto,
+                &payload.session_id,
+                "下载",
+                &result.source_path,
+            );
+            serde_json::to_value(result).map_err(AppError::from)
         }
         AgentAction::FileDelete(payload) => {
             delete_agent_file(runtime, storage, crypto, payload)?;
+            announce_file_action(runtime, storage, crypto, &payload.session_id, "删除", &payload.path);
             Ok(json!({ "ok": true }))
         }
         AgentAction::FileRename(payload) => {
             rename_agent_file(runtime, storage, crypto, payload)?;
+            announce_file_action(
+                runtime,
+                storage,
+                crypto,
+                &payload.session_id,
+                "重命名",
+                &format!("{} -> {}", payload.path, payload.new_path),
+            );
             Ok(json!({ "ok": true }))
         }
         AgentAction::FileMkdir(payload) => {
             mkdir_agent_file(runtime, storage, crypto, payload)?;
+            announce_file_action(runtime, storage, crypto, &payload.session_id, "创建目录", &payload.path);
             Ok(json!({ "ok": true }))
         }
     }
+}
+
+/// 文件类操作走 SFTP，不经过 PTY，用户在终端里看不到任何痕迹。
+/// 这里把动作播报到该连接的终端标签，保证 AI 的每一步都留下可见记录。
+fn announce_file_action(
+    runtime: &AgentBridgeRuntime,
+    storage: &StorageService,
+    crypto: &CryptoService,
+    session_id: &str,
+    action: &str,
+    target: &str,
+) {
+    let Some(app_handle) = runtime.app_handle.lock().ok().and_then(|h| h.clone()) else {
+        return;
+    };
+    // 解析出连接 id；失败说明会话本身有问题，此时静默跳过播报即可，不影响主流程。
+    let Ok(session) = resolve_agent_session(runtime, storage, crypto, session_id) else {
+        return;
+    };
+    let state = app_handle.state::<AppState>();
+    commands::announce_agent_activity(
+        &state,
+        &app_handle,
+        &session.connection_id,
+        &format!("{action}：{target}"),
+    );
 }
 
 pub fn list_connections(
@@ -1308,7 +1368,6 @@ pub fn run_agent_command(
         .map_err(|_| AppError::Validation("agent bridge command lane is unavailable".into()))?;
     let (session, connection) =
         connection_for_session(runtime, storage, crypto, &payload.session_id)?;
-    let ssh_session = connect_ssh(&connection)?;
     let cwd = payload.cwd.clone().unwrap_or_else(|| session.cwd.clone());
     let timeout = Duration::from_secs(
         payload
@@ -1316,8 +1375,20 @@ pub fn run_agent_command(
             .unwrap_or(settings.default_timeout_sec as u64)
             .clamp(1, 3600),
     );
+
+    // 优先在用户可见的终端标签里执行；拿不到可注入的终端时如实记录原因并回退隐藏通道。
+    let fallback_reason = if settings.visible_execution {
+        match run_agent_command_in_terminal(runtime, &session, payload, &cwd, timeout, settings) {
+            Ok(result) => return Ok(result),
+            Err(reason) => Some(reason.to_string()),
+        }
+    } else {
+        Some("设置中已关闭“在终端中执行”".to_string())
+    };
+
+    let ssh_session = connect_ssh(&connection)?;
     let command = command_with_cwd(&payload.command, &cwd);
-    exec_agent_command(
+    let mut result = exec_agent_command(
         ssh_session,
         &session,
         command,
@@ -1325,7 +1396,478 @@ pub fn run_agent_command(
         cwd,
         timeout,
         settings.max_output_bytes.max(1024),
-    )
+    )?;
+    result.fallback_reason = fallback_reason;
+    Ok(result)
+}
+
+/// 可见执行无法进行的原因；一律转成中文说明返回给 agent 与用户，不静默降级。
+#[derive(Debug)]
+enum VisibleExecUnavailable {
+    /// 应用未就绪（Broker 尚未拿到 AppHandle）。
+    AppUnavailable,
+    /// 该连接没有可用终端标签，且自动新开失败。
+    NoTerminal(String),
+    /// 终端 shell 不具备命令边界能力（bash < 4.4 且非 zsh、dash/fish 等）。
+    NoCommandBoundary,
+    /// 前台是全屏 TUI（vim/top 等），注入会被当作按键吃掉。
+    AlternateScreen,
+    /// 终端被用户输入或另一条 agent 命令占用，等待超时。
+    Busy,
+    /// 注入后等待命令开始标记超时，shell 可能已失去钩子。
+    BeginTimeout,
+}
+
+impl std::fmt::Display for VisibleExecUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::AppUnavailable => "应用窗口尚未就绪",
+            Self::NoTerminal(reason) => return write!(formatter, "无法打开终端标签：{reason}"),
+            Self::NoCommandBoundary => "该终端的 Shell 不支持命令边界协议（需要 zsh 或 bash 4.4+）",
+            Self::AlternateScreen => "终端前台正在运行全屏程序",
+            Self::Busy => "终端正被使用中（用户正在输入或有命令在运行）",
+            Self::BeginTimeout => "终端未响应命令开始标记",
+        };
+        formatter.write_str(message)
+    }
+}
+
+/// 等待终端空闲可注入的最长时间；超时即回退隐藏通道，绝不打断用户正在敲的命令。
+const VISIBLE_EXEC_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(3);
+/// 新开标签后等待 shell 就绪（收到能力标记与提示符）的最长时间。
+const VISIBLE_EXEC_READY_TIMEOUT: Duration = Duration::from_secs(20);
+/// 注入命令后等待命令开始标记的最长时间。
+const VISIBLE_EXEC_BEGIN_TIMEOUT: Duration = Duration::from_secs(10);
+/// 用户最后一次按键后需静默多久才允许注入，避免与用户输入交错。
+const VISIBLE_EXEC_USER_IDLE: Duration = Duration::from_millis(750);
+
+/// 在用户可见的终端标签里执行一条 agent 命令，并精确回收 stdout 与退出码。
+/// 任何一步不满足条件都返回 Err，由调用方回退隐藏通道——绝不为了“可见”而牺牲正确性。
+fn run_agent_command_in_terminal(
+    runtime: &AgentBridgeRuntime,
+    session: &AgentSession,
+    payload: &RunCommandRequest,
+    cwd: &str,
+    timeout: Duration,
+    settings: &AgentBridgeSettings,
+) -> Result<AgentCommandResult, VisibleExecUnavailable> {
+    let app_handle = runtime
+        .app_handle
+        .lock()
+        .ok()
+        .and_then(|handle| handle.clone())
+        .ok_or(VisibleExecUnavailable::AppUnavailable)?;
+    let state = app_handle.state::<AppState>();
+
+    let terminal_session_id = resolve_terminal_session(
+        &state,
+        &app_handle,
+        &session.id,
+        &session.connection_id,
+    )?;
+
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let started_at = now_rfc3339();
+    // cwd 用子 shell 包裹，命令执行完不会改变用户终端所在目录，语义与隐藏通道一致。
+    let wrapped = wrap_command_for_terminal(&payload.command, cwd);
+
+    let outcome = {
+        // RAII 租约保证任何提前返回、超时或 panic 都会把终端复位为空闲并解除捕获武装。
+        let lease = TerminalExecLease::acquire(&state, &terminal_session_id)?;
+        // 抢占成功后再打来源标记，避免抢不到终端时留下无意义的提示行。
+        commands::announce_agent_command(&state, &app_handle, &terminal_session_id, &payload.command);
+        lease.run(&wrapped, timeout)?
+    };
+
+    let max_output_bytes = settings.max_output_bytes.max(1024);
+    let mut stdout = outcome.captured;
+    let mut truncated = outcome.truncated;
+    if stdout.len() > max_output_bytes {
+        // 按 UTF-8 边界裁剪到设置上限，避免把多字节字符切断。
+        let mut cut = max_output_bytes;
+        while cut > 0 && !stdout.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        stdout.truncate(cut);
+        truncated = true;
+    }
+
+    let status = if outcome.aborted {
+        "timeout"
+    } else if outcome.exit_code.unwrap_or(0) != 0 {
+        "failed"
+    } else {
+        "completed"
+    };
+
+    Ok(AgentCommandResult {
+        run_id,
+        session_id: session.id.clone(),
+        connection_id: session.connection_id.clone(),
+        command: payload.command.clone(),
+        cwd: cwd.to_string(),
+        status: status.to_string(),
+        exit_code: outcome.exit_code,
+        stdout,
+        // 终端 PTY 天然合并 stdout 与 stderr，无法分离；如实留空而不是伪造内容。
+        stderr: String::new(),
+        truncated,
+        started_at,
+        finished_at: now_rfc3339(),
+        execution_mode: "terminal".into(),
+        terminal_session_id: Some(terminal_session_id),
+        fallback_reason: None,
+    })
+}
+
+/// 为一次可见执行挑选目标终端标签：优先沿用该 agent 会话上次用过的标签，
+/// 其次选同连接中最近出现过提示符的已连接标签，都没有则自动新开一个并等待就绪。
+fn resolve_terminal_session(
+    state: &AppState,
+    app_handle: &AppHandle,
+    agent_session_id: &str,
+    connection_id: &str,
+) -> Result<String, VisibleExecUnavailable> {
+    // 粘性绑定让同一 agent 会话的命令始终落在同一个标签，保持 shell 历史连贯。
+    let bound = state
+        .agent_terminal_bindings
+        .lock()
+        .ok()
+        .and_then(|bindings| bindings.get(agent_session_id).cloned());
+
+    if let Some(candidate) = bound {
+        // 绑定标签仍属于该连接就继续用：即使此刻用户正在里面敲字，
+        // acquire 会等一小会儿；等不到再由调用方回退隐藏通道，好过为同一会话到处开新标签。
+        if terminal_session_is_usable(state, &candidate, connection_id) {
+            return Ok(candidate);
+        }
+        // 绑定的标签已关闭或重连换了 id，惰性清理后重新挑选。
+        if let Ok(mut bindings) = state.agent_terminal_bindings.lock() {
+            bindings.remove(agent_session_id);
+        }
+    }
+
+    if let Some(candidate) = pick_recent_terminal_session(state, connection_id) {
+        bind_terminal_session(state, agent_session_id, &candidate);
+        return Ok(candidate);
+    }
+
+    // 没有可用标签就自动开一个，并广播给前端立即显示，用户能看到 agent 为它开了哪个终端。
+    let session = commands::start_ssh_session(state, app_handle, connection_id, true)
+        .map_err(|error| VisibleExecUnavailable::NoTerminal(error.to_string()))?;
+    wait_for_terminal_ready(state, &session.id)?;
+    bind_terminal_session(state, agent_session_id, &session.id);
+    Ok(session.id)
+}
+
+fn bind_terminal_session(state: &AppState, agent_session_id: &str, terminal_session_id: &str) {
+    if let Ok(mut bindings) = state.agent_terminal_bindings.lock() {
+        bindings.insert(
+            agent_session_id.to_string(),
+            terminal_session_id.to_string(),
+        );
+    }
+}
+
+/// 判断某个终端标签是否仍属于该连接且处于已连接状态。
+/// 判断某个终端标签是否仍属于该连接且可承载可见执行。
+///
+/// 注意：`RuntimeSession.session.status` 是创建时的快照（"connecting"），
+/// 后续状态只经输出队列推给前端，后端这份副本永远不会变成 "connected"。
+/// 因此就绪与否必须看 shell 是否真的回传过能力标记与提示符，而不是看这个字段。
+fn terminal_session_is_usable(state: &AppState, session_id: &str, connection_id: &str) -> bool {
+    let Ok(sessions) = state.sessions.lock() else {
+        return false;
+    };
+    let Some(runtime) = sessions.get(session_id) else {
+        return false;
+    };
+    if runtime.session.connection_id != connection_id || runtime.session.kind != "ssh" {
+        return false;
+    }
+    runtime
+        .agent_pty
+        .lock()
+        .map(|pty| pty.command_boundary_ready && pty.last_prompt_at.is_some())
+        .unwrap_or(false)
+}
+
+/// 该标签此刻能否立刻接受注入：停在提示符、没有正在跑的 agent 命令、
+/// 不在全屏 TUI 里、用户当前行也没有半截内容。
+/// 挑选目标标签时优先选满足这些条件的，避免选中用户正忙的标签后白等一轮超时。
+fn terminal_session_is_idle_now(runtime: &RuntimeSession) -> bool {
+    runtime
+        .agent_pty
+        .lock()
+        .map(|pty| {
+            pty.command_boundary_ready
+                && pty.at_prompt
+                && !pty.alternate_screen_active
+                && !pty.user_line_dirty
+                && pty.phase == AgentPtyPhase::Idle
+        })
+        .unwrap_or(false)
+}
+
+/// 在同一连接的已连接标签中挑选最近出现过提示符的一个。
+/// 按提示符时间而非 HashMap 迭代顺序选择，保证多标签时行为稳定且贴近用户正在看的那个。
+fn pick_recent_terminal_session(state: &AppState, connection_id: &str) -> Option<String> {
+    let sessions = state.sessions.lock().ok()?;
+    sessions
+        .values()
+        // 同上：不能用 session.status 判活，它是创建时快照且永远停在 "connecting"。
+        .filter(|runtime| {
+            runtime.session.kind == "ssh" && runtime.session.connection_id == connection_id
+        })
+        .filter_map(|runtime| {
+            let pty = runtime.agent_pty.lock().ok()?;
+            // 没上报过能力或还没出现提示符的标签不能承载可见执行，直接排除。
+            if !pty.command_boundary_ready || pty.last_prompt_at.is_none() {
+                return None;
+            }
+            drop(pty);
+            // 空闲标签优先：用户正在该标签里跑命令或敲字时，宁可另开一个也不去打扰他。
+            let idle = terminal_session_is_idle_now(runtime);
+            let last_prompt_at = runtime.agent_pty.lock().ok()?.last_prompt_at;
+            Some((idle, last_prompt_at, runtime.session.id.clone()))
+        })
+        // 先按“是否空闲”排序，同为空闲时取最近出现提示符的（多半是用户正看着的那个）。
+        .max_by_key(|(idle, last_prompt_at, _)| (*idle, *last_prompt_at))
+        .and_then(|(idle, _, session_id)| idle.then_some(session_id))
+}
+
+/// 等待新开标签完成 SSH 握手与 shell 注入：收到能力标记且出现过提示符才算就绪。
+///
+/// 只在循环开头取一次 Arc，之后全程只持有 agent_pty 锁等待 Condvar，
+/// 绝不在持有 agent_pty 时再去锁 sessions——shell 线程正是按“先 sessions 后 agent_pty”
+/// 的顺序推进状态，反向加锁会直接死锁。
+fn wait_for_terminal_ready(
+    state: &AppState,
+    terminal_session_id: &str,
+) -> Result<(), VisibleExecUnavailable> {
+    let (agent_pty, signal) = terminal_agent_pty(state, terminal_session_id)
+        .ok_or_else(|| VisibleExecUnavailable::NoTerminal("终端标签已关闭".into()))?;
+    let deadline = Instant::now() + VISIBLE_EXEC_READY_TIMEOUT;
+    let mut guard = agent_pty
+        .lock()
+        .map_err(|_| VisibleExecUnavailable::NoTerminal("终端状态不可用".into()))?;
+
+    loop {
+        if guard.command_boundary_ready && guard.last_prompt_at.is_some() {
+            return Ok(());
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(VisibleExecUnavailable::NoCommandBoundary);
+        }
+        // Condvar 等待期间自动释放锁，shell 线程解析到能力标记或提示符时唤醒。
+        let (next_guard, _timeout) = signal
+            .wait_timeout(guard, remaining)
+            .map_err(|_| VisibleExecUnavailable::NoTerminal("终端状态不可用".into()))?;
+        guard = next_guard;
+    }
+}
+
+/// 取出某个终端会话的占用状态与信号量；会话不存在时返回 None。
+fn terminal_agent_pty(
+    state: &AppState,
+    terminal_session_id: &str,
+) -> Option<(Arc<Mutex<AgentPtyState>>, Arc<Condvar>)> {
+    let sessions = state.sessions.lock().ok()?;
+    let runtime = sessions.get(terminal_session_id)?;
+    Some((
+        Arc::clone(&runtime.agent_pty),
+        Arc::clone(&runtime.agent_pty_signal),
+    ))
+}
+
+/// 一次可见执行的结果。
+struct TerminalExecOutcome {
+    exit_code: Option<i32>,
+    captured: String,
+    truncated: bool,
+    /// 是否因超时被中止（已向终端发送 Ctrl+C）。
+    aborted: bool,
+}
+
+/// 终端占用租约：构造时抢占，Drop 时无条件复位为空闲并解除捕获武装。
+/// 有了它，超时、错误提前返回甚至 panic 都不会让用户的终端永久拒绝 agent 命令。
+struct TerminalExecLease {
+    agent_pty: Arc<Mutex<AgentPtyState>>,
+    signal: Arc<Condvar>,
+    control_tx: std::sync::mpsc::Sender<SessionControl>,
+}
+
+impl TerminalExecLease {
+    /// 等待终端空闲并抢占：要求已连接、具备命令边界能力、不在全屏 TUI、
+    /// 停在提示符上、用户当前行干净且已静默一小段时间。
+    fn acquire(
+        state: &AppState,
+        terminal_session_id: &str,
+    ) -> Result<Self, VisibleExecUnavailable> {
+        let (agent_pty, signal, control_tx) = {
+            let sessions = state
+                .sessions
+                .lock()
+                .map_err(|_| VisibleExecUnavailable::Busy)?;
+            let runtime = sessions
+                .get(terminal_session_id)
+                .ok_or_else(|| VisibleExecUnavailable::NoTerminal("终端标签已关闭".into()))?;
+            (
+                Arc::clone(&runtime.agent_pty),
+                Arc::clone(&runtime.agent_pty_signal),
+                runtime.control_tx.clone(),
+            )
+        };
+
+        let deadline = Instant::now() + VISIBLE_EXEC_ACQUIRE_TIMEOUT;
+        let mut guard = agent_pty.lock().map_err(|_| VisibleExecUnavailable::Busy)?;
+        loop {
+            if !guard.command_boundary_ready {
+                return Err(VisibleExecUnavailable::NoCommandBoundary);
+            }
+            if guard.alternate_screen_active {
+                return Err(VisibleExecUnavailable::AlternateScreen);
+            }
+
+            let user_idle = guard
+                .last_user_input_at
+                .map(|at| at.elapsed() >= VISIBLE_EXEC_USER_IDLE)
+                .unwrap_or(true);
+            // 必须是“此刻停在提示符”，而不是“历史上出现过提示符”：
+            // 用户正在跑 tail -f / top 时前者为 false，注入会被前台程序吃掉。
+            if guard.phase == AgentPtyPhase::Idle
+                && guard.at_prompt
+                && user_idle
+                && !guard.user_line_dirty
+            {
+                guard.phase = AgentPtyPhase::AwaitingBegin;
+                guard.active = Some(AgentPtyRun::default());
+                break;
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(VisibleExecUnavailable::Busy);
+            }
+            let (next_guard, _timeout) = signal
+                .wait_timeout(guard, remaining)
+                .map_err(|_| VisibleExecUnavailable::Busy)?;
+            guard = next_guard;
+        }
+        drop(guard);
+
+        Ok(Self {
+            agent_pty,
+            signal,
+            control_tx,
+        })
+    }
+
+    /// 注入命令并等待其执行完毕；超时则发送 Ctrl+C 中止并返回已捕获的部分输出。
+    fn run(
+        &self,
+        wrapped_command: &str,
+        timeout: Duration,
+    ) -> Result<TerminalExecOutcome, VisibleExecUnavailable> {
+        // 先武装捕获，再写入命令：两条消息经同一控制通道，shell 线程内严格有序，
+        // 保证 PS0 发出的开始标记一定落在武装之后。
+        self.control_tx
+            .send(SessionControl::SetAgentCapture(true))
+            .map_err(|_| VisibleExecUnavailable::NoTerminal("终端已断开".into()))?;
+        // 命令与回车合并成一条消息写入，避免与用户按键在 pending_input 中交错。
+        self.control_tx
+            .send(SessionControl::AgentInput(format!("{wrapped_command}\n")))
+            .map_err(|_| VisibleExecUnavailable::NoTerminal("终端已断开".into()))?;
+
+        let begin_deadline = Instant::now() + VISIBLE_EXEC_BEGIN_TIMEOUT;
+        let run_deadline = Instant::now() + timeout;
+        let mut guard = self
+            .agent_pty
+            .lock()
+            .map_err(|_| VisibleExecUnavailable::Busy)?;
+        let mut aborted = false;
+        let mut abort_sent = false;
+
+        loop {
+            if guard.active.as_ref().is_some_and(|run| run.finished) {
+                let run = guard.active.take().unwrap_or_default();
+                return Ok(TerminalExecOutcome {
+                    exit_code: run.exit_code,
+                    captured: run.captured,
+                    truncated: run.truncated,
+                    aborted,
+                });
+            }
+
+            let now = Instant::now();
+            // 命令始终没开始执行，说明 shell 钩子已失效（例如命令自行覆盖了 PROMPT_COMMAND）。
+            if guard.phase == AgentPtyPhase::AwaitingBegin && now >= begin_deadline {
+                return Err(VisibleExecUnavailable::BeginTimeout);
+            }
+
+            if now >= run_deadline {
+                if !abort_sent {
+                    // 超时只发 Ctrl+C 打断当前命令，绝不关闭通道——那是用户的终端。
+                    let _ = self.control_tx.send(SessionControl::AgentInput("\u{3}".into()));
+                    abort_sent = true;
+                    aborted = true;
+                } else {
+                    // 二次超时仍拿不到结束标记，返回已捕获部分，避免 MCP 调用永久挂起。
+                    let run = guard.active.take().unwrap_or_default();
+                    return Ok(TerminalExecOutcome {
+                        exit_code: None,
+                        captured: run.captured,
+                        truncated: run.truncated,
+                        aborted: true,
+                    });
+                }
+            }
+
+            let wait = if abort_sent {
+                Duration::from_secs(2)
+            } else {
+                let until = run_deadline.min(if guard.phase == AgentPtyPhase::AwaitingBegin {
+                    begin_deadline
+                } else {
+                    run_deadline
+                });
+                until
+                    .saturating_duration_since(now)
+                    .max(Duration::from_millis(20))
+            };
+            let (next_guard, _timeout) = self
+                .signal
+                .wait_timeout(guard, wait)
+                .map_err(|_| VisibleExecUnavailable::Busy)?;
+            guard = next_guard;
+        }
+    }
+}
+
+impl Drop for TerminalExecLease {
+    fn drop(&mut self) {
+        // 无条件解除武装并复位状态，保证异常路径也不会让终端卡在被占用状态。
+        let _ = self
+            .control_tx
+            .send(SessionControl::SetAgentCapture(false));
+        if let Ok(mut guard) = self.agent_pty.lock() {
+            guard.phase = AgentPtyPhase::Idle;
+            guard.active = None;
+        }
+        self.signal.notify_all();
+    }
+}
+
+/// 把命令包进子 shell 并附带 cwd，保证执行完不改变用户终端的当前目录。
+fn wrap_command_for_terminal(command: &str, cwd: &str) -> String {
+    let trimmed_cwd = cwd.trim();
+    if trimmed_cwd.is_empty() || trimmed_cwd == "~" {
+        format!("( {command} )")
+    } else {
+        format!("( cd {} && {command} )", shell_quote(trimmed_cwd))
+    }
 }
 
 fn command_with_cwd(command: &str, cwd: &str) -> String {
@@ -1446,6 +1988,10 @@ fn exec_agent_command(
         truncated,
         started_at,
         finished_at: now_rfc3339(),
+        // 本函数即隐藏通道本身；回退原因由调用方在决定回退时补充。
+        execution_mode: "exec".into(),
+        terminal_session_id: None,
+        fallback_reason: None,
     })
 }
 
@@ -2210,6 +2756,119 @@ fn decode_request_body<T: for<'de> Deserialize<'de>>(body: &str) -> Result<T, Ap
     serde_json::from_str(body).map_err(AppError::from)
 }
 
+/// Agent 动作的统一分派表：外部 MCP（经 HTTP Broker）与内置 Agent 都走这里。
+/// 单一入口保证两条路径共享同一套审批闸门、会话解析与错误语义，不会出现绕过授权的“后门”。
+pub fn dispatch_agent_action(
+    runtime: &AgentBridgeRuntime,
+    storage: &StorageService,
+    crypto: &CryptoService,
+    settings: &AgentBridgeSettings,
+    route: &str,
+    body: &Value,
+) -> Result<Value, AppError> {
+    match route {
+        "/sessions/open" => {
+            let payload: OpenSessionRequest = decode_action_payload(body)?;
+            serde_json::to_value(open_agent_session(runtime, storage, crypto, &payload)?)
+                .map_err(AppError::from)
+        }
+        "/sessions/close" => {
+            let payload: CloseSessionRequest = decode_action_payload(body)?;
+            close_agent_session(runtime, &payload.session_id)?;
+            Ok(json!({ "ok": true }))
+        }
+        "/exec" => {
+            let payload: RunCommandRequest = decode_action_payload(body)?;
+            submit_action(
+                runtime,
+                storage,
+                crypto,
+                settings,
+                AgentAction::RunCommand(payload),
+            )
+        }
+        // 只读操作不入审批队列，与既有行为保持一致。
+        "/files/list" => {
+            let payload: FilePathRequest = decode_action_payload(body)?;
+            serde_json::to_value(list_agent_files(runtime, storage, crypto, &payload)?)
+                .map_err(AppError::from)
+        }
+        "/files/read" => {
+            let payload: FilePathRequest = decode_action_payload(body)?;
+            serde_json::to_value(read_agent_file(runtime, storage, crypto, &payload)?)
+                .map_err(AppError::from)
+        }
+        "/files/write" => {
+            let payload: FileWriteRequest = decode_action_payload(body)?;
+            submit_action(
+                runtime,
+                storage,
+                crypto,
+                settings,
+                AgentAction::FileWrite(payload),
+            )
+        }
+        "/files/upload" => {
+            let payload: FileUploadRequest = decode_action_payload(body)?;
+            submit_action(
+                runtime,
+                storage,
+                crypto,
+                settings,
+                AgentAction::FileUpload(payload),
+            )
+        }
+        "/files/download" => {
+            let payload: FileDownloadRequest = decode_action_payload(body)?;
+            submit_action(
+                runtime,
+                storage,
+                crypto,
+                settings,
+                AgentAction::FileDownload(payload),
+            )
+        }
+        "/files/delete" => {
+            let payload: FilePathRequest = decode_action_payload(body)?;
+            submit_action(
+                runtime,
+                storage,
+                crypto,
+                settings,
+                AgentAction::FileDelete(payload),
+            )
+        }
+        "/files/rename" => {
+            let payload: FileRenameRequest = decode_action_payload(body)?;
+            submit_action(
+                runtime,
+                storage,
+                crypto,
+                settings,
+                AgentAction::FileRename(payload),
+            )
+        }
+        "/files/mkdir" => {
+            let payload: FilePathRequest = decode_action_payload(body)?;
+            submit_action(
+                runtime,
+                storage,
+                crypto,
+                settings,
+                AgentAction::FileMkdir(payload),
+            )
+        }
+        other => Err(AppError::NotFound(format!("POST {other}"))),
+    }
+}
+
+/// 把 JSON 参数解析成具体动作负载；错误信息保留字段名，便于模型自行纠正入参。
+fn decode_action_payload<T: for<'de> Deserialize<'de>>(body: &Value) -> Result<T, AppError> {
+    serde_json::from_value(body.clone()).map_err(|error| {
+        AppError::Validation(format!("invalid tool arguments: {error}"))
+    })
+}
+
 fn handle_http_request(
     stream: &mut TcpStream,
     runtime: &AgentBridgeRuntime,
@@ -2246,85 +2905,14 @@ fn handle_http_request(
             close_agent_session(runtime, &payload.session_id)?;
             Ok(json!({ "ok": true }))
         }
-        ("POST", "/exec") => {
-            let payload: RunCommandRequest = decode_request_body(&request.body)?;
-            submit_action(
-                runtime,
-                storage,
-                crypto,
-                settings,
-                AgentAction::RunCommand(payload),
-            )
-        }
-        ("POST", "/files/list") => {
-            let payload: FilePathRequest = decode_request_body(&request.body)?;
-            serde_json::to_value(list_agent_files(runtime, storage, crypto, &payload)?)
-                .map_err(AppError::from)
-        }
-        ("POST", "/files/read") => {
-            let payload: FilePathRequest = decode_request_body(&request.body)?;
-            serde_json::to_value(read_agent_file(runtime, storage, crypto, &payload)?)
-                .map_err(AppError::from)
-        }
-        ("POST", "/files/write") => {
-            let payload: FileWriteRequest = decode_request_body(&request.body)?;
-            submit_action(
-                runtime,
-                storage,
-                crypto,
-                settings,
-                AgentAction::FileWrite(payload),
-            )
-        }
-        ("POST", "/files/upload") => {
-            let payload: FileUploadRequest = decode_request_body(&request.body)?;
-            submit_action(
-                runtime,
-                storage,
-                crypto,
-                settings,
-                AgentAction::FileUpload(payload),
-            )
-        }
-        ("POST", "/files/download") => {
-            let payload: FileDownloadRequest = decode_request_body(&request.body)?;
-            submit_action(
-                runtime,
-                storage,
-                crypto,
-                settings,
-                AgentAction::FileDownload(payload),
-            )
-        }
-        ("POST", "/files/delete") => {
-            let payload: FilePathRequest = decode_request_body(&request.body)?;
-            submit_action(
-                runtime,
-                storage,
-                crypto,
-                settings,
-                AgentAction::FileDelete(payload),
-            )
-        }
-        ("POST", "/files/rename") => {
-            let payload: FileRenameRequest = decode_request_body(&request.body)?;
-            submit_action(
-                runtime,
-                storage,
-                crypto,
-                settings,
-                AgentAction::FileRename(payload),
-            )
-        }
-        ("POST", "/files/mkdir") => {
-            let payload: FilePathRequest = decode_request_body(&request.body)?;
-            submit_action(
-                runtime,
-                storage,
-                crypto,
-                settings,
-                AgentAction::FileMkdir(payload),
-            )
+        // 其余 POST 路由与内置 Agent 共用同一张分派表，保证两条入口的审批与语义完全一致。
+        ("POST", path) => {
+            let body: Value = if request.body.trim().is_empty() {
+                json!({})
+            } else {
+                serde_json::from_str(&request.body)?
+            };
+            dispatch_agent_action(runtime, storage, crypto, settings, path, &body)
         }
         _ => Err(AppError::NotFound(format!(
             "{} {}",
@@ -2489,6 +3077,8 @@ mod tests {
             allowed_connection_ids: vec!["safe".into()],
             default_timeout_sec: 60,
             max_output_bytes: 1024,
+            // 审批策略与可见执行相互独立；这两个用例只验证白名单逻辑。
+            visible_execution: true,
         };
         assert!(should_auto_execute(&settings, "safe"));
         assert!(should_auto_execute(&settings, "prod"));
@@ -2502,6 +3092,8 @@ mod tests {
             allowed_connection_ids: vec!["safe".into()],
             default_timeout_sec: 60,
             max_output_bytes: 1024,
+            // 审批策略与可见执行相互独立；这两个用例只验证白名单逻辑。
+            visible_execution: true,
         };
         assert!(should_auto_execute(&settings, "safe"));
         assert!(!should_auto_execute(&settings, "prod"));

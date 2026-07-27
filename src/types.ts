@@ -79,6 +79,73 @@ export interface AgentBridgeSettings {
   defaultTimeoutSec: number;
   /** 单次命令最大输出字节数，超出后后端截断并标记 truncated。 */
   maxOutputBytes: number;
+  /** AI 命令是否在用户可见的终端标签中执行；关闭后回到后台隐藏通道。 */
+  visibleExecution: boolean;
+}
+
+/** 内置 Agent 支持的三种接口协议。 */
+export type AgentProtocol = 'anthropic' | 'openai-chat' | 'openai-responses';
+
+export interface AgentModel {
+  /** 调用 API 时使用的模型 id。 */
+  id: string;
+  /** 界面展示名称；为空时回退显示 id。 */
+  name: string;
+  /** 单次回复最大 token 数。 */
+  maxTokens: number;
+  /** 上下文窗口大小（token），用于估算何时自动压缩。 */
+  contextWindow: number;
+}
+
+/** 思考强度；default 表示不下发该参数，走模型自身默认。 */
+export type AgentEffort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+/** 持久化到本地的一条 AI 对话。messages 对后端不透明，由前端定义形状。 */
+export interface StoredAgentConversation {
+  id: string;
+  title: string;
+  /** 最后更新时间（毫秒时间戳）。 */
+  updatedAt: number;
+  providerId: string;
+  modelId: string;
+  messages: AgentChatMessage[];
+}
+
+/** 一轮对话的运行参数，每次发送时携带。 */
+export interface AgentRunOptions {
+  effort: AgentEffort;
+  /** 上下文占用超过该比例时自动压缩。 */
+  compactThreshold: number;
+  autoCompact: boolean;
+}
+
+export interface AgentProvider {
+  id: string;
+  name: string;
+  protocol: AgentProtocol;
+  baseUrl: string;
+  /** 后端永不下发明文密钥，前端只知道是否已配置。 */
+  hasApiKey: boolean;
+  /** 仅用于提交新密钥；留空表示沿用后端已保存的值。 */
+  apiKey?: string;
+  models: AgentModel[];
+}
+
+/** 一次工具调用在对话中的展示状态。 */
+export interface AgentChatToolCall {
+  id: string;
+  name: string;
+  arguments: unknown;
+  /** 工具返回内容；尚未完成时为空。 */
+  result?: string;
+  isError?: boolean;
+}
+
+export interface AgentChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  toolCalls: AgentChatToolCall[];
 }
 
 export interface AppSettings {

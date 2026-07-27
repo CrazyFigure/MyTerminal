@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   AgentBridgeRequest,
   AgentBridgeStatus,
+  AgentProvider,
+  AgentRunOptions,
   AppSettings,
   BootstrapState,
   ConnectionProfile,
@@ -18,6 +20,7 @@ import type {
   RuntimeResourceUsageRequest,
   RuntimeStorageFiles,
   SshJumpHost,
+  StoredAgentConversation,
   SshProxyConfig,
   TerminalOutputChunk,
   TerminalSession,
@@ -189,6 +192,8 @@ const normalizeSettings = (settings: AppSettings): AppSettings => ({
     allowedConnectionIds: Array.from(new Set(settings.agentBridge?.allowedConnectionIds ?? [])),
     defaultTimeoutSec: Math.min(3600, Math.max(1, Number(settings.agentBridge?.defaultTimeoutSec) || 60)),
     maxOutputBytes: Math.min(10_000_000, Math.max(1024, Number(settings.agentBridge?.maxOutputBytes) || 200_000)),
+    // 旧配置没有该字段时按默认开启处理，保持与后端 default 一致。
+    visibleExecution: settings.agentBridge?.visibleExecution ?? true,
   },
 });
 
@@ -304,6 +309,7 @@ const mockSettings: AppSettings = {
     allowedConnectionIds: [],
     defaultTimeoutSec: 60,
     maxOutputBytes: 200000,
+    visibleExecution: true,
   },
 };
 
@@ -510,6 +516,25 @@ export const backend = {
     return call<ConnectionProfile>(isExisting ? 'update_connection' : 'create_connection', { connection: normalized }, normalized);
   },
   deleteConnection: (connectionId: string) => call<boolean>('delete_connection', { connectionId }, true),
+  // 内置 Agent：端点配置读写与对话驱动。API Key 只上行不下行。
+  listAgentProviders: () => call<AgentProvider[]>('list_agent_providers', undefined, []),
+  saveAgentProviders: (providers: AgentProvider[]) =>
+    call<AgentProvider[]>('save_agent_providers', { providers }, providers),
+  startAgentChat: (payload: {
+    conversationId: string;
+    providerId: string;
+    modelId: string;
+    history: { role: string; content: string; toolCalls: unknown[]; toolResults: unknown[] }[];
+    options: AgentRunOptions;
+  }) => call<boolean>('start_agent_chat', payload, true),
+  cancelAgentChat: (conversationId: string) =>
+    call<boolean>('cancel_agent_chat', { conversationId }, true),
+  listAgentConversations: () =>
+    call<StoredAgentConversation[]>('list_agent_conversations', undefined, []),
+  saveAgentConversation: (conversation: StoredAgentConversation) =>
+    call<boolean>('save_agent_conversation', { conversation }, true),
+  deleteAgentConversation: (conversationId: string) =>
+    call<boolean>('delete_agent_conversation', { conversationId }, true),
   openSession: (connectionId: string) =>
     call<TerminalSession>(
       'open_ssh_session',

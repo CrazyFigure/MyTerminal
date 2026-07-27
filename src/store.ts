@@ -71,6 +71,7 @@ const defaultSettings: AppSettings = {
     allowedConnectionIds: [],
     defaultTimeoutSec: 60,
     maxOutputBytes: 200000,
+    visibleExecution: true,
   },
 };
 
@@ -700,6 +701,8 @@ type StoreState = {
   reorderConnections: (connectionIds: string[]) => Promise<void>;
   moveConnectionToGroup: (connectionId: string, groupPath?: string) => Promise<void>;
   openSession: (connectionId: string) => Promise<void>;
+  /** 登记由后端自行创建的终端会话（AI 可见执行自动开标签），前端未发起过 openSession 时也能显示。 */
+  adoptSession: (session: TerminalSession) => void;
   saveLocalTerminals: (settings: LocalTerminalSettings) => Promise<LocalTerminalSettings>;
   openLocalTerminal: (profile: LocalTerminalProfile) => Promise<void>;
   reconnectSession: (sessionId: string) => Promise<void>;
@@ -1334,6 +1337,23 @@ export const useAppStore = create<StoreState>((set, get) => ({
         }),
       }));
     }
+  },
+
+  adoptSession: (session) => {
+    const { sessions } = get();
+    if (sessions.some((item) => item.id === session.id)) {
+      return;
+    }
+
+    const connection = get().connections.find((item) => item.id === session.connectionId);
+    set((state) => ({
+      // 只追加标签，不抢占 activeSessionId：用户可能正在别的标签里工作，不应被 AI 打断视线。
+      sessions: [...state.sessions, { ...session, title: connection?.name ?? session.title }],
+      statusMessage: statusText(state.settings, 'statusAgentTerminalOpened', {
+        name: connection?.name ?? session.title,
+      }),
+    }));
+    void get().pollTerminalOutputs(session.id);
   },
 
   saveLocalTerminals: async (settings) => {

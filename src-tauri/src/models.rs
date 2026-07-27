@@ -111,6 +111,11 @@ fn default_agent_bridge_max_output_bytes() -> usize {
     200_000
 }
 
+/// 可见执行默认开启：让用户能实时看到 AI 在自己终端里做了什么，是本功能的核心价值。
+fn default_agent_bridge_visible_execution() -> bool {
+    true
+}
+
 fn default_connection_groups() -> Vec<String> {
     Vec::new()
 }
@@ -266,6 +271,10 @@ pub struct AgentBridgeSettings {
     /// 单次命令输出最大保留字节数，超出后截断并标记 truncated。
     #[serde(default = "default_agent_bridge_max_output_bytes")]
     pub max_output_bytes: usize,
+    /// AI 命令是否在用户可见的终端标签中执行；默认开启。
+    /// 关闭后回到后台隐藏通道执行，用户只能在审批卡片里看到命令本身。
+    #[serde(default = "default_agent_bridge_visible_execution")]
+    pub visible_execution: bool,
 }
 
 impl Default for AgentBridgeSettings {
@@ -276,8 +285,154 @@ impl Default for AgentBridgeSettings {
             allowed_connection_ids: Vec::new(),
             default_timeout_sec: default_agent_bridge_timeout_sec(),
             max_output_bytes: default_agent_bridge_max_output_bytes(),
+            visible_execution: default_agent_bridge_visible_execution(),
         }
     }
+}
+
+/// 内置 Agent 可用的一个模型。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModel {
+    /// 调用 API 时使用的模型 id，例如 claude-opus-5 或 gpt-4o。
+    pub id: String,
+    /// 界面上展示的名称；为空时前端回退显示 id。
+    #[serde(default)]
+    pub name: String,
+    /// 单次回复最大 token 数；Anthropic 协议要求必填，其它协议留空则不下发。
+    #[serde(default = "default_agent_model_max_tokens")]
+    pub max_tokens: u32,
+    /// 上下文窗口大小（token）；用于估算何时触发自动压缩。
+    #[serde(default = "default_agent_model_context_window")]
+    pub context_window: u32,
+}
+
+fn default_agent_model_max_tokens() -> u32 {
+    16000
+}
+
+/// 保守默认 200k：多数主流模型不低于此值，估算偏小只会让压缩更早触发，不会溢出。
+fn default_agent_model_context_window() -> u32 {
+    200_000
+}
+
+/// 思考强度；仅对支持该参数的模型下发，其余协议自动忽略。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentEffort {
+    /// 不下发任何思考参数，走模型默认行为。
+    Default,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl Default for AgentEffort {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
+impl AgentEffort {
+    /// 转成 API 需要的字符串；Default 返回 None 表示不下发。
+    pub fn as_api_value(&self) -> Option<&'static str> {
+        match self {
+            Self::Default => None,
+            Self::Low => Some("low"),
+            Self::Medium => Some("medium"),
+            Self::High => Some("high"),
+            Self::Xhigh => Some("xhigh"),
+            Self::Max => Some("max"),
+        }
+    }
+}
+
+/// 一个 AI 服务端点及其下属模型。API Key 落盘前由 CryptoService 加密，且永不下发到前端。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentProvider {
+    pub id: String,
+    pub name: String,
+    /// 接口协议："anthropic" | "openai-chat" | "openai-responses"。
+    pub protocol: String,
+    /// 服务基址，例如 https://api.anthropic.com。
+    pub base_url: String,
+    /// 明文 API Key；仅在后端内存与加密文件之间流转，序列化给前端时会被剔除。
+    #[serde(default, skip_serializing)]
+    pub api_key: String,
+    /// 前端据此显示“已配置密钥”，无需拿到密钥本身。
+    #[serde(default)]
+    pub has_api_key: bool,
+    #[serde(default)]
+    pub models: Vec<AgentModel>,
+}
+
+/// 一条持久化的 AI 对话。
+/// 消息结构对后端是不透明的 JSON：对话内容的形状由前端定义，
+/// 后端只负责按会话 id 存取，避免两边为了展示细节反复同步类型。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversation {
+    pub id: String,
+    pub title: String,
+    /// 最后更新时间（毫秒时间戳），用于历史列表排序。
+    pub updated_at: i64,
+    /// 该对话使用的端点与模型，重新打开时恢复选择。
+    #[serde(default)]
+    pub provider_id: String,
+    #[serde(default)]
+    pub model_id: String,
+    /// 前端消息列表原样保存。
+    pub messages: serde_json::Value,
+}
+
+/// 一轮对话的运行参数；由前端每次发送时携带，不落盘，便于随时调整。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunOptions {
+    /// 思考强度。
+    #[serde(default)]
+    pub effort: AgentEffort,
+    /// 上下文占用超过该比例时触发自动压缩（0.1~0.95）。
+    #[serde(default = "default_agent_compact_threshold")]
+    pub compact_threshold: f32,
+    /// 是否启用自动压缩；关闭后超长对话会直接被 API 拒绝，由用户自行新建对话。
+    #[serde(default = "default_agent_auto_compact")]
+    pub auto_compact: bool,
+}
+
+impl Default for AgentRunOptions {
+    fn default() -> Self {
+        Self {
+            effort: AgentEffort::default(),
+            compact_threshold: default_agent_compact_threshold(),
+            auto_compact: default_agent_auto_compact(),
+        }
+    }
+}
+
+/// 留 25% 余量给本轮的新输出与工具结果，避免压缩刚好卡在溢出边缘。
+fn default_agent_compact_threshold() -> f32 {
+    0.75
+}
+
+fn default_agent_auto_compact() -> bool {
+    true
+}
+
+/// AgentProvider 的落盘形态：API Key 以密文保存，与连接凭据同一套加密方案。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredAgentProvider {
+    pub id: String,
+    pub name: String,
+    pub protocol: String,
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key_encrypted: String,
+    #[serde(default)]
+    pub models: Vec<AgentModel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -52,6 +52,7 @@ import {
   RotateCcw,
   Save,
   Settings,
+  ShieldCheck,
   Square,
   Sun,
   TerminalSquare,
@@ -77,13 +78,14 @@ import {
 // 等高频更新触发无关组件（尤其是未打开的弹窗）重渲染。
 import { useShallow } from 'zustand/react/shallow';
 import { UpdateModal, type UpdateDownloadProgress } from './UpdateModal';
-import type { AgentBridgeRequest, AgentBridgeStatus, AppSettings, ConnectionDraft, ConnectionProfile, LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, RemoteFileEntry, RuntimeConnectionList, RuntimeResourceMetric, RuntimeResourceTarget, RuntimeResourceUsage, RuntimeResourceSource, RuntimeStorageFiles, SshJumpHost, TerminalSession, TunnelRecord, UiLanguage, UpdateCheckResult } from './types';
+import type { AgentBridgeRequest, AgentBridgeStatus, AgentModel, AgentProtocol, AgentProvider, AppSettings, ConnectionDraft, ConnectionProfile, LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, RemoteFileEntry, RuntimeConnectionList, RuntimeResourceMetric, RuntimeResourceTarget, RuntimeResourceUsage, RuntimeResourceSource, RuntimeStorageFiles, SshJumpHost, TerminalSession, TunnelRecord, UiLanguage, UpdateCheckResult } from './types';
+import { AgentChatPanel } from './AgentChatPanel';
 import { CustomSelect } from './CustomSelect';
 
 const MonacoEditor = lazy(() => import('./MonacoEditor'));
 
 type BottomPanelTab = 'commands' | 'tunnels' | 'history';
-type SettingsTab = 'appearance' | 'resources' | 'sync' | 'agent' | 'about';
+type SettingsTab = 'appearance' | 'resources' | 'sync' | 'agent' | 'agentChat' | 'about';
 type ConnectionFormTab = 'basic' | 'jumpHosts' | 'proxy';
 type FileContextMenuState = {
   file: RemoteFileEntry;
@@ -197,6 +199,10 @@ const agentRequestSummaryMaxLength = 160;
 // 左右侧栏允许比旧版 320px 更窄，展开双侧栏时优先把横向空间留给终端和底部操作区。
 const sidePanelMinWidth = 240;
 const sidePanelMaxWidth = 560;
+// AI 对话栏承载长文本与代码块，需要比文件树宽得多；按窗口比例上限，大屏时能拖到接近 3/5。
+const agentSidebarMaxWidthRatio = 0.6;
+// AI 栏展开时主工作区可以让到更窄——终端本身在窄宽下仍可用，用户是主动选择看对话。
+const agentSidebarMainWorkspaceMinWidth = 420;
 // 左侧上下分区都保留约 120px 最小可用高度，避免文件管理区被限制成半屏起步。
 const sidebarRuntimeMinHeight = 120;
 const sidebarExplorerMinHeight = 120;
@@ -650,17 +656,95 @@ function TitlebarWindowControls({
 }
 
 // 侧栏最大宽度由当前窗口、另一侧栏宽度和主工作区保底宽度共同决定，避免双侧栏展开时互相抢占中间区域。
-const resolveSidePanelMaxWidth = (oppositePanelVisible: boolean, oppositePanelWidth: number) => {
+/**
+ * 各协议的服务地址书写规范。
+ * 三种协议的实际请求路径不同，用户无从凭空判断该填到哪一层，
+ * 所以把「填什么」「会拼成什么」直接摆在输入框旁边。
+ */
+const agentProtocolUrlSpec: Record<AgentProtocol, { placeholder: string; path: string }> = {
+  anthropic: { placeholder: 'https://api.anthropic.com', path: '/v1/messages' },
+  'openai-chat': { placeholder: 'https://api.openai.com', path: '/v1/chat/completions' },
+  'openai-responses': { placeholder: 'https://api.openai.com', path: '/v1/responses' },
+};
+
+/**
+ * 解析模型配置文本。每行一个模型，可选地用 `|` 指定上下文窗口与单次输出上限：
+ *   claude-opus-5
+ *   gpt-4o | 128000
+ *   gpt-4o-mini | 128000 | 8000
+ * 两个 token 值都省略时沿用该模型已有配置，新模型才落到默认值——
+ * 上下文窗口无法可靠探测，必须让用户按自己的端点如实填写。
+ */
+const parseAgentModelLines = (value: string, previous: AgentModel[]): AgentModel[] =>
+  value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [rawId, rawContext, rawMaxTokens] = line.split('|').map((part) => part.trim());
+      const existing = previous.find((item) => item.id === rawId);
+      const contextWindow = Number(rawContext);
+      const maxTokens = Number(rawMaxTokens);
+      return {
+        id: rawId,
+        name: existing?.name || rawId,
+        contextWindow:
+          Number.isFinite(contextWindow) && contextWindow > 0
+            ? Math.round(contextWindow)
+            : existing?.contextWindow ?? 200000,
+        maxTokens:
+          Number.isFinite(maxTokens) && maxTokens > 0
+            ? Math.round(maxTokens)
+            : existing?.maxTokens ?? 16000,
+      };
+    });
+
+/** 回显成可编辑文本；始终写出完整三段，让用户直观看到当前生效的数值。 */
+const formatAgentModelLines = (models: AgentModel[]): string =>
+  models.map((item) => `${item.id} | ${item.contextWindow} | ${item.maxTokens}`).join('\n');
+
+/**
+ * 预览最终会请求的完整 URL，规则必须与后端 join_url 保持一致：
+ * 已填到完整端点则原样使用；结尾是重复版本段（如 /v1）则剥掉后再拼。
+ */
+const previewAgentRequestUrl = (baseUrl: string, protocol: AgentProtocol): string => {
+  const path = agentProtocolUrlSpec[protocol].path;
+  const trimmed = baseUrl.trim().replace(/\/+$/, '');
+  if (!trimmed) {
+    return `${agentProtocolUrlSpec[protocol].placeholder}${path}`;
+  }
+  if (trimmed.endsWith(path)) {
+    return trimmed;
+  }
+  const version = path.split('/')[1];
+  if (version && trimmed.endsWith(`/${version}`)) {
+    return `${trimmed.slice(0, -(version.length + 1))}${path}`;
+  }
+  return `${trimmed}${path}`;
+};
+
+const resolveSidePanelMaxWidth = (
+  oppositePanelVisible: boolean,
+  oppositePanelWidth: number,
+  // AI 对话栏用更宽的上限与更小的主工作区保底，其余侧栏维持原有克制的尺寸。
+  isAgentPanel = false,
+) => {
   if (typeof window === 'undefined') {
-    return sidePanelMaxWidth;
+    return isAgentPanel ? Math.round(1180 * agentSidebarMaxWidthRatio) : sidePanelMaxWidth;
   }
 
   const occupiedByChrome =
     appShellHorizontalPadding +
     sidePanelResizeHandleWidth +
     (oppositePanelVisible ? sidePanelResizeHandleWidth + oppositePanelWidth : 0);
-  const availableWidth = window.innerWidth - occupiedByChrome - mainWorkspaceMinWidth;
-  return Math.max(sidePanelMinWidth, Math.min(sidePanelMaxWidth, Math.floor(availableWidth)));
+  const workspaceFloor = isAgentPanel
+    ? agentSidebarMainWorkspaceMinWidth
+    : mainWorkspaceMinWidth;
+  const ceiling = isAgentPanel
+    ? Math.round(window.innerWidth * agentSidebarMaxWidthRatio)
+    : sidePanelMaxWidth;
+  const availableWidth = window.innerWidth - occupiedByChrome - workspaceFloor;
+  return Math.max(sidePanelMinWidth, Math.min(ceiling, Math.floor(availableWidth)));
 };
 
 // 运行状态区域最大高度由文件管理区最小高度反推，拖拽到底时仍给文件管理保留可操作空间。
@@ -2808,11 +2892,14 @@ function SettingsModal({
   activeTab,
   onClose,
   onTabChange,
+  onAgentProvidersSaved,
 }: {
   open: boolean;
   activeTab: SettingsTab;
   onClose: () => void;
   onTabChange: (tab: SettingsTab) => void;
+  /** AI 端点保存成功后回传给主组件，刷新侧边栏对话面板的端点下拉。 */
+  onAgentProvidersSaved: (providers: AgentProvider[]) => void;
 }) {
   const {
     checkForUpdates,
@@ -2867,6 +2954,22 @@ function SettingsModal({
   // 本机已安装字体列表用于剔除不存在的推荐项，并限制英文字体下拉只展示真实等宽字体。
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
   const [systemFontsLoaded, setSystemFontsLoaded] = useState(false);
+  // AI 端点草稿：与其它设置一样先在本地编辑，点击保存才落盘。
+  const [agentProviderDrafts, setAgentProviderDrafts] = useState<AgentProvider[]>([]);
+  // 每个端点独立控制密钥是否明文展示，与 WebDAV 密码同一交互。
+  const [revealApiKeys, setRevealApiKeys] = useState<Record<string, boolean>>({});
+
+  // 打开设置页时拉取端点列表；后端不下发明文密钥，仅返回 hasApiKey 标记。
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    backend
+      .listAgentProviders()
+      .then(setAgentProviderDrafts)
+      .catch(() => setAgentProviderDrafts([]));
+  }, [open]);
+
 
   // 懒加载系统字体列表，仅在用户首次点击字体下拉时触发，避免打开设置时的卡顿。
   const loadSystemFontsOnce = () => {
@@ -2988,6 +3091,48 @@ function SettingsModal({
       delete actionFeedbackTimerRef.current[actionKey];
     }, 5000);
   };
+
+  const addAgentProvider = () => {
+    setAgentProviderDrafts((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        name: '',
+        protocol: 'anthropic',
+        baseUrl: 'https://api.anthropic.com',
+        hasApiKey: false,
+        apiKey: '',
+        models: [],
+      },
+    ]);
+  };
+
+  const updateAgentProvider = (providerId: string, patch: Partial<AgentProvider>) => {
+    setAgentProviderDrafts((current) =>
+      current.map((item) => (item.id === providerId ? { ...item, ...patch } : item)),
+    );
+  };
+
+  const removeAgentProvider = (providerId: string) => {
+    setAgentProviderDrafts((current) => current.filter((item) => item.id !== providerId));
+  };
+
+  const saveAgentProviders = async () => {
+    try {
+      const saved = await backend.saveAgentProviders(agentProviderDrafts);
+      // 保存后回填后端归一化结果，并清空本地明文密钥输入框，避免密钥长期留在内存里。
+      setAgentProviderDrafts(saved.map((item) => ({ ...item, apiKey: '' })));
+      onAgentProvidersSaved(saved);
+      showActionFeedback('save-agent-providers', 'is-success', t('statusSettingsSaved'));
+    } catch (error) {
+      showActionFeedback(
+        'save-agent-providers',
+        'is-error',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  };
+
   const runSettingsAction = async (actionKey: string, action: () => Promise<void>, successMessage?: string) => {
     setSettingsActionRunning(actionKey);
     // 清除该按钮的旧反馈，显示 working 状态
@@ -3311,6 +3456,14 @@ function SettingsModal({
             >
               <Cable size={16} />
               {t('settingsTabAgent')}
+            </button>
+            <button
+              className={`settings-nav-item ${activeTab === 'agentChat' ? 'is-active' : ''}`}
+              onClick={() => onTabChange('agentChat')}
+              type="button"
+            >
+              <Bot size={16} />
+              {t('settingsTabAgentChat')}
             </button>
             <button
               className={`settings-nav-item ${activeTab === 'about' ? 'is-active' : ''}`}
@@ -3841,6 +3994,25 @@ function SettingsModal({
                         <strong>{draftSettings.agentBridge.autoExecute ? t('enabled') : t('disabled')}</strong>
                       </div>
                     </div>
+                    <div className="agent-toggle-field settings-inline-toggle">
+                      <span title={t('fieldAgentBridgeVisibleExecutionDesc')}>
+                        {t('fieldAgentBridgeVisibleExecution')}
+                      </span>
+                      <div className="settings-inline-toggle-control">
+                        <input
+                          aria-label={t('fieldAgentBridgeVisibleExecution')}
+                          checked={draftSettings.agentBridge.visibleExecution}
+                          type="checkbox"
+                          onChange={(event) =>
+                            updateDraftSettings((current) => ({
+                              ...current,
+                              agentBridge: { ...current.agentBridge, visibleExecution: event.target.checked },
+                            }))
+                          }
+                        />
+                        <strong>{draftSettings.agentBridge.visibleExecution ? t('enabled') : t('disabled')}</strong>
+                      </div>
+                    </div>
                     <label>
                       <span>{t('fieldAgentBridgeTimeout')}</span>
                       <input
@@ -3911,6 +4083,153 @@ function SettingsModal({
                       <span>{t('agentBridgeMcpConfig')}</span>
                       <textarea readOnly rows={9} spellCheck={false} value={buildAgentMcpConfig(agentBridgeStatus)} />
                     </label>
+                  </div>
+                </section>
+              </div>
+            ) : null}
+
+            {activeTab === 'agentChat' ? (
+              <div className="stack gap-16">
+                <section className="settings-section-block">
+                  <div className="section-row">
+                    <div>
+                      <h3>{t('agentProvidersTitle')}</h3>
+                      <p>{t('agentProvidersDesc')}</p>
+                    </div>
+                    <button className="secondary-button slim" onClick={addAgentProvider} type="button">
+                      <Plus size={14} /> {t('agentProviderAdd')}
+                    </button>
+                  </div>
+
+                  {agentProviderDrafts.length ? (
+                    <div className="stack gap-12">
+                      {agentProviderDrafts.map((provider) => (
+                        <div key={provider.id} className="agent-provider-card">
+                          <div className="section-row compact">
+                            <strong>{provider.name || provider.id}</strong>
+                            <button
+                              className="icon-button"
+                              onClick={() => removeAgentProvider(provider.id)}
+                              title={t('agentProviderDelete')}
+                              type="button"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                          <div className="form-grid">
+                            <label>
+                              <span>{t('agentProviderName')}</span>
+                              <input
+                                onChange={(event) =>
+                                  updateAgentProvider(provider.id, { name: event.target.value })
+                                }
+                                value={provider.name}
+                              />
+                            </label>
+                            <div className="form-field">
+                              <span>{t('agentProviderProtocol')}</span>
+                              <CustomSelect
+                                aria-label={t('agentProviderProtocol')}
+                                onChange={(value) =>
+                                  updateAgentProvider(provider.id, { protocol: value as AgentProtocol })
+                                }
+                                options={[
+                                  { value: 'anthropic', label: 'Anthropic Messages' },
+                                  { value: 'openai-chat', label: 'OpenAI Chat Completions' },
+                                  { value: 'openai-responses', label: 'OpenAI Responses' },
+                                ]}
+                                value={provider.protocol}
+                              />
+                              {/* 大部分第三方代理是 Chat Completions 兼容，选错会直接 400，这里点明。 */}
+                              <small className="agent-provider-hint">
+                                {t('agentProviderProtocolHint')}
+                              </small>
+                            </div>
+                            <label className="span-2">
+                              <span>{t('agentProviderBaseUrl')}</span>
+                              <input
+                                onChange={(event) =>
+                                  updateAgentProvider(provider.id, { baseUrl: event.target.value })
+                                }
+                                placeholder={agentProtocolUrlSpec[provider.protocol].placeholder}
+                                value={provider.baseUrl}
+                              />
+                              <small className="agent-provider-hint">
+                                {t('agentProviderBaseUrlHint', {
+                                  path: agentProtocolUrlSpec[provider.protocol].path,
+                                })}
+                              </small>
+                              {/* 直接把最终请求地址显示出来，用户不必猜自己填的会被拼成什么。 */}
+                              <small className="agent-provider-url-preview">
+                                {t('agentProviderResolvedUrl')}
+                                <code>{previewAgentRequestUrl(provider.baseUrl, provider.protocol)}</code>
+                              </small>
+                            </label>
+                            <label className="span-2">
+                              <span>{t('agentProviderApiKey')}</span>
+                              <div className="password-field">
+                                <input
+                                  onChange={(event) =>
+                                    updateAgentProvider(provider.id, { apiKey: event.target.value })
+                                  }
+                                  placeholder={
+                                    provider.hasApiKey ? t('agentProviderApiKeySaved') : 'sk-...'
+                                  }
+                                  type={revealApiKeys[provider.id] ? 'text' : 'password'}
+                                  value={provider.apiKey ?? ''}
+                                />
+                                <button
+                                  aria-label={revealApiKeys[provider.id] ? t('hideSecret') : t('showSecret')}
+                                  className="secondary-button slim password-toggle-button"
+                                  onClick={() =>
+                                    setRevealApiKeys((current) => ({
+                                      ...current,
+                                      [provider.id]: !current[provider.id],
+                                    }))
+                                  }
+                                  title={revealApiKeys[provider.id] ? t('hideSecret') : t('showSecret')}
+                                  type="button"
+                                >
+                                  {revealApiKeys[provider.id] ? <EyeOff size={16} /> : <Eye size={16} />}
+                                  <span>{revealApiKeys[provider.id] ? t('hideSecret') : t('showSecret')}</span>
+                                </button>
+                              </div>
+                            </label>
+                            <label className="span-2">
+                              <span>{t('agentProviderModels')}</span>
+                              <textarea
+                                onChange={(event) =>
+                                  updateAgentProvider(provider.id, {
+                                    models: parseAgentModelLines(event.target.value, provider.models),
+                                  })
+                                }
+                                placeholder={t('agentProviderModelsPlaceholder')}
+                                rows={5}
+                                spellCheck={false}
+                                value={formatAgentModelLines(provider.models)}
+                              />
+                              <small className="agent-provider-hint">
+                                {t('agentProviderModelsHint')}
+                              </small>
+                            </label>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="empty-state">{t('agentProvidersEmpty')}</div>
+                  )}
+
+                  {actionFeedbackMap['save-agent-providers'] ? (
+                    <div className={`sync-action-feedback ${actionFeedbackMap['save-agent-providers'].kind}`}>
+                      {actionFeedbackMap['save-agent-providers'].message}
+                    </div>
+                  ) : null}
+
+                  <div className="section-row compact">
+                    <button className="primary-button" onClick={() => void saveAgentProviders()} type="button">
+                      <Save size={16} /> {t('agentProvidersSave')}
+                    </button>
                   </div>
                 </section>
               </div>
@@ -4016,6 +4335,10 @@ function SettingsModal({
 }
 
 export default function App() {
+  // 右侧 AI 栏分为对话与审批两个页签；默认停在对话，审批有新请求时会自动切过去。
+  const [agentSidebarTab, setAgentSidebarTab] = useState<'chat' | 'requests'>('chat');
+  // AI 端点配置由后端持有明文密钥，前端只缓存去敏后的列表用于下拉选择。
+  const [agentProviders, setAgentProviders] = useState<AgentProvider[]>([]);
   // 左侧栏初始宽度默认取最小宽度稍多一点，避免打开时占用过多空间
   const [sidebarWidth, setSidebarWidth] = useState(sidePanelMinWidth + 20);
   const [runtimePanelHeight, setRuntimePanelHeight] = useState(() => {
@@ -4034,7 +4357,10 @@ export default function App() {
   const [globalBottomTab, setGlobalBottomTab] = useState<BottomPanelTab>('commands');
   const [bottomTabByConnection, setBottomTabByConnection] = useState<Record<string, BottomPanelTab>>({});
   // AI 执行右侧栏宽度独立于左侧栏，避免 MCP 审批展开时影响用户已经调整好的主机列表宽度。
-  const [agentSidebarWidth, setAgentSidebarWidth] = useState(360);
+  // 对话栏默认比文件树宽：AI 回复常含多行说明与命令块，360px 会频繁折行。
+  const [agentSidebarWidth, setAgentSidebarWidth] = useState(() =>
+    typeof window === 'undefined' ? 460 : clamp(Math.round(window.innerWidth * 0.3), 380, 620),
+  );
   // AI 执行默认收起，只有用户点击或 MCP 新请求到达时才占用主窗口右侧空间。
   const [agentSidebarCollapsed, setAgentSidebarCollapsed] = useState(true);
   const [pathInput, setPathInput] = useState('~');
@@ -4137,6 +4463,7 @@ export default function App() {
     editTunnel,
     files,
     filesLoading,
+    adoptSession,
     history,
     historyLoading,
     installUpdate,
@@ -4189,6 +4516,7 @@ export default function App() {
       filesLoading: state.filesLoading,
       history: state.history,
       historyLoading: state.historyLoading,
+      adoptSession: state.adoptSession,
       installUpdate: state.installUpdate,
       openConnectionForm: state.openConnectionForm,
       openSession: state.openSession,
@@ -4322,7 +4650,11 @@ export default function App() {
         if (agentSidebarCollapsed) {
           return current;
         }
-        return clamp(current, sidePanelMinWidth, resolveSidePanelMaxWidth(!sidebarCollapsed, sidebarWidth));
+        return clamp(
+          current,
+          sidePanelMinWidth,
+          resolveSidePanelMaxWidth(!sidebarCollapsed, sidebarWidth, true),
+        );
       });
       // 窗口缩小时重新钳制运行状态高度，确保文件管理区仍保留最小可操作高度。
       setRuntimePanelHeight((current) => clamp(current, sidebarRuntimeMinHeight, resolveRuntimePanelMaxHeight()));
@@ -4336,6 +4668,8 @@ export default function App() {
   const openAgentRequestPanel = useCallback(async (focusWindow = false) => {
     // MCP 审批入口已经迁到右侧栏，新请求只展开右栏，不再改动底部命令/隧道/历史的当前 tab。
     setAgentSidebarCollapsed(false);
+    // 有待审批请求时必须切到审批页签，否则用户停在对话页会完全看不到卡片。
+    setAgentSidebarTab('requests');
 
     if (!isTauriRuntime()) {
       return;
@@ -4937,6 +5271,46 @@ export default function App() {
       unlistenFn?.();
     };
   }, [pollTerminalOutputs, sessions.length]);
+
+  // 启动时加载 AI 端点列表（不含密钥），供侧边栏对话与设置页共用。
+  const refreshAgentProviders = useCallback(async () => {
+    try {
+      setAgentProviders(await backend.listAgentProviders());
+    } catch {
+      // 端点未配置或读取失败不影响其它功能，对话面板会提示去设置里添加。
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshAgentProviders();
+  }, [refreshAgentProviders]);
+
+  // AI 可见执行会在没有可用标签时自行开一个终端；前端未发起过 openSession，必须靠事件登记进标签栏。
+  // 依赖数组刻意为空：首个由后端创建的会话到达时 sessions 还是空的，不能因依赖变化错过订阅。
+  useEffect(() => {
+    let unlistenFn: (() => void) | undefined;
+    let isMounted = true;
+    void import('@tauri-apps/api/event').then(({ listen }) =>
+      listen<TerminalSession>('terminal-session-opened', (event) => {
+        if (event.payload && typeof event.payload === 'object') {
+          adoptSession(event.payload);
+        }
+      }),
+    ).then((unlisten) => {
+      if (isMounted) {
+        unlistenFn = unlisten;
+      } else {
+        unlisten();
+      }
+    }).catch(() => {
+      // 非 Tauri 环境没有该事件；可见执行本身也不可用，忽略即可。
+    });
+
+    return () => {
+      isMounted = false;
+      unlistenFn?.();
+    };
+  }, [adoptSession]);
 
   // 监听后台隧道健康监控线程发出的状态变化事件，实时将隧道“运行中/异常”状态同步到面板。
   useEffect(() => {
@@ -5854,6 +6228,15 @@ export default function App() {
           const isExpanded = agentExpandedRequestIds[request.id] ?? request.status === 'pending';
           const machineLabel = getAgentRequestMachineLabel(request, connections);
           const summaryLabel = getAgentRequestSummary(request);
+          // 执行结果里带回本次走的通道；未完成或非命令类请求时不显示该行。
+          const executionResult = request.result as
+            | { executionMode?: string; fallbackReason?: string }
+            | undefined;
+          const executionModeLabel = executionResult?.executionMode
+            ? executionResult.executionMode === 'terminal'
+              ? t('agentRequestModeTerminal')
+              : `${t('agentRequestModeHidden')}${executionResult.fallbackReason ? `（${executionResult.fallbackReason}）` : ''}`
+            : '';
 
           return (
             <div key={request.id} className={`agent-request-card status-${request.status} ${isExpanded ? 'is-expanded' : 'is-collapsed'}`}>
@@ -5875,6 +6258,13 @@ export default function App() {
                 <strong>{machineLabel}</strong>
                 <span>{request.kind === 'run_command' ? t('agentRequestCommand') : t('agentRequestTarget')}</span>
                 <strong>{summaryLabel}</strong>
+                {executionModeLabel ? (
+                  <>
+                    {/* 如实告知本次是在终端里可见执行还是走了后台通道，避免用户误以为一定能看到过程。 */}
+                    <span>{t('agentRequestExecutionMode')}</span>
+                    <strong>{executionModeLabel}</strong>
+                  </>
+                ) : null}
               </div>
               {isExpanded ? (
                 <>
@@ -6926,23 +7316,48 @@ export default function App() {
                 setAgentSidebarWidth(clamp(
                   startWidth + (startX - moveEvent.clientX),
                   sidePanelMinWidth,
-                  resolveSidePanelMaxWidth(!sidebarCollapsed, sidebarWidth),
+                  resolveSidePanelMaxWidth(!sidebarCollapsed, sidebarWidth, true),
                 ));
               });
             }}
           />
           <aside className="agent-sidebar card" style={{ minWidth: sidePanelMinWidth, width: agentSidebarWidth }}>
-            <header className="agent-sidebar-header">
-              <div className="panel-tab is-active agent-sidebar-title">
-                <Bot size={16} />
-                <span>{t('panelAgent')}</span>
+            <header className="agent-sidebar-header panel-tab-row">
+              <div className="tab-list">
+                <button
+                  className={`panel-tab ${agentSidebarTab === 'chat' ? 'is-active' : ''}`}
+                  onClick={() => setAgentSidebarTab('chat')}
+                  type="button"
+                >
+                  <Bot size={16} />
+                  <span>{t('panelAgentChat')}</span>
+                </button>
+                <button
+                  className={`panel-tab ${agentSidebarTab === 'requests' ? 'is-active' : ''}`}
+                  onClick={() => setAgentSidebarTab('requests')}
+                  type="button"
+                >
+                  <ShieldCheck size={16} />
+                  <span>{t('panelAgentRequests')}</span>
+                </button>
               </div>
-              <button className="secondary-button slim" onClick={() => clearAgentBridgeRequests()} type="button">
-                <Trash2 size={14} /> {t('clearAgentBridgeRequests')}
-              </button>
+              {agentSidebarTab === 'requests' ? (
+                <button className="secondary-button slim" onClick={() => clearAgentBridgeRequests()} type="button">
+                  <Trash2 size={14} /> {t('clearAgentBridgeRequests')}
+                </button>
+              ) : null}
             </header>
             <div ref={agentSidebarBodyRef} className="agent-sidebar-body">
-              {agentRequestPanel}
+              {agentSidebarTab === 'chat' ? (
+                <AgentChatPanel
+                  fontFamily={buildPreviewFontFamily(settings)}
+                  fontSize={settings.shellFontSize}
+                  providers={agentProviders}
+                  t={t}
+                />
+              ) : (
+                agentRequestPanel
+              )}
             </div>
           </aside>
         </>
@@ -6951,7 +7366,13 @@ export default function App() {
 
       <ConnectionManagerModal open={connectionsOpen} onClose={() => setConnectionsOpen(false)} />
       <LocalTerminalManagerModal open={localTerminalsOpen} onClose={() => setLocalTerminalsOpen(false)} />
-      <SettingsModal open={settingsOpen} activeTab={settingsTab} onClose={() => setSettingsOpen(false)} onTabChange={setSettingsTab} />
+      <SettingsModal
+        activeTab={settingsTab}
+        onAgentProvidersSaved={setAgentProviders}
+        onClose={() => setSettingsOpen(false)}
+        onTabChange={setSettingsTab}
+        open={settingsOpen}
+      />
       <UpdateModal
         checkError={appUpdateCheckError}
         downloading={appUpdateInstalling}
