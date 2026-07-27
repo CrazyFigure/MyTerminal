@@ -38,25 +38,25 @@
   <text class="subtitle" x="68" y="64">CrazyFigure/MyTerminal</text>
   <g>
     <line class="grid" x1="68" y1="368" x2="812" y2="368" />
-    <line class="grid" x1="68" y1="270" x2="812" y2="270" />
-    <line class="grid" x1="68" y1="172" x2="812" y2="172" />
+    <line class="grid" x1="68" y1="250.4" x2="812" y2="250.4" />
+    <line class="grid" x1="68" y1="132.8" x2="812" y2="132.8" />
     <line class="grid" x1="68" y1="74" x2="812" y2="74" />
     <line class="axis" x1="68" y1="74" x2="68" y2="368" />
     <line class="axis" x1="68" y1="368" x2="812" y2="368" />
     <text class="axis-label" x="54" y="372" text-anchor="end">0</text>
-    <text class="axis-label" x="54" y="274" text-anchor="end">10</text>
-    <text class="axis-label" x="54" y="176" text-anchor="end">20</text>
-    <text class="axis-label" x="54" y="78" text-anchor="end">30</text>
+    <text class="axis-label" x="54" y="254.4" text-anchor="end">20</text>
+    <text class="axis-label" x="54" y="136.8" text-anchor="end">40</text>
+    <text class="axis-label" x="54" y="78" text-anchor="end">50</text>
     <text class="axis-label" x="68" y="410" text-anchor="middle">2026-06-09</text>
-    <text class="axis-label" x="254" y="410" text-anchor="middle">2026-06-19</text>
-    <text class="axis-label" x="440" y="410" text-anchor="middle">2026-06-30</text>
-    <text class="axis-label" x="626" y="410" text-anchor="middle">2026-07-10</text>
-    <text class="axis-label" x="812" y="410" text-anchor="middle">2026-07-21</text>
+    <text class="axis-label" x="254" y="410" text-anchor="middle">2026-06-21</text>
+    <text class="axis-label" x="440" y="410" text-anchor="middle">2026-07-03</text>
+    <text class="axis-label" x="626" y="410" text-anchor="middle">2026-07-15</text>
+    <text class="axis-label" x="812" y="410" text-anchor="middle">2026-07-27</text>
   </g>
-  <path class="area" d="M 68 368 H 120.86 V 358.2 H 129.82 V 348.4 H 147.26 V 338.6 H 190.41 V 328.8 H 190.44 V 319 H 190.49 V 309.2 H 190.75 V 299.4 H 190.76 V 289.6 H 190.87 V 279.8 H 190.93 V 270 H 191.28 V 260.2 H 191.38 V 250.4 H 191.39 V 240.6 H 209.9 V 230.8 H 211.04 V 221 H 211.62 V 211.2 H 215.72 V 201.4 H 227.71 V 191.6 H 248.67 V 181.8 H 286.68 V 172 H 299.09 V 162.2 H 371.39 V 152.4 H 532.73 V 142.6 H 665.85 V 132.8 H 794.81 V 123 H 797.89 V 113.2 H 807.93 V 103.4 H 808.49 V 93.6 H 812 V 83.8 L 812 368 L 68 368 Z" />
-  <path class="line" d="M 68 368 H 120.86 V 358.2 H 129.82 V 348.4 H 147.26 V 338.6 H 190.41 V 328.8 H 190.44 V 319 H 190.49 V 309.2 H 190.75 V 299.4 H 190.76 V 289.6 H 190.87 V 279.8 H 190.93 V 270 H 191.28 V 260.2 H 191.38 V 250.4 H 191.39 V 240.6 H 209.9 V 230.8 H 211.04 V 221 H 211.62 V 211.2 H 215.72 V 201.4 H 227.71 V 191.6 H 248.67 V 181.8 H 286.68 V 172 H 299.09 V 162.2 H 371.39 V 152.4 H 532.73 V 142.6 H 665.85 V 132.8 H 794.81 V 123 H 797.89 V 113.2 H 807.93 V 103.4 H 808.49 V 93.6 H 812 V 83.8" />
-  <circle class="dot" cx="812" cy="83.8" r="6" />
+  <path class="area" d="M 68 368 H 114.27 V 362.12 H 122.11 V 356.24 H 137.38 V 350.36 H 175.14 V 344.48 H 175.17 V 338.6 H 175.21 V 332.72 H 175.44 V 326.84 H 175.45 V 320.96 H 175.54 V 315.08 H 175.6 V 309.2 H 175.9 V 303.32 H 175.99 V 297.44 H 176 V 291.56 H 192.19 V 285.68 H 193.19 V 279.8 H 193.71 V 273.92 H 197.29 V 268.04 H 207.79 V 262.16 H 226.13 V 256.28 H 259.4 V 250.4 H 270.26 V 244.52 H 333.55 V 238.64 H 474.76 V 232.76 H 591.27 V 226.88 H 704.14 V 221 H 706.84 V 215.12 H 715.63 V 209.24 H 716.12 V 203.36 H 719.19 V 197.48 H 811.55 V 191.6 H 811.58 V 185.72 H 811.65 V 179.84 H 812 V 173.96 L 812 368 L 68 368 Z" />
+  <path class="line" d="M 68 368 H 114.27 V 362.12 H 122.11 V 356.24 H 137.38 V 350.36 H 175.14 V 344.48 H 175.17 V 338.6 H 175.21 V 332.72 H 175.44 V 326.84 H 175.45 V 320.96 H 175.54 V 315.08 H 175.6 V 309.2 H 175.9 V 303.32 H 175.99 V 297.44 H 176 V 291.56 H 192.19 V 285.68 H 193.19 V 279.8 H 193.71 V 273.92 H 197.29 V 268.04 H 207.79 V 262.16 H 226.13 V 256.28 H 259.4 V 250.4 H 270.26 V 244.52 H 333.55 V 238.64 H 474.76 V 232.76 H 591.27 V 226.88 H 704.14 V 221 H 706.84 V 215.12 H 715.63 V 209.24 H 716.12 V 203.36 H 719.19 V 197.48 H 811.55 V 191.6 H 811.58 V 185.72 H 811.65 V 179.84 H 812 V 173.96" />
+  <circle class="dot" cx="812" cy="173.96" r="6" />
   <rect class="badge" x="682" y="28" width="130" height="34" rx="17" />
-  <text class="badge-text" x="747" y="50" text-anchor="middle">29 stars</text>
+  <text class="badge-text" x="747" y="50" text-anchor="middle">33 stars</text>
   <text class="status" x="812" y="428" text-anchor="end">Exact stargazer timeline</text>
 </svg>
