@@ -275,8 +275,15 @@ export function AgentChatPanel({ providers, fontFamily, fontSize, t }: AgentChat
     if (!node) {
       return;
     }
+    // 先记下当前光标/选区：把 height 置 auto 再回填会触发重排，
+    // WebView2 下这一下偶发把光标甩到鼠标悬停的位置，写完再还原即可避免打字时乱跳。
+    const start = node.selectionStart;
+    const end = node.selectionEnd;
     node.style.height = 'auto';
     node.style.height = `${Math.min(Math.max(node.scrollHeight, COMPOSER_MIN_HEIGHT), COMPOSER_MAX_HEIGHT)}px`;
+    if (document.activeElement === node) {
+      node.setSelectionRange(start, end);
+    }
   }, [input]);
 
   /** 把一条对话写回本地。空对话不落盘，避免历史里堆满没说过话的占位。 */
