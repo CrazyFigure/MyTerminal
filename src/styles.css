@@ -3669,8 +3669,8 @@ select:disabled {
    仅靠 20% 透明底色在浅色主题下几乎看不出差别。 */
 .agent-chat-toolbar .icon-button.is-active,
 .agent-chat-toolbar .icon-button.is-active:hover {
-  background: var(--app-accent);
-  border-color: var(--app-accent);
+  background: var(--app-accent, #4f46e5);
+  border-color: var(--app-accent, #4f46e5);
   color: #fff;
 }
 
@@ -3757,7 +3757,7 @@ select:disabled {
 }
 
 .agent-chat-history-item.is-active {
-  background: color-mix(in srgb, var(--app-accent) 16%, transparent);
+  background: color-mix(in srgb, var(--app-accent, #4f46e5) 16%, transparent);
 }
 
 .agent-chat-history-item > button:first-child {
@@ -3815,8 +3815,8 @@ select:disabled {
 }
 
 .agent-chat-message.is-user .agent-chat-message-role {
-  background: color-mix(in srgb, var(--app-accent) 22%, transparent);
-  color: var(--app-accent);
+  background: color-mix(in srgb, var(--app-accent, #4f46e5) 22%, transparent);
+  color: var(--app-accent, #4f46e5);
 }
 
 .agent-chat-message-body {
@@ -3870,7 +3870,7 @@ select:disabled {
 .md-quote {
   margin: 0;
   padding: 4px 10px;
-  border-left: 3px solid color-mix(in srgb, var(--app-accent) 45%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--app-accent, #4f46e5) 45%, transparent);
   color: var(--app-muted);
   overflow-wrap: anywhere;
 }
@@ -3891,7 +3891,7 @@ select:disabled {
 }
 
 .md-link {
-  color: var(--app-accent);
+  color: var(--app-accent, #4f46e5);
   text-decoration: underline;
   text-underline-offset: 2px;
   overflow-wrap: anywhere;
@@ -3905,7 +3905,7 @@ select:disabled {
 
 /* 未闭合的代码块（模型还在输出）用强调色左边框提示"正在写入"。 */
 .md-code-block.is-streaming {
-  border-left: 3px solid var(--app-accent);
+  border-left: 3px solid var(--app-accent, #4f46e5);
 }
 
 .md-code-head {
@@ -3930,7 +3930,7 @@ select:disabled {
 }
 
 .md-code-copy:hover {
-  color: var(--app-accent);
+  color: var(--app-accent, #4f46e5);
 }
 
 .md-code-block pre {
@@ -4046,7 +4046,7 @@ select:disabled {
 }
 
 .agent-chat-composer:focus-within {
-  border-color: color-mix(in srgb, var(--app-accent) 55%, var(--app-card-border));
+  border-color: color-mix(in srgb, var(--app-accent, #4f46e5) 55%, var(--app-card-border));
 }
 
 /* 高度由 JS 按内容计算；这里去掉边框与背景，让整块 composer 看起来是一个输入框。 */
@@ -4080,7 +4080,7 @@ select:disabled {
   height: 30px;
   border: none;
   border-radius: 8px;
-  background: var(--app-accent);
+  background: var(--app-accent, #4f46e5);
   color: #fff;
 }
 
@@ -4090,7 +4090,7 @@ select:disabled {
 }
 
 .agent-chat-composer .icon-button.agent-chat-send:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--app-accent) 82%, #000);
+  background: color-mix(in srgb, var(--app-accent, #4f46e5) 82%, #000);
   color: #fff;
 }
 
