@@ -156,8 +156,18 @@ pub struct AgentBridgeRequest {
     pub error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// 内置 AI 对话发起的请求会带上对话 ID；外部 MCP 请求保持为空。
+    pub conversation_id: Option<String>,
+    /// 对应的模型工具调用 ID，用于把审批卡片准确放回原工具调用下方。
+    pub tool_call_id: Option<String>,
     #[serde(skip_serializing)]
     pub action: AgentAction,
+}
+
+/// 内置 AI 工具调用的来源上下文；外部 MCP 入口不传，继续进入独立审批记录页。
+pub struct AgentActionContext<'a> {
+    pub conversation_id: &'a str,
+    pub tool_call_id: &'a str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -864,6 +874,7 @@ fn enqueue_request(
     runtime: &AgentBridgeRuntime,
     action: AgentAction,
     session: &AgentSession,
+    context: Option<&AgentActionContext<'_>>,
 ) -> Result<String, AppError> {
     let now = now_rfc3339();
     let (kind, command, path, new_path, preview) = match &action {
@@ -956,6 +967,8 @@ fn enqueue_request(
         error: None,
         created_at: now.clone(),
         updated_at: now,
+        conversation_id: context.map(|value| value.conversation_id.to_string()),
+        tool_call_id: context.map(|value| value.tool_call_id.to_string()),
         action,
     });
     while requests.len() > AGENT_BRIDGE_HISTORY_LIMIT {
@@ -984,6 +997,7 @@ fn submit_action(
     crypto: &CryptoService,
     settings: &AgentBridgeSettings,
     action: AgentAction,
+    context: Option<&AgentActionContext<'_>>,
 ) -> Result<Value, AppError> {
     let session = session_for_action(runtime, storage, crypto, &action)?;
     if should_auto_execute(settings, &session.connection_id) {
@@ -991,7 +1005,7 @@ fn submit_action(
             .and_then(|value| serde_json::to_value(value).map_err(AppError::from));
     }
 
-    let request_id = enqueue_request(runtime, action, &session)?;
+    let request_id = enqueue_request(runtime, action, &session, context)?;
     wait_for_request_result(runtime, &request_id)
 }
 
@@ -2766,6 +2780,19 @@ pub fn dispatch_agent_action(
     route: &str,
     body: &Value,
 ) -> Result<Value, AppError> {
+    dispatch_agent_action_with_context(runtime, storage, crypto, settings, route, body, None)
+}
+
+/// 带来源上下文的统一分派入口；仅内置 AI 对话使用上下文，以便审批回到原对话内展示。
+pub fn dispatch_agent_action_with_context(
+    runtime: &AgentBridgeRuntime,
+    storage: &StorageService,
+    crypto: &CryptoService,
+    settings: &AgentBridgeSettings,
+    route: &str,
+    body: &Value,
+    context: Option<&AgentActionContext<'_>>,
+) -> Result<Value, AppError> {
     match route {
         "/sessions/open" => {
             let payload: OpenSessionRequest = decode_action_payload(body)?;
@@ -2785,6 +2812,7 @@ pub fn dispatch_agent_action(
                 crypto,
                 settings,
                 AgentAction::RunCommand(payload),
+                context,
             )
         }
         // 只读操作不入审批队列，与既有行为保持一致。
@@ -2806,6 +2834,7 @@ pub fn dispatch_agent_action(
                 crypto,
                 settings,
                 AgentAction::FileWrite(payload),
+                context,
             )
         }
         "/files/upload" => {
@@ -2816,6 +2845,7 @@ pub fn dispatch_agent_action(
                 crypto,
                 settings,
                 AgentAction::FileUpload(payload),
+                context,
             )
         }
         "/files/download" => {
@@ -2826,6 +2856,7 @@ pub fn dispatch_agent_action(
                 crypto,
                 settings,
                 AgentAction::FileDownload(payload),
+                context,
             )
         }
         "/files/delete" => {
@@ -2836,6 +2867,7 @@ pub fn dispatch_agent_action(
                 crypto,
                 settings,
                 AgentAction::FileDelete(payload),
+                context,
             )
         }
         "/files/rename" => {
@@ -2846,6 +2878,7 @@ pub fn dispatch_agent_action(
                 crypto,
                 settings,
                 AgentAction::FileRename(payload),
+                context,
             )
         }
         "/files/mkdir" => {
@@ -2856,6 +2889,7 @@ pub fn dispatch_agent_action(
                 crypto,
                 settings,
                 AgentAction::FileMkdir(payload),
+                context,
             )
         }
         other => Err(AppError::NotFound(format!("POST {other}"))),

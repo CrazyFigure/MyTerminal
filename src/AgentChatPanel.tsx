@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   History,
+  Play,
   Plus,
   Send,
   SlidersHorizontal,
@@ -11,6 +12,7 @@ import {
   Terminal as TerminalIcon,
   Trash2,
   User,
+  X,
 } from 'lucide-react';
 
 import { CustomSelect } from './CustomSelect';
@@ -21,6 +23,7 @@ import type {
   AgentChatMessage,
   AgentChatPart,
   AgentChatToolCall,
+  AgentBridgeRequest,
   AgentEffort,
   AgentProvider,
   AgentRunOptions,
@@ -49,6 +52,10 @@ interface AgentConversation {
 
 interface AgentChatPanelProps {
   providers: AgentProvider[];
+  /** 内置 AI 对话产生的审批；通过 conversationId/toolCallId 精确挂回原工具调用。 */
+  approvalRequests: AgentBridgeRequest[];
+  onApproveRequest: (request: AgentBridgeRequest) => void;
+  onRejectRequest: (request: AgentBridgeRequest) => void;
   /** 与终端一致的字体族；代码块和正文都用它，保证中英文对齐与用户偏好一致。 */
   fontFamily: string;
   fontSize: number;
@@ -156,7 +163,15 @@ const deriveTitle = (messages: AgentChatMessage[], fallback: string) => {
   return line.length > 40 ? `${line.slice(0, 40)}…` : line;
 };
 
-export function AgentChatPanel({ providers, fontFamily, fontSize, t }: AgentChatPanelProps) {
+export function AgentChatPanel({
+  providers,
+  approvalRequests,
+  onApproveRequest,
+  onRejectRequest,
+  fontFamily,
+  fontSize,
+  t,
+}: AgentChatPanelProps) {
   const [providerId, setProviderId] = useState('');
   const [modelId, setModelId] = useState('');
   const [input, setInput] = useState('');
@@ -177,6 +192,8 @@ export function AgentChatPanel({ providers, fontFamily, fontSize, t }: AgentChat
   const activeIdRef = useRef('');
   // 对话列表的同步镜像：发送时要在状态提交前就读到最新历史，只靠 state 会拿到上一帧的值。
   const conversationsRef = useRef<AgentConversation[]>([]);
+  // 本地存档必须串行写入；工具调用、结果和完成事件相邻到达时，并发写会让旧快照反覆盖新快照。
+  const persistenceQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   // 用户手动上翻查看历史时不再自动滚到底，避免流式输出把视图拽走。
@@ -292,90 +309,102 @@ export function AgentChatPanel({ providers, fontFamily, fontSize, t }: AgentChat
     if (!conversation || !conversation.messages.length) {
       return;
     }
-    void backend
-      .saveAgentConversation({
-        id: conversation.id,
-        title: conversation.title,
-        updatedAt: conversation.updatedAt,
-        providerId: conversation.providerId ?? '',
-        modelId: conversation.modelId ?? '',
-        messages: conversation.messages,
-      })
-      .catch(() => {
-        // 落盘失败不影响当前会话继续用，下一轮结束时会再试。
-      });
+    // 每次排队时冻结当前不可变快照，确保稍后执行的任务不会意外读取到另一帧状态。
+    const snapshot = {
+      id: conversation.id,
+      title: conversation.title,
+      updatedAt: conversation.updatedAt,
+      providerId: conversation.providerId ?? '',
+      modelId: conversation.modelId ?? '',
+      messages: conversation.messages,
+    };
+    persistenceQueueRef.current = persistenceQueueRef.current
+      .catch(() => undefined)
+      .then(() => backend.saveAgentConversation(snapshot));
+    void persistenceQueueRef.current.catch(() => {
+      // 落盘失败不影响当前会话继续用，下一次快照仍会接在队列后重试写入。
+    });
   }, []);
 
-  const patchActive = useCallback((updater: (messages: AgentChatMessage[]) => AgentChatMessage[]) => {
-    setConversations((current) => {
-      const next = current.map((item) =>
-        item.id === activeIdRef.current
-          ? { ...item, messages: updater(item.messages), updatedAt: Date.now() }
-          : item,
-      );
-      // 立刻同步镜像：工具结果是流式写入的，下一轮发送必须能读到它们，
-      // 否则模型看不到工具返回了什么，会重复调用同一个工具。
-      conversationsRef.current = next;
-      return next;
-    });
+  const patchConversation = useCallback((
+    conversationId: string,
+    updater: (messages: AgentChatMessage[]) => AgentChatMessage[],
+  ) => {
+    // 后端事件可能在用户查看另一条历史对话时到达，必须按事件自带 ID 更新原对话，
+    // 不能再依赖当前页签或 activeId；同时先更新镜像，紧随其后的持久化才能拿到完整快照。
+    const next = conversationsRef.current.map((item) =>
+      item.id === conversationId
+        ? { ...item, messages: updater(item.messages), updatedAt: Date.now() }
+        : item,
+    );
+    conversationsRef.current = next;
+    setConversations(next);
   }, []);
 
   const applyEvent = useCallback(
     (payload: AgentChatEvent) => {
-      patchActive((current) => {
-        const next = [...current];
-        // 同一轮里的文本增量与工具调用都并入最后一条助手消息。
-        let index = -1;
-        for (let i = next.length - 1; i >= 0; i -= 1) {
-          if (next[i].role === 'assistant') {
-            index = i;
-            break;
-          }
-        }
-        if (index < 0) {
-          next.push({ id: newId(), role: 'assistant', content: '', toolCalls: [], parts: [] });
-          index = next.length - 1;
-        }
-
-        switch (payload.type) {
-          case 'textDelta': {
-            // 文本增量并入最后一个文本片段；若上一片段是工具调用，则新开一段，
-            // 这样「工具之后的总结」会排在工具卡片后面，而不是被拼到最前面。
-            const parts = [...(next[index].parts ?? messageParts(next[index]))];
-            const lastPart = parts[parts.length - 1];
-            if (lastPart && lastPart.type === 'text') {
-              parts[parts.length - 1] = { type: 'text', text: lastPart.text + payload.text };
-            } else {
-              parts.push({ type: 'text', text: payload.text });
+      if (payload.type === 'textDelta' || payload.type === 'toolCall' || payload.type === 'toolResult') {
+        patchConversation(payload.conversationId, (current) => {
+          const next = [...current];
+          // 同一轮里的文本增量与工具调用都并入最后一条助手消息。
+          let index = -1;
+          for (let i = next.length - 1; i >= 0; i -= 1) {
+            if (next[i].role === 'assistant') {
+              index = i;
+              break;
             }
-            next[index] = withSyncedLegacy({ ...next[index], parts });
-            break;
           }
-          case 'toolCall': {
-            const call: AgentChatToolCall = {
-              id: payload.id,
-              name: payload.name,
-              arguments: payload.arguments,
-            };
-            const toolPart: AgentChatPart = { type: 'tool', call };
-            const parts = [...(next[index].parts ?? messageParts(next[index])), toolPart];
-            next[index] = withSyncedLegacy({ ...next[index], parts });
-            break;
+          if (index < 0) {
+            next.push({ id: newId(), role: 'assistant', content: '', toolCalls: [], parts: [] });
+            index = next.length - 1;
           }
-          case 'toolResult': {
-            const parts = (next[index].parts ?? messageParts(next[index])).map((part) =>
-              part.type === 'tool' && part.call.id === payload.id
-                ? { type: 'tool' as const, call: { ...part.call, result: payload.content, isError: payload.isError } }
-                : part,
-            );
-            next[index] = withSyncedLegacy({ ...next[index], parts });
-            break;
+
+          switch (payload.type) {
+            case 'textDelta': {
+              // 文本增量并入最后一个文本片段；若上一片段是工具调用，则新开一段，
+              // 这样「工具之后的总结」会排在工具卡片后面，而不是被拼到最前面。
+              const parts = [...(next[index].parts ?? messageParts(next[index]))];
+              const lastPart = parts[parts.length - 1];
+              if (lastPart && lastPart.type === 'text') {
+                parts[parts.length - 1] = { type: 'text', text: lastPart.text + payload.text };
+              } else {
+                parts.push({ type: 'text', text: payload.text });
+              }
+              next[index] = withSyncedLegacy({ ...next[index], parts });
+              break;
+            }
+            case 'toolCall': {
+              const call: AgentChatToolCall = {
+                id: payload.id,
+                name: payload.name,
+                arguments: payload.arguments,
+              };
+              const toolPart: AgentChatPart = { type: 'tool', call };
+              const parts = [...(next[index].parts ?? messageParts(next[index])), toolPart];
+              next[index] = withSyncedLegacy({ ...next[index], parts });
+              break;
+            }
+            case 'toolResult': {
+              const parts = (next[index].parts ?? messageParts(next[index])).map((part) =>
+                part.type === 'tool' && part.call.id === payload.id
+                  ? { type: 'tool' as const, call: { ...part.call, result: payload.content, isError: payload.isError } }
+                  : part,
+              );
+              next[index] = withSyncedLegacy({ ...next[index], parts });
+              break;
+            }
+            default:
+              break;
           }
-          default:
-            break;
-        }
-        return next;
-      });
+          return next;
+        });
+      }
+
+      if (payload.type === 'toolCall' || payload.type === 'toolResult') {
+        // 审批等待可能持续很久，工具调用一出现、工具结果一返回就立即落盘；
+        // 即使应用随后退出，也不能把这两类关键工作记录回退到发送前。
+        persistConversation(payload.conversationId);
+      }
 
       if (payload.type === 'completed') {
         setRunning(false);
@@ -391,7 +420,7 @@ export function AgentChatPanel({ providers, fontFamily, fontSize, t }: AgentChat
         setError(payload.message);
         // 必须移除空的助手占位：否则它会一直渲染成"思考中"，
         // 用户看到红色报错的同时下面还转着圈，完全不知道到底结束没有。
-        patchActive((current) => {
+        patchConversation(payload.conversationId, (current) => {
           const next = [...current];
           const last = next[next.length - 1];
           if (last && last.role === 'assistant' && !last.content && !last.toolCalls.length) {
@@ -403,10 +432,10 @@ export function AgentChatPanel({ providers, fontFamily, fontSize, t }: AgentChat
         persistConversation(payload.conversationId);
       }
     },
-    [patchActive, persistConversation, t],
+    [patchConversation, persistConversation, t],
   );
 
-  // 订阅后端流式事件；只处理当前对话，避免旧对话的迟到事件污染界面。
+  // 订阅后端流式事件；事件始终按 conversationId 回写原对话，切换历史也不会丢增量。
   useEffect(() => {
     let unlistenFn: (() => void) | undefined;
     let isMounted = true;
@@ -415,7 +444,7 @@ export function AgentChatPanel({ providers, fontFamily, fontSize, t }: AgentChat
       .then(({ listen }) =>
         listen<AgentChatEvent>('agent-chat-event', (event) => {
           const payload = event.payload;
-          if (!payload || payload.conversationId !== activeIdRef.current) {
+          if (!payload) {
             return;
           }
           applyEvent(payload);
@@ -733,6 +762,10 @@ export function AgentChatPanel({ providers, fontFamily, fontSize, t }: AgentChat
                       }
                       const call = part.call;
                       const expanded = expandedTools[call.id] ?? false;
+                      // 审批记录按对话与工具调用双重匹配，避免并发或同名工具把按钮挂到错误位置。
+                      const approvalRequest = approvalRequests.find(
+                        (request) => request.conversationId === activeId && request.toolCallId === call.id,
+                      );
                       return (
                         <div key={partIndex} className={`agent-chat-tool ${call.isError ? 'is-error' : ''}`}>
                           <button
@@ -754,6 +787,34 @@ export function AgentChatPanel({ providers, fontFamily, fontSize, t }: AgentChat
                                   : t('agentChatToolDone')}
                             </span>
                           </button>
+                          {approvalRequest ? (
+                            <div className={`agent-chat-approval status-${approvalRequest.status}`}>
+                              <div className="agent-chat-approval-status">
+                                <span>{t('panelAgentRequests')}</span>
+                                <span className={`status-badge status-${approvalRequest.status}`}>
+                                  {approvalRequest.status}
+                                </span>
+                              </div>
+                              {approvalRequest.status === 'pending' ? (
+                                <div className="section-row compact">
+                                  <button
+                                    className="primary-button"
+                                    onClick={() => onApproveRequest(approvalRequest)}
+                                    type="button"
+                                  >
+                                    <Play size={14} /> {t('approveAgentRequest')}
+                                  </button>
+                                  <button
+                                    className="secondary-button"
+                                    onClick={() => onRejectRequest(approvalRequest)}
+                                    type="button"
+                                  >
+                                    <X size={14} /> {t('rejectAgentRequest')}
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
                           {expanded ? (
                             <>
                               <pre className="agent-chat-tool-payload">

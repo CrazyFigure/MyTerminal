@@ -188,9 +188,17 @@ pub fn execute_tool(
     storage: &StorageService,
     crypto: &CryptoService,
     settings: &AgentBridgeSettings,
+    conversation_id: &str,
     call: &ChatToolCall,
 ) -> ChatToolResult {
-    let outcome = dispatch_tool(runtime, storage, crypto, settings, &call.name, &call.arguments);
+    let outcome = dispatch_tool(
+        runtime,
+        storage,
+        crypto,
+        settings,
+        conversation_id,
+        call,
+    );
     match outcome {
         Ok(value) => ChatToolResult {
             tool_call_id: call.id.clone(),
@@ -214,11 +222,11 @@ fn dispatch_tool(
     storage: &StorageService,
     crypto: &CryptoService,
     settings: &AgentBridgeSettings,
-    name: &str,
-    arguments: &Value,
+    conversation_id: &str,
+    call: &ChatToolCall,
 ) -> Result<Value, String> {
     // 复用 Broker 的统一入口，保证与 MCP 路径共享审批、串行化与错误语义。
-    let route = match name {
+    let route = match call.name.as_str() {
         "list_connections" => return agent_bridge::list_connections(storage, crypto)
             .map_err(|error| error.to_string())
             .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string())),
@@ -234,8 +242,21 @@ fn dispatch_tool(
         other => return Err(format!("未知工具：{other}")),
     };
 
-    agent_bridge::dispatch_agent_action(runtime, storage, crypto, settings, route, arguments)
-        .map_err(|error| error.to_string())
+    // 对话与工具调用 ID 一并进入审批队列，前端才能把审批准确放回发起它的工具卡片。
+    let context = agent_bridge::AgentActionContext {
+        conversation_id,
+        tool_call_id: &call.id,
+    };
+    agent_bridge::dispatch_agent_action_with_context(
+        runtime,
+        storage,
+        crypto,
+        settings,
+        route,
+        &call.arguments,
+        Some(&context),
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
