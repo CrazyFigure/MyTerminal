@@ -1347,12 +1347,16 @@ export const useAppStore = create<StoreState>((set, get) => ({
 
     const connection = get().connections.find((item) => item.id === session.connectionId);
     set((state) => ({
-      // 只追加标签，不抢占 activeSessionId：用户可能正在别的标签里工作，不应被 AI 打断视线。
       sessions: [...state.sessions, { ...session, title: connection?.name ?? session.title }],
       statusMessage: statusText(state.settings, 'statusAgentTerminalOpened', {
         name: connection?.name ?? session.title,
       }),
     }));
+    // 自动打开的标签要立刻切过去：内置 agent 与外部 MCP 开的 SSH 都走这条路径，
+    // 用户希望直接看到 agent 在哪个终端里干活，而不是手动去找新标签。
+    // 复用 selectSession 的面板切换逻辑，保证右侧文件/运行面板与手动点标签一致。
+    // 注意只有「新建标签」才会触发 adoptSession；复用已有标签不抢焦点，避免每次工具调用都打断用户。
+    get().selectSession(session.id);
     void get().pollTerminalOutputs(session.id);
   },
 

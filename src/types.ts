@@ -141,11 +141,18 @@ export interface AgentChatToolCall {
   isError?: boolean;
 }
 
+/** 助手消息按到达顺序保存的展示片段；文本段与工具段交替，渲染据此还原「先工具、后总结」的真实顺序。 */
+export type AgentChatPart =
+  | { type: 'text'; text: string }
+  | { type: 'tool'; call: AgentChatToolCall };
+
 export interface AgentChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   toolCalls: AgentChatToolCall[];
+  /** 有序的展示片段；缺省时（旧存档）按 content 在前、toolCalls 在后兜底。 */
+  parts?: AgentChatPart[];
 }
 
 export interface AppSettings {

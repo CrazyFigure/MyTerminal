@@ -19,6 +19,7 @@ import { backend } from './backend';
 import type { TranslationKey } from './i18n';
 import type {
   AgentChatMessage,
+  AgentChatPart,
   AgentChatToolCall,
   AgentEffort,
   AgentProvider,
@@ -63,6 +64,36 @@ const COMPOSER_MAX_HEIGHT = 180;
 
 const previewText = (value: string, max = 4000) =>
   value.length > max ? `${value.slice(0, max)}…` : value;
+
+/** 取出消息的有序展示片段；旧存档没有 parts 时按「正文在前、工具在后」兜底，保持向下兼容。 */
+const messageParts = (message: AgentChatMessage): AgentChatPart[] => {
+  if (message.parts && message.parts.length) {
+    return message.parts;
+  }
+  const parts: AgentChatPart[] = [];
+  if (message.content) {
+    parts.push({ type: 'text', text: message.content });
+  }
+  for (const call of message.toolCalls) {
+    parts.push({ type: 'tool', call });
+  }
+  return parts;
+};
+
+/** 由有序片段反推 content / toolCalls，使后端投影与持久化字段始终和 parts 同步。 */
+const withSyncedLegacy = (message: AgentChatMessage): AgentChatMessage => {
+  const parts = message.parts ?? [];
+  let content = '';
+  const toolCalls: AgentChatToolCall[] = [];
+  for (const part of parts) {
+    if (part.type === 'text') {
+      content += part.text;
+    } else {
+      toolCalls.push(part.call);
+    }
+  }
+  return { ...message, content, toolCalls };
+};
 
 /** 传给后端的一条消息；与 Rust 侧 ChatMessage 形状一致。 */
 interface WireMessage {
@@ -295,33 +326,44 @@ export function AgentChatPanel({ providers, fontFamily, fontSize, t }: AgentChat
           }
         }
         if (index < 0) {
-          next.push({ id: newId(), role: 'assistant', content: '', toolCalls: [] });
+          next.push({ id: newId(), role: 'assistant', content: '', toolCalls: [], parts: [] });
           index = next.length - 1;
         }
 
         switch (payload.type) {
-          case 'textDelta':
-            next[index] = { ...next[index], content: next[index].content + payload.text };
+          case 'textDelta': {
+            // 文本增量并入最后一个文本片段；若上一片段是工具调用，则新开一段，
+            // 这样「工具之后的总结」会排在工具卡片后面，而不是被拼到最前面。
+            const parts = [...(next[index].parts ?? messageParts(next[index]))];
+            const lastPart = parts[parts.length - 1];
+            if (lastPart && lastPart.type === 'text') {
+              parts[parts.length - 1] = { type: 'text', text: lastPart.text + payload.text };
+            } else {
+              parts.push({ type: 'text', text: payload.text });
+            }
+            next[index] = withSyncedLegacy({ ...next[index], parts });
             break;
+          }
           case 'toolCall': {
             const call: AgentChatToolCall = {
               id: payload.id,
               name: payload.name,
               arguments: payload.arguments,
             };
-            next[index] = { ...next[index], toolCalls: [...next[index].toolCalls, call] };
+            const toolPart: AgentChatPart = { type: 'tool', call };
+            const parts = [...(next[index].parts ?? messageParts(next[index])), toolPart];
+            next[index] = withSyncedLegacy({ ...next[index], parts });
             break;
           }
-          case 'toolResult':
-            next[index] = {
-              ...next[index],
-              toolCalls: next[index].toolCalls.map((call) =>
-                call.id === payload.id
-                  ? { ...call, result: payload.content, isError: payload.isError }
-                  : call,
-              ),
-            };
+          case 'toolResult': {
+            const parts = (next[index].parts ?? messageParts(next[index])).map((part) =>
+              part.type === 'tool' && part.call.id === payload.id
+                ? { type: 'tool' as const, call: { ...part.call, result: payload.content, isError: payload.isError } }
+                : part,
+            );
+            next[index] = withSyncedLegacy({ ...next[index], parts });
             break;
+          }
           default:
             break;
         }
@@ -430,7 +472,7 @@ export function AgentChatPanel({ providers, fontFamily, fontSize, t }: AgentChat
         ? {
             ...item,
             title: item.messages.length ? item.title : deriveTitle(history, t('agentChatUntitled')),
-            messages: [...history, { id: newId(), role: 'assistant', content: '', toolCalls: [] }],
+            messages: [...history, { id: newId(), role: 'assistant', content: '', toolCalls: [], parts: [] }],
             updatedAt: Date.now(),
             providerId: activeProvider.id,
             modelId,
@@ -672,53 +714,57 @@ export function AgentChatPanel({ providers, fontFamily, fontSize, t }: AgentChat
                 {message.role === 'user' ? <User size={13} /> : <Bot size={13} />}
               </div>
               <div className="agent-chat-message-body">
-                {/* 用户输入保持纯文本原样展示；只有模型回复才按 Markdown 渲染。 */}
-                {message.content ? (
-                  message.role === 'assistant' ? (
-                    <MarkdownView source={message.content} />
-                  ) : (
-                    <p className="agent-chat-user-text">{message.content}</p>
-                  )
-                ) : null}
-                {message.toolCalls.map((call) => {
-                  const expanded = expandedTools[call.id] ?? false;
-                  return (
-                    <div key={call.id} className={`agent-chat-tool ${call.isError ? 'is-error' : ''}`}>
-                      <button
-                        aria-expanded={expanded}
-                        className="agent-chat-tool-header"
-                        onClick={() =>
-                          setExpandedTools((current) => ({ ...current, [call.id]: !expanded }))
-                        }
-                        type="button"
-                      >
-                        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                        <TerminalIcon size={13} />
-                        <strong>{call.name}</strong>
-                        <span>
-                          {call.result === undefined
-                            ? t('agentChatToolRunning')
-                            : call.isError
-                              ? t('agentChatToolFailed')
-                              : t('agentChatToolDone')}
-                        </span>
-                      </button>
-                      {expanded ? (
-                        <>
-                          <pre className="agent-chat-tool-payload">
-                            {previewText(JSON.stringify(call.arguments, null, 2))}
-                          </pre>
-                          {call.result !== undefined ? (
-                            <pre className="agent-chat-tool-payload">{previewText(call.result)}</pre>
+                {message.role === 'user' ? (
+                  // 用户输入保持纯文本原样展示，不按 Markdown 解析。
+                  message.content ? <p className="agent-chat-user-text">{message.content}</p> : null
+                ) : (
+                  <>
+                    {/* 助手回复按到达顺序渲染：文本段与工具段交替，保证「先工具、后总结」与真实执行一致。 */}
+                    {messageParts(message).map((part, partIndex) => {
+                      if (part.type === 'text') {
+                        return part.text ? <MarkdownView key={partIndex} source={part.text} /> : null;
+                      }
+                      const call = part.call;
+                      const expanded = expandedTools[call.id] ?? false;
+                      return (
+                        <div key={partIndex} className={`agent-chat-tool ${call.isError ? 'is-error' : ''}`}>
+                          <button
+                            aria-expanded={expanded}
+                            className="agent-chat-tool-header"
+                            onClick={() =>
+                              setExpandedTools((current) => ({ ...current, [call.id]: !expanded }))
+                            }
+                            type="button"
+                          >
+                            {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                            <TerminalIcon size={13} />
+                            <strong>{call.name}</strong>
+                            <span>
+                              {call.result === undefined
+                                ? t('agentChatToolRunning')
+                                : call.isError
+                                  ? t('agentChatToolFailed')
+                                  : t('agentChatToolDone')}
+                            </span>
+                          </button>
+                          {expanded ? (
+                            <>
+                              <pre className="agent-chat-tool-payload">
+                                {previewText(JSON.stringify(call.arguments, null, 2))}
+                              </pre>
+                              {call.result !== undefined ? (
+                                <pre className="agent-chat-tool-payload">{previewText(call.result)}</pre>
+                              ) : null}
+                            </>
                           ) : null}
-                        </>
-                      ) : null}
-                    </div>
-                  );
-                })}
-                {message.role === 'assistant' && !message.content && !message.toolCalls.length ? (
-                  <p className="agent-chat-thinking">{t('agentChatThinking')}</p>
-                ) : null}
+                        </div>
+                      );
+                    })}
+                    {!message.content && !message.toolCalls.length ? (
+                      <p className="agent-chat-thinking">{t('agentChatThinking')}</p>
+                    ) : null}
+                  </>
+                )}
               </div>
             </div>
           ))
