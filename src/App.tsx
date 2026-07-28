@@ -4548,10 +4548,16 @@ export default function App() {
   const [globalBottomTab, setGlobalBottomTab] = useState<BottomPanelTab>('commands');
   const [bottomTabByConnection, setBottomTabByConnection] = useState<Record<string, BottomPanelTab>>({});
   // AI 执行右侧栏宽度独立于左侧栏，避免 MCP 审批展开时影响用户已经调整好的主机列表宽度。
-  // 对话栏默认比文件树宽：AI 回复常含多行说明与命令块，360px 会频繁折行。
-  const [agentSidebarWidth, setAgentSidebarWidth] = useState(() =>
-    typeof window === 'undefined' ? 460 : clamp(Math.round(window.innerWidth * 0.3), 380, 620),
-  );
+  // 对话栏默认取约 1/3 窗口宽：AI 回复常含多行说明与命令块，需要足够宽；
+  // 上限仍套用拖拽钳制逻辑，小窗口或双侧栏展开时不会挤掉主工作区。
+  const [agentSidebarWidth, setAgentSidebarWidth] = useState(() => {
+    if (typeof window === 'undefined') {
+      return 460;
+    }
+    const preferred = Math.round(window.innerWidth / 3);
+    const ceiling = resolveSidePanelMaxWidth(!sidebarCollapsed, sidePanelMinWidth + 20, true);
+    return clamp(preferred, 380, ceiling);
+  });
   // AI 执行默认收起，只有用户点击或 MCP 新请求到达时才占用主窗口右侧空间。
   const [agentSidebarCollapsed, setAgentSidebarCollapsed] = useState(true);
   const [pathInput, setPathInput] = useState('~');
@@ -4592,7 +4598,8 @@ export default function App() {
   const [runtimeConnections, setRuntimeConnections] = useState<RuntimeConnectionList | null>(null);
   const [runtimeConnectionsLoading, setRuntimeConnectionsLoading] = useState(false);
   const [runtimeConnectionsError, setRuntimeConnectionsError] = useState('');
-  const [bottomDockCollapsed, setBottomDockCollapsed] = useState(false);
+  // 底部功能栏默认收起：日常操作集中在终端，命令/隧道/历史面板按需展开，把纵向空间让给终端。
+  const [bottomDockCollapsed, setBottomDockCollapsed] = useState(true);
   const [transferProgressItems, setTransferProgressItems] = useState<TransferProgressItem[]>([]);
   const [agentBridgeRequests, setAgentBridgeRequests] = useState<AgentBridgeRequest[]>([]);
   const [agentCommandEdits, setAgentCommandEdits] = useState<Record<string, string>>({});

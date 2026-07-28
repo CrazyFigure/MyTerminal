@@ -188,7 +188,7 @@ export function AgentChatPanel({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [runOptions, setRunOptions] = useState<AgentRunOptions>({
     effort: 'default',
-    compactThreshold: 0.75,
+    compactThreshold: 0.65,
     autoCompact: true,
   });
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
@@ -243,7 +243,8 @@ export function AgentChatPanel({
     }
   }, [activeProvider, modelId]);
 
-  // 启动时从本地加载历史对话；没有历史才建一条空的。
+  // 启动时从本地加载历史对话；无论有没有历史，默认都停在一条新会话上，
+  // 历史对话留给历史列表按需打开。空的新会话不落盘、不进历史列表。
   // 对话是用户的工作记录，必须跨重启保留，不能只活在内存里。
   useEffect(() => {
     let cancelled = false;
@@ -264,10 +265,8 @@ export function AgentChatPanel({
           }));
           conversationsRef.current = loaded;
           setConversations(loaded);
-          setActiveId(loaded[0].id);
-          activeIdRef.current = loaded[0].id;
-          return;
         }
+        // 新打开软件时点开侧栏看到的是一条干净的新会话，而不是上次留下的对话。
         startNewConversation();
       })
       .catch(() => {
@@ -471,6 +470,15 @@ export function AgentChatPanel({
   }, [applyEvent]);
 
   const startNewConversation = useCallback(() => {
+    // 当前会话还没说过话时直接复用：连续点“新建”不会堆出一串空的占位会话。
+    const active = conversationsRef.current.find((item) => item.id === activeIdRef.current);
+    if (active && !active.messages.length) {
+      setActiveId(active.id);
+      activeIdRef.current = active.id;
+      setError(null);
+      setHistoryOpen(false);
+      return active.id;
+    }
     const conversation: AgentConversation = {
       id: newId(),
       title: t('agentChatUntitled'),
@@ -547,6 +555,9 @@ export function AgentChatPanel({
       void backend.cancelAgentChat(activeIdRef.current);
     }
   }, []);
+
+  // 空的新会话只是输入入口：没说过话就不进历史列表，也不会在落盘时留下占位。
+  const historyItems = conversations.filter((item) => item.messages.length);
 
   if (!providers.length) {
     return <div className="empty-state">{t('agentChatNoProvider')}</div>;
@@ -650,6 +661,7 @@ export function AgentChatPanel({
               <span>
                 {t('agentChatCompactThreshold')}（{Math.round(runOptions.compactThreshold * 100)}%）
               </span>
+              {/* 1% 步进：阈值对压缩时机影响敏感，粗调容易一次跨过头。 */}
               <input
                 max={95}
                 min={30}
@@ -659,7 +671,7 @@ export function AgentChatPanel({
                     compactThreshold: Number(event.target.value) / 100,
                   }))
                 }
-                step={5}
+                step={1}
                 type="range"
                 value={Math.round(runOptions.compactThreshold * 100)}
               />
@@ -675,8 +687,8 @@ export function AgentChatPanel({
 
       {historyOpen ? (
         <div className="agent-chat-history">
-          {conversations.length ? (
-            conversations.map((item) => (
+          {historyItems.length ? (
+            historyItems.map((item) => (
               <div
                 key={item.id}
                 className={`agent-chat-history-item ${item.id === activeId ? 'is-active' : ''}`}
@@ -708,9 +720,11 @@ export function AgentChatPanel({
                     const next = conversationsRef.current.filter((entry) => entry.id !== item.id);
                     conversationsRef.current = next;
                     setConversations(next);
-                    // 删掉当前对话时自动切到最近一条，避免面板空白无从操作。
+                    // 删掉当前对话时自动切到最近一条有内容的对话；
+                    // 都没有就回落到空的新会话，保证面板始终可以输入。
                     if (item.id === activeIdRef.current) {
-                      const fallback = next[0]?.id ?? '';
+                      const fallback =
+                        next.find((entry) => entry.messages.length)?.id ?? next[0]?.id ?? '';
                       setActiveId(fallback);
                       activeIdRef.current = fallback;
                     }
