@@ -414,9 +414,9 @@ impl Default for AgentRunOptions {
     }
 }
 
-/// 留 25% 余量给本轮的新输出与工具结果，避免压缩刚好卡在溢出边缘。
+/// 留 35% 余量给本轮的新输出与工具结果，避免压缩刚好卡在溢出边缘。
 fn default_agent_compact_threshold() -> f32 {
-    0.75
+    0.65
 }
 
 fn default_agent_auto_compact() -> bool {
