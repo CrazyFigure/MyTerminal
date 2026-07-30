@@ -304,9 +304,10 @@ const isUsableRemoteSession = (session?: TerminalSession): session is TerminalSe
 const isUsableTerminalSession = (session?: TerminalSession): session is TerminalSession =>
   Boolean(session && !['closed', 'error'].includes(session.status));
 
-// 终端输出走浏览器事件直达 xterm，避免高频输出通过 React 状态触发整页重渲染。
+// 终端输出和 PTY 尺寸时间线走浏览器事件直达 xterm，避免高频数据通过 React 状态触发整页重渲染。
 const emitTerminalOutput = (chunk: TerminalOutputChunk) => {
-  if (typeof window === 'undefined' || !chunk.content) {
+  const hasTerminalSize = Number.isInteger(chunk.cols) && Number.isInteger(chunk.rows);
+  if (typeof window === 'undefined' || (!chunk.content && !hasTerminalSize)) {
     return;
   }
 

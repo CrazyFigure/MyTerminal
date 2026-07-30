@@ -700,10 +700,34 @@ fn queue_session_status(
             cwd: None,
             // 连接状态只交给前端标签栏展示，不再写入终端可见内容。
             status: Some(status.into()),
+            cols: None,
+            rows: None,
             content: String::new(),
         });
     }
     // 状态变化同样定向唤醒对应会话，避免多会话时每次事件都扫全部输出队列。
+    let _ = app_handle.emit("terminal-output-ready", session_id);
+}
+
+/// PTY 尺寸只有在后端初建或 resize 真正成功后才进入同一输出队列，确保前端按严格时序重放原始控制流。
+fn queue_terminal_size(
+    queue: &Arc<std::sync::Mutex<TerminalOutputQueue>>,
+    app_handle: &tauri::AppHandle,
+    session_id: &str,
+    cols: u16,
+    rows: u16,
+) {
+    if let Ok(mut output) = queue.lock() {
+        output.push_meta(TerminalOutputChunk {
+            session_id: session_id.to_string(),
+            cwd: None,
+            status: None,
+            cols: Some(cols),
+            rows: Some(rows),
+            content: String::new(),
+        });
+    }
+    // 尺寸变化本身没有可见文本，也必须唤醒前端拉取，否则后台会话的下一段输出可能先绑定到旧尺寸。
     let _ = app_handle.emit("terminal-output-ready", session_id);
 }
 
@@ -915,6 +939,8 @@ fn queue_cwd(
             session_id: session_id.to_string(),
             cwd: Some(cwd.into()),
             status: None,
+            cols: None,
+            rows: None,
             content: String::new(),
         });
     }
@@ -3626,6 +3652,8 @@ fn spawn_shell_thread(
         // libssh2 session 超时设为 0 表示不超时，由我们自己的主循环控制。
         ssh_session.set_timeout(0);
 
+        // 初始尺寸必须排在连接状态和首批 Shell 输出之前，缓存重放才能用创建 PTY 时的真实 120x32 解析启动内容。
+        queue_terminal_size(&output_queue, &app_handle, &session_id, cols, rows);
         queue_session_status(&output_queue, &app_handle, &session_id, "connected");
 
         let mut buffer = [0_u8; 8192];
@@ -3784,6 +3812,14 @@ fn spawn_shell_thread(
                 if let Some((cols, rows)) = pending_resize {
                     match request_shell_pty_size(&mut channel, cols, rows) {
                         Ok(true) => {
+                            // 只在 libssh2 确认 resize 生效后入队；之前已读取的输出仍属于旧尺寸，时序不能提前。
+                            queue_terminal_size(
+                                &output_queue,
+                                &app_handle,
+                                &session_id,
+                                cols,
+                                rows,
+                            );
                             resized_pty = true;
                             pending_resize = None;
                         }
@@ -4002,6 +4038,9 @@ fn spawn_local_terminal_thread(
             }
         };
 
+        // 本地 PTY 同样先登记初始几何，避免启动输出在首次前端 resize 前被按当前窗口宽度错误重放。
+        queue_terminal_size(&output_queue, &app_handle, &session_id, cols, rows);
+
         let mut command = build_local_terminal_command(&shell_path, &profile.command);
         command.cwd(&profile.cwd);
         // AI CLI 通常会根据 TERM/COLORTERM 决定颜色和交互 UI，显式声明现代终端能力。
@@ -4108,12 +4147,25 @@ fn spawn_local_terminal_thread(
                     }
                 }
                 Ok(SessionControl::Resize { cols, rows }) => {
-                    let _ = pair.master.resize(PtySize {
-                        rows,
-                        cols,
-                        pixel_width: 0,
-                        pixel_height: 0,
-                    });
+                    // 只有 resize 成功才推进尺寸时间线；失败时后续输出仍必须按旧几何解释。
+                    if pair
+                        .master
+                        .resize(PtySize {
+                            rows,
+                            cols,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        })
+                        .is_ok()
+                    {
+                        queue_terminal_size(
+                            &output_queue,
+                            &app_handle,
+                            &session_id,
+                            cols,
+                            rows,
+                        );
+                    }
                 }
                 // 本地终端不承载 agent 可见执行，捕获武装与注入指令直接忽略。
                 Ok(SessionControl::SetAgentCapture(_)) => {}

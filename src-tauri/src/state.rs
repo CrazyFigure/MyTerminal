@@ -86,12 +86,12 @@ const OUTPUT_QUEUE_MAX_BYTES: usize = 1024 * 1024;
 /// 队列清空后若容量超过该阈值则收缩，避免一次突发输出让大容量 VecDeque 永久驻留。
 const OUTPUT_QUEUE_SHRINK_THRESHOLD: usize = 64;
 
-/// 有界终端输出队列：内容按字节封顶并合并相邻纯内容分片，cwd/status 控制元数据优先保留。
+/// 有界终端输出队列：内容按字节封顶并合并相邻纯内容分片，cwd/status/PTY 尺寸等控制元数据优先保留。
 /// 达到上限时丢弃最旧内容分片并插入一次 truncated 标记，避免用户误以为终端完整保留了历史。
 #[derive(Debug, Default)]
 pub struct TerminalOutputQueue {
     chunks: VecDeque<TerminalOutputChunk>,
-    /// 仅统计内容字节；cwd/status 元数据分片不计入淘汰预算，保证控制信息不被内容挤掉。
+    /// 仅统计内容字节；cwd/status/尺寸元数据不计入淘汰预算，保证控制信息不被内容挤掉。
     content_bytes: usize,
     /// 已因超限丢弃过内容但尚未向前端发出截断提示时为 true，下次入队时补一条 truncated 标记。
     pending_truncation_notice: bool,
@@ -109,9 +109,13 @@ impl TerminalOutputQueue {
         }
         self.content_bytes = self.content_bytes.saturating_add(content.len());
 
-        // 队尾若也是纯内容分片（无 cwd/status），直接追加字符串，避免产生新的 chunk 对象。
+        // 队尾若也是纯内容分片（无 cwd/status/尺寸），直接追加字符串；尺寸元数据是重放时序屏障，绝不能被文本吞并。
         if let Some(last) = self.chunks.back_mut() {
-            if last.cwd.is_none() && last.status.is_none() {
+            if last.cwd.is_none()
+                && last.status.is_none()
+                && last.cols.is_none()
+                && last.rows.is_none()
+            {
                 last.content.push_str(&content);
                 self.enforce_limit();
                 return;
@@ -122,12 +126,14 @@ impl TerminalOutputQueue {
             session_id: session_id.to_string(),
             cwd: None,
             status: None,
+            cols: None,
+            rows: None,
             content,
         });
         self.enforce_limit();
     }
 
-    /// 入队 cwd/status 等控制元数据分片；这类分片不计入内容字节预算，也不参与内容合并。
+    /// 入队 cwd/status/PTY 尺寸等控制元数据分片；这类分片不计入内容字节预算，也不参与内容合并。
     pub fn push_meta(&mut self, chunk: TerminalOutputChunk) {
         self.chunks.push_back(chunk);
     }
@@ -140,7 +146,11 @@ impl TerminalOutputQueue {
             // 找到最旧的一条纯内容分片丢弃；若队首是元数据则跳过它继续找下一条内容分片。
             let mut removed = false;
             for index in 0..self.chunks.len() {
-                if self.chunks[index].cwd.is_none() && self.chunks[index].status.is_none() {
+                if self.chunks[index].cwd.is_none()
+                    && self.chunks[index].status.is_none()
+                    && self.chunks[index].cols.is_none()
+                    && self.chunks[index].rows.is_none()
+                {
                     let chunk = self.chunks.remove(index).expect("index in range");
                     self.content_bytes = self.content_bytes.saturating_sub(chunk.content.len());
                     dropped = true;
@@ -170,6 +180,8 @@ impl TerminalOutputQueue {
                     session_id: session_id.to_string(),
                     cwd: None,
                     status: None,
+                    cols: None,
+                    rows: None,
                     content: "\r\n\x1b[2m[较早的输出因超出缓存上限已被回收]\x1b[0m\r\n".to_string(),
                 },
             );
@@ -355,6 +367,28 @@ mod tests {
         assert_eq!(chunks[0].content, "hello world");
     }
 
+    // 尺寸元数据是原始终端流的几何时间线，前后文本不能跨过它合并，取出时也必须保持独立顺序。
+    #[test]
+    fn keeps_terminal_size_metadata_between_content_chunks() {
+        let mut queue = TerminalOutputQueue::new();
+        queue.push_content("s1", "before".into());
+        queue.push_meta(super::TerminalOutputChunk {
+            session_id: "s1".into(),
+            cwd: None,
+            status: None,
+            cols: Some(96),
+            rows: Some(28),
+            content: String::new(),
+        });
+        queue.push_content("s1", "after".into());
+
+        let chunks = queue.take("s1");
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].content, "before");
+        assert_eq!((chunks[1].cols, chunks[1].rows), (Some(96), Some(28)));
+        assert_eq!(chunks[2].content, "after");
+    }
+
     // 超出字节上限时丢弃最旧内容并补一条截断提示；总内容不得超过上限。
     #[test]
     fn caps_bytes_and_emits_truncation_notice() {
@@ -367,6 +401,8 @@ mod tests {
             session_id: "s1".into(),
             cwd: Some("/tmp".into()),
             status: None,
+            cols: None,
+            rows: None,
             content: String::new(),
         });
         queue.push_content("s1", half.clone());
@@ -374,6 +410,8 @@ mod tests {
             session_id: "s1".into(),
             cwd: None,
             status: Some("connected".into()),
+            cols: None,
+            rows: None,
             content: String::new(),
         });
         queue.push_content("s1", half);
