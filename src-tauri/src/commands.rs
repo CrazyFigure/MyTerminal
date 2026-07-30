@@ -791,8 +791,8 @@ pub(crate) fn announce_agent_command(
     );
 }
 
-/// 跟踪用户按键对当前输入行的影响：有可见字符即视为未提交内容，回车/Ctrl+C/Ctrl+U 视为该行结束。
-/// agent 只在当前行干净且用户静默一段时间后才注入，避免与用户手敲的内容拼接成错误命令。
+/// 跟踪用户按键对当前输入行的影响：普通回车结束该行，奇数个行尾反斜杠后的回车仍属于同一条 Shell 续行。
+/// agent 只在当前逻辑行干净且用户静默一段时间后才注入，避免在 PS2 等待态把命令拼到用户输入后面。
 fn track_user_input_activity(
     agent_pty: &Arc<std::sync::Mutex<AgentPtyState>>,
     agent_pty_signal: &Arc<Condvar>,
@@ -809,12 +809,30 @@ fn track_user_input_activity(
     pty.last_user_input_at = Some(Instant::now());
     for byte in data {
         match byte {
-            // 提交或放弃当前行：行内容已交给 shell 或被丢弃。
-            b'\r' | b'\n' | 0x03 | 0x15 => pty.user_line_dirty = false,
-            // 退格无法精确还原行长度，保守起见不清标记，等提示符标记回来再复位。
-            0x7f | 0x08 => {}
-            // 其余可见字符与控制序列都可能在行内留下内容。
-            _ => pty.user_line_dirty = true,
+            b'\r' | b'\n' => {
+                // Shell 只把奇数个行尾反斜杠中的最后一个用于续行；偶数个表示反斜杠自身已被转义。
+                pty.user_line_dirty = pty.user_line_trailing_backslashes % 2 == 1;
+                pty.user_line_trailing_backslashes = 0;
+            }
+            // Ctrl+C / Ctrl+U 明确放弃当前逻辑行。
+            0x03 | 0x15 => {
+                pty.user_line_dirty = false;
+                pty.user_line_trailing_backslashes = 0;
+            }
+            // 退格至少可以精确撤销行尾反斜杠；其它位置仍保守保持 dirty，等待真实提示符复位。
+            0x7f | 0x08 => {
+                pty.user_line_trailing_backslashes =
+                    pty.user_line_trailing_backslashes.saturating_sub(1);
+            }
+            b'\\' => {
+                pty.user_line_dirty = true;
+                pty.user_line_trailing_backslashes += 1;
+            }
+            // 其余可见字符与控制序列都可能在行内留下内容，同时终止“行尾连续反斜杠”计数。
+            _ => {
+                pty.user_line_dirty = true;
+                pty.user_line_trailing_backslashes = 0;
+            }
         }
     }
 
@@ -847,6 +865,7 @@ fn publish_agent_pty_progress(
         pty.last_prompt_at = Some(Instant::now());
         pty.at_prompt = true;
         pty.user_line_dirty = false;
+        pty.user_line_trailing_backslashes = 0;
     }
 
     for event in events {
@@ -1511,6 +1530,32 @@ fn keep_trailing_utf8_by_bytes(value: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod shell_output_filter_tests {
     use super::*;
+
+    #[test]
+    fn keeps_agent_input_guard_dirty_during_backslash_continuation() {
+        let agent_pty = Arc::new(Mutex::new(AgentPtyState::default()));
+        let signal = Arc::new(Condvar::new());
+
+        // 第一行以单个反斜杠结束时，换行后仍处于同一条逻辑命令，agent 不得趁 PS2 等待态注入。
+        track_user_input_activity(&agent_pty, &signal, b"echo first \\");
+        track_user_input_activity(&agent_pty, &signal, b"\n");
+        assert!(agent_pty.lock().unwrap().user_line_dirty);
+
+        // 后续物理行正常提交后才真正解除占用。
+        track_user_input_activity(&agent_pty, &signal, b"second\r");
+        assert!(!agent_pty.lock().unwrap().user_line_dirty);
+    }
+
+    #[test]
+    fn treats_even_trailing_backslashes_as_a_normal_submission() {
+        let agent_pty = Arc::new(Mutex::new(AgentPtyState::default()));
+        let signal = Arc::new(Condvar::new());
+
+        // 两个行尾反斜杠表示最后一个反斜杠已被转义，Enter 应当按普通提交处理。
+        track_user_input_activity(&agent_pty, &signal, b"printf \\\\");
+        track_user_input_activity(&agent_pty, &signal, b"\r");
+        assert!(!agent_pty.lock().unwrap().user_line_dirty);
+    }
 
     fn cwd_marker(cwd: &str) -> String {
         format!("{CWD_SYNC_MARKER_PREFIX}{cwd}{CWD_SYNC_MARKER_SUFFIX}")

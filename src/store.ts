@@ -470,9 +470,48 @@ const normalizeTerminalInputForCommandTracking = (data: string) =>
     .replace(terminalCsiSequencePattern, '')
     .replace(terminalShortEscapeSequencePattern, '');
 
+// Shell 只把奇数个行尾反斜杠中的最后一个视为续行转义；偶数个表示最后一个反斜杠本身已被转义。
+const hasUnescapedTrailingBackslash = (value: string) => {
+  let count = 0;
+  for (let index = value.length - 1; index >= 0 && value[index] === '\\'; index -= 1) {
+    count += 1;
+  }
+  return count % 2 === 1;
+};
+
+// xterm 的 Enter 默认是 CR；行尾反斜杠必须与 LF 组成明确的 `\\\n`，避免远端 stty 的 CR 映射差异把它提前提交。
+const normalizeRemoteTerminalContinuationEnter = (sessionId: string, data: string) => (
+  (data === '\r' || data === '\n')
+  && hasUnescapedTrailingBackslash(terminalInputLineBuffers.get(sessionId) ?? '')
+    ? '\n'
+    : data
+);
+
+// “命令”底栏可能同时包含多条命令与续行：普通换行按终端 Enter 发送 CR，反斜杠后的换行固定发送 LF。
+// 最后一行没有换行时按其结尾补 Enter 或续行 LF；若文本已停在换行后，则不再擅自二次提交。
+const normalizeCommandPanelTerminalInput = (rawCommand: string) => {
+  const normalized = rawCommand.replace(/\r\n?/g, '\n');
+  let payload = '';
+  let currentLine = '';
+  for (const character of normalized) {
+    if (character !== '\n') {
+      currentLine += character;
+      payload += character;
+      continue;
+    }
+    payload += hasUnescapedTrailingBackslash(currentLine) ? '\n' : '\r';
+    currentLine = '';
+  }
+  if (!normalized.endsWith('\n')) {
+    payload += hasUnescapedTrailingBackslash(currentLine) ? '\n' : '\r';
+  }
+  return payload;
+};
+
 const extractCompletedTerminalInputLines = (sessionId: string, data: string) => {
   let currentLine = terminalInputLineBuffers.get(sessionId) ?? '';
   const completedLines: string[] = [];
+  let continuationLineBreaks = 0;
 
   for (const character of normalizeTerminalInputForCommandTracking(data)) {
     if (character === '\x03' || character === '\x15') {
@@ -485,6 +524,12 @@ const extractCompletedTerminalInputLines = (sessionId: string, data: string) => 
       continue;
     }
     if (character === '\r' || character === '\n') {
+      if (hasUnescapedTrailingBackslash(currentLine)) {
+        // Shell 解析时会删除反斜杠与紧随其后的换行；前端命令跟踪也按同样规则拼接后续物理行。
+        currentLine = currentLine.slice(0, -1);
+        continuationLineBreaks += 1;
+        continue;
+      }
       const completedLine = currentLine.trim();
       if (completedLine) {
         completedLines.push(completedLine);
@@ -503,7 +548,7 @@ const extractCompletedTerminalInputLines = (sessionId: string, data: string) => 
     terminalInputLineBuffers.delete(sessionId);
   }
 
-  return completedLines;
+  return { completedLines, continuationLineBreaks };
 };
 
 // 远端刷新请求可能被快速 cd、目录双击或自动轮询连续触发；序号只允许最后一次结果落到界面。
@@ -1871,7 +1916,15 @@ export const useAppStore = create<StoreState>((set, get) => ({
       : undefined;
 
     await flushQueuedTerminalInput(sessionId);
-    await backend.writeTerminalInput(sessionId, rawCommand.endsWith('\n') ? rawCommand : `${rawCommand}\n`);
+    // SSH 底栏统一按交互 PTY 语义发送：普通换行是 Enter，行尾反斜杠换行固定为 LF 续行；本地程序保持原输入协议。
+    const terminalPayload = isUsableRemoteSession(session)
+      ? normalizeCommandPanelTerminalInput(rawCommand)
+      : rawCommand.endsWith('\n') ? rawCommand : `${rawCommand}\n`;
+    if (isUsableRemoteSession(session)) {
+      // 底栏与终端本体共用同一 PTY，命令跟踪状态也必须消费完全相同的 payload，避免后续 Enter 读取到旧行。
+      extractCompletedTerminalInputLines(sessionId, terminalPayload);
+    }
+    await backend.writeTerminalInput(sessionId, terminalPayload);
 
     set((prev) => ({
       commandBuffers: { ...prev.commandBuffers, [sessionId]: '' },
@@ -1895,32 +1948,51 @@ export const useAppStore = create<StoreState>((set, get) => ({
       return;
     }
 
+    // 只修正 SSH Shell 的反斜杠续行 Enter；本地 TUI/程序依赖原始键码，不能套用 Shell 规则。
+    const terminalData = isUsableRemoteSession(session)
+      ? normalizeRemoteTerminalContinuationEnter(sessionId, data)
+      : data;
+
     let nextRemotePath: string | undefined;
+    let completedInputLines: string[] = [];
+    let continuationLineBreaks = 0;
     if (isUsableRemoteSession(session) && session.connectionId === state.activeConnectionId) {
       // 文件管理器允许独立浏览；终端内连续 cd 的相对路径始终从 Shell cwd 推导，避免 cd .. 被面板路径带偏。
       let pathCursor = session.cwd || state.currentRemotePath || '~';
-      for (const completedLine of extractCompletedTerminalInputLines(sessionId, data)) {
+      const trackedInput = extractCompletedTerminalInputLines(sessionId, terminalData);
+      completedInputLines = trackedInput.completedLines;
+      continuationLineBreaks = trackedInput.continuationLineBreaks;
+      for (const completedLine of completedInputLines) {
         const guessedPath = guessNextRemotePath(pathCursor, completedLine);
         if (guessedPath) {
           pathCursor = guessedPath;
           nextRemotePath = guessedPath;
         }
       }
+    } else if (isUsableRemoteSession(session)) {
+      // 非当前连接也必须维护续行缓冲，否则切换回来后 Enter 无法判断前一字符是否为反斜杠。
+      const trackedInput = extractCompletedTerminalInputLines(sessionId, terminalData);
+      completedInputLines = trackedInput.completedLines;
+      continuationLineBreaks = trackedInput.continuationLineBreaks;
     }
 
-    const submittedInput = data.includes('\r') || data.includes('\n');
-    const flushDelayMs = shouldFlushTerminalInputImmediately(data)
+    const hasLineBreak = terminalData.includes('\r') || terminalData.includes('\n');
+    // 单独的反斜杠续行仍处于同一条逻辑命令，不触发“命令已提交”后的轮询和目录刷新。
+    const submittedInput = hasLineBreak && (completedInputLines.length > 0 || continuationLineBreaks === 0);
+    const flushDelayMs = shouldFlushTerminalInputImmediately(terminalData)
       ? 0
-      : isBulkTerminalInput(data)
+      : isBulkTerminalInput(terminalData)
         ? terminalBulkInputFlushDelayMs
         : terminalInteractiveInputFlushDelayMs;
-    queueTerminalInput(sessionId, data, flushDelayMs);
-    if (submittedInput) {
+    queueTerminalInput(sessionId, terminalData, flushDelayMs);
+    if (hasLineBreak) {
       await flushQueuedTerminalInput(sessionId);
-      void get().pollTerminalOutputs();
-      if (nextRemotePath) {
-        // 终端本体里粘贴或手输 cd 不经过命令面板，先用输入侧预测兜底刷新；后端真实 PWD 标记回来后会再次校正。
-        void get().refreshFiles(nextRemotePath);
+      if (submittedInput) {
+        void get().pollTerminalOutputs();
+        if (nextRemotePath) {
+          // 终端本体里粘贴或手输 cd 不经过命令面板，先用输入侧预测兜底刷新；后端真实 PWD 标记回来后会再次校正。
+          void get().refreshFiles(nextRemotePath);
+        }
       }
       return;
     }
