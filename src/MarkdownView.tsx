@@ -1,6 +1,7 @@
 import { Fragment, useMemo, useState } from 'react';
 import { Check, Copy } from 'lucide-react';
 
+import { writeClipboardText } from './clipboard';
 import { parseMarkdown, type InlineSpan, type MarkdownNode } from './markdown';
 
 /** 渲染行内标记。 */
@@ -45,8 +46,8 @@ function CodeBlock({ lang, text, closed }: { lang: string; text: string; closed:
         <button
           className="md-code-copy"
           onClick={() => {
-            void navigator.clipboard
-              .writeText(text)
+            // 桌面端显式走 Tauri 原生插件，确保按钮复制的代码进入 Windows 系统剪贴板及其历史。
+            void writeClipboardText(text)
               .then(() => {
                 setCopied(true);
                 window.setTimeout(() => setCopied(false), 1500);
