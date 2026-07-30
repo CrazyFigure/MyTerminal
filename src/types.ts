@@ -231,6 +231,10 @@ export interface TerminalOutputChunk {
   cwd?: string;
   /** 会话状态由后端结构化回传，前端只更新标签图标，不写入终端正文。 */
   status?: SessionStatus;
+  /** 后端 PTY 初建或 resize 真正生效后的列数；与 rows 成对出现并先于对应输出入队。 */
+  cols?: number;
+  /** 后端 PTY 初建或 resize 真正生效后的行数；缓存重放据此还原当时的解析几何。 */
+  rows?: number;
   content: string;
 }
 

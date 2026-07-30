@@ -715,6 +715,12 @@ pub struct TerminalOutputChunk {
     /// 会话状态结构化回传给前端标签栏，避免把连接/断开提示写入终端正文。
     #[serde(default)]
     pub status: Option<String>,
+    /// PTY 初建或 resize 真正生效后的列数；尺寸元数据与普通输出共用队列以保持严格时序。
+    #[serde(default)]
+    pub cols: Option<u16>,
+    /// PTY 初建或 resize 真正生效后的行数；前端重放原始流时据此恢复当时的终端几何。
+    #[serde(default)]
+    pub rows: Option<u16>,
     #[serde(default)]
     pub content: String,
 }

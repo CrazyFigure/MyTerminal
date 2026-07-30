@@ -6,7 +6,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { backend } from './backend';
 import { readClipboardText, writeClipboardText } from './clipboard';
 import { translate } from './i18n';
-import { TerminalOutputCache } from './terminalCache';
+import { TerminalOutputCache, type TerminalReplayEntry } from './terminalCache';
 import { buildTerminalFontFamily } from './terminalFonts';
 import type { AppSettings, TerminalOutputChunk, TerminalSession } from './types';
 import packageMetadata from '../package.json';
@@ -231,7 +231,7 @@ type TerminalReplayState = {
 };
 
 type TerminalReplayDeferredOutput = TerminalReplayState & {
-  chunks: string[];
+  entries: TerminalReplayEntry[];
 };
 
 // 连续 resize 后若溢出量始终贴着右边界增长，说明内容很可能在响应 PTY 宽度，而不是一条固定长文本。
@@ -1109,8 +1109,8 @@ export function TerminalWorkspace({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  // 终端原始输出改用有界分片缓存：按会话/全局字节封顶、LRU 淘汰，关闭会话时显式回收，
-  // 避免旧实现的全量字符串拼接与关闭后不回收导致的长时间运行内存增长。
+  // 终端原始输出改用有界分片缓存：按会话/全局字节封顶、LRU 淘汰，并绑定后端确认的 PTY 尺寸；
+  // 关闭会话时显式回收，既避免长期内存增长，也保证标签切换后动态覆盖行可按原几何重放。
   const outputCacheRef = useRef(new TerminalOutputCache());
   const terminalMatchOverlayRef = useRef<SVGSVGElement | null>(null);
   const terminalMatchDecorationDisposablesRef = useRef<IDisposable[]>([]);
@@ -3060,7 +3060,7 @@ export function TerminalWorkspace({
     };
     terminalReplayGenerationRef.current = replayState.generation;
     terminalActiveReplayRef.current = replayState;
-    terminalReplayDeferredOutputRef.current = { ...replayState, chunks: [] };
+    terminalReplayDeferredOutputRef.current = { ...replayState, entries: [] };
     terminalGutterReplayActiveRef.current = Boolean(replaySessionId);
     const wasImeComposing = terminalImeComposingRef.current;
     // 先关闭 stdin 再暂时放行 blur/compositionend，让 xterm 清掉旧会话组合态；其延迟 finalize 仍会被 activeReplay 丢弃。
@@ -3123,24 +3123,55 @@ export function TerminalWorkspace({
         && deferredBeforeSnapshot.sessionId === replayState.sessionId
       ) {
         // 屏障前到达的实时块已经进入 outputCache，将由本次快照统一重放，不能再作为 deferred 重复写入。
-        deferredBeforeSnapshot.chunks = [];
+        deferredBeforeSnapshot.entries = [];
       }
-      const replayChunks = replaySessionId
-        ? outputCacheRef.current.replayChunks(replaySessionId)
+      const replayEntries = replaySessionId
+        ? outputCacheRef.current.replayEntries(replaySessionId)
         : [];
+
+      // 同一尺寸的相邻分片作为一组送入 xterm；组间等待 write FIFO 落地后再 resize，严格复现输出生成时的 PTY 几何。
+      // 如果先按当前窗口一次性解析，scp 的 CR 覆盖帧可能因软换行而把每次进度刷新永久变成一条新行。
+      const writeReplayEntries = (entries: TerminalReplayEntry[], onComplete: () => void) => {
+        let nextEntryIndex = 0;
+        const writeNextSizeGroup = () => {
+          if (
+            terminalReplayGenerationRef.current !== replayState.generation
+            || sessionRef.current?.id !== replayState.sessionId
+          ) {
+            return;
+          }
+          if (nextEntryIndex >= entries.length) {
+            onComplete();
+            return;
+          }
+
+          const firstEntry = entries[nextEntryIndex];
+          if (terminal.cols !== firstEntry.cols || terminal.rows !== firstEntry.rows) {
+            terminal.resize(firstEntry.cols, firstEntry.rows);
+          }
+          let groupEnd = nextEntryIndex + 1;
+          while (
+            groupEnd < entries.length
+            && entries[groupEnd].cols === firstEntry.cols
+            && entries[groupEnd].rows === firstEntry.rows
+          ) {
+            groupEnd += 1;
+          }
+
+          for (let index = nextEntryIndex; index < groupEnd; index += 1) {
+            terminal.write(entries[index].content, index === groupEnd - 1 ? () => {
+              nextEntryIndex = groupEnd;
+              writeNextSizeGroup();
+            } : undefined);
+          }
+        };
+        writeNextSizeGroup();
+      };
       const finishReplay = () => {
         if (!finishTerminalGutterReplay(Date.now(), replayState)) {
           return;
         }
 
-        const deferredOutput = terminalReplayDeferredOutputRef.current;
-        const deferredChunks = deferredOutput?.generation === replayState.generation
-          && deferredOutput.sessionId === replayState.sessionId
-          ? deferredOutput.chunks.splice(0)
-          : [];
-        if (deferredOutput?.generation === replayState.generation) {
-          terminalReplayDeferredOutputRef.current = null;
-        }
         // 历史解析已结束，先恢复 xterm 自动协议回包；DOM 捕获层仍阻止真实用户输入，直到 deferred 全部落屏。
         terminal.options.disableStdin = !canAcceptTerminalInput(sessionRef.current);
 
@@ -3165,20 +3196,26 @@ export function TerminalWorkspace({
           scheduleTerminalGutterSync();
           window.requestAnimationFrame(focusPendingTerminalInput);
         };
-        if (deferredChunks.length === 0) {
+        // 分尺寸组写入需要等待上一组解析后才能 resize；期间新到实时块继续进入 deferred，循环排空后才能开放输入。
+        const flushDeferredEntries = () => {
+          const deferredOutput = terminalReplayDeferredOutputRef.current;
+          const deferredEntries = deferredOutput?.generation === replayState.generation
+            && deferredOutput.sessionId === replayState.sessionId
+            ? deferredOutput.entries.splice(0)
+            : [];
+          if (deferredEntries.length > 0) {
+            writeReplayEntries(deferredEntries, flushDeferredEntries);
+            return;
+          }
+          if (deferredOutput?.generation === replayState.generation) {
+            terminalReplayDeferredOutputRef.current = null;
+          }
           runReplayVisualCompletion();
-          return;
-        }
-        deferredChunks.forEach((chunk, index) => {
-          terminal.write(chunk, index === deferredChunks.length - 1 ? runReplayVisualCompletion : undefined);
-        });
+        };
+        flushDeferredEntries();
       };
-      if (replayChunks.length > 0) {
-        // 逐块写入 xterm，不先 join 成大字符串；完成回调只挂在最后一块，行为与旧的单次 write 一致。
-        replayChunks.forEach((chunk, index) => {
-          const isLast = index === replayChunks.length - 1;
-          terminal.write(chunk, isLast ? finishReplay : undefined);
-        });
+      if (replayEntries.length > 0) {
+        writeReplayEntries(replayEntries, finishReplay);
         return;
       }
 
@@ -3836,7 +3873,15 @@ export function TerminalWorkspace({
   useEffect(() => {
     const handleTerminalOutput = (event: Event) => {
       const chunk = (event as CustomEvent<TerminalOutputChunk>).detail;
-      if (!chunk?.sessionId || !chunk.content) {
+      if (!chunk?.sessionId) {
+        return;
+      }
+
+      // 尺寸元数据由后端在 PTY 初建/resize 真正生效后按输出时序发出；缓存后续分片必须先绑定该几何。
+      if (Number.isInteger(chunk.cols) && Number.isInteger(chunk.rows)) {
+        outputCacheRef.current.recordTerminalSize(chunk.sessionId, chunk.cols as number, chunk.rows as number);
+      }
+      if (!chunk.content) {
         return;
       }
 
@@ -3863,7 +3908,7 @@ export function TerminalWorkspace({
 
       // 终端输出直接写入 xterm，避免每 80ms 把大字符串塞进 React 状态导致输入、滚动和选区明显卡顿。
       // 原始输出进有界分片缓存：只累加分片、不整体拼接，超限时按会话/全局上限淘汰最旧分片。
-      outputCacheRef.current.append(
+      const replayEntry = outputCacheRef.current.append(
         chunk.sessionId,
         chunk.content,
         sessionRef.current?.id === chunk.sessionId,
@@ -3872,13 +3917,20 @@ export function TerminalWorkspace({
       if (sessionRef.current?.id === chunk.sessionId) {
         const activeReplay = terminalActiveReplayRef.current;
         const deferredOutput = terminalReplayDeferredOutputRef.current;
-        if (
-          activeReplay?.sessionId === chunk.sessionId
-          && deferredOutput?.generation === activeReplay.generation
-          && deferredOutput.sessionId === activeReplay.sessionId
-        ) {
+        const shouldDeferDuringReplay = Boolean(
+          deferredOutput
+          && deferredOutput.sessionId === chunk.sessionId
+          && deferredOutput.generation === terminalReplayGenerationRef.current
+          && (
+            activeReplay?.generation === deferredOutput.generation
+            || terminalReplayInputBlockedRef.current
+          )
+        );
+        if (shouldDeferDuringReplay && deferredOutput) {
           // 屏障/重放期间只缓存实时块；快照前的块由 replay 覆盖，快照后的块在 finishReplay 后按原顺序补写。
-          deferredOutput.chunks.push(chunk.content);
+          if (replayEntry) {
+            deferredOutput.entries.push(replayEntry);
+          }
           return;
         }
         terminalRef.current?.write(chunk.content, () => {
