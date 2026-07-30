@@ -76,6 +76,8 @@ pub struct AgentPtyState {
     pub last_user_input_at: Option<Instant>,
     /// 用户当前行是否有未提交内容；有则不注入，避免与用户输入拼接。
     pub user_line_dirty: bool,
+    /// 当前物理输入行末尾连续反斜杠数量；奇数个后面的 Enter 属于 Shell 续行，不能误判为行已提交。
+    pub user_line_trailing_backslashes: usize,
     /// 当前运行中的 agent 命令结果槽位。
     pub active: Option<AgentPtyRun>,
 }

@@ -1114,13 +1114,18 @@ select:disabled {
   background-color: transparent !important;
 }
 
-/* 匹配和选区圆角层放在 xterm 文字层下方，只画底色，不覆盖终端字符。 */
+/* 提示符细色条、匹配和选区圆角层都放在 xterm 文字层下方，不覆盖终端字符。 */
+.terminal-prompt-line-overlay,
 .terminal-match-rounded-overlay,
 .terminal-selection-rounded-overlay {
   position: absolute;
   inset: 0;
   pointer-events: none;
   overflow: visible;
+}
+
+.terminal-prompt-line-overlay {
+  z-index: 0;
 }
 
 .terminal-match-rounded-overlay {
@@ -1159,7 +1164,8 @@ select:disabled {
 }
 
 .terminal-match-rounded-shape,
-.terminal-selection-rounded-shape {
+.terminal-selection-rounded-shape,
+.terminal-prompt-segment-underline {
   shape-rendering: geometricPrecision;
 }
 

@@ -110,6 +110,30 @@ const terminalHighlightCornerRadiusPx = 4;
 const terminalHighlightBorderWidthPx = 1;
 // 匹配块之间需要有可见间隙；只收缩每个命中块的外边缘，跨行命中内部仍保持连贯。
 const terminalMatchHighlightGapPx = 1.5;
+// 提示符各部分只用底部细色条区分，不铺命令行背景，完整保留终端底色与背景图片。
+const terminalPromptHighlightLightColors: TerminalPromptHighlightColors = {
+  segments: {
+    user: '#0f766e',
+    host: '#0284c7',
+    path: '#7c3aed',
+    symbol: '#d97706',
+    separator: '#64748b',
+  },
+};
+const terminalPromptHighlightDarkColors: TerminalPromptHighlightColors = {
+  segments: {
+    user: '#5eead4',
+    host: '#7dd3fc',
+    path: '#c4b5fd',
+    symbol: '#fbbf24',
+    separator: '#94a3b8',
+  },
+};
+// 提示符前缀有严格上限，避免超长日志行触发不必要的正则回溯；路径超过该长度时仍保留整行浅色标识。
+const terminalPromptHighlightMaxScanChars = 512;
+// 分段色条保持纤细，只强化 user/host/path/结束符的视觉节奏，不遮挡下划线字符或背景图细节。
+const terminalPromptSegmentUnderlineHeightPx = 2;
+const terminalPromptSegmentHorizontalInsetPx = 0.6;
 
 // 行号栏（gutter）都不显示时仍保留少量宽度，用于承载右键菜单命中区域。
 const terminalGutterMinWidthPx = 16;
@@ -166,6 +190,23 @@ type TerminalMatchRange = {
   row: number;
   col: number;
   size: number;
+};
+
+type TerminalPromptSegmentKind = 'user' | 'host' | 'path' | 'symbol' | 'separator';
+
+type TerminalPromptHighlightSegment = {
+  start: number;
+  end: number;
+  kind: TerminalPromptSegmentKind;
+};
+
+type TerminalPromptHighlightMatch = {
+  row: number;
+  segments: TerminalPromptHighlightSegment[];
+};
+
+type TerminalPromptHighlightColors = {
+  segments: Record<TerminalPromptSegmentKind, string>;
 };
 
 type TerminalHighlightStrip = {
@@ -457,6 +498,122 @@ const stringLengthToTerminalBufferSize = (terminal: Terminal, row: number, lengt
     }
   }
   return bufferSize;
+};
+
+// 常见 Unix、RHEL、PowerShell 与 cmd 提示符都要求从逻辑行首完整命中，避免把日志里的邮箱、路径或大于号误认成命令行。
+const terminalPromptUnixPattern = /^((?:\([^()\n]{1,64}\)\s+)*)([A-Za-z0-9._+-]+)(@)([A-Za-z0-9._-]+)(:)(\S*?)([#\$%])(?=\s|$)/;
+const terminalPromptUnixSpacePattern = /^((?:\([^()\n]{1,64}\)\s+)*)([A-Za-z0-9._+-]+)(@)([A-Za-z0-9._-]+)(\s+)(\S+?)(\s*)([#\$%])(?=\s|$)/;
+const terminalPromptBracketPattern = /^(\[)([A-Za-z0-9._+-]+)(@)([A-Za-z0-9._-]+)(\s+)(\S*?)(\])([#\$])(?=\s|$)/;
+const terminalPromptPowerShellPattern = /^(PS)(\s+)(.+?)(>)(?=\s|$)/;
+const terminalPromptCmdPattern = /^([A-Za-z]:[^<>|\n]*?)(>)(?=\s|$)/;
+
+// 按正则捕获顺序累加字符串下标；渲染前再换算成 xterm 单元格列，兼容全角路径与组合字符。
+const buildTerminalPromptSegments = (
+  parts: Array<{ text: string; kind: TerminalPromptSegmentKind }>,
+) => {
+  const segments: TerminalPromptHighlightSegment[] = [];
+  let cursor = 0;
+  for (const part of parts) {
+    const start = cursor;
+    cursor += part.text.length;
+    if (cursor > start) {
+      segments.push({ start, end: cursor, kind: part.kind });
+    }
+  }
+  return segments;
+};
+
+// 返回提示符自身的彩色分段；命令正文不做改色，只由整条命令行的透明底色负责定位。
+const matchTerminalPromptSegments = (lineText: string): TerminalPromptHighlightSegment[] | undefined => {
+  const text = lineText.slice(0, terminalPromptHighlightMaxScanChars);
+  const unixMatch = terminalPromptUnixPattern.exec(text);
+  if (unixMatch) {
+    return buildTerminalPromptSegments([
+      { text: unixMatch[1], kind: 'separator' },
+      { text: unixMatch[2], kind: 'user' },
+      { text: unixMatch[3], kind: 'separator' },
+      { text: unixMatch[4], kind: 'host' },
+      { text: unixMatch[5], kind: 'separator' },
+      { text: unixMatch[6], kind: 'path' },
+      { text: unixMatch[7], kind: 'symbol' },
+    ]);
+  }
+
+  const unixSpaceMatch = terminalPromptUnixSpacePattern.exec(text);
+  if (unixSpaceMatch) {
+    return buildTerminalPromptSegments([
+      { text: unixSpaceMatch[1], kind: 'separator' },
+      { text: unixSpaceMatch[2], kind: 'user' },
+      { text: unixSpaceMatch[3], kind: 'separator' },
+      { text: unixSpaceMatch[4], kind: 'host' },
+      { text: unixSpaceMatch[5], kind: 'separator' },
+      { text: unixSpaceMatch[6], kind: 'path' },
+      { text: unixSpaceMatch[7], kind: 'separator' },
+      { text: unixSpaceMatch[8], kind: 'symbol' },
+    ]);
+  }
+
+  const bracketMatch = terminalPromptBracketPattern.exec(text);
+  if (bracketMatch) {
+    return buildTerminalPromptSegments([
+      { text: bracketMatch[1], kind: 'separator' },
+      { text: bracketMatch[2], kind: 'user' },
+      { text: bracketMatch[3], kind: 'separator' },
+      { text: bracketMatch[4], kind: 'host' },
+      { text: bracketMatch[5], kind: 'separator' },
+      { text: bracketMatch[6], kind: 'path' },
+      { text: bracketMatch[7], kind: 'separator' },
+      { text: bracketMatch[8], kind: 'symbol' },
+    ]);
+  }
+
+  const powerShellMatch = terminalPromptPowerShellPattern.exec(text);
+  if (powerShellMatch) {
+    return buildTerminalPromptSegments([
+      { text: powerShellMatch[1], kind: 'user' },
+      { text: powerShellMatch[2], kind: 'separator' },
+      { text: powerShellMatch[3], kind: 'path' },
+      { text: powerShellMatch[4], kind: 'symbol' },
+    ]);
+  }
+
+  const cmdMatch = terminalPromptCmdPattern.exec(text);
+  if (cmdMatch) {
+    return buildTerminalPromptSegments([
+      { text: cmdMatch[1], kind: 'path' },
+      { text: cmdMatch[2], kind: 'symbol' },
+    ]);
+  }
+  return undefined;
+};
+
+// 从当前可视窗口收集提示符逻辑行；若窗口从软换行中间开始，先回溯到该逻辑行首再判断。
+const collectTerminalPromptHighlightMatches = (
+  terminal: Terminal,
+  firstRow: number,
+  lastRowExclusive: number,
+) => {
+  const buffer = terminal.buffer.active;
+  const matches: TerminalPromptHighlightMatch[] = [];
+  let row = Math.max(0, firstRow);
+  while (row > 0 && buffer.getLine(row)?.isWrapped) {
+    row -= 1;
+  }
+
+  while (row < lastRowExclusive) {
+    const line = buffer.getLine(row);
+    if (!line || line.isWrapped) {
+      row += 1;
+      continue;
+    }
+    const logicalLine = translateTerminalBufferLineWithWrap(terminal, row);
+    const segments = matchTerminalPromptSegments(logicalLine.text);
+    if (segments && logicalLine.endRowExclusive > firstRow) {
+      matches.push({ row, segments });
+    }
+    row = Math.max(row + 1, logicalLine.endRowExclusive);
+  }
+  return matches;
 };
 
 const resolveTerminalMatchRange = (
@@ -1112,6 +1269,9 @@ export function TerminalWorkspace({
   // 终端原始输出改用有界分片缓存：按会话/全局字节封顶、LRU 淘汰，并绑定后端确认的 PTY 尺寸；
   // 关闭会话时显式回收，既避免长期内存增长，也保证标签切换后动态覆盖行可按原几何重放。
   const outputCacheRef = useRef(new TerminalOutputCache());
+  // 提示符命令行覆盖层基于 xterm 已解析缓冲区绘制，因此实时输出、标签切换和缓存重放共用同一条路径。
+  const terminalPromptHighlightOverlayRef = useRef<SVGSVGElement | null>(null);
+  const terminalPromptHighlightFrameRef = useRef<number | null>(null);
   const terminalMatchOverlayRef = useRef<SVGSVGElement | null>(null);
   const terminalMatchDecorationDisposablesRef = useRef<IDisposable[]>([]);
   const terminalMatchHighlightFrameRef = useRef<number | null>(null);
@@ -1208,6 +1368,10 @@ export function TerminalWorkspace({
   const useManagedCursorForSessionRef = useRef(useManagedCursorForSession);
   const anchorImeToPromptForSessionRef = useRef(anchorImeToPromptForSession);
   const terminalMatchSelectionRef = useRef(settings.terminalMatchSelection ?? true);
+  // 命令式覆盖层从 ref 读取当前主题，避免终端实例的一次性事件回调持有挂载时的旧配色。
+  const terminalPromptHighlightColorsRef = useRef(
+    settings.themeMode === 'dark' ? terminalPromptHighlightDarkColors : terminalPromptHighlightLightColors,
+  );
   // 行号栏两个开关缓存进 ref，命令式同步逻辑读取时无需依赖闭包中的最新 props。
   const gutterShowLineNumber = settings.terminalGutterShowLineNumber !== false;
   const gutterShowTimestamp = settings.terminalGutterShowTimestamp !== false;
@@ -1291,6 +1455,9 @@ export function TerminalWorkspace({
   useManagedCursorForSessionRef.current = useManagedCursorForSession;
   anchorImeToPromptForSessionRef.current = anchorImeToPromptForSession;
   terminalMatchSelectionRef.current = settings.terminalMatchSelection ?? true;
+  terminalPromptHighlightColorsRef.current = settings.themeMode === 'dark'
+    ? terminalPromptHighlightDarkColors
+    : terminalPromptHighlightLightColors;
   gutterShowLineNumberRef.current = gutterShowLineNumber;
   gutterShowTimestampRef.current = gutterShowTimestamp;
   terminalFontSizeRef.current = settings.shellFontSize;
@@ -1858,7 +2025,11 @@ export function TerminalWorkspace({
       return;
     }
 
-    const overlays = [terminalMatchOverlayRef.current, terminalSelectionOverlayRef.current];
+    const overlays = [
+      terminalPromptHighlightOverlayRef.current,
+      terminalMatchOverlayRef.current,
+      terminalSelectionOverlayRef.current,
+    ];
     for (const overlay of overlays) {
       if (overlay) {
         syncTerminalHighlightOverlaySize(overlay, container);
@@ -2643,6 +2814,90 @@ export function TerminalWorkspace({
     return { metrics, strips };
   };
 
+  const clearTerminalPromptHighlights = () => {
+    const overlay = terminalPromptHighlightOverlayRef.current;
+    if (!overlay) {
+      return;
+    }
+    overlay.replaceChildren();
+    const container = containerRef.current;
+    if (container) {
+      syncTerminalHighlightOverlaySize(overlay, container);
+    }
+  };
+
+  // 提示符识别发生在 xterm 解析后的普通缓冲区，不依赖原始输出分片；同一逻辑自然覆盖实时 SSH、本地 Shell 与缓存重放。
+  const refreshTerminalPromptHighlights = () => {
+    const terminal = terminalRef.current;
+    const container = containerRef.current;
+    const overlay = terminalPromptHighlightOverlayRef.current;
+    const metrics = resolveTerminalHighlightMetrics();
+    if (
+      !terminal
+      || !container
+      || !overlay
+      || !metrics
+      || terminal.buffer.active.type !== 'normal'
+      || isAiAgentTerminalSessionRef.current
+    ) {
+      clearTerminalPromptHighlights();
+      return;
+    }
+
+    const matches = collectTerminalPromptHighlightMatches(
+      terminal,
+      metrics.firstVisibleRow,
+      metrics.lastVisibleRow + 1,
+    );
+    const colors = terminalPromptHighlightColorsRef.current;
+    const elements: SVGElement[] = [];
+    for (const match of matches) {
+      // 只绘制提示符分段下划线；命令正文、终端底色和背景图片均保持原样。
+      const logicalLine = translateTerminalBufferLineWithWrap(terminal, match.row);
+      for (const segment of match.segments) {
+        const range = resolveTerminalMatchRange(
+          terminal,
+          match.row,
+          logicalLine.offsets,
+          segment.start,
+          segment.end - segment.start,
+        );
+        if (!range) {
+          continue;
+        }
+        const segmentHighlight = terminalMatchRangeToHighlightStrips(range, metrics);
+        for (const strip of segmentHighlight.strips) {
+          const width = Math.max(0, strip.right - strip.left - terminalPromptSegmentHorizontalInsetPx * 2);
+          if (width <= 0) {
+            continue;
+          }
+          const underline = document.createElementNS(terminalHighlightSvgNamespace, 'rect');
+          underline.setAttribute('class', 'terminal-prompt-segment-underline');
+          underline.setAttribute('x', formatTerminalHighlightSvgNumber(strip.left + terminalPromptSegmentHorizontalInsetPx));
+          underline.setAttribute('y', formatTerminalHighlightSvgNumber(strip.bottom - terminalPromptSegmentUnderlineHeightPx));
+          underline.setAttribute('width', formatTerminalHighlightSvgNumber(width));
+          underline.setAttribute('height', `${terminalPromptSegmentUnderlineHeightPx}`);
+          underline.setAttribute('rx', '1');
+          underline.setAttribute('fill', colors.segments[segment.kind]);
+          elements.push(underline);
+        }
+      }
+    }
+
+    syncTerminalHighlightOverlaySize(overlay, container);
+    overlay.replaceChildren(...elements);
+  };
+
+  const scheduleTerminalPromptHighlightRefresh = () => {
+    if (terminalPromptHighlightFrameRef.current !== null) {
+      return;
+    }
+    terminalPromptHighlightFrameRef.current = window.requestAnimationFrame(() => {
+      terminalPromptHighlightFrameRef.current = null;
+      refreshTerminalPromptHighlights();
+    });
+  };
+
   const refreshTerminalMatchHighlights = () => {
     const terminal = terminalRef.current;
     const container = containerRef.current;
@@ -3102,6 +3357,7 @@ export function TerminalWorkspace({
       applyTerminalSessionBehaviorOptions();
       // 只回收 marker（定位）并清空 buffer，保留按会话持久保存的稳定时间线；重放完成后从末端恢复编号。
       resetTerminalGutterMarkers();
+      clearTerminalPromptHighlights();
       terminalGutterReplayNextLogicalNumberRef.current = 1;
       terminal.reset();
       // reset 会恢复 xterm 内部的主题光标色和显示状态；Codex 托管模式必须在重放缓存前立刻重新隐藏，避免 reset 与首个输出块之间漏出原生块光标。
@@ -3190,6 +3446,7 @@ export function TerminalWorkspace({
           syncLocalCursorVisibility();
           scheduleTerminalCursorFollow();
           scheduleTerminalMatchHighlightRefresh();
+          scheduleTerminalPromptHighlightRefresh();
           scheduleTerminalSelectionOverlaySync();
           scheduleTerminalContrastCursorSync();
           scheduleTerminalVerticalScrollbarSync();
@@ -3559,6 +3816,10 @@ export function TerminalWorkspace({
       }
       return !useNativeClipboardPaste;
     });
+    const promptHighlightOverlay = document.createElementNS(terminalHighlightSvgNamespace, 'svg');
+    promptHighlightOverlay.classList.add('terminal-prompt-line-overlay');
+    containerRef.current.appendChild(promptHighlightOverlay);
+    terminalPromptHighlightOverlayRef.current = promptHighlightOverlay;
     const matchOverlay = document.createElementNS(terminalHighlightSvgNamespace, 'svg');
     matchOverlay.classList.add('terminal-match-rounded-overlay');
     containerRef.current.appendChild(matchOverlay);
@@ -3670,6 +3931,7 @@ export function TerminalWorkspace({
       scheduleTerminalImeCompositionAnchorSync();
       scheduleTerminalContrastCursorSync();
       scheduleTerminalGutterSync();
+      scheduleTerminalPromptHighlightRefresh();
     });
     // 每次硬换行落到新行时登记一条逻辑行 marker（仅定位）；始终登记，与开关无关，保证切换显示项后
     // 历史行仍能定位。软换行不触发，天然显示为续行占位。
@@ -3679,6 +3941,7 @@ export function TerminalWorkspace({
     const scrollDisposable = terminal.onScroll(() => {
       // 竖向翻页只能刷新依赖 viewportY 的覆盖层，禁止按当前页最长行 resize；否则会 reflow 出空行并造成页面跳动。
       scheduleTerminalMatchHighlightRefresh();
+      scheduleTerminalPromptHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
       scheduleTerminalImeCompositionAnchorSync();
       scheduleTerminalContrastCursorSync();
@@ -3694,6 +3957,7 @@ export function TerminalWorkspace({
     });
     const resizeDisposable = terminal.onResize(() => {
       scheduleTerminalMatchHighlightRefresh();
+      scheduleTerminalPromptHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
       scheduleTerminalImeCompositionAnchorSync();
       scheduleTerminalContrastCursorSync();
@@ -3702,6 +3966,7 @@ export function TerminalWorkspace({
     });
     const handleTerminalSurfaceScroll = () => {
       scheduleTerminalMatchHighlightRefresh();
+      scheduleTerminalPromptHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
       scheduleTerminalImeCompositionAnchorSync();
       scheduleTerminalContrastCursorSync();
@@ -3809,6 +4074,10 @@ export function TerminalWorkspace({
         window.cancelAnimationFrame(terminalMatchHighlightFrameRef.current);
         terminalMatchHighlightFrameRef.current = null;
       }
+      if (terminalPromptHighlightFrameRef.current !== null) {
+        window.cancelAnimationFrame(terminalPromptHighlightFrameRef.current);
+        terminalPromptHighlightFrameRef.current = null;
+      }
       if (terminalSelectionOverlayFrameRef.current !== null) {
         window.cancelAnimationFrame(terminalSelectionOverlayFrameRef.current);
         terminalSelectionOverlayFrameRef.current = null;
@@ -3853,11 +4122,13 @@ export function TerminalWorkspace({
       clearTerminalSelectionSnapshot();
       resetTerminalGutterMarkers();
       hideTerminalContrastCursor();
+      promptHighlightOverlay.remove();
       matchOverlay.remove();
       selectionOverlay.remove();
       contrastCursor.remove();
       verticalScrollbar.remove();
       gutter.remove();
+      terminalPromptHighlightOverlayRef.current = null;
       terminalMatchOverlayRef.current = null;
       terminalSelectionOverlayRef.current = null;
       terminalContrastCursorRef.current = null;
@@ -3943,6 +4214,7 @@ export function TerminalWorkspace({
           scheduleTerminalCursorRecovery();
           scheduleTerminalCursorFollow();
           scheduleTerminalMatchHighlightRefresh();
+          scheduleTerminalPromptHighlightRefresh();
           scheduleTerminalSelectionOverlaySync();
           scheduleTerminalImeCompositionAnchorSync();
           scheduleTerminalContrastCursorSync();
@@ -4008,6 +4280,7 @@ export function TerminalWorkspace({
     window.requestAnimationFrame(() => {
       syncTerminalSizeToRemote();
       scheduleTerminalMatchHighlightRefresh();
+      scheduleTerminalPromptHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
       scheduleTerminalContrastCursorSync();
       scheduleTerminalVerticalScrollbarSync();
@@ -4090,6 +4363,7 @@ export function TerminalWorkspace({
       clearTerminalSelectionSnapshot();
       syncTerminalSizeToRemote();
       scheduleTerminalMatchHighlightRefresh();
+      scheduleTerminalPromptHighlightRefresh();
       scheduleTerminalSelectionOverlaySync();
       scheduleTerminalContrastCursorSync();
       scheduleTerminalVerticalScrollbarSync();
