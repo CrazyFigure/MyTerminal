@@ -26,6 +26,7 @@ import {
   ChevronUp,
   CloudDownload,
   Copy,
+  CopyPlus,
   CornerDownLeft,
   Download,
   Eye,
@@ -2816,6 +2817,25 @@ function EditorModal({
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements);
   const editorTheme = settings.themeMode === 'dark' ? 'vs-dark' : 'vs-light';
+  const editorOpen = Boolean(editorDocument);
+
+  useEffect(() => {
+    if (!editorOpen) {
+      return undefined;
+    }
+
+    // 远程编辑器打开期间必须拦截 WebView 的刷新快捷键；整页刷新会销毁前端会话状态，进而关闭全部 SSH。
+    const suppressWebviewReload = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r') {
+        event.preventDefault();
+        // 从捕获阶段直接吞掉快捷键，确保编辑器、弹窗和后注册的全局监听都不会响应。
+        event.stopImmediatePropagation();
+      }
+    };
+
+    window.addEventListener('keydown', suppressWebviewReload, true);
+    return () => window.removeEventListener('keydown', suppressWebviewReload, true);
+  }, [editorOpen]);
 
   if (!editorDocument) {
     return null;
@@ -4658,6 +4678,7 @@ export default function App() {
     deleteRemotePaths,
     copyRemotePaths,
     downloadRemotePaths,
+    duplicateSession: duplicateSessionById,
     editTunnel,
     files,
     filesLoading,
@@ -4709,6 +4730,7 @@ export default function App() {
       deleteRemotePaths: state.deleteRemotePaths,
       copyRemotePaths: state.copyRemotePaths,
       downloadRemotePaths: state.downloadRemotePaths,
+      duplicateSession: state.duplicateSession,
       editTunnel: state.editTunnel,
       files: state.files,
       filesLoading: state.filesLoading,
@@ -5607,6 +5629,17 @@ export default function App() {
       setStatusMessage(error instanceof Error ? error.message : String(error));
     });
   }, [reconnectSessionById, setStatusMessage]);
+  const duplicateSession = useCallback((session?: TerminalSession) => {
+    if (!session) {
+      return;
+    }
+
+    setSessionContextMenu(null);
+    // 复制标签在源标签右侧新开一条同类会话；SSH 走登录默认目录，本地终端沿用原目录与启动命令。
+    void duplicateSessionById(session.id).catch((error) => {
+      setStatusMessage(error instanceof Error ? error.message : String(error));
+    });
+  }, [duplicateSessionById, setStatusMessage]);
   const approveAgentBridgeRequest = useCallback((request: AgentBridgeRequest) => {
     const editedCommand = request.kind === 'run_command' ? agentCommandEdits[request.id] : undefined;
     void backend.approveAgentBridgeRequest(request.id, editedCommand).then(() => {
@@ -7148,6 +7181,9 @@ export default function App() {
                 </button>
                 <button className="context-menu-item" onClick={() => closeSessionBatch(allSessionIds)} type="button">
                   <Trash2 size={14} /> {t('closeAllSessions')}
+                </button>
+                <button className="context-menu-item" onClick={() => duplicateSession(sessionContextSession)} type="button">
+                  <CopyPlus size={14} /> {t('duplicateSession')}
                 </button>
                 <button className="context-menu-item" onClick={() => reconnectSession(sessionContextSession)} type="button">
                   <RotateCcw size={14} /> {t('reconnectSession')}
