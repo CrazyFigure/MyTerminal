@@ -3854,14 +3854,27 @@ select:disabled {
   min-width: 0;
 }
 
-/* 用户输入保留换行与空格；长 URL/路径必须能折行，否则会把侧边栏撑宽。 */
+/* 用户输入保留换行与空格；长 URL/路径必须能折行，否则会把侧边栏撑宽。
+   浅紫色气泡块只包裹文字本身（fit-content），助手回复不加，以此区分双方发言。 */
 .agent-chat-user-text {
   margin: 0;
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--app-accent, #4f46e5) 20%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--app-accent, #4f46e5) 12%, transparent);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.55;
   font-family: var(--agent-chat-font);
   font-size: var(--agent-chat-font-size);
+}
+
+/* 深色底上低浓度混色会发灰，提高浓度让气泡与浅色模式一样醒目。 */
+.app-shell.theme-dark .agent-chat-user-text {
+  border-color: color-mix(in srgb, var(--app-accent, #4f46e5) 35%, transparent);
+  background: color-mix(in srgb, var(--app-accent, #4f46e5) 20%, transparent);
 }
 
 /* ── Markdown 渲染 ─────────────────────────────────────────── */
