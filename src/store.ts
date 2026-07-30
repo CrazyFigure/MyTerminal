@@ -705,6 +705,8 @@ type StoreState = {
   adoptSession: (session: TerminalSession) => void;
   saveLocalTerminals: (settings: LocalTerminalSettings) => Promise<LocalTerminalSettings>;
   openLocalTerminal: (profile: LocalTerminalProfile) => Promise<void>;
+  /** 复制标签页：按源标签的连接或本地启动项再开一条同类会话，新标签插在源标签右侧。 */
+  duplicateSession: (sessionId: string) => Promise<void>;
   reconnectSession: (sessionId: string) => Promise<void>;
   // 为刚掉线的 SSH 会话启动自动重连计划（幂等：已在计划中则忽略）。
   scheduleAutoReconnect: (sessionId: string) => void;
@@ -1401,6 +1403,111 @@ export const useAppStore = create<StoreState>((set, get) => ({
         loading: false,
         statusMessage: error instanceof Error ? error.message : String(error),
       });
+    }
+  },
+
+  // 复制标签页：SSH 复用同一连接重新开一条会话（落在登录默认目录，不向远端注入 cd）；
+  // 本地终端/TUI 复用同一启动项，因此新标签的目录与启动命令都与源标签一致。
+  duplicateSession: async (sessionId) => {
+    const state = get();
+    const session = state.sessions.find((item) => item.id === sessionId);
+    if (!session) {
+      return;
+    }
+
+    // 新标签紧跟源标签右侧插入，避免被追加到标签栏最末尾导致用户找不到。
+    const insertAfterIndex = state.sessions.findIndex((item) => item.id === sessionId);
+    const placeNextToSource = (current: StoreState, openedSession: TerminalSession) => {
+      const filteredSessions = current.sessions.filter((item) => item.id !== openedSession.id);
+      // 源标签可能在打开过程中被关闭，此时回退到追加，保证新会话不会丢失。
+      const sourceIndex = filteredSessions.findIndex((item) => item.id === sessionId);
+      const insertIndex = sourceIndex >= 0 ? sourceIndex + 1 : Math.min(insertAfterIndex + 1, filteredSessions.length);
+      return [
+        ...filteredSessions.slice(0, insertIndex),
+        openedSession,
+        ...filteredSessions.slice(insertIndex),
+      ];
+    };
+
+    if (session.kind === 'local') {
+      // 目录与启动命令以会话自身为准：历史启动项会按目录去重覆盖，可能已被同目录的其它命令改写，
+      // 而会话上的 cwd/localCommand 由后端在启动时写入，始终是这个标签真实使用的参数。
+      const profile: LocalTerminalProfile = {
+        // 沿用同一条历史启动项 id，复制标签只把它顶到历史列表最前，不额外新增一条重复记录。
+        id: session.localProfileId ?? '',
+        title: session.title,
+        cwd: session.cwd ?? '',
+        command: session.localCommand ?? '',
+        lastUsedAt: '',
+      };
+
+      try {
+        set({
+          loading: true,
+          statusMessage: statusText(state.settings, 'statusLocalTerminalOpening', {
+            command: localTerminalCommandLabel(state.settings, profile.command),
+          }),
+        });
+        const openedSession = await backend.openLocalTerminal(profile);
+        const localTerminals = await backend.loadLocalTerminals();
+        set((current) => ({
+          loading: false,
+          localTerminals,
+          sessions: placeNextToSource(current, openedSession),
+          activeSessionId: openedSession.id,
+          activeConnectionId: undefined,
+          files: [],
+          currentRemotePath: '',
+          runtimeOverview: undefined,
+          // 本地终端没有远端面板，直接熄灭加载态。
+          filesLoading: false,
+          runtimeLoading: false,
+          historyLoading: false,
+          statusMessage: statusText(current.settings, 'statusLocalTerminalOpened', { title: openedSession.title }),
+        }));
+        void get().pollTerminalOutputs(openedSession.id);
+      } catch (error) {
+        set({
+          loading: false,
+          statusMessage: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+
+    const connection = state.connections.find((item) => item.id === session.connectionId);
+    if (!connection) {
+      return;
+    }
+
+    try {
+      set({
+        loading: true,
+        statusMessage: statusText(state.settings, 'statusOpeningSession', { name: connection.name }),
+      });
+      const openedSession = await backend.openSession(connection.id);
+      const nextSession = { ...openedSession, title: connection.name };
+      set((current) => ({
+        loading: false,
+        sessions: placeNextToSource(current, nextSession),
+        activeSessionId: nextSession.id,
+        activeConnectionId: connection.id,
+        files: [],
+        currentRemotePath: nextSession.cwd ?? '~',
+        runtimeOverview: undefined,
+        // 新会话即将拉取远端数据，先点亮加载动画，等状态事件触发的刷新完成后自动熄灭。
+        filesLoading: true,
+        runtimeLoading: true,
+        statusMessage: statusText(current.settings, 'statusSessionReady', { name: connection.name }),
+      }));
+      void get().pollTerminalOutputs(nextSession.id);
+    } catch (error) {
+      set((current) => ({
+        loading: false,
+        statusMessage: statusText(current.settings, 'statusConnectionTestFailed', {
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      }));
     }
   },
 
