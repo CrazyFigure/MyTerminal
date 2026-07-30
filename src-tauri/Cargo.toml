@@ -41,3 +41,8 @@ tauri-plugin-single-instance = "2"
 thiserror = "1"
 urlencoding = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
+
+# Windows 原生层关闭 WebView2 的浏览器专用加速键，防止刷新、打印、缩放和开发者工具等行为绕过前端组件。
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+windows-core = "0.61"
