@@ -2817,25 +2817,6 @@ function EditorModal({
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements);
   const editorTheme = settings.themeMode === 'dark' ? 'vs-dark' : 'vs-light';
-  const editorOpen = Boolean(editorDocument);
-
-  useEffect(() => {
-    if (!editorOpen) {
-      return undefined;
-    }
-
-    // 远程编辑器打开期间必须拦截 WebView 的刷新快捷键；整页刷新会销毁前端会话状态，进而关闭全部 SSH。
-    const suppressWebviewReload = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r') {
-        event.preventDefault();
-        // 从捕获阶段直接吞掉快捷键，确保编辑器、弹窗和后注册的全局监听都不会响应。
-        event.stopImmediatePropagation();
-      }
-    };
-
-    window.addEventListener('keydown', suppressWebviewReload, true);
-    return () => window.removeEventListener('keydown', suppressWebviewReload, true);
-  }, [editorOpen]);
 
   if (!editorDocument) {
     return null;
@@ -5378,6 +5359,29 @@ export default function App() {
     const disableContextMenu = (event: MouseEvent) => event.preventDefault();
     window.addEventListener('contextmenu', disableContextMenu);
     return () => window.removeEventListener('contextmenu', disableContextMenu);
+  }, []);
+
+  useEffect(() => {
+    // 原生层会统一关闭 WebView 浏览器加速键；这里专门兜底旧版 WebView2 的刷新键，避免任意面板或弹窗触发整页重载。
+    const suppressWebviewReloadFallback = (event: KeyboardEvent) => {
+      const isReloadShortcut = event.key === 'F5'
+        || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r');
+      if (!isReloadShortcut) {
+        return;
+      }
+
+      // Monaco 需要把 Ctrl+R 映射为替换，xterm 也需要接收终端功能键；两者会自行消费按键并阻止浏览器默认行为。
+      const target = event.target;
+      if (target instanceof Element && target.closest('.monaco-editor, .xterm')) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+
+    window.addEventListener('keydown', suppressWebviewReloadFallback, true);
+    return () => window.removeEventListener('keydown', suppressWebviewReloadFallback, true);
   }, []);
 
   useEffect(() => {

@@ -64,6 +64,10 @@ export default function MonacoEditor({
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       onSaveRef.current?.();
     });
+    // Ctrl/Cmd+R 在内置编辑器中与默认的 Ctrl/Cmd+H 一致，打开 Monaco 查找替换框而不是刷新 WebView。
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyR, () => {
+      editor.trigger('keyboard', 'editor.action.startFindReplaceAction', null);
+    });
   }, []);
 
   return (

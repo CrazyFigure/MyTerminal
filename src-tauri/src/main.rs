@@ -5,6 +5,10 @@ use std::sync::atomic::Ordering;
 
 use myterminal::{agent_bridge, commands, state::AppState};
 use tauri::{Manager, WindowEvent};
+#[cfg(windows)]
+use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+#[cfg(windows)]
+use windows_core::Interface;
 
 // 单实例插件在第二个进程启动时聚焦已有主窗口，避免重复实例；隐藏到托盘后也能被重新拉起。
 fn focus_existing_main_window(app: &tauri::AppHandle) {
@@ -51,6 +55,26 @@ fn apply_software_rendering_webview_args() {
     std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", args);
 }
 
+// Windows WebView2 默认把 F5、Ctrl+R、打印、缩放、页面查找和开发者工具等按键当作浏览器功能；
+// 桌面终端不需要这些浏览器行为，统一关闭后，Monaco 与 xterm 仍可按各自键位处理编辑和终端输入。
+#[cfg(windows)]
+fn disable_webview_browser_accelerators(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    window.with_webview(|webview| {
+        // 兼容极旧 WebView2：接口或设置项不可用时由前端 keydown 继续兜底最危险的刷新快捷键。
+        let disable_result = unsafe {
+            webview
+                .controller()
+                .CoreWebView2()
+                .and_then(|core| core.Settings())
+                .and_then(|settings| settings.cast::<ICoreWebView2Settings3>())
+                .and_then(|settings| settings.SetAreBrowserAcceleratorKeysEnabled(false))
+        };
+        if let Err(error) = disable_result {
+            eprintln!("failed to disable WebView2 browser accelerator keys: {error}");
+        }
+    })
+}
+
 fn main() {
     let app_state = AppState::new().expect("failed to initialize app state");
 
@@ -69,6 +93,11 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .manage(app_state)
         .setup(|app| {
+            #[cfg(windows)]
+            if let Some(window) = app.get_webview_window("main") {
+                // 必须在原生 WebView 创建后立即关闭浏览器加速键，覆盖左/右/底栏、设置页和所有弹窗。
+                disable_webview_browser_accelerators(&window)?;
+            }
             // Broker 属于后端常驻能力，必须在 Tauri setup 阶段按持久化设置启动，
             // 不能依赖 WebView 完成前端 bootstrap；窗口隐藏、页面加载失败时 MCP 仍应可用。
             {
