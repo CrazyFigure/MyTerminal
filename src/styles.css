@@ -1293,17 +1293,17 @@ select:disabled {
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
 }
 
-/* 外观页与 MCP 页的数字输入框隐藏右侧增减按钮，配合 onWheel 失焦一起杜绝滚轮误改数值。 */
+/* 外观页与执行页的数字输入框隐藏右侧增减按钮，配合 onWheel 失焦一起杜绝滚轮误改数值。 */
 .settings-appearance-pane input[type="number"]::-webkit-inner-spin-button,
 .settings-appearance-pane input[type="number"]::-webkit-outer-spin-button,
-.settings-mcp-pane input[type="number"]::-webkit-inner-spin-button,
-.settings-mcp-pane input[type="number"]::-webkit-outer-spin-button {
+.settings-execution-pane input[type="number"]::-webkit-inner-spin-button,
+.settings-execution-pane input[type="number"]::-webkit-outer-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
 
 .settings-appearance-pane input[type="number"],
-.settings-mcp-pane input[type="number"] {
+.settings-execution-pane input[type="number"] {
   appearance: textfield;
   -moz-appearance: textfield;
 }
@@ -4300,7 +4300,7 @@ select:disabled {
   border-top: 1px solid var(--app-card-border);
 }
 
-/* 自动执行连接现在是执行配置的子块，标题层级低于 section 主标题。 */
+/* 连接范围是共享执行规则的子块，标题层级低于 section 主标题。 */
 .agent-auto-connections-panel h4 {
   margin: 0 0 6px;
   font-size: 0.92rem;

@@ -89,7 +89,8 @@ import { CustomSelect } from './CustomSelect';
 const MonacoEditor = lazy(() => import('./MonacoEditor'));
 
 type BottomPanelTab = 'commands' | 'tunnels' | 'history';
-type SettingsTab = 'appearance' | 'resources' | 'sync' | 'agent' | 'agentChat' | 'about';
+// “执行”是内置 AI 助手与外部 MCP 的共享配置页，不能继续归属于任一接入方式。
+type SettingsTab = 'appearance' | 'resources' | 'sync' | 'agent' | 'agentChat' | 'execution' | 'about';
 type ConnectionFormTab = 'basic' | 'jumpHosts' | 'proxy';
 type FileContextMenuState = {
   file: RemoteFileEntry;
@@ -3272,15 +3273,16 @@ function SettingsModal({
       setAgentBridgeTransition('');
     }
   };
-  const saveAgentBridgeSettings = async () => {
+  // 执行规则由内置 AI 助手与外部 MCP 共用，统一从独立“执行”页保存并立即刷新 Bridge 状态。
+  const saveExecutionSettings = async () => {
     await runSettingsAction(
-      'save-agent-settings',
+      'save-execution-settings',
       async () => {
         const saved = await persistSettings(draftSettings);
         setDraftSettings(saved);
         await refreshAgentBridgeStatus();
       },
-      t('statusAgentBridgeSettingsSaved'),
+      t('statusExecutionSettingsSaved'),
     );
   };
   const openExternalLink = (url: string) => {
@@ -3526,6 +3528,14 @@ function SettingsModal({
             >
               <Bot size={16} />
               {t('settingsTabAgentChat')}
+            </button>
+            <button
+              className={`settings-nav-item ${activeTab === 'execution' ? 'is-active' : ''}`}
+              onClick={() => onTabChange('execution')}
+              type="button"
+            >
+              <ShieldCheck size={16} />
+              {t('settingsTabExecution')}
             </button>
             <button
               className={`settings-nav-item ${activeTab === 'about' ? 'is-active' : ''}`}
@@ -4105,115 +4115,6 @@ function SettingsModal({
                 <section className="settings-section-block">
                   <div className="section-row">
                     <div>
-                      <h3>{t('agentBridgeConfigTitle')}</h3>
-                    </div>
-                    <button
-                      className="primary-button"
-                      disabled={Boolean(settingsActionRunning) || agentBridgeSwitchBusy || !hasSettingsChanges}
-                      onClick={() => void saveAgentBridgeSettings()}
-                      type="button"
-                    >
-                      <Save size={16} /> {settingsActionRunning === 'save-agent-settings' ? t('working') : t('saveAgentBridgeSettings')}
-                    </button>
-                  </div>
-                  {actionFeedbackMap['save-agent-settings'] ? <div className={`sync-action-feedback ${actionFeedbackMap['save-agent-settings'].kind}`}>{actionFeedbackMap['save-agent-settings'].message}</div> : null}
-
-                  <div className="form-grid settings-single-column-grid">
-                    <div className="agent-toggle-field settings-inline-toggle">
-                      <span>{t('fieldAgentBridgeAutoExecute')}</span>
-                      <div className="settings-inline-toggle-control">
-                        <input
-                          aria-label={t('fieldAgentBridgeAutoExecute')}
-                          checked={draftSettings.agentBridge.autoExecute}
-                          type="checkbox"
-                          onChange={(event) =>
-                            updateDraftSettings((current) => ({
-                              ...current,
-                              agentBridge: { ...current.agentBridge, autoExecute: event.target.checked },
-                            }))
-                          }
-                        />
-                        <strong>{draftSettings.agentBridge.autoExecute ? t('enabled') : t('disabled')}</strong>
-                      </div>
-                    </div>
-                    <div className="agent-toggle-field settings-inline-toggle">
-                      <span title={t('fieldAgentBridgeVisibleExecutionDesc')}>
-                        {t('fieldAgentBridgeVisibleExecution')}
-                      </span>
-                      <div className="settings-inline-toggle-control">
-                        <input
-                          aria-label={t('fieldAgentBridgeVisibleExecution')}
-                          checked={draftSettings.agentBridge.visibleExecution}
-                          type="checkbox"
-                          onChange={(event) =>
-                            updateDraftSettings((current) => ({
-                              ...current,
-                              agentBridge: { ...current.agentBridge, visibleExecution: event.target.checked },
-                            }))
-                          }
-                        />
-                        <strong>{draftSettings.agentBridge.visibleExecution ? t('enabled') : t('disabled')}</strong>
-                      </div>
-                    </div>
-                    <label>
-                      <span>{t('fieldAgentBridgeTimeout')}</span>
-                      <input
-                        min={1}
-                        max={3600}
-                        type="number"
-                        value={draftSettings.agentBridge.defaultTimeoutSec}
-                        onChange={(event) =>
-                          updateDraftSettings((current) => ({
-                            ...current,
-                            agentBridge: { ...current.agentBridge, defaultTimeoutSec: Number(event.target.value) || 60 },
-                          }))
-                        }
-                        onWheel={(event) => event.currentTarget.blur()}
-                      />
-                    </label>
-                    <label>
-                      <span>{t('fieldAgentBridgeMaxOutput')}</span>
-                      <input
-                        min={1024}
-                        type="number"
-                        value={draftSettings.agentBridge.maxOutputBytes}
-                        onChange={(event) =>
-                          updateDraftSettings((current) => ({
-                            ...current,
-                            agentBridge: { ...current.agentBridge, maxOutputBytes: Number(event.target.value) || 200000 },
-                          }))
-                        }
-                        onWheel={(event) => event.currentTarget.blur()}
-                      />
-                    </label>
-                  </div>
-
-                  {!draftSettings.agentBridge.autoExecute ? (
-                    <div className="agent-auto-connections-panel">
-                      <div>
-                        <h4>{t('agentBridgeAutoConnections')}</h4>
-                        <p>{t('agentBridgeAutoConnectionsDesc')}</p>
-                      </div>
-                      <div className="agent-connection-list">
-                        {connections.length ? (
-                          <AgentAutoConnectionTree
-                            allowedConnectionIds={draftSettings.agentBridge.allowedConnectionIds}
-                            nodes={agentAutoGroups}
-                            ungroupedConnections={agentAutoUngroupedConnections}
-                            ungroupedLabel={t('ungroupedConnections')}
-                            onToggleConnection={toggleAgentAutoConnection}
-                          />
-                        ) : (
-                          <div className="empty-state">{t('connectionManagerEmpty')}</div>
-                        )}
-                      </div>
-                    </div>
-                  ) : null}
-                </section>
-
-                <section className="settings-section-block">
-                  <div className="section-row">
-                    <div>
                       <h3>{t('agentBridgeUsageTitle')}</h3>
                       <p>{t('agentBridgeUsageDesc')}</p>
                     </div>
@@ -4225,7 +4126,8 @@ function SettingsModal({
                   <div className="agent-bridge-code-grid">
                     <label className="span-2">
                       <span>{t('agentBridgeMcpConfig')}</span>
-                      <textarea readOnly rows={9} spellCheck={false} value={buildAgentMcpConfig(agentBridgeStatus)} />
+                      {/* MCP 配置通常包含多行环境变量与启动参数，增加默认高度以减少查看时滚动。 */}
+                      <textarea readOnly rows={15} spellCheck={false} value={buildAgentMcpConfig(agentBridgeStatus)} />
                     </label>
                   </div>
                 </section>
@@ -4240,9 +4142,15 @@ function SettingsModal({
                       <h3>{t('agentProvidersTitle')}</h3>
                       <p>{t('agentProvidersDesc')}</p>
                     </div>
-                    <button className="secondary-button slim" onClick={addAgentProvider} type="button">
-                      <Plus size={14} /> {t('agentProviderAdd')}
-                    </button>
+                    <div className="section-row compact">
+                      {/* AI 助手页只提供共享执行规则的快捷入口，避免复制一份会产生状态分叉的表单。 */}
+                      <button className="secondary-button slim" onClick={() => onTabChange('execution')} type="button">
+                        <ShieldCheck size={14} /> {t('openExecutionSettings')}
+                      </button>
+                      <button className="secondary-button slim" onClick={addAgentProvider} type="button">
+                        <Plus size={14} /> {t('agentProviderAdd')}
+                      </button>
+                    </div>
                   </div>
 
                   {agentProviderDrafts.length ? (
@@ -4423,6 +4331,121 @@ function SettingsModal({
                       <Save size={16} /> {t('agentProvidersSave')}
                     </button>
                   </div>
+                </section>
+              </div>
+            ) : null}
+
+            {activeTab === 'execution' ? (
+              <div className="stack gap-16 settings-execution-pane">
+                <section className="settings-section-block">
+                  <div className="section-row">
+                    <div>
+                      <h3>{t('executionSettingsTitle')}</h3>
+                      <p>{t('executionSettingsDesc')}</p>
+                    </div>
+                    <button
+                      className="primary-button"
+                      disabled={Boolean(settingsActionRunning) || agentBridgeSwitchBusy || !hasSettingsChanges}
+                      onClick={() => void saveExecutionSettings()}
+                      type="button"
+                    >
+                      <Save size={16} /> {settingsActionRunning === 'save-execution-settings' ? t('working') : t('saveExecutionSettings')}
+                    </button>
+                  </div>
+                  {actionFeedbackMap['save-execution-settings'] ? <div className={`sync-action-feedback ${actionFeedbackMap['save-execution-settings'].kind}`}>{actionFeedbackMap['save-execution-settings'].message}</div> : null}
+
+                  <div className="form-grid settings-single-column-grid">
+                    <div className="agent-toggle-field settings-inline-toggle">
+                      <span>{t('fieldAgentBridgeAutoExecute')}</span>
+                      <div className="settings-inline-toggle-control">
+                        <input
+                          aria-label={t('fieldAgentBridgeAutoExecute')}
+                          checked={draftSettings.agentBridge.autoExecute}
+                          type="checkbox"
+                          onChange={(event) =>
+                            updateDraftSettings((current) => ({
+                              ...current,
+                              agentBridge: { ...current.agentBridge, autoExecute: event.target.checked },
+                            }))
+                          }
+                        />
+                        <strong>{draftSettings.agentBridge.autoExecute ? t('enabled') : t('disabled')}</strong>
+                      </div>
+                    </div>
+                    <div className="agent-toggle-field settings-inline-toggle">
+                      <span title={t('fieldAgentBridgeVisibleExecutionDesc')}>
+                        {t('fieldAgentBridgeVisibleExecution')}
+                      </span>
+                      <div className="settings-inline-toggle-control">
+                        <input
+                          aria-label={t('fieldAgentBridgeVisibleExecution')}
+                          checked={draftSettings.agentBridge.visibleExecution}
+                          type="checkbox"
+                          onChange={(event) =>
+                            updateDraftSettings((current) => ({
+                              ...current,
+                              agentBridge: { ...current.agentBridge, visibleExecution: event.target.checked },
+                            }))
+                          }
+                        />
+                        <strong>{draftSettings.agentBridge.visibleExecution ? t('enabled') : t('disabled')}</strong>
+                      </div>
+                    </div>
+                    <label>
+                      <span>{t('fieldAgentBridgeTimeout')}</span>
+                      <input
+                        min={1}
+                        max={3600}
+                        type="number"
+                        value={draftSettings.agentBridge.defaultTimeoutSec}
+                        onChange={(event) =>
+                          updateDraftSettings((current) => ({
+                            ...current,
+                            agentBridge: { ...current.agentBridge, defaultTimeoutSec: Number(event.target.value) || 60 },
+                          }))
+                        }
+                        onWheel={(event) => event.currentTarget.blur()}
+                      />
+                    </label>
+                    <label>
+                      <span>{t('fieldAgentBridgeMaxOutput')}</span>
+                      <input
+                        min={1024}
+                        type="number"
+                        value={draftSettings.agentBridge.maxOutputBytes}
+                        onChange={(event) =>
+                          updateDraftSettings((current) => ({
+                            ...current,
+                            agentBridge: { ...current.agentBridge, maxOutputBytes: Number(event.target.value) || 200000 },
+                          }))
+                        }
+                        onWheel={(event) => event.currentTarget.blur()}
+                      />
+                    </label>
+                  </div>
+
+                  {/* 全局自动执行开启时白名单不再参与判断，隐藏连接范围以免用户误以为勾选仍有限制作用。 */}
+                  {!draftSettings.agentBridge.autoExecute ? (
+                    <div className="agent-auto-connections-panel">
+                      <div>
+                        <h4>{t('executionConnectionsTitle')}</h4>
+                        <p>{t('executionConnectionsDesc')}</p>
+                      </div>
+                      <div className="agent-connection-list">
+                        {connections.length ? (
+                          <AgentAutoConnectionTree
+                            allowedConnectionIds={draftSettings.agentBridge.allowedConnectionIds}
+                            nodes={agentAutoGroups}
+                            ungroupedConnections={agentAutoUngroupedConnections}
+                            ungroupedLabel={t('ungroupedConnections')}
+                            onToggleConnection={toggleAgentAutoConnection}
+                          />
+                        ) : (
+                          <div className="empty-state">{t('connectionManagerEmpty')}</div>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
                 </section>
               </div>
             ) : null}
