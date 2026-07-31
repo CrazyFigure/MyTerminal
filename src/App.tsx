@@ -4144,10 +4144,10 @@ function SettingsModal({
                     </div>
                     <div className="section-row compact">
                       {/* AI 助手页只提供共享执行规则的快捷入口，避免复制一份会产生状态分叉的表单。 */}
-                      <button className="secondary-button slim" onClick={() => onTabChange('execution')} type="button">
+                      <button className="secondary-button slim agent-provider-header-action" onClick={() => onTabChange('execution')} type="button">
                         <ShieldCheck size={14} /> {t('openExecutionSettings')}
                       </button>
-                      <button className="secondary-button slim" onClick={addAgentProvider} type="button">
+                      <button className="secondary-button slim agent-provider-header-action" onClick={addAgentProvider} type="button">
                         <Plus size={14} /> {t('agentProviderAdd')}
                       </button>
                     </div>

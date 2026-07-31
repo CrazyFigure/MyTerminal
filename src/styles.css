@@ -4211,6 +4211,17 @@ select:disabled {
   line-height: 1.45;
 }
 
+/* AI 端点标题区保留紧凑按钮宽度，同时稍微增加高度，提升两个快捷操作的点击手感。 */
+.agent-provider-header-action {
+  min-height: 30px;
+  padding-block: 5px;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.08s ease;
+}
+
+.agent-provider-header-action:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
 /* 实际请求地址预览：等宽显示，长地址允许折行而不撑破卡片。 */
 .agent-provider-url-preview {
   display: block;
