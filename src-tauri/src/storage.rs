@@ -184,7 +184,8 @@ impl StorageService {
         self.data_dir.join("local-terminals.json")
     }
 
-    /// AI 端点单独存文件，不并入 settings.json：避免 API Key 随配置包同步到 WebDAV。
+    /// AI 端点单独存文件，确保 API Key 在本机始终以密文落盘；
+    /// WebDAV 与本地导出由配置包构建流程显式读取解密后的端点，行为与 SSH 连接凭据一致。
     fn agent_providers_path(&self) -> PathBuf {
         self.data_dir.join("agent-providers.json")
     }
