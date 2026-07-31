@@ -474,6 +474,18 @@ fn build_update_http_client(total_timeout: Duration) -> Result<reqwest::Client, 
         .map_err(AppError::from)
 }
 
+// 直连客户端：忽略系统代理。代理节点的数据中心 IP 常被 GitHub API 风控（403），
+// 更新请求在代理失败时回退直连重试，避免把代理服务器的拒绝误报成 GitHub 限流。
+fn build_direct_http_client(total_timeout: Duration) -> Result<reqwest::Client, AppError> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(UPDATE_HTTP_CONNECT_TIMEOUT)
+        .read_timeout(UPDATE_HTTP_READ_TIMEOUT)
+        .timeout(total_timeout)
+        .build()
+        .map_err(AppError::from)
+}
+
 fn installer_path_matches_expected_size(
     path: &Path,
     expected_size: Option<u64>,
@@ -4866,7 +4878,7 @@ fn decode_proc_net_address(value: &str) -> Option<String> {
     Some(format!("{ip}:{port}"))
 }
 
-/// 判断地址文本的端口是否命中；兼容 ss/netstat 的 ip:port、旧式 ip.port 以及 [::1]:port 写法。
+// 判断地址文本的端口是否命中；兼容 ss/netstat 的 ip:port、旧式 ip.port 以及 [::1]:port 写法。
 fn address_matches_port(address: &str, port: u16) -> bool {
     address.ends_with(&format!(":{port}")) || address.ends_with(&format!(".{port}"))
 }
@@ -7784,31 +7796,73 @@ fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
+// 请求 GitHub 最新 Release 元数据；use_system_proxy 决定是否读取 Windows 系统代理。
+// 网络错误（代理不可达等）与 403（代理节点被风控）均由调用方决定是否回退直连重试。
+async fn fetch_latest_release(use_system_proxy: bool) -> Result<reqwest::Response, String> {
+    let client = if use_system_proxy {
+        build_update_http_client(UPDATE_HTTP_READ_TIMEOUT)?
+    } else {
+        build_direct_http_client(UPDATE_HTTP_READ_TIMEOUT)?
+    };
+    // GitHub API 要求明确 User-Agent；这里仅读取最新 Release 元数据，并挑出后续可安装的 Windows 安装包。
+    // 错误统一以 "update_error:{code}:{params}" 返回，由前端按界面语言翻译成完整文案，避免中英混杂。
+    client
+        .get("https://api.github.com/repos/CrazyFigure/MyTerminal/releases/latest")
+        .header(reqwest::header::USER_AGENT, "MyTerminal")
+        .send()
+        .await
+        .map_err(|err| format!("update_error:network:{err}"))
+}
+
 #[tauri::command]
 pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
     // 更新提示返回给前端的 Release 页面地址，必须和 GitHub 仓库名保持一致。
     let release_url = "https://github.com/CrazyFigure/MyTerminal/releases/latest".to_string();
-    let client = build_update_http_client(UPDATE_HTTP_READ_TIMEOUT)?;
-    // GitHub API 要求明确 User-Agent；这里仅读取最新 Release 元数据，并挑出后续可安装的 Windows 安装包。
-    let response = client
-        .get("https://api.github.com/repos/CrazyFigure/MyTerminal/releases/latest")
-        .header(reqwest::header::USER_AGENT, "MyTerminal")
-        .send()
-        .await
-        .map_err(|err| format!("网络请求失败，检测更新超时或被重置。请检查网络连接或代理设置。错误原因: {err}"))?;
 
-    // 针对 GitHub 接口返回 403 Forbidden 进行拦截，由于通常是 API Rate Limit 频率超限导致
+    // 首次请求走系统代理（用户代理软件常见）；代理节点 IP 常被 GitHub API 风控返回 403，
+    // 或代理不可达导致网络错误，两种情况都回退直连重试一次，避免误报限流或网络故障。
+    let mut response = match fetch_latest_release(true).await {
+        Ok(response) => response,
+        Err(_) => fetch_latest_release(false).await?,
+    };
     if response.status() == reqwest::StatusCode::FORBIDDEN {
-        return Err("由于 GitHub 接口访问频率限制（Rate Limit Exceeded），当前 IP 暂时被 GitHub 拒绝对 API 的请求。您可以稍后再试，或者直接点击右上角「GitHub 仓库」前往 Release 页面手动下载新版本。".to_string());
+        response = fetch_latest_release(false).await?;
+    }
+
+    // 403 需区分两种情况：响应头 X-RateLimit-Remaining 为 0 才确认是 API 配额耗尽；
+    // 否则（或该头缺失）多为代理或安全策略拦截，不应误报成限流。
+    // 错误统一以 "update_error:{code}:{params}" 返回，由前端按界面语言翻译成完整文案。
+    if response.status() == reqwest::StatusCode::FORBIDDEN {
+        let rate_limited = response
+            .headers()
+            .get("x-ratelimit-remaining")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u32>().ok())
+            == Some(0);
+        if rate_limited {
+            // 配额确认耗尽：附上配额重置时间戳（Unix 秒），由前端按当前语言格式化为可读时间。
+            let reset_ts = response
+                .headers()
+                .get("x-ratelimit-reset")
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| value.parse::<i64>().is_ok())
+                .unwrap_or_default();
+            return Err(if reset_ts.is_empty() {
+                "update_error:rate_limited".to_string()
+            } else {
+                format!("update_error:rate_limited:{reset_ts}")
+            });
+        }
+        return Err("update_error:forbidden".to_string());
     }
 
     let release = response
         .error_for_status()
-        .map_err(|err| format!("HTTP 状态码错误: {err}"))?
+        .map_err(|err| format!("update_error:http_status:{err}"))?
         .json::<GitHubReleaseResponse>()
         .await
-        .map_err(|err| format!("解析 Release 数据失败: {err}"))?;
+        .map_err(|err| format!("update_error:parse:{err}"))?;
 
     let latest_version = release.tag_name.trim_start_matches(['v', 'V']).to_string();
     let update_available = is_newer_version(&release.tag_name, &current_version);
@@ -7857,9 +7911,32 @@ pub async fn download_and_install_update(
         return Ok(installer_path.to_string_lossy().to_string());
     }
 
-    let client = build_update_http_client(UPDATE_INSTALLER_DOWNLOAD_TIMEOUT)?;
     // 安装包下载使用 GitHub Release 浏览器下载地址；完成写入后立即启动安装程序，交互式确认交给安装器自身处理。
-    download_update_installer(&app_handle, &client, normalized_url, &installer_path, installer_size).await?;
+    // 首次走系统代理，若被代理节点风控返回 403，回退直连重试一次（与检测更新的策略保持一致）。
+    let client = build_update_http_client(UPDATE_INSTALLER_DOWNLOAD_TIMEOUT)?;
+    if let Err(error) = download_update_installer(
+        &app_handle,
+        &client,
+        normalized_url,
+        &installer_path,
+        installer_size,
+    )
+    .await
+    {
+        if error.to_string().contains("403") {
+            let direct_client = build_direct_http_client(UPDATE_INSTALLER_DOWNLOAD_TIMEOUT)?;
+            download_update_installer(
+                &app_handle,
+                &direct_client,
+                normalized_url,
+                &installer_path,
+                installer_size,
+            )
+            .await?;
+        } else {
+            return Err(error.to_string());
+        }
+    }
     spawn_update_installer(&installer_path).map_err(|error| AppError::from(error).to_string())?;
     Ok(installer_path.to_string_lossy().to_string())
 }
