@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="860" height="440" viewBox="0 0 860 440" role="img" aria-labelledby="title desc">
   <title id="title">Star History for CrazyFigure/MyTerminal</title>
-  <desc id="desc">Generated from GitHub stargazer timestamps.</desc>
+  <desc id="desc">Generated from observed repository star-count snapshots; changes between observations are unavailable.</desc>
   <style>
     .chart-bg { fill: #ffffff; }
     .title { fill: #111827; font: 700 26px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -47,16 +47,16 @@
     <text class="axis-label" x="54" y="254.4" text-anchor="end">20</text>
     <text class="axis-label" x="54" y="136.8" text-anchor="end">40</text>
     <text class="axis-label" x="54" y="78" text-anchor="end">50</text>
-    <text class="axis-label" x="68" y="410" text-anchor="middle">2026-06-09</text>
-    <text class="axis-label" x="254" y="410" text-anchor="middle">2026-06-21</text>
-    <text class="axis-label" x="440" y="410" text-anchor="middle">2026-07-03</text>
-    <text class="axis-label" x="626" y="410" text-anchor="middle">2026-07-15</text>
-    <text class="axis-label" x="812" y="410" text-anchor="middle">2026-07-27</text>
+    <text class="axis-label" x="68" y="410" text-anchor="middle">2026-07-09</text>
+    <text class="axis-label" x="254" y="410" text-anchor="middle">2026-07-14</text>
+    <text class="axis-label" x="440" y="410" text-anchor="middle">2026-07-20</text>
+    <text class="axis-label" x="626" y="410" text-anchor="middle">2026-07-26</text>
+    <text class="axis-label" x="812" y="410" text-anchor="middle">2026-08-01</text>
   </g>
-  <path class="area" d="M 68 368 H 114.24 V 362.12 H 122.08 V 356.24 H 137.33 V 350.36 H 175.07 V 344.48 H 175.1 V 338.6 H 175.14 V 332.72 H 175.37 V 326.84 H 175.38 V 320.96 H 175.47 V 315.08 H 175.53 V 309.2 H 175.83 V 303.32 H 175.92 V 297.44 H 175.93 V 291.56 H 192.12 V 285.68 H 193.11 V 279.8 H 193.63 V 273.92 H 197.21 V 268.04 H 207.7 V 262.16 H 226.03 V 256.28 H 259.28 V 250.4 H 270.13 V 244.52 H 333.38 V 238.64 H 474.5 V 232.76 H 590.94 V 226.88 H 703.74 V 221 H 706.43 V 215.12 H 715.22 V 209.24 H 715.7 V 203.36 H 811.08 V 197.48 H 811.1 V 191.6 H 811.17 V 185.72 H 811.52 V 179.84 H 812 V 173.96 L 812 368 L 68 368 Z" />
-  <path class="line" d="M 68 368 H 114.24 V 362.12 H 122.08 V 356.24 H 137.33 V 350.36 H 175.07 V 344.48 H 175.1 V 338.6 H 175.14 V 332.72 H 175.37 V 326.84 H 175.38 V 320.96 H 175.47 V 315.08 H 175.53 V 309.2 H 175.83 V 303.32 H 175.92 V 297.44 H 175.93 V 291.56 H 192.12 V 285.68 H 193.11 V 279.8 H 193.63 V 273.92 H 197.21 V 268.04 H 207.7 V 262.16 H 226.03 V 256.28 H 259.28 V 250.4 H 270.13 V 244.52 H 333.38 V 238.64 H 474.5 V 232.76 H 590.94 V 226.88 H 703.74 V 221 H 706.43 V 215.12 H 715.22 V 209.24 H 715.7 V 203.36 H 811.08 V 197.48 H 811.1 V 191.6 H 811.17 V 185.72 H 811.52 V 179.84 H 812 V 173.96" />
+  <path class="area" d="M 68 226.88 H 104.9 V 226.88 H 136.16 V 232.76 H 200.92 V 226.88 H 296.93 V 221 H 329.15 V 226.88 H 426.24 V 221 H 458 V 197.48 H 490.19 V 197.48 H 657.18 V 173.96 H 683.05 V 168.08 H 812 V 173.96 L 812 368 L 68 368 Z" />
+  <path class="line" d="M 68 226.88 H 104.9 V 226.88 H 136.16 V 232.76 H 200.92 V 226.88 H 296.93 V 221 H 329.15 V 226.88 H 426.24 V 221 H 458 V 197.48 H 490.19 V 197.48 H 657.18 V 173.96 H 683.05 V 168.08 H 812 V 173.96" />
   <circle class="dot" cx="812" cy="173.96" r="6" />
   <rect class="badge" x="682" y="28" width="130" height="34" rx="17" />
   <text class="badge-text" x="747" y="50" text-anchor="middle">33 stars</text>
-  <text class="status" x="812" y="428" text-anchor="end">Exact stargazer timeline</text>
+  <text class="status" x="812" y="428" text-anchor="end">Observed snapshots: 2026-07-09 – 2026-08-01</text>
 </svg>
