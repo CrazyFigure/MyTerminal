@@ -743,11 +743,9 @@ fn queue_terminal_size(
     let _ = app_handle.emit("terminal-output-ready", session_id);
 }
 
-/// 在目标终端里插入一行灰色提示，标明接下来这条命令来自 AI 而非用户手输。
-/// 命令本身仍由远端 shell 正常回显，这里只补一个来源标记，避免用户困惑“我没敲过这条命令”。
-/// 把一条 AI 活动播报到该连接对应的终端标签里。
+/// 把一条 AI 文件活动播报到该连接对应的终端标签里。
 /// 文件类操作走 SFTP 不经过 PTY，用户在终端里看不到任何痕迹；
-/// 这里补一行灰色提示，保证"AI 做了什么"始终可见。
+/// 这里补一行带浅粉色来源标记的提示，保证"AI 做了什么"始终可见。
 pub(crate) fn announce_agent_activity(
     state: &AppState,
     app_handle: &tauri::AppHandle,
@@ -774,14 +772,44 @@ pub(crate) fn announce_agent_activity(
     let Some(terminal_session_id) = target else {
         return;
     };
-    announce_agent_command(state, app_handle, &terminal_session_id, text);
+
+    // 文件操作没有远端 Shell 回显，需要保留活动正文；超长内容截断，避免提示行刷满终端。
+    let preview: String = text.chars().take(160).collect();
+    let ellipsis = if text.chars().count() > 160 { "…" } else { "" };
+    queue_agent_terminal_notice(
+        state,
+        app_handle,
+        &terminal_session_id,
+        format!(
+            "\r\n{AGENT_COMMAND_ACCENT_SEQUENCE}[AI]{TERMINAL_STYLE_RESET_SEQUENCE} {preview}{ellipsis}\r\n"
+        ),
+    );
 }
 
+/// 以整行浅粉色展示 AI 实际执行的完整包装代码；远端 PTY 的机械回显由 ShellOutputFilter 隐藏，
+/// 避免同一段代码重复出现，同时保证终端展示与真实执行内容完全一致。
 pub(crate) fn announce_agent_command(
     state: &AppState,
     app_handle: &tauri::AppHandle,
     terminal_session_id: &str,
     command: &str,
+) {
+    queue_agent_terminal_notice(
+        state,
+        app_handle,
+        terminal_session_id,
+        format!(
+            "\r\n{AGENT_COMMAND_ACCENT_SEQUENCE}[AI] {command}{TERMINAL_STYLE_RESET_SEQUENCE}\r\n"
+        ),
+    );
+}
+
+/// 向指定终端写入 AI 可见提示，并与随后到达的 PTY 输出共用同一条有序队列。
+fn queue_agent_terminal_notice(
+    state: &AppState,
+    app_handle: &tauri::AppHandle,
+    terminal_session_id: &str,
+    content: String,
 ) {
     let Ok(sessions) = lock_sessions(state) else {
         return;
@@ -792,15 +820,7 @@ pub(crate) fn announce_agent_command(
     let output_queue = Arc::clone(&runtime.output_queue);
     drop(sessions);
 
-    // 单行显示，过长命令截断，避免一条超长命令把提示行刷满屏幕。
-    let preview: String = command.chars().take(160).collect();
-    let ellipsis = if command.chars().count() > 160 { "…" } else { "" };
-    queue_output(
-        &output_queue,
-        app_handle,
-        terminal_session_id,
-        format!("\r\n\x1b[2m[AI] {preview}{ellipsis}\x1b[0m\r\n"),
-    );
+    queue_output(&output_queue, app_handle, terminal_session_id, content);
 }
 
 /// 跟踪用户按键对当前输入行的影响：普通回车结束该行，奇数个行尾反斜杠后的回车仍属于同一条 Shell 续行。
@@ -956,6 +976,11 @@ const CWD_SYNC_HISTORY_PREP_TOKEN: &str = "HIST_IGNORE_SPACE";
 /// 部分命令行工具会在绘制进度时隐藏光标，异常返回 shell 时可能漏发恢复序列；提示符边界需要兜底恢复。
 const TERMINAL_CURSOR_HIDE_SEQUENCE: &str = "\x1b[?25l";
 const TERMINAL_CURSOR_SHOW_SEQUENCE: &str = "\x1b[?25h";
+/// AI 可见提示固定使用浅粉色真彩色；专属下划线色是前端识别标记，用于绕过 xterm 对浅色主题的自动压暗。
+const AGENT_COMMAND_ACCENT_SEQUENCE: &str =
+    "\x1b[1;4;38;2;244;114;182;58;2;1;2;3m";
+/// AI 提示结束后立即恢复终端默认样式，禁止命令输出继承浅粉色。
+const TERMINAL_STYLE_RESET_SEQUENCE: &str = "\x1b[0m";
 /// 光标控制序列长度固定为 6 字节，保留前一分片末尾 5 字节即可识别跨 SSH 分片的半截序列。
 const TERMINAL_CURSOR_CONTROL_TAIL_BYTES: usize = TERMINAL_CURSOR_HIDE_SEQUENCE.len() - 1;
 
@@ -1142,6 +1167,8 @@ struct ShellOutputFilter {
     /// 已武装但尚未开始：agent 注入命令前置位，等下一个 Begin 标记才真正开始捕获。
     /// 不武装就不捕获，避免用户手敲的每条命令都在后端白白拷一份输出。
     capture_armed: bool,
+    /// 武装后隐藏远端 PTY 对安全包装命令的首行回显；界面已经单独展示不带括号的 AI 业务命令。
+    suppress_agent_command_echo: bool,
     /// 是否处于 Begin/End 之间且已武装；为 true 时可见输出会复制一份给 agent。
     capturing: bool,
     /// 当前捕获缓冲与截断标记；End 时随事件一起取走。
@@ -1164,6 +1191,7 @@ impl Default for ShellOutputFilter {
             visible_line_escape_state: TerminalVisibleLineEscapeState::default(),
             visible_line_csi_parameters: String::new(),
             capture_armed: false,
+            suppress_agent_command_echo: false,
             capturing: false,
             capture_buffer: String::new(),
             capture_truncated: false,
@@ -1212,6 +1240,8 @@ impl ShellOutputFilter {
                         ShellSyncMarkerKind::CommandBegin => {
                             // 无论谁发起，命令开始就意味着 shell 已离开提示符。
                             output.command_started = true;
+                            // Begin 是命令回显的可靠右边界；即使远端没有回显换行，也必须在这里结束抑制。
+                            self.suppress_agent_command_echo = false;
                             // 只有 agent 注入前武装过才开始捕获；用户手敲的命令不产生后端拷贝。
                             if self.capture_armed {
                                 self.capture_armed = false;
@@ -1265,7 +1295,8 @@ impl ShellOutputFilter {
     /// 写入真正要交给 xterm 的内容，并同步跟踪远端是否把光标切到隐藏状态。
     /// 处于命令执行区间时同一份内容会复制给 agent 捕获缓冲；上限由调用方按设置裁剪。
     fn push_filtered_visible(&mut self, output: &mut ShellConsumeOutput, value: &str) {
-        let filtered = self.strip_cwd_sync_setup_echo(value);
+        let setup_filtered = self.strip_cwd_sync_setup_echo(value);
+        let filtered = self.strip_agent_command_echo(&setup_filtered);
         if filtered.is_empty() {
             return;
         }
@@ -1282,11 +1313,25 @@ impl ShellOutputFilter {
     /// 取消时立即停止捕获并丢弃缓冲，用于超时中止后不再污染下一条命令。
     fn set_capture_armed(&mut self, armed: bool) {
         self.capture_armed = armed;
+        self.suppress_agent_command_echo = armed;
         if !armed {
             self.capturing = false;
             self.capture_buffer.clear();
             self.capture_truncated = false;
         }
+    }
+
+    /// 只隐藏武装后的第一条远端回显行；遇到换行或 Begin 标记立即恢复，命令正文输出始终正常上屏。
+    fn strip_agent_command_echo(&mut self, value: &str) -> String {
+        if !self.suppress_agent_command_echo {
+            return value.to_string();
+        }
+
+        let Some(line_end) = value.find('\n') else {
+            return String::new();
+        };
+        self.suppress_agent_command_echo = false;
+        value[line_end + 1..].to_string()
     }
 
     /// 按硬上限追加 agent 捕获内容；超限后置截断标记并停止累加，可见内容不受影响。
@@ -1655,6 +1700,29 @@ mod shell_output_filter_tests {
                 assert_eq!(*exit_code, Some(0));
                 assert_eq!(captured, "total 4\r\nfile.txt\r\n");
                 assert!(!truncated);
+            }
+            other => panic!("expected End event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hides_agent_wrapper_echo_but_keeps_command_output() {
+        let mut filter = ShellOutputFilter::default();
+        filter.set_capture_armed(true);
+
+        // 包装命令即使被 SSH 拆成多个分片也不应上屏；换行后的 Begin/End 区间仍正常显示并捕获。
+        let first = filter.consume("( cd '/root' && docker ps )\r");
+        assert!(first.visible.is_empty());
+        let second = filter.consume(&format!(
+            "\n{}NAMES\r\ncontainer-a\r\n{}",
+            cmd_begin_marker(),
+            cmd_end_marker("0")
+        ));
+
+        assert_eq!(second.visible, "NAMES\r\ncontainer-a\r\n");
+        match second.command_events.last() {
+            Some(ShellCommandEvent::End { captured, .. }) => {
+                assert_eq!(captured, "NAMES\r\ncontainer-a\r\n");
             }
             other => panic!("expected End event, got {other:?}"),
         }

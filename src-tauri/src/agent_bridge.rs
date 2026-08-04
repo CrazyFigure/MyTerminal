@@ -1489,7 +1489,12 @@ fn run_agent_command_in_terminal(
         // RAII 租约保证任何提前返回、超时或 panic 都会把终端复位为空闲并解除捕获武装。
         let lease = TerminalExecLease::acquire(&state, &terminal_session_id)?;
         // 抢占成功后再打来源标记，避免抢不到终端时留下无意义的提示行。
-        commands::announce_agent_command(&state, &app_handle, &terminal_session_id, &payload.command);
+        commands::announce_agent_command(
+            &state,
+            &app_handle,
+            &terminal_session_id,
+            &wrapped,
+        );
         lease.run(&wrapped, timeout)?
     };
 
@@ -1877,7 +1882,7 @@ impl Drop for TerminalExecLease {
 /// 把命令包进子 shell 并附带 cwd，保证执行完不改变用户终端的当前目录。
 fn wrap_command_for_terminal(command: &str, cwd: &str) -> String {
     let trimmed_cwd = cwd.trim();
-    if trimmed_cwd.is_empty() || trimmed_cwd == "~" {
+    if uses_default_shell_directory(trimmed_cwd) {
         format!("( {command} )")
     } else {
         format!("( cd {} && {command} )", shell_quote(trimmed_cwd))
@@ -1886,11 +1891,16 @@ fn wrap_command_for_terminal(command: &str, cwd: &str) -> String {
 
 fn command_with_cwd(command: &str, cwd: &str) -> String {
     let trimmed_cwd = cwd.trim();
-    if trimmed_cwd.is_empty() || trimmed_cwd == "~" {
+    if uses_default_shell_directory(trimmed_cwd) {
         command.to_string()
     } else {
         format!("cd {} && {}", shell_quote(trimmed_cwd), command)
     }
+}
+
+/// 只有空值和用户主目录占位符沿用会话默认目录；点目录也显式执行 cd，统一 cwd 包装语义。
+fn uses_default_shell_directory(cwd: &str) -> bool {
+    cwd.is_empty() || cwd == "~"
 }
 
 fn shell_quote(value: &str) -> String {
@@ -3057,6 +3067,24 @@ fn write_http_json(stream: &mut TcpStream, status: u16, body: &Value) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_command_keeps_dot_cwd_wrapper() {
+        // 点目录也显式进入 cwd 包装；同一段包装代码同时用于实际执行和终端展示。
+        assert_eq!(
+            wrap_command_for_terminal("docker ps", "."),
+            "( cd '.' && docker ps )"
+        );
+    }
+
+    #[test]
+    fn visible_command_keeps_explicit_cwd() {
+        // 指定目录仍需在子 Shell 内切换，并正确引用包含空格的路径。
+        assert_eq!(
+            wrap_command_for_terminal("docker ps", "/opt/my app"),
+            "( cd '/opt/my app' && docker ps )"
+        );
+    }
 
     #[test]
     fn sanitize_connection_drops_secrets() {
