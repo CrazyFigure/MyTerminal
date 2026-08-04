@@ -1181,6 +1181,12 @@ select:disabled {
   font-kerning: none;
 }
 
+/* 专属下划线色只充当 AI 命令语义标记；覆盖 xterm 的自动对比度压色，并隐藏实际下划线。 */
+.terminal-surface .xterm-rows span.xterm-bold.xterm-underline-1[style*="text-decoration-color: rgb(1, 2, 3)"] {
+  color: #f472b6 !important;
+  text-decoration: none !important;
+}
+
 .terminal-empty-state {
   position: absolute;
   z-index: 2;
