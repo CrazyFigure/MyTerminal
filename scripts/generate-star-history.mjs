@@ -1,13 +1,13 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // 仓库根目录是脚本定位输出文件的唯一基准，保证本地和 GitHub Actions 路径一致。
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-// README 直接引用仓库内静态 SVG，避免依赖第三方实时图片代理。
-const outputPath = join(repoRoot, 'assets', 'star-history.svg');
-// 本地执行时使用默认仓库，GitHub Actions 中优先使用当前仓库环境变量。
-const repository = process.env.GITHUB_REPOSITORY || 'CrazyFigure/MyTerminal';
+// README 直接引用仓库内静态 SVG；环境变量仅用于隔离测试输出，不改变默认产物位置。
+const outputPath = resolve(process.env.STAR_HISTORY_OUTPUT_PATH || join(repoRoot, 'assets', 'star-history.svg'));
+// 历史快照与 SVG 一起纳入版本控制，GitHub 无法提供的取消 Star 历史由定时观测补齐。
+const historyPath = resolve(process.env.STAR_HISTORY_DATA_PATH || join(repoRoot, 'assets', 'star-history.json'));
 // 自定义 PAT 用于扩大接口配额或兼容特殊权限；令牌过期时不能阻断 Actions 自带令牌兜底。
 const starHistoryToken = process.env.STAR_HISTORY_TOKEN || process.env.GH_TOKEN || '';
 // Actions 自带令牌单独保留，避免 PAT_STAR_HISTORY 过期或撤销后覆盖可用凭据。
@@ -16,8 +16,6 @@ const githubToken = process.env.GITHUB_TOKEN || '';
 const githubTokens = [...new Set([starHistoryToken, githubToken].filter(Boolean)), ''];
 // GitHub REST API 统一入口，方便后续切换企业版或代理时只改一处。
 const githubApiBaseUrl = process.env.GITHUB_API_URL || 'https://api.github.com';
-// CI 中禁止用线性兜底图覆盖真实走势图，避免自动提交不准确资产。
-const allowFallback = process.env.GITHUB_ACTIONS !== 'true' || process.env.STAR_HISTORY_ALLOW_FALLBACK === '1';
 // 图表尺寸固定，README 中渲染时不会因为内容变化产生布局跳动。
 const chartWidth = 860;
 const chartHeight = 440;
@@ -28,10 +26,6 @@ const chartMargin = {
   bottom: 72,
   left: 68,
 };
-// 每页 100 条是 GitHub REST API 支持的最大分页大小，减少远程调用次数。
-const stargazersPageSize = 100;
-// 100 页最多覆盖 10000 个 star，防止接口异常时陷入无限分页。
-const maxStargazerPages = 100;
 
 // GitHub API 异常需要携带状态码和响应正文，方便 Actions 日志直接定位鉴权或限流原因。
 class GithubApiError extends Error {
@@ -73,7 +67,7 @@ function formatCoord(value) {
   return Number(value.toFixed(2));
 }
 
-// GitHub 请求头集中生成，stargazers 接口需要特殊 Accept 才会返回 starred_at。
+// GitHub 请求头集中生成；仓库元数据接口只负责读取当前总 Star 数。
 function buildGithubHeaders(accept, token) {
   const headers = {
     Accept: accept,
@@ -81,7 +75,7 @@ function buildGithubHeaders(accept, token) {
     'X-GitHub-Api-Version': '2022-11-28',
   };
 
-  // 当前候选令牌用于读取 stargazers 时间戳；空令牌仅支持公开元数据或本地兜底图。
+  // 空令牌仍可访问公开仓库，Actions 中优先使用令牌以获得稳定的请求配额。
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
@@ -132,90 +126,113 @@ async function withGithubAuthentication(operation) {
   throw lastAuthenticationError || new Error('No GitHub authentication candidate was available.');
 }
 
-// 仓库元数据用于获取创建时间和当前 star 数，是精确和兜底图都需要的基础信息。
-async function fetchRepositoryMetadata(token) {
+// 仓库元数据只读取观测时刻的总 Star 数，不再把当前 stargazer 列表误当作历史事件。
+async function fetchRepositoryMetadata(repository, token) {
   const metadataUrl = `${githubApiBaseUrl}/repos/${repository}`;
   return fetchJson(metadataUrl, buildGithubHeaders('application/vnd.github+json', token));
 }
 
-// 分页读取完整 stargazer 时间线；任一页缺少 starred_at 都视为不可生成精确走势图。
-async function fetchStargazers(token) {
-  const stars = [];
-
-  for (let page = 1; page <= maxStargazerPages; page += 1) {
-    const stargazersUrl = `${githubApiBaseUrl}/repos/${repository}/stargazers?per_page=${stargazersPageSize}&page=${page}`;
-    const pageItems = await fetchJson(stargazersUrl, buildGithubHeaders('application/vnd.github.star+json', token));
-
-    // GitHub 返回结构变化时立即失败，避免生成没有时间戳的错误走势图。
-    if (!Array.isArray(pageItems)) {
-      throw new Error('Unexpected stargazers response: expected an array.');
-    }
-
-    for (const item of pageItems) {
-      // starred_at 是走势图的核心数据；缺失通常说明 Accept 头或鉴权失效。
-      if (!item?.starred_at) {
-        throw new Error('GitHub stargazers response did not include starred_at.');
-      }
-
-      stars.push({
-        starredAt: item.starred_at,
-      });
-    }
-
-    // 最后一页条数不足时停止分页，避免额外请求空页。
-    if (pageItems.length < stargazersPageSize) {
-      break;
-    }
+// Star 数必须是非负整数，拒绝异常接口值，避免错误快照永久进入版本历史。
+function normalizeStarCount(value, source) {
+  // API 返回数字，测试注入使用数字字符串；空值、布尔值等隐式转成 0 会污染历史，必须拒绝。
+  if ((typeof value !== 'number' && typeof value !== 'string') || (typeof value === 'string' && value.trim() === '')) {
+    throw new Error(`Invalid star count from ${source}: ${value}`);
   }
 
-  return stars.sort((left, right) => Date.parse(left.starredAt) - Date.parse(right.starredAt));
+  const count = Number(value);
+
+  if (!Number.isInteger(count) || count < 0) {
+    throw new Error(`Invalid star count from ${source}: ${value}`);
+  }
+
+  return count;
 }
 
-// 精确序列从仓库创建时间的 0 star 开始，每个 starred_at 将累计数量加一。
-function buildExactSeries(stargazers, repositoryMetadata) {
-  const repoCreatedAt = repositoryMetadata.created_at || stargazers[0]?.starredAt || new Date().toISOString();
-  const points = [
-    {
-      date: repoCreatedAt,
-      count: 0,
-    },
-  ];
+// 快照文件是走势图的唯一历史依据；格式、仓库名或任一记录异常时立即停止生成。
+function readHistory() {
+  const history = JSON.parse(readFileSync(historyPath, 'utf8'));
 
-  for (const [index, star] of stargazers.entries()) {
-    points.push({
-      date: star.starredAt,
-      count: index + 1,
-    });
+  if (
+    history?.version !== 1 ||
+    typeof history.repository !== 'string' ||
+    !/^[^/]+\/[^/]+$/.test(history.repository) ||
+    !Array.isArray(history.snapshots)
+  ) {
+    throw new Error(`Invalid star history file: ${historyPath}`);
   }
 
+  const snapshots = history.snapshots.map((snapshot, index) => {
+    const observedAt = snapshot?.observedAt;
+    const stars = normalizeStarCount(snapshot?.stars, `history snapshot ${index + 1}`);
+
+    if (typeof observedAt !== 'string' || !Number.isFinite(Date.parse(observedAt))) {
+      throw new Error(`Invalid observation time in history snapshot ${index + 1}: ${observedAt}`);
+    }
+
+    return { observedAt, stars };
+  });
+
+  // 至少保留一个已观测点，禁止退化为根据仓库创建时间猜测的虚假曲线。
+  if (snapshots.length === 0) {
+    throw new Error(`Star history has no observed snapshots: ${historyPath}`);
+  }
+
+  // 同一时刻只能有一个仓库总数，重复时间戳通常意味着手工合并历史时发生了冲突。
+  if (new Set(snapshots.map((snapshot) => snapshot.observedAt)).size !== snapshots.length) {
+    throw new Error(`Star history contains duplicate observation times: ${historyPath}`);
+  }
+
+  snapshots.sort((left, right) => Date.parse(left.observedAt) - Date.parse(right.observedAt));
+  return { version: 1, repository: history.repository, snapshots };
+}
+
+// 测试可显式注入 Star 数；正式 Actions 始终从仓库元数据读取当前总数。
+async function readCurrentStarCount(repository) {
+  if (process.env.STAR_HISTORY_CURRENT_COUNT !== undefined) {
+    return normalizeStarCount(process.env.STAR_HISTORY_CURRENT_COUNT, 'STAR_HISTORY_CURRENT_COUNT');
+  }
+
+  const metadata = await withGithubAuthentication((token) => fetchRepositoryMetadata(repository, token));
+  return normalizeStarCount(metadata?.stargazers_count, 'GitHub repository metadata');
+}
+
+// 每次运行追加一个真实观测；相同时间戳用于幂等重跑时覆盖，避免产生重复点。
+function recordSnapshot(history, observedAt, stars) {
+  const observedTime = Date.parse(observedAt);
+
+  if (!Number.isFinite(observedTime)) {
+    throw new Error(`Invalid STAR_HISTORY_RECORDED_AT: ${observedAt}`);
+  }
+
+  const latestSnapshot = history.snapshots.at(-1);
+
+  // Action 只能追加当前或未来观测，拒绝异常系统时间倒序改写既有曲线。
+  if (latestSnapshot && observedTime < Date.parse(latestSnapshot.observedAt)) {
+    throw new Error(`Observation time ${observedAt} is earlier than the latest snapshot ${latestSnapshot.observedAt}.`);
+  }
+
+  const snapshots = history.snapshots.filter((snapshot) => snapshot.observedAt !== observedAt);
+  snapshots.push({ observedAt, stars });
+  snapshots.sort((left, right) => Date.parse(left.observedAt) - Date.parse(right.observedAt));
+
+  return { ...history, snapshots };
+}
+
+// 图表序列直接映射观测快照，因此既能上涨也能下降，并明确不猜测两次观测之间的事件时间。
+function buildObservedSeries(history) {
+  const points = history.snapshots.map((snapshot) => ({
+    date: snapshot.observedAt,
+    count: snapshot.stars,
+  }));
+  const totalStars = points.at(-1).count;
+  const maxStars = Math.max(...points.map((point) => point.count));
+
   return {
+    repository: history.repository,
     points,
-    totalStars: stargazers.length,
-    exact: true,
-    note: 'Generated from GitHub stargazer timestamps',
-  };
-}
-
-// 本地无 token 时用当前 star 数生成预览图；CI 默认禁用该分支，避免自动提交近似数据。
-function buildFallbackSeries(repositoryMetadata) {
-  const repoCreatedAt = repositoryMetadata.created_at || new Date().toISOString();
-  const latestKnownAt = repositoryMetadata.updated_at || repositoryMetadata.pushed_at || new Date().toISOString();
-  const currentStars = Number(repositoryMetadata.stargazers_count || 0);
-
-  return {
-    points: [
-      {
-        date: repoCreatedAt,
-        count: 0,
-      },
-      {
-        date: latestKnownAt,
-        count: currentStars,
-      },
-    ],
-    totalStars: currentStars,
-    exact: false,
-    note: 'Fallback preview from current GitHub star count',
+    totalStars,
+    maxStars,
+    note: 'Generated from observed repository star-count snapshots; changes between observations are unavailable',
   };
 }
 
@@ -266,8 +283,8 @@ function buildXTicks(minTime, maxTime, tickCount) {
   });
 }
 
-// 精确数据绘制阶梯线，兜底预览绘制普通折线，避免把近似数据伪装成真实增长节点。
-function buildPath(points, xScale, yScale, exact) {
+// 快照使用阶梯线连接：变化发生在相邻观测之间，图中仅把新值落在实际观测时刻。
+function buildPath(points, xScale, yScale) {
   if (points.length === 0) {
     return '';
   }
@@ -279,12 +296,8 @@ function buildPath(points, xScale, yScale, exact) {
     const x = formatCoord(xScale(point.time));
     const y = formatCoord(yScale(point.count));
 
-    // 真实 stargazer 时间序列使用阶梯线，表达 star 数只在具体时间点增加。
-    if (exact) {
-      path += ` H ${x} V ${y}`;
-    } else {
-      path += ` L ${x} ${y}`;
-    }
+    // 垂直段允许向上或向下，能够如实展示净增与净减的观测结果。
+    path += ` H ${x} V ${y}`;
   }
 
   return path;
@@ -309,17 +322,18 @@ function renderSvg(series) {
   const minTime = Math.min(...normalizedPoints.map((point) => point.time));
   const maxTime = Math.max(...normalizedPoints.map((point) => point.time));
   const timeSpan = Math.max(1, maxTime - minTime);
-  const { yMax, ticks: yTicks } = buildYTicks(series.totalStars);
+  // Y 轴按历史峰值计算，当前值下降后也不会把过去的高点裁出绘图区。
+  const { yMax, ticks: yTicks } = buildYTicks(series.maxStars);
   const xTicks = buildXTicks(minTime, maxTime, 5);
   const xScale = (time) => chartMargin.left + ((time - minTime) / timeSpan) * plotWidth;
   const yScale = (count) => chartMargin.top + plotHeight - (count / yMax) * plotHeight;
-  const linePath = buildPath(normalizedPoints, xScale, yScale, series.exact);
+  const linePath = buildPath(normalizedPoints, xScale, yScale);
   const firstPoint = normalizedPoints[0];
   const lastPoint = normalizedPoints.at(-1);
   const baselineY = yScale(0);
   const areaPath = `${linePath} L ${formatCoord(xScale(lastPoint.time))} ${formatCoord(baselineY)} L ${formatCoord(xScale(firstPoint.time))} ${formatCoord(baselineY)} Z`;
   const latestLabel = `${formatNumber(series.totalStars)} stars`;
-  const statusLabel = series.exact ? 'Exact stargazer timeline' : 'Preview until GitHub Actions refreshes exact data';
+  const statusLabel = `Observed snapshots: ${formatDateLabel(firstPoint.time)} – ${formatDateLabel(lastPoint.time)}`;
   const yGrid = yTicks
     .map((tick) => {
       const y = formatCoord(yScale(tick));
@@ -340,7 +354,7 @@ function renderSvg(series) {
     .join('\n    ');
   const latestX = formatCoord(xScale(lastPoint.time));
   const latestY = formatCoord(yScale(lastPoint.count));
-  const repositoryLabel = escapeXml(repository);
+  const repositoryLabel = escapeXml(series.repository);
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${chartWidth}" height="${chartHeight}" viewBox="0 0 ${chartWidth} ${chartHeight}" role="img" aria-labelledby="title desc">
   <title id="title">Star History for ${repositoryLabel}</title>
@@ -397,28 +411,29 @@ function renderSvg(series) {
 `;
 }
 
-// 主流程先取仓库元数据，再优先生成精确走势图；本地无 token 时才降级为可显示预览图。
+// 主流程读取已提交快照、记录本次仓库总数，再同时更新 JSON 数据和 SVG 展示文件。
 async function main() {
-  const repositoryMetadata = await withGithubAuthentication((token) => fetchRepositoryMetadata(token));
-  let series;
+  const history = readHistory();
+  const repository = process.env.STAR_HISTORY_REPOSITORY || history.repository;
 
-  try {
-    const stargazers = await withGithubAuthentication((token) => fetchStargazers(token));
-    series = buildExactSeries(stargazers, repositoryMetadata);
-  } catch (error) {
-    // 本地无 token 时允许生成可显示的预览图；CI 中失败可避免自动提交错误趋势。
-    if (!allowFallback) {
-      throw error;
-    }
-
-    const reason = error instanceof Error ? error.message : String(error);
-    console.warn(`Unable to fetch exact stargazer history, using fallback preview: ${reason}`);
-    series = buildFallbackSeries(repositoryMetadata);
+  // 环境变量切换仓库时必须同步迁移历史文件，防止把两个仓库的快照混在一张图里。
+  if (repository !== history.repository) {
+    throw new Error(`Star history belongs to ${history.repository}, but ${repository} was requested.`);
   }
 
+  const currentStars = await readCurrentStarCount(repository);
+  const observedAt = process.env.STAR_HISTORY_RECORDED_AT || new Date().toISOString();
+  const updatedHistory = recordSnapshot(history, observedAt, currentStars);
+  const series = buildObservedSeries(updatedHistory);
+  const serializedHistory = `${JSON.stringify(updatedHistory, null, 2)}\n`;
+  const svg = renderSvg(series);
+
   mkdirSync(dirname(outputPath), { recursive: true });
-  writeFileSync(outputPath, renderSvg(series), 'utf8');
-  console.log(`Generated ${outputPath}`);
+  mkdirSync(dirname(historyPath), { recursive: true });
+  writeFileSync(historyPath, serializedHistory, 'utf8');
+  writeFileSync(outputPath, svg, 'utf8');
+  console.log(`Recorded ${currentStars} stars at ${observedAt}`);
+  console.log(`Updated ${historyPath} and ${outputPath}`);
 }
 
 main().catch((error) => {

@@ -9,6 +9,11 @@ on:
 permissions:
   contents: write
 
+# 同一分支只允许一个快照任务写入历史文件，避免并发运行互相覆盖观测记录。
+concurrency:
+  group: star-history-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   update-star-history:
     name: Update star history SVG
@@ -25,7 +30,7 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Generate star history SVG
+      - name: Record star count and generate SVG
         run: node scripts/generate-star-history.mjs
         env:
           # 自定义 PAT 仅作为首选凭据，过期后由脚本自动尝试 Actions 自带令牌。
@@ -33,17 +38,17 @@ jobs:
           # github.token 始终保留为独立兜底，不能再被自定义 PAT 覆盖。
           GITHUB_TOKEN: ${{ github.token }}
 
-      - name: Commit updated SVG
+      - name: Commit updated snapshot and SVG
         shell: bash
         run: |
-          # 只有 SVG 内容变化时才提交，避免每天产生无意义提交。
-          if git diff --quiet -- assets/star-history.svg; then
-            echo "Star history SVG is already up to date."
+          # JSON 保存原始观测，SVG 只负责展示；两者必须在同一次提交中保持一致。
+          if git diff --quiet -- assets/star-history.json assets/star-history.svg; then
+            echo "Star history snapshot is already up to date."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add assets/star-history.svg
+          git add assets/star-history.json assets/star-history.svg
           git commit -m "docs: update star history"
           git push
