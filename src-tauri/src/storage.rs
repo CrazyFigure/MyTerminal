@@ -384,6 +384,7 @@ impl StorageService {
                 let proxy_password = crypto.decrypt_local(&item.proxy.password_encrypted)?;
                 Ok(ConnectionProfile {
                     id: item.id,
+                    protocol: item.protocol,
                     name: item.name,
                     group_path: item.group_path,
                     host: item.host,
@@ -440,6 +441,7 @@ impl StorageService {
                     .collect();
                 Ok(StoredConnectionProfile {
                     id: item.id.clone(),
+                    protocol: item.protocol.clone(),
                     name: item.name.clone(),
                     group_path: item.group_path.clone(),
                     host: item.host.clone(),

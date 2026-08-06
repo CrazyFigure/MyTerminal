@@ -1,5 +1,7 @@
 export type ThemeMode = 'light' | 'dark';
 export type UiLanguage = 'zh-CN' | 'en-US';
+/** 管理连接支持的远程协议；旧配置缺少该字段时统一按 SSH 处理。 */
+export type ConnectionProtocol = 'ssh' | 'rdp';
 export type SshAuthMethod = 'password' | 'privateKey';
 export type SshProxyType = 'http' | 'socks5';
 export type WorkspacePanel = 'files' | 'editor' | 'tunnels' | 'sync' | 'settings' | 'history';
@@ -42,6 +44,8 @@ export interface SshProxyConfig {
 
 export interface ConnectionProfile {
   id: string;
+  /** SSH 打开内置终端，RDP 调用 Windows 系统远程桌面客户端。 */
+  protocol: ConnectionProtocol;
   name: string;
   groupPath?: string;
   host: string;
@@ -473,6 +477,8 @@ export interface AgentBridgeRequest {
 
 export interface ConnectionDraft {
   id: string;
+  /** 类型切换会同步调整常用端口，但用户手工填写的非默认端口必须保留。 */
+  protocol: ConnectionProtocol;
   name: string;
   groupPath: string;
   host: string;
