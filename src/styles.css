@@ -2720,6 +2720,16 @@ select:disabled {
   min-height: 0;
 }
 
+/* 终端内核按需加载期间只占住既有布局，不遮挡已经可操作的标题栏、侧栏和底部面板。 */
+.terminal-startup-placeholder {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  min-height: 0;
+}
+
 /* 分隔条扩大透明命中区并保留细线视觉，悬停、按下和键盘聚焦时都即时反馈可拖动状态。 */
 .connection-manager-resizer {
   position: relative;
