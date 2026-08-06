@@ -2065,6 +2065,76 @@ select:disabled {
   white-space: nowrap;
 }
 
+/* 协议选择用紧凑双按钮直接表达“内置 SSH / Windows 原生 RDP”，切换时无需再猜认证字段含义。 */
+.connection-protocol-selector {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.connection-protocol-option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 9px;
+  background: var(--app-input-bg);
+  color: var(--app-text);
+  font-weight: 600;
+  transition: transform 120ms ease, border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.connection-protocol-option:hover {
+  border-color: var(--app-active-border);
+  background: var(--app-active-bg);
+}
+
+.connection-protocol-option:active {
+  transform: translateY(1px);
+}
+
+.connection-protocol-option:focus-visible {
+  outline: 2px solid var(--app-active-border);
+  outline-offset: 2px;
+}
+
+.connection-protocol-option.is-active {
+  border-color: var(--app-active-border);
+  background: var(--app-active-bg);
+  color: var(--app-active-text);
+  box-shadow: inset 0 0 0 1px rgba(79, 70, 229, 0.12);
+}
+
+/* Windows 蓝只用于 RDP 类型标识，是连接管理中唯一的协议强调色。 */
+.connection-protocol-option.is-windows.is-active {
+  border-color: #0078d4;
+  background: rgba(0, 120, 212, 0.1);
+  color: #0067b8;
+  box-shadow: inset 0 0 0 1px rgba(0, 120, 212, 0.12);
+}
+
+.app-shell.theme-dark .connection-protocol-option.is-windows.is-active {
+  border-color: #60a5fa;
+  background: rgba(30, 144, 255, 0.16);
+  color: #bfdbfe;
+}
+
+.connection-rdp-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  align-self: end;
+  padding: 8px 10px;
+  border: 1px solid rgba(0, 120, 212, 0.2);
+  border-radius: 8px;
+  background: rgba(0, 120, 212, 0.06);
+  color: var(--app-muted);
+  font-size: 0.8rem;
+}
+
 .connection-form-tabs {
   margin: 14px 0 12px;
 }
@@ -2268,6 +2338,44 @@ select:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.connection-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.connection-name-cell > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-ssh-icon {
+  flex: 0 0 auto;
+  color: var(--app-muted);
+}
+
+.connection-windows-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  border: 1px solid rgba(0, 120, 212, 0.3);
+  border-radius: 6px;
+  background: rgba(0, 120, 212, 0.09);
+  color: #0067b8;
+}
+
+.app-shell.theme-dark .connection-windows-badge {
+  border-color: rgba(96, 165, 250, 0.45);
+  background: rgba(30, 144, 255, 0.14);
+  color: #bfdbfe;
 }
 
 /* 连接列表列宽调整沿用文件管理的窄分隔线风格，默认保持低干扰，悬停时给出明确拖拽反馈。 */
@@ -2866,11 +2974,34 @@ select:disabled {
 }
 
 .modal {
+  --modal-drag-x: 0px;
+  --modal-drag-y: 0px;
   width: min(780px, 100%);
   height: var(--modal-fixed-height);
   max-height: none;
   padding: 20px;
   overflow: auto;
+  /* 拖动只改变外框位置，不参与宽高计算；DOM 卸载后变量随节点销毁，重开仍由网格居中。 */
+  transform: translate3d(var(--modal-drag-x), var(--modal-drag-y), 0);
+  will-change: transform;
+}
+
+/* 标题栏承担弹窗拖动手柄，并用抓取光标提供即时反馈；按钮仍沿用自身的 pointer 光标。 */
+.modal-header {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.modal-header :is(button, a, input, select, textarea, label, [role='button'], [contenteditable='true']) {
+  cursor: pointer;
+}
+
+.modal.is-dragging .modal-header,
+.is-modal-dragging,
+.is-modal-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
 }
 
 /* 所有弹窗外壳统一使用实色浮层背景，避免通用 card 的半透明背景泄露到底层终端。 */

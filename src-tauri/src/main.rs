@@ -186,6 +186,7 @@ fn main() {
             commands::update_connection,
             commands::delete_connection,
             commands::open_ssh_session,
+            commands::open_rdp_connection,
             commands::open_local_terminal_session,
             commands::close_ssh_session,
             commands::write_terminal_input,

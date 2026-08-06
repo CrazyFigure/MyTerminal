@@ -208,24 +208,27 @@ const normalizeSettings = (settings: AppSettings): AppSettings => ({
   },
 });
 
-const normalizeConnection = (connection: ConnectionProfile): ConnectionProfile => ({
-  ...connection,
-  groupPath: trimToUndefined(connection.groupPath)?.replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''),
-  port: clampPort(connection.port),
-  tags: Array.isArray(connection.tags) ? connection.tags : [],
-  authMethod: connection.authMethod === 'privateKey' ? 'privateKey' : 'password',
-  password: connection.authMethod === 'privateKey' ? undefined : connection.password ?? '',
-  privateKeyPath:
-    connection.authMethod === 'privateKey' ? trimToUndefined(connection.privateKeyPath) : undefined,
-  privateKeyText:
-    connection.authMethod === 'privateKey' ? keepTextIfPresent(connection.privateKeyText) : undefined,
-  passphrase:
-    connection.authMethod === 'privateKey' ? keepTextIfPresent(connection.passphrase) : undefined,
-  jumpHosts: Array.isArray(connection.jumpHosts)
-    ? connection.jumpHosts.map((jumpHost) => normalizeJumpHost(jumpHost))
-    : [],
-  proxy: normalizeProxyConfig(connection.proxy),
-});
+const normalizeConnection = (connection: ConnectionProfile): ConnectionProfile => {
+  // 旧连接没有 protocol；RDP 只保留密码认证和目标端点，不能把 SSH 私钥、跳板或代理误传给后端。
+  const protocol = connection.protocol === 'rdp' ? 'rdp' : 'ssh';
+  const authMethod = protocol === 'rdp' ? 'password' : connection.authMethod === 'privateKey' ? 'privateKey' : 'password';
+  return {
+    ...connection,
+    protocol,
+    groupPath: trimToUndefined(connection.groupPath)?.replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''),
+    port: clampPort(connection.port, protocol === 'rdp' ? 3389 : 22),
+    tags: Array.isArray(connection.tags) ? connection.tags : [],
+    authMethod,
+    password: authMethod === 'privateKey' ? undefined : connection.password ?? '',
+    privateKeyPath: authMethod === 'privateKey' ? trimToUndefined(connection.privateKeyPath) : undefined,
+    privateKeyText: authMethod === 'privateKey' ? keepTextIfPresent(connection.privateKeyText) : undefined,
+    passphrase: authMethod === 'privateKey' ? keepTextIfPresent(connection.passphrase) : undefined,
+    jumpHosts: protocol === 'ssh' && Array.isArray(connection.jumpHosts)
+      ? connection.jumpHosts.map((jumpHost) => normalizeJumpHost(jumpHost))
+      : [],
+    proxy: protocol === 'ssh' ? normalizeProxyConfig(connection.proxy) : normalizeProxyConfig(undefined),
+  };
+};
 
 // 隧道请求在进入 Tauri IPC 前统一清洗端点，避免前后端对空监听地址和端口默认值理解不一致。
 const normalizeTunnelRequest = (request: TunnelOpenRequest): TunnelOpenRequest => ({
@@ -305,7 +308,7 @@ const mockSettings: AppSettings = {
   showCommandGhost: true,
   hardwareAcceleration: true,
   connectionGroups: ['ology', 'ology/ology-old'],
-  connectionOrder: ['local-demo-1'],
+  connectionOrder: ['windows-demo-1', 'local-demo-1'],
   quickCommands: ['pwd', 'ls -la', 'docker ps'],
   webdav: {
     baseUrl: '',
@@ -337,7 +340,23 @@ const mockLocalTerminals: LocalTerminalSettings = {
 
 const mockConnections: ConnectionProfile[] = [
   {
+    id: 'windows-demo-1',
+    protocol: 'rdp',
+    name: 'Windows Build Server',
+    groupPath: 'ology/ology-old',
+    host: '192.168.12.36',
+    port: 3389,
+    username: 'Administrator',
+    authMethod: 'password',
+    password: 'password',
+    jumpHosts: [],
+    proxy: normalizeProxyConfig(undefined),
+    note: 'Windows 远程桌面预览连接。',
+    tags: ['windows', 'build'],
+  },
+  {
     id: 'local-demo-1',
+    protocol: 'ssh',
     name: 'Ubuntu Demo',
     groupPath: 'ology/ology-old',
     host: '192.168.12.28',
@@ -560,6 +579,9 @@ export const backend = {
         cwd: '~',
       },
     ),
+  // RDP 连接由后端写入当前登录会话的临时凭据，并启动 Windows 自带 mstsc，不创建内置终端标签。
+  openRdpConnection: (connectionId: string) =>
+    call<boolean>('open_rdp_connection', { connectionId }, true),
   openLocalTerminal: (profile: LocalTerminalProfile) =>
     call<TerminalSession>(
       'open_local_terminal_session',

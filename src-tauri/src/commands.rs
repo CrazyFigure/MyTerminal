@@ -307,6 +307,24 @@ fn validate_connection_profile(connection: &ConnectionProfile) -> Result<(), App
             "connection port must be between 1 and 65535".into(),
         ));
     }
+
+    let protocol = connection.protocol.trim().to_ascii_lowercase();
+    if protocol == "rdp" {
+        // Windows 远程桌面只接受账号密码；SSH 私钥、跳板机和代理字段由前端保存时清空，此处不参与校验。
+        return validate_ssh_auth_fields(
+            "RDP connection",
+            &connection.username,
+            "password",
+            &connection.password,
+            None,
+            None,
+        );
+    }
+    if protocol != "ssh" {
+        return Err(AppError::Validation(format!(
+            "unsupported connection protocol: {protocol}"
+        )));
+    }
     validate_ssh_auth_fields(
         "connection",
         &connection.username,
@@ -362,6 +380,30 @@ fn validate_connection_profile(connection: &ConnectionProfile) -> Result<(), App
         }
     }
 
+    Ok(())
+}
+
+fn normalize_connection_protocol_fields(connection: &mut ConnectionProfile) -> Result<(), AppError> {
+    // 规范化必须在后端完成，避免 CLI、MCP 或手工 IPC 绕过前端后把 RDP 与 SSH 专属字段混存。
+    match connection.protocol.trim().to_ascii_lowercase().as_str() {
+        "ssh" => {
+            connection.protocol = "ssh".into();
+        }
+        "rdp" => {
+            connection.protocol = "rdp".into();
+            connection.auth_method = "password".into();
+            connection.private_key_path = None;
+            connection.private_key_text = None;
+            connection.passphrase = None;
+            connection.jump_hosts.clear();
+            connection.proxy = SshProxyConfig::default();
+        }
+        value => {
+            return Err(AppError::Validation(format!(
+                "unsupported connection protocol: {value}"
+            )))
+        }
+    }
     Ok(())
 }
 
@@ -2476,7 +2518,7 @@ fn resolve_tcp_address(host: &str, port: u16) -> Result<Vec<std::net::SocketAddr
 }
 
 fn connect_tcp_direct(host: &str, port: u16) -> Result<TcpStream, AppError> {
-    // 所有 SSH 辅助连接都共享固定连接超时，避免不可达地址拖住 UI 刷新和测试连接。
+    // SSH 辅助连接与 RDP 端口测试共享固定连接超时，避免不可达地址拖住 UI 刷新和测试连接。
     let mut last_error = None;
     for socket_address in resolve_tcp_address(host, port)? {
         match TcpStream::connect_timeout(&socket_address, SSH_CONNECT_TIMEOUT) {
@@ -3180,6 +3222,12 @@ fn connect_ssh_once(
 }
 
 pub(crate) fn connect_ssh(connection: &ConnectionProfile) -> Result<Session, AppError> {
+    // 所有 SSH 入口（界面、AI、文件和隧道）最终都会经过这里，防止 RDP 配置被误当作 SSH 发起握手。
+    if !connection.protocol.trim().eq_ignore_ascii_case("ssh") {
+        return Err(AppError::Validation(
+            "this connection is not an SSH connection".into(),
+        ));
+    }
     validate_connection_profile(connection)?;
     match connect_ssh_once(connection, false) {
         Ok(session) => Ok(session),
@@ -7020,16 +7068,182 @@ pub fn reset_agent_bridge_token(
 }
 
 #[tauri::command]
-pub fn test_connection(connection: ConnectionProfile) -> Result<bool, String> {
+pub fn test_connection(mut connection: ConnectionProfile) -> Result<bool, String> {
+    normalize_connection_protocol_fields(&mut connection)?;
+    validate_connection_profile(&connection)?;
+    if connection.protocol.trim().eq_ignore_ascii_case("rdp") {
+        // RDP 没有轻量的账号认证探测接口；测试只确认 TCP 服务可达，真实凭据由 mstsc 完成认证。
+        let stream = connect_tcp_direct(&connection.host, connection.port)?;
+        let _ = stream.shutdown(Shutdown::Both);
+        return Ok(true);
+    }
     let _ = connect_ssh(&connection)?;
     Ok(true)
+}
+
+#[cfg(windows)]
+fn rdp_client_address(connection: &ConnectionProfile) -> String {
+    // 默认 3389 不写端口，确保 Windows 凭据目标使用系统最常见的 TERMSRV/host 形式；自定义端口保持显式。
+    if connection.port == 3389 {
+        let host = connection.host.trim();
+        if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]")
+        } else {
+            host.to_string()
+        }
+    } else {
+        format_tcp_endpoint(&connection.host, connection.port)
+    }
+}
+
+#[cfg(windows)]
+fn write_rdp_session_credential(
+    address: &str,
+    username: &str,
+    password: &str,
+) -> Result<(), AppError> {
+    use windows::{
+        core::PWSTR,
+        Win32::Security::Credentials::{
+            CredWriteW, CREDENTIALW, CRED_PERSIST_SESSION, CRED_TYPE_GENERIC,
+        },
+    };
+
+    // 直接调用 Windows Credential API，密码不会像 cmdkey.exe 那样短暂暴露在进程命令行中。
+    let mut target = format!("TERMSRV/{address}")
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut user = username
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut password_blob = password.encode_utf16().collect::<Vec<_>>();
+    let password_blob_size = u32::try_from(password_blob.len().saturating_mul(2))
+        .map_err(|_| AppError::Validation("RDP password is too long".into()))?;
+
+    let credential = CREDENTIALW {
+        Type: CRED_TYPE_GENERIC,
+        TargetName: PWSTR(target.as_mut_ptr()),
+        CredentialBlobSize: password_blob_size,
+        CredentialBlob: password_blob.as_mut_ptr().cast::<u8>(),
+        // 仅保留到当前 Windows 登录会话结束，长期凭据仍只由 MyTerminal 的加密配置持有。
+        Persist: CRED_PERSIST_SESSION,
+        UserName: PWSTR(user.as_mut_ptr()),
+        ..Default::default()
+    };
+
+    unsafe { CredWriteW(&credential, 0) }.map_err(|error| {
+        AppError::Io(std::io::Error::other(format!(
+            "failed to prepare Windows Remote Desktop credential: {error}"
+        )))
+    })
+}
+
+#[cfg(test)]
+mod rdp_connection_tests {
+    use super::*;
+
+    fn rdp_connection(host: &str, port: u16) -> ConnectionProfile {
+        serde_json::from_value(serde_json::json!({
+            "id": "rdp-test",
+            "protocol": "rdp",
+            "name": "Windows Test",
+            "host": host,
+            "port": port,
+            "username": "Administrator",
+            "authMethod": "privateKey",
+            "password": "secret",
+            "privateKeyPath": "C:/should-not-remain",
+            "jumpHosts": [{
+                "id": "jump",
+                "host": "10.0.0.1",
+                "username": "root",
+                "password": "jump-secret"
+            }],
+            "proxy": {
+                "enabled": true,
+                "type": "socks5",
+                "host": "127.0.0.1",
+                "port": 1080
+            },
+            "tags": []
+        }))
+        .expect("RDP test profile should deserialize")
+    }
+
+    #[test]
+    fn rdp_normalization_removes_ssh_only_fields() {
+        let mut connection = rdp_connection("192.168.1.20", 3389);
+        normalize_connection_protocol_fields(&mut connection)
+            .expect("RDP connection should normalize");
+
+        assert_eq!(connection.auth_method, "password");
+        assert!(connection.private_key_path.is_none());
+        assert!(connection.jump_hosts.is_empty());
+        assert!(!connection.proxy.enabled);
+        validate_connection_profile(&connection)
+            .expect("normalized RDP connection should validate");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rdp_address_handles_default_port_custom_port_and_ipv6() {
+        assert_eq!(
+            rdp_client_address(&rdp_connection("server.local", 3389)),
+            "server.local"
+        );
+        assert_eq!(
+            rdp_client_address(&rdp_connection("server.local", 3390)),
+            "server.local:3390"
+        );
+        assert_eq!(rdp_client_address(&rdp_connection("::1", 3389)), "[::1]");
+        assert_eq!(rdp_client_address(&rdp_connection("::1", 3390)), "[::1]:3390");
+    }
+}
+
+#[tauri::command]
+pub fn open_rdp_connection(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<bool, String> {
+    let connection = ensure_connection_exists(&state, &connection_id)?;
+    validate_connection_profile(&connection)?;
+    if !connection.protocol.trim().eq_ignore_ascii_case("rdp") {
+        return Err(AppError::Validation(
+            "this connection is not a Windows Remote Desktop connection".into(),
+        )
+        .into());
+    }
+
+    #[cfg(windows)]
+    {
+        let address = rdp_client_address(&connection);
+        write_rdp_session_credential(&address, &connection.username, &connection.password)?;
+        // mstsc 使用独立原生窗口；只传目标地址，账号密码通过当前登录会话的凭据存储读取。
+        Command::new("mstsc.exe")
+            .arg(format!("/v:{address}"))
+            .creation_flags(WINDOWS_CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(AppError::from)?;
+        Ok(true)
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err(AppError::Validation(
+            "Windows Remote Desktop connections can only be opened on Windows".into(),
+        )
+        .into())
+    }
 }
 
 #[tauri::command]
 pub fn create_connection(
     state: State<'_, AppState>,
-    connection: ConnectionProfile,
+    mut connection: ConnectionProfile,
 ) -> Result<ConnectionProfile, String> {
+    normalize_connection_protocol_fields(&mut connection)?;
     validate_connection_profile(&connection)?;
     drop_auxiliary_session(&state, &connection.id);
     // 连接配置可能被同 ID 覆盖；旧隧道必须停止，避免后台继续使用旧主机、旧代理或旧凭据。

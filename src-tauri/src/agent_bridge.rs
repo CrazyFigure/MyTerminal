@@ -1126,6 +1126,8 @@ pub fn list_connections(
     let connections = storage
         .load_connections(crypto)?
         .into_iter()
+        // Agent 的命令、文件和终端能力都建立在 SSH 上，Windows RDP 只在桌面连接管理中展示。
+        .filter(|connection| connection.protocol.trim().eq_ignore_ascii_case("ssh"))
         .map(sanitize_connection)
         .collect::<Vec<_>>();
     let settings = storage.load_settings(crypto)?;
@@ -3090,6 +3092,7 @@ mod tests {
     fn sanitize_connection_drops_secrets() {
         let summary = sanitize_connection(ConnectionProfile {
             id: "c1".into(),
+            protocol: "ssh".into(),
             name: "prod".into(),
             group_path: Some("ops/prod".into()),
             host: "10.0.0.2".into(),

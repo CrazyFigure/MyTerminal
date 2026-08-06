@@ -93,6 +93,7 @@ const localTerminalCommandLabel = (settings: AppSettings, command: string) =>
 
 const emptyConnectionDraft = (): ConnectionDraft => ({
   id: '',
+  protocol: 'ssh',
   name: '',
   groupPath: '',
   host: '',
@@ -236,9 +237,10 @@ const normalizeProxyConfig = (proxy?: SshProxyConfig): SshProxyConfig => ({
   password: keepTextIfPresent(proxy?.password),
 });
 
-// 旧连接没有 jumpHosts/proxy 字段，加载到前端状态时补齐默认值，避免编辑旧连接时报 undefined。
+// 旧连接没有 protocol/jumpHosts/proxy 字段，加载到前端状态时补齐默认值，避免编辑旧连接时报 undefined。
 const normalizeLoadedConnection = (connection: ConnectionProfile): ConnectionProfile => ({
   ...connection,
+  protocol: connection.protocol === 'rdp' ? 'rdp' : 'ssh',
   jumpHosts: Array.isArray(connection.jumpHosts) ? connection.jumpHosts : [],
   proxy: normalizeProxyConfig(connection.proxy),
   tags: Array.isArray(connection.tags) ? connection.tags : [],
@@ -623,7 +625,11 @@ const getConnectionDraftValidationKey = (draft: ConnectionDraft) => {
     return 'validationPortInvalid' as const;
   }
 
-  if (draft.authMethod === 'privateKey') {
+  if (draft.protocol === 'rdp') {
+    if (!draft.password.trim()) {
+      return 'validationPasswordRequired' as const;
+    }
+  } else if (draft.authMethod === 'privateKey') {
     if (!draft.privateKeyPath.trim() && !draft.privateKeyText.trim()) {
       return 'validationPrivateKeyRequired' as const;
     }
@@ -631,7 +637,7 @@ const getConnectionDraftValidationKey = (draft: ConnectionDraft) => {
     return 'validationPasswordRequired' as const;
   }
 
-  for (const jumpHost of draft.jumpHosts) {
+  for (const jumpHost of draft.protocol === 'ssh' ? draft.jumpHosts : []) {
     if (!jumpHost.host.trim()) {
       return 'validationJumpHostRequired' as const;
     }
@@ -650,7 +656,7 @@ const getConnectionDraftValidationKey = (draft: ConnectionDraft) => {
     }
   }
 
-  if (draft.proxy.enabled) {
+  if (draft.protocol === 'ssh' && draft.proxy.enabled) {
     if (!draft.proxy.host.trim()) {
       return 'validationProxyHostRequired' as const;
     }
@@ -663,10 +669,13 @@ const getConnectionDraftValidationKey = (draft: ConnectionDraft) => {
 };
 
 const buildConnectionProfile = (draft: ConnectionDraft): ConnectionProfile => {
-  const authMethod = draft.authMethod === 'privateKey' ? 'privateKey' : 'password';
+  // RDP 固定使用 Windows 账号密码；隐藏的 SSH 高级配置不随 RDP 保存，避免协议切换后误用旧链路。
+  const protocol = draft.protocol === 'rdp' ? 'rdp' : 'ssh';
+  const authMethod = protocol === 'rdp' ? 'password' : draft.authMethod === 'privateKey' ? 'privateKey' : 'password';
 
   return {
     id: draft.id || crypto.randomUUID(),
+    protocol,
     name: draft.name.trim(),
     groupPath: normalizeConnectionGroupPath(draft.groupPath) || undefined,
     host: draft.host.trim(),
@@ -677,8 +686,8 @@ const buildConnectionProfile = (draft: ConnectionDraft): ConnectionProfile => {
     privateKeyPath: authMethod === 'privateKey' ? draft.privateKeyPath : undefined,
     privateKeyText: authMethod === 'privateKey' ? draft.privateKeyText : undefined,
     passphrase: authMethod === 'privateKey' ? draft.passphrase : undefined,
-    jumpHosts: draft.jumpHosts.map((jumpHost) => normalizeJumpHost(jumpHost)),
-    proxy: normalizeProxyConfig(draft.proxy),
+    jumpHosts: protocol === 'ssh' ? draft.jumpHosts.map((jumpHost) => normalizeJumpHost(jumpHost)) : [],
+    proxy: protocol === 'ssh' ? normalizeProxyConfig(draft.proxy) : emptyProxyDraft(),
     note: draft.note?.trim() || undefined,
     tags: Array.isArray(draft.tags)
       ? draft.tags
@@ -906,6 +915,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
       connectionDraft: connection
         ? {
             ...connection,
+            protocol: connection.protocol === 'rdp' ? 'rdp' : 'ssh',
             authMethod: connection.authMethod ?? 'password',
             groupPath: connection.groupPath ?? '',
             password: connection.password ?? '',
@@ -1004,11 +1014,12 @@ export const useAppStore = create<StoreState>((set, get) => ({
     set((state) => ({
       loading: true,
       connectionTestResult: undefined,
-      statusMessage: statusText(state.settings, 'statusTestingConnection'),
+      statusMessage: statusText(state.settings, connection.protocol === 'rdp' ? 'statusTestingRdp' : 'statusTestingConnection'),
     }));
 
     try {
-      const message = statusText(get().settings, 'statusConnectionTestPassed', {
+      // RDP 测试只验证目标端口可达，不能把它表述成账号认证成功。
+      const message = statusText(get().settings, connection.protocol === 'rdp' ? 'statusRdpTestPassed' : 'statusConnectionTestPassed', {
         name: connection.name || connection.host,
       });
       await backend.testConnection(connection);
@@ -1358,8 +1369,21 @@ export const useAppStore = create<StoreState>((set, get) => ({
     try {
       set({
         loading: true,
-        statusMessage: statusText(get().settings, 'statusOpeningSession', { name: connection.name }),
+        statusMessage: statusText(
+          get().settings,
+          connection.protocol === 'rdp' ? 'statusOpeningRdp' : 'statusOpeningSession',
+          { name: connection.name },
+        ),
       });
+      if (connection.protocol === 'rdp') {
+        // RDP 交给系统 mstsc 独立窗口承载；启动成功后不创建 SSH 终端标签，也不刷新远端文件和运行状态。
+        await backend.openRdpConnection(connectionId);
+        set((state) => ({
+          loading: false,
+          statusMessage: statusText(state.settings, 'statusRdpOpened', { name: connection.name }),
+        }));
+        return;
+      }
       const session = await backend.openSession(connectionId);
       const nextSession = { ...session, title: connection.name };
       set((state) => ({
