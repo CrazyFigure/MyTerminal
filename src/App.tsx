@@ -1532,7 +1532,7 @@ function ConnectionFormModal() {
                   </button>
                   <button
                     aria-pressed={isRdpConnection}
-                    className={`connection-protocol-option is-windows ${isRdpConnection ? 'is-active' : ''}`}
+                    className={`connection-protocol-option ${isRdpConnection ? 'is-active' : ''}`}
                     onClick={() => selectProtocol('rdp')}
                     type="button"
                   >
@@ -2448,13 +2448,21 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
                         {connection.protocol === 'rdp' ? (
                           <span
                             aria-label={t('connectionProtocolRdp')}
-                            className="connection-windows-badge"
+                            className="connection-type-icon"
+                            role="img"
                             title={t('connectionProtocolRdp')}
                           >
                             <Monitor size={13} />
                           </span>
                         ) : (
-                          <TerminalSquare className="connection-ssh-icon" size={14} aria-hidden="true" />
+                          <span
+                            aria-label={t('connectionProtocolSsh')}
+                            className="connection-type-icon"
+                            role="img"
+                            title={t('connectionProtocolSsh')}
+                          >
+                            <TerminalSquare size={13} />
+                          </span>
                         )}
                         <span>{connection.name}</span>
                       </div>

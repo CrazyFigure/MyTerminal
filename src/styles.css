@@ -2107,20 +2107,6 @@ select:disabled {
   box-shadow: inset 0 0 0 1px rgba(79, 70, 229, 0.12);
 }
 
-/* Windows 蓝只用于 RDP 类型标识，是连接管理中唯一的协议强调色。 */
-.connection-protocol-option.is-windows.is-active {
-  border-color: #0078d4;
-  background: rgba(0, 120, 212, 0.1);
-  color: #0067b8;
-  box-shadow: inset 0 0 0 1px rgba(0, 120, 212, 0.12);
-}
-
-.app-shell.theme-dark .connection-protocol-option.is-windows.is-active {
-  border-color: #60a5fa;
-  background: rgba(30, 144, 255, 0.16);
-  color: #bfdbfe;
-}
-
 .connection-rdp-hint {
   display: flex;
   align-items: center;
@@ -2128,9 +2114,9 @@ select:disabled {
   min-height: 36px;
   align-self: end;
   padding: 8px 10px;
-  border: 1px solid rgba(0, 120, 212, 0.2);
+  border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: 8px;
-  background: rgba(0, 120, 212, 0.06);
+  background: var(--app-input-bg);
   color: var(--app-muted);
   font-size: 0.8rem;
 }
@@ -2354,28 +2340,15 @@ select:disabled {
   white-space: nowrap;
 }
 
-.connection-ssh-icon {
-  flex: 0 0 auto;
-  color: var(--app-muted);
-}
-
-.connection-windows-badge {
+.connection-type-icon {
   display: inline-flex;
-  flex: 0 0 auto;
+  flex: 0 0 24px;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
   width: 24px;
   height: 22px;
-  border: 1px solid rgba(0, 120, 212, 0.3);
-  border-radius: 6px;
-  background: rgba(0, 120, 212, 0.09);
-  color: #0067b8;
-}
-
-.app-shell.theme-dark .connection-windows-badge {
-  border-color: rgba(96, 165, 250, 0.45);
-  background: rgba(30, 144, 255, 0.14);
-  color: #bfdbfe;
+  color: var(--app-muted);
 }
 
 /* 连接列表列宽调整沿用文件管理的窄分隔线风格，默认保持低干扰，悬停时给出明确拖拽反馈。 */
