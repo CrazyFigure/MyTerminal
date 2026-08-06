@@ -156,6 +156,12 @@ impl StorageService {
         self.data_dir.join("agent-bridge-discovery.json")
     }
 
+    /// 所有 MyTerminal 构建共用的 Broker 注册目录；安装版与开发版使用不同数据目录，
+    /// 但 MCP 仍可从这里发现同一台机器上后启动且健康的 GUI Broker。
+    pub fn agent_bridge_registry_dir_path() -> PathBuf {
+        Self::platform_data_dir().join("agent-bridge-instances")
+    }
+
     pub fn downloads_dir_path(&self) -> PathBuf {
         self.data_dir.join("downloads")
     }

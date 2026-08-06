@@ -44,6 +44,8 @@ npm install
 npm run tauri:dev
 ```
 
+该命令会合并 `src-tauri/tauri.dev.conf.json`，为开发版使用独立应用标识；因此已安装的 EXE 可以与开发版同时运行，同时仍分别保持单实例。
+
 它会：
 
 1. 启动 Vite 前端开发服务器；
