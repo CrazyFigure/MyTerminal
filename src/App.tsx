@@ -194,6 +194,21 @@ const numericSettingInputProps = {
     event.currentTarget.blur();
   },
 } as const;
+// 资源页“重置”只恢复本页字段的产品默认值；这些值先写入草稿，仍需点击保存才会持久化并生效。
+const resourceSettingsDefaults = {
+  runtimeRefreshIntervalSec: 1,
+  runtimeStorageRefreshIntervalSec: 5,
+  runtimeResourceRefreshIntervalSec: 3,
+  runtimeResourceSource: 'system',
+  sshKeepaliveIntervalSec: 30,
+} satisfies Pick<
+  AppSettings,
+  | 'runtimeRefreshIntervalSec'
+  | 'runtimeStorageRefreshIntervalSec'
+  | 'runtimeResourceRefreshIntervalSec'
+  | 'runtimeResourceSource'
+  | 'sshKeepaliveIntervalSec'
+>;
 // AI 执行通知用稳定 tag 去重，避免 MCP 客户端重试时 Windows 通知中心堆出重复消息。
 const agentBridgeNotificationTagPrefix = 'myterminal-agent-bridge';
 // Windows toast 按钮的动作 ID 和 Rust 端保持一致，前端事件回来后直接分派审批结果。
@@ -3053,6 +3068,13 @@ function SettingsModal({
   // 草稿与已保存配置相同时禁用各页保存按钮，避免重复点击触发无意义的落盘；
   // 四个保存入口落盘的都是同一份完整设置，因此共用同一个"有修改"判断。
   const hasSettingsChanges = JSON.stringify(draftSettings) !== JSON.stringify(settings);
+  // 重置按钮只比较资源页自身字段；草稿已是默认值时禁用，但不会影响尚待保存的其它设置。
+  const hasResourceSettingsChangesFromDefaults =
+    draftSettings.runtimeRefreshIntervalSec !== resourceSettingsDefaults.runtimeRefreshIntervalSec
+    || draftSettings.runtimeStorageRefreshIntervalSec !== resourceSettingsDefaults.runtimeStorageRefreshIntervalSec
+    || draftSettings.runtimeResourceRefreshIntervalSec !== resourceSettingsDefaults.runtimeResourceRefreshIntervalSec
+    || draftSettings.runtimeResourceSource !== resourceSettingsDefaults.runtimeResourceSource
+    || draftSettings.sshKeepaliveIntervalSec !== resourceSettingsDefaults.sshKeepaliveIntervalSec;
   // 端点保存按钮只在草稿相对基线有改动（含新输入密钥）时可用；基线未拉取完成前保持禁用。
   const hasAgentProviderChanges = agentProvidersBaseline !== null
     && serializeAgentProvidersForCompare(agentProviderDrafts) !== serializeAgentProvidersForCompare(agentProvidersBaseline);
@@ -3923,6 +3945,7 @@ function SettingsModal({
                         options={[
                           { value: 'system', label: t('runtimeResourceSourceSystem') },
                           { value: 'docker', label: t('runtimeResourceSourceDocker') },
+                          { value: 'podman', label: t('runtimeResourceSourcePodman') },
                           { value: 'kubernetes', label: t('runtimeResourceSourceKubernetes') },
                         ]}
                       />
@@ -3932,6 +3955,18 @@ function SettingsModal({
 
                 <div className="modal-actions">
                   {settingsSaveMessage ? <span className="inline-save-feedback">{settingsSaveMessage}</span> : null}
+                  <button
+                    className="secondary-button resource-settings-reset-button"
+                    disabled={!hasResourceSettingsChangesFromDefaults}
+                    onClick={() => {
+                      // 仅覆盖资源页草稿；不调用持久化接口，用户取消设置弹窗时会自然回退。
+                      updateDraftSettings((current) => ({ ...current, ...resourceSettingsDefaults }));
+                      setSettingsSaveMessage('');
+                    }}
+                    type="button"
+                  >
+                    <RotateCcw size={16} /> {t('resetResourceSettings')}
+                  </button>
                   <button className="primary-button" disabled={!hasSettingsChanges} onClick={() => void persistSettingsWithFeedback()} type="button">
                     <Save size={16} /> {t('saveResourceSettings')}
                   </button>
@@ -4819,6 +4854,7 @@ export default function App() {
     const labelKeyBySource: Record<RuntimeResourceSource, TranslationKey> = {
       system: 'runtimeResourceSourceSystem',
       docker: 'runtimeResourceSourceDocker',
+      podman: 'runtimeResourceSourcePodman',
       kubernetes: 'runtimeResourceSourceKubernetes',
     };
     return t(labelKeyBySource[source] ?? 'runtimeResourceSourceSystem');

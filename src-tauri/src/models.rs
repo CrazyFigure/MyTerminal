@@ -451,7 +451,7 @@ pub struct AppSettings {
     /// 内存行展开后的进程/线程资源明细刷新频率（秒），独立于常规运行状态刷新。
     #[serde(default = "default_runtime_resource_refresh_interval_sec")]
     pub runtime_resource_refresh_interval_sec: u16,
-    /// 内存行展开后的资源明细默认来源，Docker 同时覆盖 Docker Compose 容器场景。
+    /// 内存行展开后的资源明细默认来源；Docker 覆盖 Compose，Podman 使用独立命令采集。
     #[serde(default = "default_runtime_resource_source")]
     pub runtime_resource_source: String,
     /// SSH 保活间隔（秒），0 表示关闭；作用于交互终端、文件/状态辅助会话与隧道池会话。

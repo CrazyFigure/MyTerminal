@@ -8,8 +8,8 @@ export type TerminalSessionKind = 'ssh' | 'local';
 export type TerminalRightClickBehavior = 'paste' | 'menu';
 /** SSH 终端长行展示模式；本地终端与 TUI 始终自动换行。 */
 export type TerminalLineWrapMode = 'wrap' | 'horizontal';
-/** 运行状态资源明细来源；Docker 同时覆盖 Docker Compose 容器场景。 */
-export type RuntimeResourceSource = 'system' | 'docker' | 'kubernetes';
+/** 运行状态资源明细来源；Docker 同时覆盖 Docker Compose，Podman 使用独立命令采集。 */
+export type RuntimeResourceSource = 'system' | 'docker' | 'podman' | 'kubernetes';
 export type RuntimeResourceMetric = 'cpu' | 'memory';
 export type RuntimeResourceTarget = 'process' | 'thread';
 
@@ -163,7 +163,7 @@ export interface AppSettings {
   runtimeStorageRefreshIntervalSec: number;
   /** 内存行展开后的进程/线程资源明细刷新频率，只影响资源明细接口。 */
   runtimeResourceRefreshIntervalSec: number;
-  /** 内存行展开后的资源明细默认来源，容器环境可切到 Docker/Compose/K8s。 */
+  /** 内存行展开后的资源明细默认来源，容器环境可切到 Docker/Compose、Podman 或 K8s。 */
   runtimeResourceSource: RuntimeResourceSource;
   /** SSH 保活间隔（秒），0 表示关闭；作用于交互终端、文件/状态辅助会话与隧道池会话。 */
   sshKeepaliveIntervalSec: number;
