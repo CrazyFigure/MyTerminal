@@ -3,12 +3,19 @@ use std::{
     env, fs,
     io::{self, BufRead, Read, Write},
     net::TcpStream,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use serde_json::{json, Value};
 
-use myterminal::{agent_bridge::AgentBridgeDiscovery, error::AppError};
+use myterminal::{
+    agent_bridge::{discovery_is_healthy, AgentBridgeDiscovery},
+    error::AppError,
+    storage::StorageService,
+};
+
+/// latest 模式由应用生成的 MCP 配置显式开启：安装版与开发版并存时，后启动且健康的 Broker 优先。
+const BRIDGE_SELECTION_ENV: &str = "MYTERMINAL_BRIDGE_SELECTION";
 
 #[derive(Debug, Clone, Copy)]
 enum McpFraming {
@@ -175,6 +182,15 @@ fn run_cli() -> Result<(), AppError> {
 
 impl BrokerClient {
     fn discover() -> Result<Self, AppError> {
+        // 多实例兼容模式先查全局注册表；后启动实例退出或崩溃后，健康探测会自然回退到旧实例。
+        if env::var(BRIDGE_SELECTION_ENV)
+            .is_ok_and(|value| value.trim().eq_ignore_ascii_case("latest"))
+        {
+            if let Some(client) = discover_latest_registered_broker() {
+                return Ok(client);
+            }
+        }
+
         let discovery_path = find_discovery_path().ok_or_else(|| {
             AppError::Validation(
                 "MyTerminal AI Bridge is not running. Enable it in Settings > AI Connection, or set MYTERMINAL_DATA_DIR."
@@ -217,6 +233,43 @@ impl BrokerClient {
         // 否则 MCP 会把 { ok: false } 当作成功文本返回，agent 便会忽略真实错误并盲目重试。
         unwrap_broker_response(read_http_response(&mut stream)?)
     }
+}
+
+/// 从全局注册目录选择最后启动且仍能完成鉴权握手的 Broker；无健康项时继续走旧版固定目录发现。
+fn discover_latest_registered_broker() -> Option<BrokerClient> {
+    let registry_dir = StorageService::agent_bridge_registry_dir_path();
+    discover_latest_registered_broker_in(&registry_dir)
+}
+
+/// 目录参数单独下沉，便于用隔离临时目录验证多实例排序与失效回退，不触碰用户真实注册表。
+fn discover_latest_registered_broker_in(registry_dir: &Path) -> Option<BrokerClient> {
+    let entries = fs::read_dir(registry_dir).ok()?;
+    let mut discoveries = entries
+        .flatten()
+        .filter_map(|entry| read_registered_discovery(&entry.path()))
+        .collect::<Vec<_>>();
+    discoveries.sort_by(|left, right| right.started_at.cmp(&left.started_at));
+    for discovery in discoveries {
+        // 注册表候选必须通过带 token 的真实 /status 请求；只探测 TCP 端口会把端口复用误判为原 Broker。
+        if !discovery_is_healthy(&discovery) {
+            continue;
+        }
+        let client = BrokerClient {
+            port: discovery.port,
+            token: discovery.token,
+        };
+        return Some(client);
+    }
+    None
+}
+
+/// 注册目录使用 .tmp 原子发布；CLI 只读取最终 JSON，损坏或旧版本不完整记录直接忽略。
+fn read_registered_discovery(path: &Path) -> Option<AgentBridgeDiscovery> {
+    if path.extension().and_then(|value| value.to_str()) != Some("json") {
+        return None;
+    }
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
 }
 
 /// 拆解 GUI Broker 的统一响应信封：成功时只向 CLI/MCP 暴露业务数据，失败时转成真正的工具错误。
@@ -727,6 +780,25 @@ mod tests {
         crypto::CryptoService, models::AppSettings, storage::StorageService,
     };
 
+    /// 启动只响应一次 /status 的本地假 Broker，验证 discovery 健康探测无需初始化真实应用状态。
+    fn spawn_status_broker() -> (u16, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            let body = r#"{"ok":true,"data":{}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        (port, handle)
+    }
+
     #[test]
     fn broker_success_response_unwraps_business_data() {
         let response = unwrap_broker_response(json!({
@@ -747,6 +819,65 @@ mod tests {
         assert!(error
             .to_string()
             .contains("agent session connection-1 not found"));
+    }
+
+    #[test]
+    fn legacy_discovery_without_instance_metadata_still_loads() {
+        // 旧版 discovery 只有端口、token 和时间；新增多实例字段必须默认补空，保证平滑升级。
+        let discovery: AgentBridgeDiscovery = serde_json::from_value(json!({
+            "port": 43123,
+            "token": "legacy-token",
+            "startedAt": "2026-08-06T10:00:00Z"
+        }))
+        .unwrap();
+        assert_eq!(discovery.port, 43123);
+        assert!(discovery.instance_id.is_empty());
+        assert!(discovery.data_dir.is_empty());
+    }
+
+    #[test]
+    fn latest_registry_falls_back_when_newer_broker_is_dead() {
+        // 使用唯一临时目录，避免测试创建或清理用户实际的全局 Broker 注册文件。
+        let test_dir = env::temp_dir().join(format!(
+            "myterminal-cli-registry-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&test_dir).unwrap();
+        let (healthy_port, healthy_server) = spawn_status_broker();
+        let dead_listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let dead_port = dead_listener.local_addr().unwrap().port();
+        drop(dead_listener);
+
+        // 新记录故意指向已关闭端口；选择器必须继续探测旧记录并回退，而不是仅按时间盲选。
+        let older = AgentBridgeDiscovery {
+            port: healthy_port,
+            token: "older-token".into(),
+            started_at: "2026-08-06T10:00:00Z".into(),
+            instance_id: "older".into(),
+            data_dir: "older-data".into(),
+        };
+        let newer = AgentBridgeDiscovery {
+            port: dead_port,
+            token: "newer-token".into(),
+            started_at: "2026-08-06T11:00:00Z".into(),
+            instance_id: "newer".into(),
+            data_dir: "newer-data".into(),
+        };
+        fs::write(
+            test_dir.join("older.json"),
+            serde_json::to_string(&older).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            test_dir.join("newer.json"),
+            serde_json::to_string(&newer).unwrap(),
+        )
+        .unwrap();
+
+        let selected = discover_latest_registered_broker_in(&test_dir).unwrap();
+        assert_eq!(selected.port, healthy_port);
+        healthy_server.join().unwrap();
+        fs::remove_dir_all(test_dir).unwrap();
     }
 
     #[test]

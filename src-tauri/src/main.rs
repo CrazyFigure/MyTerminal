@@ -93,6 +93,11 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .manage(app_state)
         .setup(|app| {
+            #[cfg(debug_assertions)]
+            if let Some(window) = app.get_webview_window("main") {
+                // 安装版与开发版可同时运行后，任务栏和窗口切换器必须明确标出开发实例，避免审批时认错窗口。
+                let _ = window.set_title("MyTerminal Dev");
+            }
             #[cfg(windows)]
             if let Some(window) = app.get_webview_window("main") {
                 // 必须在原生 WebView 创建后立即关闭浏览器加速键，覆盖左/右/底栏、设置页和所有弹窗。

@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
     io::{ErrorKind, Read, Write},
-    net::{TcpListener, TcpStream},
+    net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -47,6 +47,12 @@ pub struct AgentBridgeDiscovery {
     /// 本地 token 随 discovery 暴露给同一用户进程，外部请求仍必须携带 Authorization。
     pub token: String,
     pub started_at: String,
+    /// 每次 Broker 启动生成独立 ID，用于多实例注册、归属校验和安全清理。
+    #[serde(default)]
+    pub instance_id: String,
+    /// Broker 实际使用的数据目录；多实例回退时据此恢复对应目录的兼容 discovery 文件。
+    #[serde(default)]
+    pub data_dir: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -271,8 +277,10 @@ pub enum AgentAction {
 
 #[derive(Debug, Clone)]
 struct AgentBridgeServer {
-    port: u16,
-    token: String,
+    /// 当前进程拥有的 discovery 记录；停止时只清理同一 instanceId，不能误删其它实例。
+    discovery: AgentBridgeDiscovery,
+    /// 当前进程在全局注册目录中的独立文件路径。
+    registry_path: PathBuf,
     stop_flag: Arc<AtomicBool>,
     /// 监听线程实际持有的执行设置快照，用于判断保存设置后是否真的需要重启 Broker。
     settings: AgentBridgeSettings,
@@ -411,21 +419,170 @@ pub fn reset_agent_bridge_token(storage: &StorageService) -> Result<String, AppE
     Ok(token)
 }
 
-fn write_discovery(storage: &StorageService, port: u16, token: &str) -> Result<(), AppError> {
+/// 读取单个 discovery；注册目录中的临时文件和异常退出留下的损坏文件会被调用方忽略。
+fn read_discovery(path: &Path) -> Option<AgentBridgeDiscovery> {
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// 使用带鉴权的 /status 探测 Broker，不能只判断端口可连接，避免端口被其它进程复用后误路由 MCP。
+pub fn discovery_is_healthy(discovery: &AgentBridgeDiscovery) -> bool {
+    let address = SocketAddr::from(([127, 0, 0, 1], discovery.port));
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(350)) else {
+        return false;
+    };
+    let timeout = Some(Duration::from_millis(700));
+    if stream.set_read_timeout(timeout).is_err() || stream.set_write_timeout(timeout).is_err() {
+        return false;
+    }
+    let request = format!(
+        "GET /status HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        discovery.port, discovery.token
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut response = Vec::new();
+    if stream.read_to_end(&mut response).is_err() {
+        return false;
+    }
+    let Some(body_start) = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| index + 4)
+    else {
+        return false;
+    };
+    serde_json::from_slice::<Value>(&response[body_start..])
+        .ok()
+        .and_then(|body| body.get("ok").and_then(Value::as_bool))
+        == Some(true)
+}
+
+/// 返回全局注册目录中仍健康的 Broker，按启动时间从新到旧排列；同时清理崩溃遗留记录。
+fn healthy_registered_discoveries() -> Vec<(PathBuf, AgentBridgeDiscovery)> {
+    // 并发启动时，另一个进程可能刚原子发布记录、监听线程尚未来得及 accept；给新文件留出启动宽限期。
+    const DISCOVERY_STARTUP_GRACE: Duration = Duration::from_secs(3);
+    let registry_dir = StorageService::agent_bridge_registry_dir_path();
+    let Ok(entries) = fs::read_dir(&registry_dir) else {
+        return Vec::new();
+    };
+    let mut discoveries = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_recent = fs::metadata(&path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|elapsed| elapsed < DISCOVERY_STARTUP_GRACE);
+        // 原子写入使用 .tmp 扩展名；只处理最终的 JSON 注册文件。
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            // 异常退出可能遗留临时文件；只清理超过启动宽限期的项，不能破坏另一个正在发布的实例。
+            if !is_recent {
+                let _ = fs::remove_file(path);
+            }
+            continue;
+        }
+        let Some(discovery) = read_discovery(&path) else {
+            if !is_recent {
+                let _ = fs::remove_file(path);
+            }
+            continue;
+        };
+        if discovery_is_healthy(&discovery) {
+            discoveries.push((path, discovery));
+        } else if !is_recent {
+            let _ = fs::remove_file(path);
+        }
+    }
+    discoveries.sort_by(|left, right| right.1.started_at.cmp(&left.1.started_at));
+    discoveries
+}
+
+/// 以“临时文件 + rename”发布独立注册记录，避免 MCP 扫描线程读到半段 JSON。
+fn write_registry_discovery(path: &Path, discovery: &AgentBridgeDiscovery) -> Result<(), AppError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppError::Validation("agent bridge registry path has no parent".into()))?;
+    fs::create_dir_all(parent)?;
+    let temporary = parent.join(format!("{}.tmp", discovery.instance_id));
+    fs::write(&temporary, serde_json::to_string_pretty(discovery)?)?;
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+/// 同时写入数据目录下的兼容 discovery 与全局多实例注册；全局记录供“后启动健康实例优先”选择。
+fn write_discovery(
+    storage: &StorageService,
+    port: u16,
+    token: &str,
+) -> Result<(AgentBridgeDiscovery, PathBuf), AppError> {
     let discovery = AgentBridgeDiscovery {
         port,
         token: token.to_string(),
         started_at: now_rfc3339(),
+        instance_id: uuid::Uuid::new_v4().to_string(),
+        data_dir: storage.data_dir_path().to_string_lossy().to_string(),
     };
-    fs::write(
+    // 启动时顺便淘汰崩溃遗留项，避免注册目录无限增长；健康旧实例继续保留以便当前实例退出后回退。
+    let _ = healthy_registered_discoveries();
+    let registry_path = StorageService::agent_bridge_registry_dir_path()
+        .join(format!("{}.json", discovery.instance_id));
+    // 全局注册是多实例增强能力；目录暂不可写时仍保留数据目录 discovery，避免 MCP 功能整体不可用。
+    if let Err(error) = write_registry_discovery(&registry_path, &discovery) {
+        eprintln!("failed to publish agent bridge registry entry: {error}");
+    }
+    if let Err(error) = fs::write(
         storage.agent_bridge_discovery_path(),
         serde_json::to_string_pretty(&discovery)?,
-    )?;
-    Ok(())
+    ) {
+        let _ = fs::remove_file(&registry_path);
+        return Err(error.into());
+    }
+    Ok((discovery, registry_path))
 }
 
-fn remove_discovery(storage: &StorageService) {
-    let _ = fs::remove_file(storage.agent_bridge_discovery_path());
+/// 停止当前 Broker 时只移除自己的注册记录；若同一数据目录仍有其它健康实例，则恢复兼容 discovery。
+fn remove_owned_discovery(storage: &StorageService, server: &AgentBridgeServer) {
+    let _ = fs::remove_file(&server.registry_path);
+    let local_path = storage.agent_bridge_discovery_path();
+    let owns_local = read_discovery(&local_path).is_some_and(|discovery| {
+        (!discovery.instance_id.is_empty() && discovery.instance_id == server.discovery.instance_id)
+            || (discovery.instance_id.is_empty()
+                && discovery.port == server.discovery.port
+                && discovery.token == server.discovery.token)
+    });
+    if !owns_local {
+        return;
+    }
+
+    let current_data_dir = storage.data_dir_path().to_string_lossy();
+    let fallback = healthy_registered_discoveries()
+        .into_iter()
+        .map(|(_, discovery)| discovery)
+        .find(|discovery| discovery.data_dir == current_data_dir);
+    if let Some(discovery) = fallback {
+        let _ = fs::write(
+            local_path,
+            serde_json::to_string_pretty(&discovery).unwrap_or_default(),
+        );
+    } else {
+        let _ = fs::remove_file(local_path);
+    }
+}
+
+/// Bridge 未启用时仅删除确认失效的本地记录，不能把另一个共用数据目录的健康实例误清掉。
+fn remove_stale_local_discovery(storage: &StorageService) {
+    let path = storage.agent_bridge_discovery_path();
+    let should_remove = read_discovery(&path)
+        .map(|discovery| !discovery_is_healthy(&discovery))
+        .unwrap_or_else(|| path.exists());
+    if should_remove {
+        let _ = fs::remove_file(path);
+    }
 }
 
 /// 解析随应用一同分发的 myterminal-cli 可执行文件路径。
@@ -466,7 +623,13 @@ pub fn bridge_status(
     let server = lock_server(runtime)?;
     let (running, port, token) = server
         .as_ref()
-        .map(|server| (true, Some(server.port), Some(server.token.clone())))
+        .map(|server| {
+            (
+                true,
+                Some(server.discovery.port),
+                Some(server.discovery.token.clone()),
+            )
+        })
         .unwrap_or((false, None, None));
     let cli_command = "myterminal-cli bridge status --json".to_string();
     let mcp_command = "myterminal-cli mcp --stdio".to_string();
@@ -525,8 +688,8 @@ pub fn ensure_server(
     } else if lock_server(runtime)?.is_some() {
         stop_server(runtime, storage)
     } else {
-        // Bridge 本来就是关闭状态时只清理可能由异常退出遗留的 discovery 文件，不反复清空会话。
-        remove_discovery(storage);
+        // Bridge 本来就是关闭状态时只清理确认失效的 discovery；共用目录中的其它健康实例必须保留。
+        remove_stale_local_discovery(storage);
         Ok(())
     }
 }
@@ -545,12 +708,12 @@ pub fn start_server(
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
-    write_discovery(storage, port, &token)?;
+    let (discovery, registry_path) = write_discovery(storage, port, &token)?;
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let server_state = AgentBridgeServer {
-        port,
-        token: token.clone(),
+        discovery,
+        registry_path,
         stop_flag: Arc::clone(&stop_flag),
         settings: settings.clone(),
     };
@@ -616,9 +779,9 @@ fn stop_server_with_policy(
     fail_waiting: bool,
 ) -> Result<(), AppError> {
     let server = lock_server(runtime)?.take();
-    if let Some(server) = server {
+    if let Some(server) = server.as_ref() {
         server.stop_flag.store(true, Ordering::Relaxed);
-        let _ = TcpStream::connect(("127.0.0.1", server.port));
+        let _ = TcpStream::connect(("127.0.0.1", server.discovery.port));
     }
     if close_sessions {
         close_all_agent_sessions(runtime)?;
@@ -626,7 +789,11 @@ fn stop_server_with_policy(
     if fail_waiting {
         fail_waiting_requests(runtime, "MCP Bridge 已停止，请重新打开会话后再执行。")?;
     }
-    remove_discovery(storage);
+    if let Some(server) = server.as_ref() {
+        remove_owned_discovery(storage, server);
+    } else {
+        remove_stale_local_discovery(storage);
+    }
     Ok(())
 }
 

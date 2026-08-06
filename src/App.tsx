@@ -448,9 +448,11 @@ const deriveAgentMcpPackagePath = (discoveryPath?: string) => {
 const buildAgentMcpConfig = (status?: AgentBridgeStatus | null) => {
   const cliPath = status?.cliPath?.trim();
   const dataDir = status?.dataDir?.trim();
-  // MYTERMINAL_DATA_DIR 指向当前实际数据目录：外部客户端从任意工作目录拉起 CLI 时，
-  // 靠它精确定位 discovery 文件，避免安装版因工作目录不确定而找不到 Broker。
-  const env = dataDir ? { MYTERMINAL_DATA_DIR: dataDir } : undefined;
+  // 数据目录保留旧版固定发现的兼容兜底；latest 让安装版与开发版并存时自动选择后启动的健康 Broker，
+  // 后启动实例退出后会回退到仍存活的旧实例，无需重启 MCP 客户端。
+  const env = dataDir
+    ? { MYTERMINAL_DATA_DIR: dataDir, MYTERMINAL_BRIDGE_SELECTION: 'latest' }
+    : { MYTERMINAL_BRIDGE_SELECTION: 'latest' };
 
   // 安装版随应用分发 myterminal-cli（含 target triple 后缀的 sidecar），后端解析出绝对路径后
   // 直接作为 stdio MCP server，免去 npx 与本地 launcher 包依赖；两台机器路径天然各自正确。
@@ -465,9 +467,7 @@ const buildAgentMcpConfig = (status?: AgentBridgeStatus | null) => {
       ? { type: 'stdio', command: 'npx', args: ['--yes', packagePath] }
       : { type: 'stdio', command: 'myterminal-cli', args: ['mcp', '--stdio'] };
   }
-  if (env) {
-    server.env = env;
-  }
+  server.env = env;
 
   return JSON.stringify(
     {
