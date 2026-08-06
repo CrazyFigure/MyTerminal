@@ -5193,6 +5193,7 @@ fn query_runtime_overview_with_session(
 fn normalize_runtime_resource_source(source: &str) -> &str {
     match source {
         "docker" | "compose" => "docker",
+        "podman" => "podman",
         "kubernetes" => "kubernetes",
         _ => "system",
     }
@@ -5371,12 +5372,15 @@ fn parse_system_resource_usage(
     }
 }
 
-fn parse_docker_resource_usage(
+fn parse_container_resource_usage(
     contents: &str,
     metric: &str,
     target: &str,
     limit: usize,
+    source: &str,
+    context: &str,
 ) -> RuntimeResourceUsage {
+    // Docker 与 Podman 命令统一输出五列管道格式；解析时保留真实来源，供前端显示当前采集引擎。
     let mut items = Vec::<RuntimeResourceUsageItem>::new();
     for line in contents.lines().filter(|line| !line.trim().is_empty()) {
         let parts = line.split('|').map(str::trim).collect::<Vec<_>>();
@@ -5390,7 +5394,7 @@ fn parse_docker_resource_usage(
             rank: 0,
             id: parts[0].to_string(),
             name: parts[1].to_string(),
-            context: String::from("Docker"),
+            context: context.to_string(),
             cpu: parts[2].to_string(),
             memory: memory.to_string(),
             detail: parts[3].to_string(),
@@ -5400,7 +5404,7 @@ fn parse_docker_resource_usage(
     }
 
     RuntimeResourceUsage {
-        source: String::from("docker"),
+        source: source.to_string(),
         metric: metric.to_string(),
         target: target.to_string(),
         items: rank_runtime_resource_items(items, metric, limit),
@@ -5475,7 +5479,23 @@ fn query_docker_resource_usage_with_session(
     // Docker stats 覆盖普通 Docker 和 Docker Compose 容器，按容器粒度展示资源占用。
     let command = r#"sh -lc 'command -v docker >/dev/null 2>&1 || exit 0; if command -v timeout >/dev/null 2>&1; then timeout 3s docker stats --no-stream --format "{{.Container}}|{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}" 2>/dev/null || true; else docker stats --no-stream --format "{{.Container}}|{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}" 2>/dev/null || true; fi'"#;
     let contents = exec_remote_command(session, command).unwrap_or_default();
-    Ok(parse_docker_resource_usage(&contents, metric, target, limit))
+    Ok(parse_container_resource_usage(
+        &contents, metric, target, limit, "docker", "Docker",
+    ))
+}
+
+fn query_podman_resource_usage_with_session(
+    session: &Session,
+    metric: &str,
+    target: &str,
+    limit: usize,
+) -> Result<RuntimeResourceUsage, AppError> {
+    // Podman 模板字段与 Docker 的容器 ID 字段不同，主动适配后再复用统一的容器统计解析格式。
+    let command = r#"sh -lc 'command -v podman >/dev/null 2>&1 || exit 0; if command -v timeout >/dev/null 2>&1; then timeout 3s podman stats --no-stream --format "{{.ID}}|{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}" 2>/dev/null || true; else podman stats --no-stream --format "{{.ID}}|{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}" 2>/dev/null || true; fi'"#;
+    let contents = exec_remote_command(session, command).unwrap_or_default();
+    Ok(parse_container_resource_usage(
+        &contents, metric, target, limit, "podman", "Podman",
+    ))
 }
 
 fn query_kubernetes_resource_usage_with_session(
@@ -5505,7 +5525,10 @@ fn query_runtime_resource_usage_with_session(
     let usage = match source {
         "system" => query_system_resource_usage_with_session(session, metric, target, limit)?,
         "docker" => query_docker_resource_usage_with_session(session, metric, target, limit)?,
-        "kubernetes" => query_kubernetes_resource_usage_with_session(session, metric, target, limit)?,
+        "podman" => query_podman_resource_usage_with_session(session, metric, target, limit)?,
+        "kubernetes" => {
+            query_kubernetes_resource_usage_with_session(session, metric, target, limit)?
+        }
         _ => query_system_resource_usage_with_session(session, metric, target, limit)?,
     };
 
@@ -5516,6 +5539,34 @@ fn query_runtime_resource_usage_with_session(
         })
     } else {
         Ok(usage)
+    }
+}
+
+#[cfg(test)]
+mod runtime_resource_usage_tests {
+    use super::{normalize_runtime_resource_source, parse_container_resource_usage};
+
+    #[test]
+    fn normalizes_podman_without_falling_back_to_system() {
+        // Podman 必须保留独立来源，否则保存后的设置会误走系统进程采集分支。
+        assert_eq!(normalize_runtime_resource_source("podman"), "podman");
+    }
+
+    #[test]
+    fn parses_and_ranks_podman_container_stats() {
+        // 模拟 Podman Go 模板的五列输出，验证来源、上下文和按内存占用排序均保持正确。
+        let contents = concat!(
+            "small|worker|2.00%|64MiB / 1GiB|6.25%\n",
+            "large|api|8.50%|256MiB / 1GiB|25.00%\n",
+        );
+        let usage =
+            parse_container_resource_usage(contents, "memory", "process", 2, "podman", "Podman");
+
+        assert_eq!(usage.source, "podman");
+        assert_eq!(usage.items.len(), 2);
+        assert_eq!(usage.items[0].id, "large");
+        assert_eq!(usage.items[0].context, "Podman");
+        assert_eq!(usage.items[0].rank, 1);
     }
 }
 

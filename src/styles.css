@@ -2937,6 +2937,16 @@ select:disabled {
   margin-top: 18px;
 }
 
+/* 资源重置是草稿动作，按下时轻微下沉，明确区分“已点击”与仅悬浮但不制造额外视觉层级。 */
+.resource-settings-reset-button {
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.08s ease;
+}
+
+.resource-settings-reset-button:active:not(:disabled) {
+  background: var(--app-active-bg) !important;
+  transform: translateY(1px);
+}
+
 .file-upload-button {
   position: relative;
   overflow: hidden;

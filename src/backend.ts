@@ -59,7 +59,8 @@ const clampRatio = (value: number | undefined, fallback: number) => {
 const terminalBackgroundImageFits = new Set<AppSettings['terminalBackgroundImageFit']>(['cover', 'contain', 'stretch', 'tile', 'center']);
 // 长行展示模式只接受前端枚举值，旧配置或手动编辑错误时回落到自动换行。
 const terminalLineWrapModes = new Set<AppSettings['terminalLineWrapMode']>(['wrap', 'horizontal']);
-const runtimeResourceSources = new Set<AppSettings['runtimeResourceSource']>(['system', 'docker', 'kubernetes']);
+// 资源来源白名单与设置下拉、Rust 远端采集分支保持一致，防止 Podman 配置在加载时被回退成系统进程。
+const runtimeResourceSources = new Set<AppSettings['runtimeResourceSource']>(['system', 'docker', 'podman', 'kubernetes']);
 
 const normalizeSingleFontFamily = (value: string) => {
   // 旧配置可能保存过一整串 fallback 字体；设置页只展示和保存用户明确选择的单个字体。
