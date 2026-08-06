@@ -64,7 +64,6 @@ import {
 } from 'lucide-react';
 
 import { translate, translateStatus, type TranslationKey } from './i18n';
-import { TerminalWorkspace } from './TerminalWorkspace';
 import { backend } from './backend';
 import { writeClipboardText } from './clipboard';
 import { useAppStore } from './store';
@@ -84,11 +83,13 @@ import {
 import { useShallow } from 'zustand/react/shallow';
 import { UpdateModal, type UpdateDownloadProgress } from './UpdateModal';
 import type { AgentBridgeRequest, AgentBridgeStatus, AgentModel, AgentProtocol, AgentProvider, AppSettings, ConnectionDraft, ConnectionProfile, LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, RemoteFileEntry, RuntimeConnectionList, RuntimeResourceMetric, RuntimeResourceTarget, RuntimeResourceUsage, RuntimeResourceSource, RuntimeStorageFiles, SshJumpHost, TerminalSession, TunnelRecord, UiLanguage, UpdateCheckResult } from './types';
-import { AgentChatPanel } from './AgentChatPanel';
 import { CustomSelect } from './CustomSelect';
 import { useDraggableModals } from './useDraggableModals';
 
 const MonacoEditor = lazy(() => import('./MonacoEditor'));
+// 终端内核和 AI 对话都不是绘制应用骨架的前置条件；动态加载可让标题栏、侧栏和操作区先进入可用状态。
+const TerminalWorkspace = lazy(() => import('./TerminalWorkspace').then((module) => ({ default: module.TerminalWorkspace })));
+const AgentChatPanel = lazy(() => import('./AgentChatPanel').then((module) => ({ default: module.AgentChatPanel })));
 
 type BottomPanelTab = 'commands' | 'tunnels' | 'history';
 // “执行”是内置 AI 助手与外部 MCP 的共享配置页，不能继续归属于任一接入方式。
@@ -4794,6 +4795,8 @@ export default function App() {
   });
   // AI 执行默认收起，只有用户点击或 MCP 新请求到达时才占用主窗口右侧空间。
   const [agentSidebarCollapsed, setAgentSidebarCollapsed] = useState(true);
+  // 首次展开前不加载 AI 对话模块；展开过后保持挂载，收起侧栏也不能中断正在进行的流式响应。
+  const [agentSidebarMounted, setAgentSidebarMounted] = useState(false);
   const [pathInput, setPathInput] = useState('~');
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
   // 文件右键“复制”暂存待粘贴的远端路径；记录来源连接以便仅在同主机内启用粘贴。
@@ -5536,6 +5539,12 @@ export default function App() {
       void bootstrap();
     }
   }, [bootstrap, bootstrapped]);
+
+  useEffect(() => {
+    if (!agentSidebarCollapsed) {
+      setAgentSidebarMounted(true);
+    }
+  }, [agentSidebarCollapsed]);
 
   // 启动后立即检测一次更新，之后每 10 分钟复检一次；网络失败时静默忽略，不打扰用户。
   useEffect(() => {
@@ -7562,25 +7571,27 @@ export default function App() {
         </section>
 
         <div className={`terminal-area ${bottomDockCollapsed ? 'is-bottom-collapsed' : ''}`}>
-          <TerminalWorkspace
-            session={activeSession}
-            settings={settings}
-            liveSessionIds={sessionIds}
-            onTerminalData={(data) => {
-              if (!activeSessionId) {
-                return;
-              }
-              void sendTerminalData(activeSessionId, data);
-            }}
-            onTerminalProtocolData={(sessionId, data) => {
-              // 能力查询可能来自后台标签；使用事件自带会话 ID，避免切换标签时把回包写入另一条 PTY。
-              void sendTerminalData(sessionId, data);
-            }}
-            onUpdateSettings={(partial) => {
-              // 行号栏右键切换的显示项直接落盘持久化，保证重启和多端同步后仍生效。
-              void persistSettings({ ...settings, ...partial }).catch(() => undefined);
-            }}
-          />
+          <Suspense fallback={<div className="terminal-startup-placeholder">{t('working')}</div>}>
+            <TerminalWorkspace
+              session={activeSession}
+              settings={settings}
+              liveSessionIds={sessionIds}
+              onTerminalData={(data) => {
+                if (!activeSessionId) {
+                  return;
+                }
+                void sendTerminalData(activeSessionId, data);
+              }}
+              onTerminalProtocolData={(sessionId, data) => {
+                // 能力查询可能来自后台标签；使用事件自带会话 ID，避免切换标签时把回包写入另一条 PTY。
+                void sendTerminalData(sessionId, data);
+              }}
+              onUpdateSettings={(partial) => {
+                // 行号栏右键切换的显示项直接落盘持久化，保证重启和多端同步后仍生效。
+                void persistSettings({ ...settings, ...partial }).catch(() => undefined);
+              }}
+            />
+          </Suspense>
 
           <div
             className="resize-handle resize-handle-horizontal"
@@ -7796,8 +7807,9 @@ export default function App() {
         </div>
       </main>
 
-      {/* 对话组件始终挂载：切换审批页或收起侧栏只能隐藏 DOM，不能销毁事件监听与流式状态。 */}
+      {/* AI 侧栏默认收起时不创建重组件；展开后的页签切换仍只隐藏 DOM，保留流式对话状态。 */}
       <>
+        {(!agentSidebarCollapsed || agentSidebarMounted) ? <>
         <div
           className={`resize-handle resize-handle-main resize-handle-agent-sidebar ${agentSidebarCollapsed ? 'is-hidden' : ''}`}
           onPointerDown={(event) => {
@@ -7842,26 +7854,29 @@ export default function App() {
           </header>
           <div ref={agentSidebarBodyRef} className="agent-sidebar-body">
             <div className={`agent-sidebar-tab-panel ${agentSidebarTab === 'chat' ? '' : 'is-hidden'}`}>
-              <AgentChatPanel
-                approvalRequests={agentChatApprovalRequests}
-                codeFontFamily={buildPreviewFontFamily(settings)}
-                fontFamily={buildAgentChatFontFamily(
-                  // 对话字体独立于终端：未单独配置（空字体 / 0 字号）时回落到终端对应设置。
-                  settings.agentChatLatinFontFamily || settings.shellLatinFontFamily || settings.shellFontFamily,
-                  settings.agentChatCjkFontFamily || settings.shellCjkFontFamily || settings.shellLatinFontFamily || settings.shellFontFamily,
-                )}
-                fontSize={settings.agentChatFontSize || settings.shellFontSize}
-                onApproveRequest={approveAgentBridgeRequest}
-                onRejectRequest={rejectAgentBridgeRequest}
-                providers={agentProviders}
-                t={t}
-              />
+              <Suspense fallback={<div className="empty-state">{t('working')}</div>}>
+                <AgentChatPanel
+                  approvalRequests={agentChatApprovalRequests}
+                  codeFontFamily={buildPreviewFontFamily(settings)}
+                  fontFamily={buildAgentChatFontFamily(
+                    // 对话字体独立于终端：未单独配置（空字体 / 0 字号）时回落到终端对应设置。
+                    settings.agentChatLatinFontFamily || settings.shellLatinFontFamily || settings.shellFontFamily,
+                    settings.agentChatCjkFontFamily || settings.shellCjkFontFamily || settings.shellLatinFontFamily || settings.shellFontFamily,
+                  )}
+                  fontSize={settings.agentChatFontSize || settings.shellFontSize}
+                  onApproveRequest={approveAgentBridgeRequest}
+                  onRejectRequest={rejectAgentBridgeRequest}
+                  providers={agentProviders}
+                  t={t}
+                />
+              </Suspense>
             </div>
             <div className={`agent-sidebar-tab-panel ${agentSidebarTab === 'requests' ? '' : 'is-hidden'}`}>
               {agentRequestPanel}
             </div>
           </div>
         </aside>
+        </> : null}
       </>
       </div>
 
