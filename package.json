@@ -22,7 +22,7 @@
     "pretauri": "npm run sync:version",
     "tauri": "tauri",
     "pretauri:dev": "npm run sync:version",
-    "tauri:dev": "tauri dev",
+    "tauri:dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "build:cli-sidecar": "node scripts/build-cli-sidecar.mjs",
     "pretauri:build": "npm run sync:version",
     "tauri:build": "tauri build",
@@ -36,7 +36,7 @@
     "webdav"
   ],
   "author": "",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@tauri-apps/api": "^2.11.0",

@@ -3,7 +3,7 @@
 [English](./README.md) | [简体中文](./README_CN.md)
 
 ![Release](https://img.shields.io/github/v/release/CrazyFigure/MyTerminal?include_prereleases&label=release)
-![License](https://img.shields.io/github/license/CrazyFigure/MyTerminal)
+![License](https://img.shields.io/badge/license-MIT%20%2B%20Commons%20Clause-orange)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111)
 ![Rust](https://img.shields.io/badge/Rust-stable-000?logo=rust&logoColor=white)
@@ -143,6 +143,8 @@ MyTerminal 可以把已保存的 SSH 连接通过本地 `CLI + MCP + GUI Broker`
 
 - MCP Bridge 初始默认关闭，需要在 **设置 > MCP** 中手动开启；开启状态与自动执行策略会持久化，并在 MyTerminal 重启后按原配置恢复。
 - 开启后，MyTerminal 会在 `127.0.0.1` 启动本地 Broker，并写入包含端口与 token 的 discovery 文件。
+- 安装版与本地开发版使用不同的单实例标识和数据目录，可以在同一台机器上同时运行；两个 Broker 都开启时不会抢占端口。
+- 设置页生成的 MCP 配置默认使用 `latest` 选择策略：每次工具调用都连接后启动且健康的 Broker；该实例退出或崩溃后会自动回退到仍存活的旧实例。删除 `MYTERMINAL_BRIDGE_SELECTION` 可继续固定使用 `MYTERMINAL_DATA_DIR` 对应的 Broker。
 - 安装版优先由 MCP 客户端直接启动随 MyTerminal 分发的 `myterminal-cli`；开发态找不到 CLI 时才通过项目内 `npx` launcher 启动。
 - Agent 应先列出连接；简单任务可把返回的连接 ID（或唯一连接名称）直接作为远程工具的 `sessionId`，Bridge 会自动建立逻辑会话。如需独立会话，也可显式打开并复用返回的 `sessionId`，任务结束后关闭。
 - 连接列表、目录列表、文件读取等只读工具可直接执行。
@@ -164,7 +166,11 @@ MyTerminal 可以把已保存的 SSH 连接通过本地 `CLI + MCP + GUI Broker`
       "args": [
         "--yes",
         "C:/Software/WorkSpace/MyTerminal/mcp/myterminal-mcp"
-      ]
+      ],
+      "env": {
+        "MYTERMINAL_DATA_DIR": "C:/Software/WorkSpace/MyTerminal/.myterminal-data",
+        "MYTERMINAL_BRIDGE_SELECTION": "latest"
+      }
     }
   }
 }
@@ -215,6 +221,9 @@ npm run check        # 执行前端构建和 Rust 后端检查
 
 [![Star 走势图](./assets/star-history.svg)](https://github.com/CrazyFigure/MyTerminal/stargazers)
 
-## License
+## 许可证
 
-[MIT](./LICENSE) © 2026 CrazyFigure
+[MIT License + Commons Clause License Condition v1.0](./LICENSE) © 2026
+CrazyFigure。允许企业免费用于内部生产；未经版权所有者事先书面授权，不得销售
+MyTerminal 本身，也不得提供其价值全部或主要来源于 MyTerminal 功能的收费产品或服务。
+这是源码可用许可证，不是 OSI 认可的开源许可证。
