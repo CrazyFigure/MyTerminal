@@ -1,0 +1,421 @@
+/* 连接表单、编辑器、拖拽与菜单末端覆盖样式；文件顺序用于保持原有 CSS 级联优先级。 */
+/* 分组路径下拉保留全部候选，仅把匹配项排前，避免浏览器 datalist 过滤掉父级分组。 */
+.group-combobox {
+  position: relative;
+}
+
+.group-combobox input {
+  width: 100%;
+}
+
+.group-options-menu {
+  position: absolute;
+  z-index: 70;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  background: var(--app-overlay-bg);
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.12);
+}
+
+.group-option-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-text);
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.group-option-button:hover {
+  background: var(--app-active-bg);
+  color: var(--app-active-text);
+}
+
+.group-option-button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 编辑器弹窗必须给 Monaco 一个明确的实色容器，避免 yml 等文件打开后被透明背景或塌陷高度遮住。 */
+.modal-editor {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(1200px, 100%);
+  height: var(--modal-editor-fixed-height);
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.app-shell.theme-dark .modal-editor {
+  background: #0f172a;
+}
+
+.modal-editor .modal-header {
+  min-height: 0;
+}
+
+.modal-editor .modal-header p {
+  max-width: min(820px, 68vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-shell,
+.modal-editor-shell {
+  min-height: 0;
+  height: 100%;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.app-shell.theme-dark .editor-shell,
+.app-shell.theme-dark .modal-editor-shell {
+  background: #0f172a;
+}
+
+.editor-shell .monaco-editor,
+.editor-shell .monaco-editor-background,
+.editor-shell .monaco-editor .margin {
+  background-color: inherit;
+}
+
+/* 文件管理列宽调整只在表头展示窄分隔线，保证列表保持专业工具的紧凑密度。 */
+.explorer-column-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding-right: 8px;
+}
+
+.explorer-column-header > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.explorer-column-resizer {
+  position: absolute;
+  top: -3px;
+  right: -5px;
+  bottom: -3px;
+  width: 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.explorer-column-resizer::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: rgba(148, 163, 184, 0.32);
+}
+
+.explorer-column-resizer:hover::after,
+.explorer-column-resizer:active::after {
+  width: 2px;
+  background: var(--app-active-border);
+}
+
+/* 指针拖拽预览跟随鼠标展示当前项，实际排序仍由 pointerup 的落点统一提交。 */
+.drag-preview {
+  position: fixed;
+  z-index: 90;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 260px;
+  padding: 5px 8px;
+  border: 1px solid rgba(79, 70, 229, 0.26);
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1e1b4b;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+  font-size: 0.8rem;
+  pointer-events: none;
+}
+
+.drag-preview span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell.theme-dark .drag-preview {
+  background: #1e293b;
+  color: #e0e7ff;
+}
+
+.app-shell.theme-dark .connection-group-row.is-drop-target {
+  border-color: rgba(96, 165, 250, 0.62);
+  background: rgba(30, 64, 175, 0.38);
+}
+
+@media (max-width: 1200px) {
+  .tunnel-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workspace-toolbar {
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, auto);
+  }
+
+  .workspace-title {
+    display: none;
+  }
+
+  .session-strip {
+    order: 1;
+  }
+
+  .workspace-toolbar-actions {
+    order: 2;
+  }
+}
+
+@media (max-width: 960px) {
+  .app-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .resize-handle-main {
+    display: none;
+  }
+
+  .sidebar {
+    display: none;
+  }
+
+  .agent-sidebar {
+    display: none;
+  }
+
+  .workspace {
+    padding-left: 0;
+  }
+
+  .settings-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .connection-manager-layout {
+    grid-template-columns: 1fr;
+  }
+
+  /* 窄窗口改为纵向堆叠，不保留无意义的横向分隔条。 */
+  .connection-manager-resizer {
+    display: none;
+  }
+
+  .agent-bridge-power {
+    width: min(300px, 100%);
+  }
+
+  .local-terminal-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto minmax(220px, 1fr);
+  }
+
+  .local-terminal-history-panel {
+    grid-column: auto;
+  }
+
+  .local-terminal-command-list {
+    max-height: 150px;
+  }
+
+  .local-terminal-history-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .local-terminal-history-main,
+  .local-terminal-history-command {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 720px) {
+  .tunnel-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .form-grid,
+  .action-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-compact-form-grid > label:not(.settings-centered-toggle),
+  .settings-compact-form-grid > .form-field {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .form-grid .agent-toggle-field.settings-inline-toggle {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .span-2 {
+    grid-column: span 1;
+  }
+
+  .connection-table-header,
+  .connection-table-row {
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
+  }
+
+  .agent-bridge-status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-request-header {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .agent-request-header .status-badge {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .agent-request-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-request-summary span,
+  .agent-request-summary strong {
+    white-space: normal;
+  }
+}
+
+/* 末尾兜底覆盖前面旧样式：右键菜单保持横排，底部动作区保持一行，按钮文字在按钮内部换行。 */
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.context-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 会话右键菜单：缩小规格（比文件右键稍宽、字号和间距略大，避免文案显得太拥挤） */
+.session-context-menu {
+  z-index: 120;
+  min-width: 168px;
+  padding: 5px;
+}
+
+.session-context-menu .context-menu-item {
+  min-height: 26px;
+  border-radius: 7px;
+  padding: 5px 9px;
+  font-size: 0.8rem;
+}
+
+.file-context-menu {
+  min-width: 132px;
+  padding: 4px;
+}
+
+.file-context-menu .context-menu-item {
+  min-height: 24px;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.78rem;
+}
+
+/* 文件右键“复制名称”的二级菜单：悬停或聚焦父项时向右浮出，靠近窗口右缘时加 .flip-left 翻到左侧。 */
+.context-menu-item.has-submenu {
+  position: relative;
+  justify-content: space-between;
+  cursor: default;
+}
+
+.context-menu-item.has-submenu > .context-menu-item-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.context-submenu-caret {
+  flex: 0 0 auto;
+  opacity: 0.6;
+}
+
+.context-menu .context-submenu {
+  position: absolute;
+  top: -5px;
+  left: 100%;
+  display: none;
+}
+
+.context-menu .context-submenu.flip-left {
+  left: auto;
+  right: 100%;
+}
+
+.context-menu-item.has-submenu:hover > .context-submenu,
+.context-menu-item.has-submenu:focus-within > .context-submenu {
+  display: block;
+}
+
+.terminal-context-menu {
+  z-index: 130;
+  min-width: 140px;
+}
+
+.terminal-context-menu .context-menu-item {
+  min-height: 28px;
+  padding: 6px 9px;
+}
+
+.file-upload-button.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.panel-tab-row .tab-list {
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
+  overflow: visible;
+  scrollbar-width: none;
+}
+
+.panel-tab-row .tab-list::-webkit-scrollbar {
+  display: none;
+}
+
+.panel-tab-actions {
+  flex: 1 1 360px;
+  flex-wrap: nowrap;
+  max-width: none;
+  overflow: hidden;
+  scrollbar-width: none;
+}
+
+.panel-tab-actions::-webkit-scrollbar {
+  display: none;
+}
