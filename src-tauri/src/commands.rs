@@ -7166,8 +7166,7 @@ mod rdp_connection_tests {
                 "type": "socks5",
                 "host": "127.0.0.1",
                 "port": 1080
-            },
-            "tags": []
+            }
         }))
         .expect("RDP test profile should deserialize")
     }

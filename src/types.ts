@@ -61,7 +61,6 @@ export interface ConnectionProfile {
   /** 代理仅作用于第一跳网络连接：无跳板时连目标，有跳板时连第一个跳板。 */
   proxy?: SshProxyConfig;
   note?: string;
-  tags: string[];
 }
 
 export interface WebDavSettings {
@@ -494,5 +493,4 @@ export interface ConnectionDraft {
   /** 表单草稿中的代理配置支持临时关闭但保留输入值。 */
   proxy: SshProxyConfig;
   note?: string;
-  tags: string[] | string;
 }

@@ -605,8 +605,6 @@ pub struct ConnectionProfile {
     pub proxy: SshProxyConfig,
     #[serde(default)]
     pub note: Option<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1183,8 +1181,6 @@ pub struct StoredConnectionProfile {
     pub proxy: StoredSshProxyConfig,
     #[serde(default)]
     pub note: Option<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1252,8 +1248,7 @@ mod connection_profile_compatibility_tests {
             "name": "Legacy Linux",
             "host": "192.168.1.10",
             "username": "root",
-            "password": "secret",
-            "tags": []
+            "password": "secret"
         }))
         .expect("legacy connection should deserialize");
 

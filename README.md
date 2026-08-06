@@ -71,7 +71,7 @@ MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP 
 ### MCP Bridge and AI Approval
 
 - **MCP Bridge for AI coding tools** - Let Claude Code, Codex, and other MCP clients use saved SSH profiles through a local `CLI + MCP + GUI Broker` bridge.
-- **Connection discovery** - MCP clients can list saved SSH profiles as non-secret metadata, including name, group path, host, port, username, tags, and notes.
+- **Connection discovery** - MCP clients can list saved SSH profiles as non-secret metadata, including name, group path, host, port, username, and notes.
 - **Bridge sessions** - MCP clients can open and close logical SSH bridge sessions by connection ID or unique connection name, then run commands or file operations against them.
 - **GUI-approved execution** - Remote commands, uploads, downloads, writes, deletes, renames, and directory creation requests are shown in MyTerminal for approval by default.
 - **Right-side AI execution panel** - Pending and completed AI requests live in a resizable right sidebar so command, file, and history panels remain available.
@@ -185,7 +185,7 @@ Copy the JSON from **Settings > MCP > Usage**. In development it looks like this
 - `myterminal_file_rename`
 - `myterminal_file_mkdir`
 
-The connection list only returns non-secret metadata such as name, group path, host, port, username, tags, and notes. Passwords, private keys, and passphrases are never exposed through MCP.
+The connection list only returns non-secret metadata such as name, group path, host, port, username, and notes. Passwords, private keys, and passphrases are never exposed through MCP.
 
 ## Useful Scripts
 

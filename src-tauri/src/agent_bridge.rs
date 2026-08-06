@@ -74,7 +74,6 @@ pub struct AgentConnectionSummary {
     pub host: String,
     pub port: u16,
     pub username: String,
-    pub tags: Vec<String>,
     pub note: Option<String>,
 }
 
@@ -1146,7 +1145,6 @@ fn sanitize_connection(connection: ConnectionProfile) -> AgentConnectionSummary 
         host: connection.host,
         port: connection.port,
         username: connection.username,
-        tags: connection.tags,
         note: connection.note,
     }
 }
@@ -3107,7 +3105,6 @@ mod tests {
             jump_hosts: Vec::new(),
             proxy: crate::models::SshProxyConfig::default(),
             note: Some("note".into()),
-            tags: vec!["prod".into()],
         });
         let serialized = serde_json::to_string(&summary).unwrap();
         assert!(serialized.contains("10.0.0.2"));
@@ -3125,7 +3122,6 @@ mod tests {
             host: "10.0.0.3".into(),
             port: 22,
             username: "root".into(),
-            tags: Vec::new(),
             note: None,
         }];
         let tree = build_group_tree(&["prod".into(), "prod/web".into()], &connections);
