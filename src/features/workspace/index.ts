@@ -13,3 +13,7 @@ export {
   sidePanelMinWidth,
   sidebarRuntimeMinHeight,
 } from './layout';
+export { TransferProgressStack, type TransferProgressItem } from './TransferProgressStack';
+export { BottomDock } from './BottomDock';
+export { AppTitlebar } from './AppTitlebar';
+export { useTransferProgress } from './useTransferProgress';

@@ -567,7 +567,13 @@ fn keep_trailing_utf8_by_bytes(value: &str, max_bytes: usize) -> String {
 
 #[cfg(test)]
 mod shell_output_filter_tests {
+    use std::sync::Mutex;
+
+    // 这些兼容测试覆盖命令层与输出过滤器的协作，显式引入父命令模块中的队列、cwd 和字体辅助函数。
     use super::super::*;
+    use super::super::local_terminal::{
+        should_force_claude_synchronized_output, should_force_qwen_synchronized_output,
+    };
     use super::*;
 
     #[test]

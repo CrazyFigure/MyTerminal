@@ -6,3 +6,5 @@ export {
   getAgentRequestMachineLabel,
   getAgentRequestSummary,
 } from './requestPresentation';
+export { AgentRequestPanel } from './AgentRequestPanel';
+export { AgentSidebar } from './AgentSidebar';

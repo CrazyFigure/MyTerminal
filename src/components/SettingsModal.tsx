@@ -1,7 +1,7 @@
 /* 本模块由 App 入口按功能域拆出，保留原组件行为与状态订阅方式。 */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { open as openFileDialog, save as saveFileDialog } from '@tauri-apps/plugin-dialog';
-import { Activity, Bot, Cable, Copy, Download, ExternalLink, Eye, EyeOff, Info, Plus, RefreshCw, RotateCcw, Save, Settings, ShieldCheck, Trash2, Upload, X } from 'lucide-react';
+import { X } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { translate, type TranslationKey } from '../i18n';
 import { backend } from '../backend';
@@ -18,26 +18,28 @@ import {
   terminalLatinFontOptions,
 } from '../terminalFonts';
 import { UpdateModal, type UpdateDownloadProgress } from '../UpdateModal';
-import type { AgentBridgeStatus, AgentModel, AgentProtocol, AgentProvider, AppSettings, RuntimeResourceSource, UiLanguage, UpdateCheckResult } from '../types';
-import { CustomSelect } from '../CustomSelect';
+import type { AgentBridgeStatus, AgentModel, AgentProvider, AppSettings, UpdateCheckResult } from '../types';
 import { buildConnectionGroupTree, normalizeConnectionGroupPath } from '../app/connectionGroups';
 import { buildPreviewFontFamily } from '../app/fonts';
-import { clamp } from '../app/layout';
 import { isTauriRuntime } from '../app/runtime';
 import { translateUpdateCheckError } from '../app/updates';
-import { AgentAutoConnectionTree } from '../features/settings/AgentAutoConnectionTree';
 import { BackupSelectorModal } from '../features/settings/BackupSelectorModal';
 import {
-  agentProtocolUrlSpec,
+  AboutSettingsSection,
+  AgentBridgeSettingsSection,
+  AgentProviderSettingsSection,
+  AppearanceSettingsSection,
+  ExecutionSettingsSection,
+  ResourceSettingsSection,
+  SettingsNavigation,
+  SyncSettingsSection,
+} from '../features/settings';
+import {
   buildAgentMcpConfig,
   findFontOption,
   mergeInstalledFontOptions,
-  numericSettingInputProps,
-  previewAgentRequestUrl,
-  readBoundedIntegerInput,
   resourceSettingsDefaults,
   serializeAgentProvidersForCompare,
-  terminalBackgroundFitOptions,
   type SettingsTab,
 } from '../features/settings/model';
 
@@ -580,6 +582,51 @@ export function SettingsModal({
     await runSettingsAction('export-local', () => exportLocalConfig(selectedPath));
   };
 
+  // 配置恢复后统一刷新设置草稿和 AI 端点聚合，避免 WebDAV 下载与本地导入各自维护一套易分叉流程。
+  const refreshDraftsAfterConfigRestore = async () => {
+    setDraftSettings(useAppStore.getState().settings);
+    const providers = await backend.listAgentProviders();
+    setAgentProviderDrafts(providers);
+    setAgentProvidersBaseline(providers);
+    onAgentProvidersSaved(providers);
+  };
+
+  // 同步页动作由编排层负责远程调用、反馈和恢复后的跨功能刷新，分区组件只表达用户意图。
+  const handleTestWebdavConnection = () =>
+    runSettingsAction('test-webdav', () => testWebdavConnection(draftSettings), t('statusWebdavTestPassed'));
+  const handleUploadConfig = () =>
+    runSettingsAction('upload-config', async () => {
+      await persistSettings(draftSettings);
+      await uploadConfig();
+    }, t('statusUploadedConfig'));
+  const handleDownloadConfig = () =>
+    runSettingsAction('download-config', async () => {
+      const backups = await backend.listConfigBackups();
+      if (backups.length === 0) {
+        throw new Error(t('noBackupsFound'));
+      }
+      const selected = await new Promise<string | null>((resolve) => {
+        setBackupList(backups);
+        backupSelectorResolveRef.current = resolve;
+        setBackupSelectorOpen(true);
+      });
+      if (!selected) {
+        throw new Error(t('downloadCancelled'));
+      }
+      await downloadConfig(selected);
+      await refreshDraftsAfterConfigRestore();
+    }, t('statusDownloadedConfig'));
+  const handleImportLocalConfig = async (file: File) => {
+    // 导入覆盖本地配置前保留原确认时机；取消时不进入动作状态，也不产生错误反馈。
+    if (!window.confirm(t('importLocalConfigConfirm'))) {
+      return;
+    }
+    await runSettingsAction('import-local', async () => {
+      await importLocalConfig(file);
+      await refreshDraftsAfterConfigRestore();
+    });
+  };
+
   useEffect(() => {
     if (open) {
       setDraftSettings(settings);
@@ -675,1035 +722,131 @@ export function SettingsModal({
         </div>
 
         <div className="settings-shell">
-          <nav className="settings-nav">
-            <button
-              className={`settings-nav-item ${activeTab === 'appearance' ? 'is-active' : ''}`}
-              onClick={() => onTabChange('appearance')}
-              type="button"
-            >
-              <Settings size={16} />
-              {t('settingsTabAppearance')}
-            </button>
-            <button
-              className={`settings-nav-item ${activeTab === 'resources' ? 'is-active' : ''}`}
-              onClick={() => onTabChange('resources')}
-              type="button"
-            >
-              <Activity size={16} />
-              {t('settingsTabResources')}
-            </button>
-            <button
-              className={`settings-nav-item ${activeTab === 'sync' ? 'is-active' : ''}`}
-              onClick={() => onTabChange('sync')}
-              type="button"
-            >
-              <Upload size={16} />
-              {t('settingsTabSync')}
-            </button>
-            <button
-              className={`settings-nav-item ${activeTab === 'agent' ? 'is-active' : ''}`}
-              onClick={() => onTabChange('agent')}
-              type="button"
-            >
-              <Cable size={16} />
-              {t('settingsTabAgent')}
-            </button>
-            <button
-              className={`settings-nav-item ${activeTab === 'agentChat' ? 'is-active' : ''}`}
-              onClick={() => onTabChange('agentChat')}
-              type="button"
-            >
-              <Bot size={16} />
-              {t('settingsTabAgentChat')}
-            </button>
-            <button
-              className={`settings-nav-item ${activeTab === 'execution' ? 'is-active' : ''}`}
-              onClick={() => onTabChange('execution')}
-              type="button"
-            >
-              <ShieldCheck size={16} />
-              {t('settingsTabExecution')}
-            </button>
-            <button
-              className={`settings-nav-item ${activeTab === 'about' ? 'is-active' : ''}`}
-              onClick={() => onTabChange('about')}
-              type="button"
-            >
-              <Info size={16} />
-              {t('settingsTabAbout')}
-            </button>
-          </nav>
+<SettingsNavigation activeTab={activeTab} onTabChange={onTabChange} t={t} />
 
           <div className="settings-content">
             {activeTab === 'appearance' ? (
-              <div className="stack gap-16 settings-appearance-pane">
-                {/* 外观页按用户认知路径分块：先配置应用偏好，再调整终端视觉与交互。 */}
-                <section className="settings-section-block">
-                  <div>
-                    <h3>{t('appearanceBaseTitle')}</h3>
-                  </div>
-
-                  <div className="form-grid">
-                    <div className="form-field">
-                      <span>{t('fieldTheme')}</span>
-                      <CustomSelect
-                        aria-label={t('fieldTheme')}
-                        value={draftSettings.themeMode}
-                        onChange={(val) => updateDraftSettings((current) => ({ ...current, themeMode: val as 'light' | 'dark' }))}
-                        options={[
-                          { value: 'light', label: t('light') },
-                          { value: 'dark', label: t('dark') },
-                        ]}
-                      />
-                    </div>
-                    <div className="form-field">
-                      <span>{t('fieldLanguage')}</span>
-                      <CustomSelect
-                        aria-label={t('fieldLanguage')}
-                        value={draftSettings.uiLanguage}
-                        onChange={(val) => updateDraftSettings((current) => ({ ...current, uiLanguage: val as UiLanguage }))}
-                        options={[
-                          { value: 'zh-CN', label: t('languageZhCn') },
-                          { value: 'en-US', label: t('languageEnUs') },
-                        ]}
-                      />
-                    </div>
-                  </div>
-                </section>
-
-                <section className="settings-section-block">
-                  <div>
-                    <h3>{t('appearanceFontTitle')}</h3>
-                  </div>
-
-                  <div className="form-grid">
-                    <div className="form-field">
-                      <span>{t('fieldLatinFontFamily')}</span>
-                      <CustomSelect
-                        aria-label={t('fieldLatinFontFamily')}
-                        emptyText={t('fontSearchEmpty')}
-                        value={selectedLatinFontFamily}
-                        onChange={(val) => updateDraftSettings((current) => ({ ...current, shellLatinFontFamily: val }))}
-                        onOpen={loadSystemFontsOnce}
-                        options={latinOptions.map((fontFamily) => ({
-                          value: fontFamily,
-                          label: fontFamily,
-                        }))}
-                        searchable
-                        searchPlaceholder={t('fontSearchPlaceholder')}
-                      />
-                    </div>
-                    <div className="form-field">
-                      <span>{t('fieldCjkFontFamily')}</span>
-                      <CustomSelect
-                        aria-label={t('fieldCjkFontFamily')}
-                        emptyText={t('fontSearchEmpty')}
-                        value={selectedCjkFontFamily}
-                        onChange={(val) => updateDraftSettings((current) => ({ ...current, shellCjkFontFamily: val }))}
-                        onOpen={loadSystemFontsOnce}
-                        options={cjkOptions.map((fontFamily) => ({
-                          value: fontFamily,
-                          label: fontFamily,
-                        }))}
-                        searchable
-                        searchPlaceholder={t('fontSearchPlaceholder')}
-                      />
-                    </div>
-                    <label>
-                      <span>{t('fieldFontSize')}</span>
-                      <input
-                        onChange={(event) => updateDraftSettings((current) => ({ ...current, shellFontSize: Number(event.target.value) || 15 }))}
-                        onWheel={(event) => event.currentTarget.blur()}
-                        type="number"
-                        value={draftSettings.shellFontSize}
-                      />
-                    </label>
-                    <div className="font-preview-panel span-2" style={terminalPreviewStyle}>
-                      <span>0123456789 abcdefghABCDEFGH</span>
-                      <strong>终端中文字体预览</strong>
-                    </div>
-                  </div>
-                </section>
-
-                <section className="settings-section-block">
-                  <div>
-                    <h3>{t('appearanceAgentChatFontTitle')}</h3>
-                  </div>
-
-                  <div className="form-grid">
-                    <div className="form-field">
-                      <span>{t('fieldLatinFontFamily')}</span>
-                      <CustomSelect
-                        aria-label={t('fieldLatinFontFamily')}
-                        emptyText={t('fontSearchEmpty')}
-                        value={draftSettings.agentChatLatinFontFamily ?? ''}
-                        onChange={(val) => updateDraftSettings((current) => ({ ...current, agentChatLatinFontFamily: val || undefined }))}
-                        onOpen={loadSystemFontsOnce}
-                        options={[
-                          { value: '', label: t('agentChatFontFollowTerminal') },
-                          ...agentChatLatinOptions.map((fontFamily) => ({
-                            value: fontFamily,
-                            label: fontFamily,
-                          })),
-                        ]}
-                        searchable
-                        searchPlaceholder={t('fontSearchPlaceholder')}
-                      />
-                    </div>
-                    <div className="form-field">
-                      <span>{t('fieldCjkFontFamily')}</span>
-                      <CustomSelect
-                        aria-label={t('fieldCjkFontFamily')}
-                        emptyText={t('fontSearchEmpty')}
-                        value={draftSettings.agentChatCjkFontFamily ?? ''}
-                        onChange={(val) => updateDraftSettings((current) => ({ ...current, agentChatCjkFontFamily: val || undefined }))}
-                        onOpen={loadSystemFontsOnce}
-                        options={[
-                          { value: '', label: t('agentChatFontFollowTerminal') },
-                          ...agentChatCjkOptions.map((fontFamily) => ({
-                            value: fontFamily,
-                            label: fontFamily,
-                          })),
-                        ]}
-                        searchable
-                        searchPlaceholder={t('fontSearchPlaceholder')}
-                      />
-                    </div>
-                    <label>
-                      <span>{t('fieldFontSize')}</span>
-                      <input
-                        max={48}
-                        min={0}
-                        onChange={(event) => updateDraftSettings((current) => ({ ...current, agentChatFontSize: Number(event.target.value) || 0 }))}
-                        onWheel={(event) => event.currentTarget.blur()}
-                        type="number"
-                        value={draftSettings.agentChatFontSize ?? 0}
-                      />
-                    </label>
-                    {/* 空字体与 0 字号都表示跟随终端设置，老配置升级后对话区观感保持不变。 */}
-                    <p className="field-hint">{t('agentChatFontSizeHint')}</p>
-                    <div className="font-preview-panel span-2" style={agentChatPreviewStyle}>
-                      <span>0123456789 abcdefghABCDEFGH</span>
-                      <strong>AI 对话字体预览</strong>
-                    </div>
-                  </div>
-                </section>
-
-                <section className="settings-section-block">
-                  <div>
-                    <h3>{t('appearanceBackgroundTitle')}</h3>
-                  </div>
-
-                  <div className="form-grid">
-                    <label className="span-2">
-                      <span>{t('fieldTerminalBackgroundImage')}</span>
-                      <div className="background-image-field">
-                        <input
-                          placeholder="C:\\Pictures\\terminal.png 或 https://example.com/bg.png"
-                          value={draftSettings.backgroundImage ?? ''}
-                          onChange={(event) => updateDraftSettings((current) => ({ ...current, backgroundImage: event.target.value }))}
-                        />
-                        <button
-                          className="secondary-button slim"
-                          onClick={() => void handleLocalBackgroundImage()}
-                          type="button"
-                        >
-                          <Upload size={14} /> {t('chooseLocalImage')}
-                        </button>
-                      </div>
-                    </label>
-                    <label>
-                      <span>{t('fieldTerminalBackgroundImageOpacity')}</span>
-                      <div className="opacity-control">
-                        <input
-                          type="range"
-                          min={0}
-                          max={1}
-                          step={0.05}
-                          value={draftSettings.terminalBackgroundImageOpacity ?? 0.18}
-                          onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalBackgroundImageOpacity: Number(event.target.value) }))}
-                        />
-                        <input
-                          aria-label={t('fieldTerminalBackgroundImageOpacity')}
-                          type="number"
-                          min={0}
-                          max={100}
-                          step={1}
-                          value={Math.round((draftSettings.terminalBackgroundImageOpacity ?? 0.18) * 100)}
-                          onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalBackgroundImageOpacity: clamp(Number(event.target.value) || 0, 0, 100) / 100 }))}
-                          onWheel={(event) => event.currentTarget.blur()}
-                        />
-                      </div>
-                    </label>
-                    <div className="form-field">
-                      <span>{t('fieldTerminalBackgroundImageFit')}</span>
-                      <CustomSelect
-                        aria-label={t('fieldTerminalBackgroundImageFit')}
-                        value={draftSettings.terminalBackgroundImageFit ?? 'cover'}
-                        onChange={(val) =>
-                          updateDraftSettings((current) => ({
-                            ...current,
-                            terminalBackgroundImageFit: val as NonNullable<AppSettings['terminalBackgroundImageFit']>,
-                          }))
-                        }
-                        options={terminalBackgroundFitOptions.map((option) => ({
-                          value: option.value,
-                          label: t(option.labelKey),
-                        }))}
-                      />
-                    </div>
-                  </div>
-                </section>
-
-                <section className="settings-section-block">
-                  <div>
-                    <h3>{t('appearanceBehaviorTitle')}</h3>
-                  </div>
-
-                  <div className="form-grid settings-single-column-grid settings-compact-form-grid">
-                    <div className="form-field">
-                      <span>{t('fieldTerminalRightClickBehavior')}</span>
-                      <CustomSelect
-                        aria-label={t('fieldTerminalRightClickBehavior')}
-                        value={draftSettings.terminalRightClickBehavior}
-                        onChange={(val) => updateDraftSettings((current) => ({ ...current, terminalRightClickBehavior: val as AppSettings['terminalRightClickBehavior'] }))}
-                        options={[
-                          { value: 'paste', label: t('rightClickPaste') },
-                          { value: 'menu', label: t('rightClickMenu') },
-                        ]}
-                      />
-                    </div>
-                    <div className="form-field">
-                      <span>{t('fieldTerminalLineWrapMode')}</span>
-                      <CustomSelect
-                        aria-label={t('fieldTerminalLineWrapMode')}
-                        value={draftSettings.terminalLineWrapMode ?? 'wrap'}
-                        onChange={(val) => updateDraftSettings((current) => ({ ...current, terminalLineWrapMode: val as AppSettings['terminalLineWrapMode'] }))}
-                        options={[
-                          { value: 'wrap', label: t('terminalLineWrapModeWrap') },
-                          { value: 'horizontal', label: t('terminalLineWrapModeHorizontal') },
-                        ]}
-                      />
-                    </div>
-                    <div className="agent-toggle-field settings-toggle-row settings-inline-toggle settings-centered-toggle">
-                      <span id="terminal-match-selection-label">{t('fieldTerminalMatchSelection')}</span>
-                      <div className="settings-inline-toggle-control">
-                        <input
-                          aria-label={t('fieldTerminalMatchSelection')}
-                          checked={draftSettings.terminalMatchSelection ?? true}
-                          type="checkbox"
-                          onChange={(event) => updateDraftSettings((current) => ({ ...current, terminalMatchSelection: event.target.checked }))}
-                        />
-                        <strong>{(draftSettings.terminalMatchSelection ?? true) ? t('enabled') : t('disabled')}</strong>
-                      </div>
-                    </div>
-                    <div className="agent-toggle-field settings-toggle-row settings-inline-toggle settings-centered-toggle">
-                      <span id="hardware-acceleration-label">{t('fieldHardwareAcceleration')}</span>
-                      <div className="settings-inline-toggle-control">
-                        <input
-                          aria-label={t('fieldHardwareAcceleration')}
-                          checked={draftSettings.hardwareAcceleration ?? true}
-                          type="checkbox"
-                          onChange={(event) => updateDraftSettings((current) => ({ ...current, hardwareAcceleration: event.target.checked }))}
-                        />
-                        <strong>
-                          {(draftSettings.hardwareAcceleration ?? true)
-                            ? t('hardwareAccelerationEnabled')
-                            : t('hardwareAccelerationDisabled')}
-                        </strong>
-                      </div>
-                    </div>
-                    {/* 渲染模式在 WebView2 创建前决定；提示用户重启生效，并明确软件渲染不保证更省内存。 */}
-                    <p className="field-hint">{t('hardwareAccelerationHint')}</p>
-                  </div>
-                </section>
-
-                <div className="modal-actions">
-                  {settingsSaveMessage ? <span className="inline-save-feedback">{settingsSaveMessage}</span> : null}
-                  <button className="primary-button" disabled={!hasSettingsChanges} onClick={() => void persistSettingsWithFeedback()} type="button">
-                    <Save size={16} /> {t('saveAppearance')}
-                  </button>
-                </div>
-              </div>
+              <AppearanceSettingsSection
+                agentChatCjkOptions={agentChatCjkOptions}
+                agentChatLatinOptions={agentChatLatinOptions}
+                agentChatPreviewStyle={agentChatPreviewStyle}
+                cjkOptions={cjkOptions}
+                draftSettings={draftSettings}
+                hasSettingsChanges={hasSettingsChanges}
+                latinOptions={latinOptions}
+                onChooseLocalBackgroundImage={handleLocalBackgroundImage}
+                onLoadSystemFonts={loadSystemFontsOnce}
+                onSave={persistSettingsWithFeedback}
+                onUpdate={updateDraftSettings}
+                saveMessage={settingsSaveMessage}
+                selectedCjkFontFamily={selectedCjkFontFamily}
+                selectedLatinFontFamily={selectedLatinFontFamily}
+                t={t}
+                terminalPreviewStyle={terminalPreviewStyle}
+              />
             ) : null}
 
             {activeTab === 'resources' ? (
-              <div className="stack gap-16">
-                <section className="settings-section-block">
-                  <div>
-                    <h3>{t('runtimeResourceSettingsTitle')}</h3>
-                  </div>
-
-                  <div className="form-grid settings-single-column-grid settings-compact-form-grid">
-                    <label>
-                      <span>{t('fieldRuntimeRefreshInterval')}</span>
-                      <input
-                        {...numericSettingInputProps}
-                        aria-label={t('fieldRuntimeRefreshInterval')}
-                        value={draftSettings.runtimeRefreshIntervalSec}
-                        onChange={(event) =>
-                          updateDraftSettings((current) => ({
-                            ...current,
-                            runtimeRefreshIntervalSec: readBoundedIntegerInput(event.target.value, 1, 60, 1),
-                          }))
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>{t('fieldRuntimeResourceRefreshInterval')}</span>
-                      <input
-                        {...numericSettingInputProps}
-                        aria-label={t('fieldRuntimeResourceRefreshInterval')}
-                        value={draftSettings.runtimeResourceRefreshIntervalSec ?? 3}
-                        onChange={(event) =>
-                          updateDraftSettings((current) => ({
-                            ...current,
-                            // 进程/线程明细是独立接口，允许比常规运行状态更贴近实时，但避免低于 1 秒。
-                            runtimeResourceRefreshIntervalSec: readBoundedIntegerInput(event.target.value, 1, 300, 3),
-                          }))
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>{t('fieldRuntimeStorageRefreshInterval')}</span>
-                      <input
-                        {...numericSettingInputProps}
-                        aria-label={t('fieldRuntimeStorageRefreshInterval')}
-                        value={draftSettings.runtimeStorageRefreshIntervalSec ?? 5}
-                        onChange={(event) =>
-                          updateDraftSettings((current) => ({
-                            ...current,
-                            // 大文件扫描会遍历文件系统，前端最低 5 秒，保存时后端再次兜底。
-                            runtimeStorageRefreshIntervalSec: readBoundedIntegerInput(event.target.value, 5, 300, 5),
-                          }))
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>{t('fieldSshKeepaliveInterval')}</span>
-                      <input
-                        {...numericSettingInputProps}
-                        aria-label={t('fieldSshKeepaliveInterval')}
-                        value={draftSettings.sshKeepaliveIntervalSec ?? 30}
-                        onChange={(event) =>
-                          updateDraftSettings((current) => ({
-                            ...current,
-                            // 0 表示关闭保活；其余值在保存归一化时夹到 10~300 秒。
-                            sshKeepaliveIntervalSec: readBoundedIntegerInput(event.target.value, 0, 300, 0),
-                          }))
-                        }
-                      />
-                    </label>
-                    <div className="form-field">
-                      <span>{t('fieldRuntimeResourceSource')}</span>
-                      <CustomSelect
-                        aria-label={t('fieldRuntimeResourceSource')}
-                        value={draftSettings.runtimeResourceSource ?? 'system'}
-                        onChange={(val) =>
-                          updateDraftSettings((current) => ({
-                            ...current,
-                            // 资源来源只作为内存行展开明细的默认采集策略，不影响常规运行状态轮询。
-                            runtimeResourceSource: val as RuntimeResourceSource,
-                          }))
-                        }
-                        options={[
-                          { value: 'system', label: t('runtimeResourceSourceSystem') },
-                          { value: 'docker', label: t('runtimeResourceSourceDocker') },
-                          { value: 'podman', label: t('runtimeResourceSourcePodman') },
-                          { value: 'kubernetes', label: t('runtimeResourceSourceKubernetes') },
-                        ]}
-                      />
-                    </div>
-                  </div>
-                </section>
-
-                <div className="modal-actions">
-                  {settingsSaveMessage ? <span className="inline-save-feedback">{settingsSaveMessage}</span> : null}
-                  <button
-                    className="secondary-button resource-settings-reset-button"
-                    disabled={!hasResourceSettingsChangesFromDefaults}
-                    onClick={() => {
-                      // 仅覆盖资源页草稿；不调用持久化接口，用户取消设置弹窗时会自然回退。
-                      updateDraftSettings((current) => ({ ...current, ...resourceSettingsDefaults }));
-                      setSettingsSaveMessage('');
-                    }}
-                    type="button"
-                  >
-                    <RotateCcw size={16} /> {t('resetResourceSettings')}
-                  </button>
-                  <button className="primary-button" disabled={!hasSettingsChanges} onClick={() => void persistSettingsWithFeedback()} type="button">
-                    <Save size={16} /> {t('saveResourceSettings')}
-                  </button>
-                </div>
-              </div>
+              <ResourceSettingsSection
+                draftSettings={draftSettings}
+                hasDefaultChanges={hasResourceSettingsChangesFromDefaults}
+                hasSettingsChanges={hasSettingsChanges}
+                onClearSaveMessage={() => setSettingsSaveMessage('')}
+                onSave={persistSettingsWithFeedback}
+                onUpdate={updateDraftSettings}
+                saveMessage={settingsSaveMessage}
+                t={t}
+              />
             ) : null}
 
             {activeTab === 'sync' ? (
-              <div className="stack gap-16">
-                <section className="settings-section-block">
-                  <div className="section-row">
-                    <div>
-                      <h3>{t('webdavSaveTitle')}</h3>
-                    </div>
-                    <div className="section-row compact">
-                      <button className="secondary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void runSettingsAction('test-webdav', () => testWebdavConnection(draftSettings), t('statusWebdavTestPassed'))} type="button">
-                        <RefreshCw size={16} /> {settingsActionRunning === 'test-webdav' ? t('working') : t('testWebdavConnection')}
-                      </button>
-                      <button className="primary-button" disabled={Boolean(settingsActionRunning) || !hasSettingsChanges} onClick={() => void persistSettingsWithFeedback()} type="button">
-                        <Save size={16} /> {t('saveWebdavSettings')}
-                      </button>
-                    </div>
-                  </div>
-                  {actionFeedbackMap['test-webdav'] ? <div className={`sync-action-feedback ${actionFeedbackMap['test-webdav'].kind}`}>{actionFeedbackMap['test-webdav'].message}</div> : null}
-                  {actionFeedbackMap['save-webdav'] ? <div className={`sync-action-feedback ${actionFeedbackMap['save-webdav'].kind}`}>{actionFeedbackMap['save-webdav'].message}</div> : null}
-
-                  <div className="form-grid">
-                    <label className="span-2">
-                      <span>{t('webdavBaseUrl')}</span>
-                      <input value={draftSettings.webdav.baseUrl} onChange={(event) => updateDraftSettings((current) => ({ ...current, webdav: { ...current.webdav, baseUrl: event.target.value } }))} />
-                    </label>
-                    <label>
-                      <span>{t('fieldUsername')}</span>
-                      <input value={draftSettings.webdav.username} onChange={(event) => updateDraftSettings((current) => ({ ...current, webdav: { ...current.webdav, username: event.target.value } }))} />
-                    </label>
-                    <label>
-                      <span>{t('fieldPassword')}</span>
-                      <div className="password-field">
-                        <input
-                          type={revealWebdavPassword ? 'text' : 'password'}
-                          value={draftSettings.webdav.password}
-                          onChange={(event) => updateDraftSettings((current) => ({ ...current, webdav: { ...current.webdav, password: event.target.value } }))}
-                        />
-                        <button
-                          aria-label={webdavPasswordToggleLabel}
-                          className="secondary-button slim password-toggle-button"
-                          onClick={() => setRevealWebdavPassword((value) => !value)}
-                          title={webdavPasswordToggleLabel}
-                          type="button"
-                        >
-                          {revealWebdavPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                          <span>{webdavPasswordToggleLabel}</span>
-                        </button>
-                      </div>
-                    </label>
-                    <label className="span-2">
-                      <span>{t('webdavRemoteDir')}</span>
-                      <input placeholder="/myterminal" value={draftSettings.webdav.remotePath} onChange={(event) => updateDraftSettings((current) => ({ ...current, webdav: { ...current.webdav, remotePath: event.target.value } }))} />
-                    </label>
-                  </div>
-                </section>
-
-                <section className="settings-section-block">
-                  <div>
-                    <h3>{t('webdavTransferTitle')}</h3>
-                    <p>{t('webdavTransferDesc')}</p>
-                  </div>
-
-                  {(actionFeedbackMap['upload-config'] || actionFeedbackMap['download-config']) ? (
-                    <div className={`sync-action-feedback ${actionFeedbackMap['upload-config'] ? actionFeedbackMap['upload-config'].kind : actionFeedbackMap['download-config']?.kind}`}>
-                      {actionFeedbackMap['upload-config']?.message || actionFeedbackMap['download-config']?.message}
-                    </div>
-                  ) : null}
-
-                  <div className="sync-transfer-actions">
-                    <button className="primary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void runSettingsAction('upload-config', async () => {
-                      await persistSettings(draftSettings);
-                      await uploadConfig();
-                    }, t('statusUploadedConfig'))} type="button">
-                      <Upload size={16} /> {settingsActionRunning === 'upload-config' ? t('working') : t('uploadConfig')}
-                    </button>
-                    <button className="secondary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void runSettingsAction('download-config', async () => {
-                      const backups = await backend.listConfigBackups();
-                      if (backups.length === 0) {
-                        throw new Error(t('noBackupsFound'));
-                      }
-                      const selected = await new Promise<string | null>((resolve) => {
-                        setBackupList(backups);
-                        backupSelectorResolveRef.current = resolve;
-                        setBackupSelectorOpen(true);
-                      });
-                      if (!selected) {
-                        throw new Error(t('downloadCancelled'));
-                      }
-                      await downloadConfig(selected);
-                      setDraftSettings(useAppStore.getState().settings);
-                      // 配置包可能包含 AI 端点，同步刷新端点草稿与侧栏下拉，避免继续展示旧配置。
-                      const providers = await backend.listAgentProviders();
-                      setAgentProviderDrafts(providers);
-                      setAgentProvidersBaseline(providers);
-                      onAgentProvidersSaved(providers);
-                    }, t('statusDownloadedConfig'))} type="button">
-                      <Download size={16} /> {settingsActionRunning === 'download-config' ? t('working') : t('downloadConfig')}
-                    </button>
-                  </div>
-                </section>
-
-                <section className="settings-section-block">
-                  <div>
-                    <h3>{t('syncSectionLocal')}</h3>
-                  </div>
-
-                  {(actionFeedbackMap['export-local'] || actionFeedbackMap['import-local']) ? (
-                    <div className={`sync-action-feedback ${actionFeedbackMap['export-local'] ? actionFeedbackMap['export-local'].kind : actionFeedbackMap['import-local']?.kind}`}>
-                      {actionFeedbackMap['export-local']?.message || actionFeedbackMap['import-local']?.message}
-                    </div>
-                  ) : null}
-
-                  <div className="sync-transfer-actions">
-                    <button className="primary-button" disabled={Boolean(settingsActionRunning)} onClick={() => void handleExportLocalConfig()} type="button">
-                      <Download size={16} /> {settingsActionRunning === 'export-local' ? t('working') : t('exportLocalConfig')}
-                    </button>
-                    <label className={`secondary-button file-upload-button ${settingsActionRunning ? 'is-disabled' : ''}`}>
-                      <Upload size={16} /> {settingsActionRunning === 'import-local' ? t('working') : t('importLocalConfig')}
-                      <input
-                        accept="application/json,.json"
-                        className="hidden-file-input"
-                        disabled={Boolean(settingsActionRunning)}
-                        type="file"
-                        onChange={(event) => {
-                          const file = event.target.files?.[0];
-                          if (file && window.confirm(t('importLocalConfigConfirm'))) {
-                            void runSettingsAction('import-local', async () => {
-                              await importLocalConfig(file);
-                              setDraftSettings(useAppStore.getState().settings);
-                              // 导入的配置可能包含 AI 端点，同步刷新端点草稿与侧栏下拉。
-                              const providers = await backend.listAgentProviders();
-                              setAgentProviderDrafts(providers);
-                              setAgentProvidersBaseline(providers);
-                              onAgentProvidersSaved(providers);
-                            });
-                          }
-                          event.currentTarget.value = '';
-                        }}
-                      />
-                    </label>
-                  </div>
-                </section>
-              </div>
+<SyncSettingsSection
+                feedback={actionFeedbackMap}
+                hasChanges={hasSettingsChanges}
+                onDownload={handleDownloadConfig}
+                onExportLocal={handleExportLocalConfig}
+                onImportLocal={handleImportLocalConfig}
+                onSave={persistSettingsWithFeedback}
+                onTestConnection={handleTestWebdavConnection}
+                onTogglePassword={() => setRevealWebdavPassword((value) => !value)}
+                onUpdate={updateDraftSettings}
+                onUpload={handleUploadConfig}
+                passwordRevealed={revealWebdavPassword}
+                passwordToggleLabel={webdavPasswordToggleLabel}
+                runningAction={settingsActionRunning}
+                settings={draftSettings}
+                t={t}
+              />
             ) : null}
 
             {activeTab === 'agent' ? (
-              <div className="stack gap-16 settings-mcp-pane">
-                <section className={`settings-section-block agent-bridge-control ${agentBridgeSwitchBusy ? 'is-pending' : ''}`}>
-                  <div className="agent-bridge-control-main">
-                    <div>
-                      <h3>{t('agentBridgeTitle')}</h3>
-                    </div>
-                  </div>
-                  <div className={`agent-toggle-field agent-bridge-power ${agentBridgeSwitchBusy ? 'is-pending' : ''}`}>
-                    <span>{t('fieldAgentBridgeEnabled')}</span>
-                    <input
-                      aria-label={t('fieldAgentBridgeEnabled')}
-                      checked={draftSettings.agentBridge.enabled}
-                      disabled={agentBridgeSwitchBusy}
-                      type="checkbox"
-                      onChange={(event) => void setAgentBridgeEnabled(event.target.checked)}
-                    />
-                    <strong>{agentBridgeSwitchLabel}</strong>
-                  </div>
-
-                  <div className="settings-about-grid agent-bridge-status-grid">
-                    <span>{t('agentBridgeRunState')}</span>
-                    <strong>{agentBridgeStatus?.running ? t('statusRunningLabel') : t('statusStoppedLabel')}</strong>
-                    <span>{t('agentBridgePort')}</span>
-                    <strong>{agentBridgeStatus?.port ?? t('metricUnavailable')}</strong>
-                    <span>{t('agentBridgeDiscoveryPath')}</span>
-                    <strong>{agentBridgeStatus?.discoveryPath ?? t('metricUnavailable')}</strong>
-                  </div>
-                </section>
-
-                <section className="settings-section-block">
-                  <div className="section-row">
-                    <div>
-                      <h3>{t('agentBridgeUsageTitle')}</h3>
-                      <p>{t('agentBridgeUsageDesc')}</p>
-                    </div>
-                    <button className="secondary-button" onClick={() => void copyAgentMcpConfig()} type="button">
-                      <Copy size={16} /> {t('copyAgentBridgeConfig')}
-                    </button>
-                  </div>
-                  {actionFeedbackMap['copy-agent-config'] ? <div className={`sync-action-feedback ${actionFeedbackMap['copy-agent-config'].kind}`}>{actionFeedbackMap['copy-agent-config'].message}</div> : null}
-                  <div className="agent-bridge-code-grid">
-                    <label className="span-2">
-                      <span>{t('agentBridgeMcpConfig')}</span>
-                      {/* MCP 配置通常包含多行环境变量与启动参数，增加默认高度以减少查看时滚动。 */}
-                      <textarea readOnly rows={15} spellCheck={false} value={buildAgentMcpConfig(agentBridgeStatus)} />
-                    </label>
-                  </div>
-                </section>
-              </div>
+<AgentBridgeSettingsSection
+                copyFeedback={actionFeedbackMap['copy-agent-config']}
+                enabled={draftSettings.agentBridge.enabled}
+                onCopyConfig={copyAgentMcpConfig}
+                onEnabledChange={setAgentBridgeEnabled}
+                status={agentBridgeStatus}
+                switchBusy={agentBridgeSwitchBusy}
+                switchLabel={agentBridgeSwitchLabel}
+                t={t}
+              />
             ) : null}
 
             {activeTab === 'agentChat' ? (
-              <div className="stack gap-16">
-                <section className="settings-section-block">
-                  <div className="section-row">
-                    <div>
-                      <h3>{t('agentProvidersTitle')}</h3>
-                      <p>{t('agentProvidersDesc')}</p>
-                    </div>
-                    <div className="section-row compact">
-                      {/* AI 助手页只提供共享执行规则的快捷入口，避免复制一份会产生状态分叉的表单。 */}
-                      <button className="secondary-button slim agent-provider-header-action" onClick={() => onTabChange('execution')} type="button">
-                        <ShieldCheck size={14} /> {t('openExecutionSettings')}
-                      </button>
-                      <button className="secondary-button slim agent-provider-header-action" onClick={addAgentProvider} type="button">
-                        <Plus size={14} /> {t('agentProviderAdd')}
-                      </button>
-                    </div>
-                  </div>
-
-                  {agentProviderDrafts.length ? (
-                    <div className="stack gap-12">
-                      {agentProviderDrafts.map((provider) => (
-                        <div key={provider.id} className="agent-provider-card">
-                          <div className="section-row compact">
-                            <strong>{provider.name || provider.id}</strong>
-                            <button
-                              className="icon-button"
-                              onClick={() => removeAgentProvider(provider.id)}
-                              title={t('agentProviderDelete')}
-                              type="button"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
-                          <div className="form-grid">
-                            <label>
-                              <span>{t('agentProviderName')}</span>
-                              <input
-                                onChange={(event) =>
-                                  updateAgentProvider(provider.id, { name: event.target.value })
-                                }
-                                value={provider.name}
-                              />
-                            </label>
-                            <div className="form-field">
-                              <span>{t('agentProviderProtocol')}</span>
-                              <CustomSelect
-                                aria-label={t('agentProviderProtocol')}
-                                onChange={(value) =>
-                                  updateAgentProvider(provider.id, { protocol: value as AgentProtocol })
-                                }
-                                options={[
-                                  { value: 'anthropic', label: 'Anthropic Messages' },
-                                  { value: 'openai-chat', label: 'OpenAI Chat Completions' },
-                                  { value: 'openai-responses', label: 'OpenAI Responses' },
-                                ]}
-                                value={provider.protocol}
-                              />
-                              {/* 大部分第三方代理是 Chat Completions 兼容，选错会直接 400，这里点明。 */}
-                              <small className="agent-provider-hint">
-                                {t('agentProviderProtocolHint')}
-                              </small>
-                            </div>
-                            <label className="span-2">
-                              <span>{t('agentProviderBaseUrl')}</span>
-                              <input
-                                onChange={(event) =>
-                                  updateAgentProvider(provider.id, { baseUrl: event.target.value })
-                                }
-                                placeholder={agentProtocolUrlSpec[provider.protocol].placeholder}
-                                value={provider.baseUrl}
-                              />
-                              <small className="agent-provider-hint">
-                                {t('agentProviderBaseUrlHint', {
-                                  path: agentProtocolUrlSpec[provider.protocol].path,
-                                })}
-                              </small>
-                              {/* 直接把最终请求地址显示出来，用户不必猜自己填的会被拼成什么。 */}
-                              <small className="agent-provider-url-preview">
-                                {t('agentProviderResolvedUrl')}
-                                <code>{previewAgentRequestUrl(provider.baseUrl, provider.protocol)}</code>
-                              </small>
-                            </label>
-                            <label className="span-2">
-                              <span>{t('agentProviderApiKey')}</span>
-                              <div className="password-field">
-                                <input
-                                  onChange={(event) =>
-                                    updateAgentProvider(provider.id, { apiKey: event.target.value })
-                                  }
-                                  placeholder="sk-..."
-                                  type={revealApiKeys[provider.id] ? 'text' : 'password'}
-                                  value={provider.apiKey ?? ''}
-                                />
-                                <button
-                                  aria-label={revealApiKeys[provider.id] ? t('hideSecret') : t('showSecret')}
-                                  className="secondary-button slim password-toggle-button"
-                                  onClick={() =>
-                                    setRevealApiKeys((current) => ({
-                                      ...current,
-                                      [provider.id]: !current[provider.id],
-                                    }))
-                                  }
-                                  title={revealApiKeys[provider.id] ? t('hideSecret') : t('showSecret')}
-                                  type="button"
-                                >
-                                  {revealApiKeys[provider.id] ? <EyeOff size={16} /> : <Eye size={16} />}
-                                  <span>{revealApiKeys[provider.id] ? t('hideSecret') : t('showSecret')}</span>
-                                </button>
-                              </div>
-                            </label>
-                            <div className="span-2">
-                              <div className="agent-model-header">
-                                <span>{t('agentProviderModels')}</span>
-                                <button
-                                  className="secondary-button slim"
-                                  onClick={() => addAgentModel(provider.id)}
-                                  type="button"
-                                >
-                                  <Plus size={14} /> {t('agentProviderModelAdd')}
-                                </button>
-                              </div>
-                              {provider.models.length > 0 ? (
-                                <div className="agent-model-list">
-                                  <div className="agent-model-row agent-model-row-header">
-                                    <span>{t('agentProviderModelId')}</span>
-                                    <span>{t('agentProviderModelContext')}</span>
-                                    <span>{t('agentProviderModelMaxTokens')}</span>
-                                    <span />
-                                  </div>
-                                  {provider.models.map((model, modelIndex) => (
-                                    <div key={modelIndex} className="agent-model-row">
-                                      <input
-                                        onChange={(event) =>
-                                          updateAgentModel(provider.id, modelIndex, { id: event.target.value })
-                                        }
-                                        placeholder={t('agentProviderModelIdPlaceholder')}
-                                        spellCheck={false}
-                                        value={model.id}
-                                      />
-                                      <input
-                                        min={1}
-                                        onChange={(event) => {
-                                          const val = parseInt(event.target.value, 10);
-                                          if (!isNaN(val) && val > 0) {
-                                            updateAgentModel(provider.id, modelIndex, { contextWindow: val });
-                                          }
-                                        }}
-                                        type="number"
-                                        value={model.contextWindow}
-                                      />
-                                      <input
-                                        min={1}
-                                        onChange={(event) => {
-                                          const val = parseInt(event.target.value, 10);
-                                          if (!isNaN(val) && val > 0) {
-                                            updateAgentModel(provider.id, modelIndex, { maxTokens: val });
-                                          }
-                                        }}
-                                        type="number"
-                                        value={model.maxTokens}
-                                      />
-                                      <button
-                                        className="icon-button"
-                                        onClick={() => removeAgentModel(provider.id, modelIndex)}
-                                        title={t('agentProviderModelRemove')}
-                                        type="button"
-                                      >
-                                        <Trash2 size={14} />
-                                      </button>
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : null}
-                              <small className="agent-provider-hint">
-                                {t('agentProviderModelsHint')}
-                              </small>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="empty-state">{t('agentProvidersEmpty')}</div>
-                  )}
-
-                  {actionFeedbackMap['save-agent-providers'] ? (
-                    <div className={`sync-action-feedback ${actionFeedbackMap['save-agent-providers'].kind}`}>
-                      {actionFeedbackMap['save-agent-providers'].message}
-                    </div>
-                  ) : null}
-
-                  <div className="section-row compact">
-                    <button className="primary-button" disabled={!hasAgentProviderChanges} onClick={() => void saveAgentProviders()} type="button">
-                      <Save size={16} /> {t('agentProvidersSave')}
-                    </button>
-                  </div>
-                </section>
-              </div>
+<AgentProviderSettingsSection
+                actionFeedback={actionFeedbackMap['save-agent-providers']}
+                hasChanges={hasAgentProviderChanges}
+                onAddModel={addAgentModel}
+                onAddProvider={addAgentProvider}
+                onOpenExecutionSettings={() => onTabChange('execution')}
+                onRemoveModel={removeAgentModel}
+                onRemoveProvider={removeAgentProvider}
+                onSave={saveAgentProviders}
+                onToggleApiKey={(providerId) =>
+                  setRevealApiKeys((current) => ({
+                    ...current,
+                    [providerId]: !current[providerId],
+                  }))
+                }
+                onUpdateModel={updateAgentModel}
+                onUpdateProvider={updateAgentProvider}
+                providers={agentProviderDrafts}
+                revealedApiKeys={revealApiKeys}
+                t={t}
+              />
             ) : null}
 
             {activeTab === 'execution' ? (
-              <div className="stack gap-16 settings-execution-pane">
-                <section className="settings-section-block">
-                  <div className="section-row">
-                    <div>
-                      <h3>{t('executionSettingsTitle')}</h3>
-                      <p>{t('executionSettingsDesc')}</p>
-                    </div>
-                    <button
-                      className="primary-button"
-                      disabled={Boolean(settingsActionRunning) || agentBridgeSwitchBusy || !hasSettingsChanges}
-                      onClick={() => void saveExecutionSettings()}
-                      type="button"
-                    >
-                      <Save size={16} /> {settingsActionRunning === 'save-execution-settings' ? t('working') : t('saveExecutionSettings')}
-                    </button>
-                  </div>
-                  {actionFeedbackMap['save-execution-settings'] ? <div className={`sync-action-feedback ${actionFeedbackMap['save-execution-settings'].kind}`}>{actionFeedbackMap['save-execution-settings'].message}</div> : null}
-
-                  <div className="form-grid settings-single-column-grid">
-                    <div className="agent-toggle-field settings-inline-toggle">
-                      <span>{t('fieldAgentBridgeAutoExecute')}</span>
-                      <div className="settings-inline-toggle-control">
-                        <input
-                          aria-label={t('fieldAgentBridgeAutoExecute')}
-                          checked={draftSettings.agentBridge.autoExecute}
-                          type="checkbox"
-                          onChange={(event) =>
-                            updateDraftSettings((current) => ({
-                              ...current,
-                              agentBridge: { ...current.agentBridge, autoExecute: event.target.checked },
-                            }))
-                          }
-                        />
-                        <strong>{draftSettings.agentBridge.autoExecute ? t('enabled') : t('disabled')}</strong>
-                      </div>
-                    </div>
-                    <div className="agent-toggle-field settings-inline-toggle">
-                      <span title={t('fieldAgentBridgeVisibleExecutionDesc')}>
-                        {t('fieldAgentBridgeVisibleExecution')}
-                      </span>
-                      <div className="settings-inline-toggle-control">
-                        <input
-                          aria-label={t('fieldAgentBridgeVisibleExecution')}
-                          checked={draftSettings.agentBridge.visibleExecution}
-                          type="checkbox"
-                          onChange={(event) =>
-                            updateDraftSettings((current) => ({
-                              ...current,
-                              agentBridge: { ...current.agentBridge, visibleExecution: event.target.checked },
-                            }))
-                          }
-                        />
-                        <strong>{draftSettings.agentBridge.visibleExecution ? t('enabled') : t('disabled')}</strong>
-                      </div>
-                    </div>
-                    <label>
-                      <span>{t('fieldAgentBridgeTimeout')}</span>
-                      <input
-                        min={1}
-                        max={3600}
-                        type="number"
-                        value={draftSettings.agentBridge.defaultTimeoutSec}
-                        onChange={(event) =>
-                          updateDraftSettings((current) => ({
-                            ...current,
-                            agentBridge: { ...current.agentBridge, defaultTimeoutSec: Number(event.target.value) || 60 },
-                          }))
-                        }
-                        onWheel={(event) => event.currentTarget.blur()}
-                      />
-                    </label>
-                    <label>
-                      <span>{t('fieldAgentBridgeMaxOutput')}</span>
-                      <input
-                        min={1024}
-                        type="number"
-                        value={draftSettings.agentBridge.maxOutputBytes}
-                        onChange={(event) =>
-                          updateDraftSettings((current) => ({
-                            ...current,
-                            agentBridge: { ...current.agentBridge, maxOutputBytes: Number(event.target.value) || 200000 },
-                          }))
-                        }
-                        onWheel={(event) => event.currentTarget.blur()}
-                      />
-                    </label>
-                  </div>
-
-                  {/* 全局自动执行开启时白名单不再参与判断，隐藏连接范围以免用户误以为勾选仍有限制作用。 */}
-                  {!draftSettings.agentBridge.autoExecute ? (
-                    <div className="agent-auto-connections-panel">
-                      <div>
-                        <h4>{t('executionConnectionsTitle')}</h4>
-                        <p>{t('executionConnectionsDesc')}</p>
-                      </div>
-                      <div className="agent-connection-list">
-                        {agentSshConnections.length ? (
-                          <AgentAutoConnectionTree
-                            allowedConnectionIds={draftSettings.agentBridge.allowedConnectionIds}
-                            nodes={agentAutoGroups}
-                            ungroupedConnections={agentAutoUngroupedConnections}
-                            ungroupedLabel={t('ungroupedConnections')}
-                            onToggleConnection={toggleAgentAutoConnection}
-                          />
-                        ) : (
-                          <div className="empty-state">{t('connectionManagerEmpty')}</div>
-                        )}
-                      </div>
-                    </div>
-                  ) : null}
-                </section>
-              </div>
+<ExecutionSettingsSection
+                actionFeedback={actionFeedbackMap['save-execution-settings']}
+                actionRunning={Boolean(settingsActionRunning)}
+                bridgeSwitchBusy={agentBridgeSwitchBusy}
+                connections={agentSshConnections}
+                draftSettings={draftSettings}
+                groups={agentAutoGroups}
+                hasChanges={hasSettingsChanges}
+                onSave={saveExecutionSettings}
+                onToggleConnection={toggleAgentAutoConnection}
+                onUpdate={updateDraftSettings}
+                saving={settingsActionRunning === 'save-execution-settings'}
+                t={t}
+                ungroupedConnections={agentAutoUngroupedConnections}
+              />
             ) : null}
 
             {activeTab === 'about' ? (
-              <div className="stack gap-16">
-                <section className="settings-section-block settings-about-section">
-                  <div className="section-row">
-                    <div>
-                      <h3>{t('aboutTitle')}</h3>
-                    </div>
-                    {/* 关于页仓库入口固定指向当前 GitHub 仓库，仓库重命名后需要同步更新。 */}
-                    <button
-                      className="secondary-button"
-                      onClick={() => openExternalLink('https://github.com/CrazyFigure/MyTerminal')}
-                      type="button"
-                    >
-                      <ExternalLink size={16} /> {t('githubRepository')}
-                    </button>
-                  </div>
-
-                  <div className="settings-about-grid">
-                    <span>{t('currentVersion')}</span>
-                    <strong>{updateCheckResult?.currentVersion ?? appVersion}</strong>
-                    <span>{t('latestVersion')}</span>
-                    <strong>{updateCheckResult?.latestVersion ?? t('metricUnavailable')}</strong>
-                    <span>{t('releasePublishedAt')}</span>
-                    <strong>{formatReleaseTime(updateCheckResult?.publishedAt)}</strong>
-                  </div>
-
-                  <div className="section-row compact settings-update-actions">
-                    <button className="primary-button" disabled={updateChecking} onClick={() => void handleCheckForUpdates()} type="button">
-                      <RefreshCw size={16} /> {updateChecking ? t('working') : t('checkUpdates')}
-                    </button>
-                    {updateCheckResult?.updateAvailable ? (
-                      <button
-                        className="secondary-button"
-                        disabled={updateInstalling}
-                        onClick={() => setUpdateModalOpen(true)}
-                        type="button"
-                      >
-                        {t('updateModalTitle')}
-                      </button>
-                    ) : null}
-                  </div>
-
-                  {updateCheckResult && !updateCheckResult.updateAvailable ? (
-                    <div className={`update-check-result is-up-to-date`}>
-                      {t('statusUpdateNotAvailable')}
-                    </div>
-                  ) : null}
-                  {updateFeedback ? (
-                    <div className={`update-check-result ${updateFeedback.kind === 'is-success' ? 'is-success' : 'is-error'}`}>
-                      {updateFeedback.message}
-                    </div>
-                  ) : null}
-                </section>
-              </div>
+              <AboutSettingsSection
+                appVersion={appVersion}
+                checking={updateChecking}
+                feedback={updateFeedback}
+                formatReleaseTime={formatReleaseTime}
+                installing={updateInstalling}
+                onCheck={handleCheckForUpdates}
+                onOpenRepository={() => openExternalLink('https://github.com/CrazyFigure/MyTerminal')}
+                onOpenUpdateModal={() => setUpdateModalOpen(true)}
+                result={updateCheckResult}
+                t={t}
+              />
             ) : null}
           </div>
         </div>

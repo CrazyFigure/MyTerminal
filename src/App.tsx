@@ -16,47 +16,23 @@ import {
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import {
   Activity,
-  Bot,
   Cable,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ChevronUp,
-  CloudDownload,
-  Copy,
-  CopyPlus,
-  CornerDownLeft,
-  Download,
-  FolderTree,
   HardDrive,
-  Laptop,
   MemoryStick,
-  Moon,
-  Pencil,
-  Play,
-  Plus,
   RefreshCw,
-  RotateCcw,
-  Settings,
-  ShieldCheck,
-  Square,
-  Sun,
-  TerminalSquare,
-  Trash2,
-  Upload,
-  X,
 } from 'lucide-react';
 
-import { translate, translateStatus, type TranslationKey } from './i18n';
+import { translate, type TranslationKey } from './i18n';
 import { backend } from './backend';
 import { writeClipboardText } from './clipboard';
 import { useAppStore } from './store';
-import { buildAgentChatFontFamily } from './terminalFonts';
 // useShallow 让组件按“选中字段的浅比较”订阅 store，避免订阅整个 store 导致终端 cwd/status
 // 等高频更新触发无关组件（尤其是未打开的弹窗）重渲染。
 import { useShallow } from 'zustand/react/shallow';
 import { UpdateModal, type UpdateDownloadProgress } from './UpdateModal';
-import type { AgentBridgeRequest, AgentProvider, RemoteFileEntry, RuntimeConnectionList, RuntimeResourceMetric, RuntimeResourceTarget, RuntimeResourceUsage, RuntimeResourceSource, RuntimeStorageFiles, TerminalSession, TunnelRecord } from './types';
+import type { AgentBridgeRequest, AgentProvider, RemoteFileEntry, RuntimeResourceSource, TerminalSession, TunnelRecord } from './types';
 import { useDraggableModals } from './useDraggableModals';
 import { ConnectionFormModal } from './components/ConnectionFormModal';
 import { ConnectionManagerModal } from './components/ConnectionManagerModal';
@@ -64,15 +40,14 @@ import { EditorModal } from './components/EditorModal';
 import { LocalTerminalManagerModal } from './components/LocalTerminalManagerModal';
 import { SettingsModal } from './components/SettingsModal';
 import type { SettingsTab } from './features/settings';
-import { TitlebarWindowControls } from './components/TitlebarWindowControls';
 import { TunnelFormModal } from './components/TunnelFormModal';
-import { buildPreviewFontFamily } from './app/fonts';
 import { beginResize, clamp } from './app/layout';
-import { formatLocalTerminalTabLabel, getLocalTerminalIcon } from './app/localTerminal';
 import { isTauriRuntime } from './app/runtime';
 import { translateUpdateCheckError } from './app/updates';
 import { isUsableRemoteSession } from './domain/sessions/model';
 import {
+  AgentRequestPanel,
+  AgentSidebar,
   agentBridgeNotificationApproveActionId,
   agentBridgeNotificationRejectActionId,
   agentBridgeNotificationTagPrefix,
@@ -80,83 +55,33 @@ import {
   getAgentRequestSummary,
 } from './features/agent';
 import {
+  FileContextMenu,
+  FileExplorerPanel,
   explorerColumnLimits,
   explorerDefaultColumnWidths,
   explorerOverscanRows,
   explorerRowHeight,
-  fileLabelIcon,
-  formatBytes,
-  formatFileType,
-  formatOwnerGroup,
-  formatTimestamp,
   isEditableFile,
-  parentPath,
+  type FileContextMenuTarget,
+  type RemoteFileClipboard,
 } from './features/files';
-import { metricTone, parseMetricPercent, runtimeResourceDetailLimit } from './features/runtime';
-import { sessionStatusClassName } from './features/sessions';
+import { parseMetricPercent, RuntimePanel, useRuntimeMonitor } from './features/runtime';
+import { SessionContextMenu, SessionTabBar, type SessionContextMenuTarget } from './features/sessions';
 import {
-  bottomTabs,
-  buildActionButtonStyle,
+  AppTitlebar,
+  BottomDock,
   estimateInlineButtonWidth,
-  renderActionButtonLabel,
   type BottomPanelTab,
   mainWorkspaceMinWidth,
   resolveRuntimePanelMaxHeight,
   resolveSidePanelMaxWidth,
   sidePanelMinWidth,
   sidebarRuntimeMinHeight,
+  TransferProgressStack,
+  useTransferProgress,
 } from './features/workspace';
-import {
-  isPointInsideElement,
-  moveItemToEnd,
-  moveItemToInsert,
-  resolveInlineInsertPlacement,
-  useFlipListAnimation,
-  type InsertPlacement,
-} from './app/connectionGroups';
 // 终端内核和 AI 对话都不是绘制应用骨架的前置条件；动态加载可让标题栏、侧栏和操作区先进入可用状态。
 const TerminalWorkspace = lazy(() => import('./TerminalWorkspace').then((module) => ({ default: module.TerminalWorkspace })));
-const AgentChatPanel = lazy(() => import('./AgentChatPanel').then((module) => ({ default: module.AgentChatPanel })));
-type FileContextMenuState = {
-  file: RemoteFileEntry;
-  x: number;
-  y: number;
-};
-type SessionContextMenuState = {
-  sessionId: string;
-  x: number;
-  y: number;
-};
-type SessionTabDragState = {
-  id: string;
-  label: string;
-  originX: number;
-  originY: number;
-  currentX: number;
-  currentY: number;
-} | null;
-type SessionTabDropTarget = { sessionId: string; placement: InsertPlacement } | { type: 'end' } | null;
-// 会话标签自绘滚动条只表达横向溢出位置，避免依赖 WebView 原生滚动条高度渲染。
-type SessionTabScrollbarState = {
-  visible: boolean;
-  thumbLeft: number;
-  thumbWidth: number;
-};
-type SessionTabScrollbarDragState = {
-  pointerId: number;
-  originX: number;
-  originScrollLeft: number;
-  maxScrollLeft: number;
-  maxThumbTravel: number;
-};
-// 传输进度用于给上传、下载、编辑读取和批量删除提供轻量阶段反馈；真实字节级进度需要后端分块事件再扩展。
-type TransferProgressItem = {
-  id: string;
-  title: string;
-  percent: number;
-  status: 'running' | 'success' | 'error';
-  message?: string;
-};
 
 export default function App() {
   // 所有业务弹窗复用标题栏拖动能力；偏移仅存在于本次打开的 DOM 节点，关闭后自动复位。
@@ -198,22 +123,10 @@ export default function App() {
   // 首次展开前不加载 AI 对话模块；展开过后保持挂载，收起侧栏也不能中断正在进行的流式响应。
   const [agentSidebarMounted, setAgentSidebarMounted] = useState(false);
   const [pathInput, setPathInput] = useState('~');
-  const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
+  const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuTarget | null>(null);
   // 文件右键“复制”暂存待粘贴的远端路径；记录来源连接以便仅在同主机内启用粘贴。
-  const [fileClipboard, setFileClipboard] = useState<{ connectionId: string; paths: string[] } | null>(null);
-  // 右键菜单容器引用，用于渲染后按视口边界回收越界位置，避免菜单被面板/窗口裁掉。
-  const fileContextMenuRef = useRef<HTMLDivElement | null>(null);
-  // 复制名称的二级菜单默认向右展开，靠近右边界时翻转到左侧，防止子菜单溢出窗口。
-  const [copyNameSubmenuFlipLeft, setCopyNameSubmenuFlipLeft] = useState(false);
-  const [sessionContextMenu, setSessionContextMenu] = useState<SessionContextMenuState | null>(null);
-  const [sessionTabDragState, setSessionTabDragState] = useState<SessionTabDragState>(null);
-  const [sessionTabDropTarget, setSessionTabDropTarget] = useState<SessionTabDropTarget>(null);
-  // 原生横向滚动条在 WebView2 中高度不可控，顶部标签改用自绘滑块保持细条视觉。
-  const [sessionTabScrollbar, setSessionTabScrollbar] = useState<SessionTabScrollbarState>({
-    visible: false,
-    thumbLeft: 0,
-    thumbWidth: 0,
-  });
+  const [fileClipboard, setFileClipboard] = useState<RemoteFileClipboard | null>(null);
+  const [sessionContextMenu, setSessionContextMenu] = useState<SessionContextMenuTarget | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState('');
   const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
   const [localFileDropActive, setLocalFileDropActive] = useState(false);
@@ -222,44 +135,15 @@ export default function App() {
   const [cpuCoresExpanded, setCpuCoresExpanded] = useState(false);
   const [memoryResourcesExpanded, setMemoryResourcesExpanded] = useState(false);
   const [storageFilesExpanded, setStorageFilesExpanded] = useState(false);
-  const [runtimeResourceMetric, setRuntimeResourceMetric] = useState<RuntimeResourceMetric>('memory');
-  const [runtimeResourceTarget, setRuntimeResourceTarget] = useState<RuntimeResourceTarget>('process');
-  const [runtimeResourceUsage, setRuntimeResourceUsage] = useState<RuntimeResourceUsage | null>(null);
-  const [runtimeResourceLoading, setRuntimeResourceLoading] = useState(false);
-  const [runtimeResourceError, setRuntimeResourceError] = useState('');
-  const [runtimeStorageFiles, setRuntimeStorageFiles] = useState<RuntimeStorageFiles | null>(null);
-  const [runtimeStorageFilesLoading, setRuntimeStorageFilesLoading] = useState(false);
-  const [runtimeStorageFilesError, setRuntimeStorageFilesError] = useState('');
   // 连接数展开态与明细数据独立保存；明细只在 connectionsExpanded 为 true 时触发远端采集。
   const [connectionsExpanded, setConnectionsExpanded] = useState(false);
-  const [runtimeConnections, setRuntimeConnections] = useState<RuntimeConnectionList | null>(null);
-  const [runtimeConnectionsLoading, setRuntimeConnectionsLoading] = useState(false);
-  const [runtimeConnectionsError, setRuntimeConnectionsError] = useState('');
   // 底部功能栏默认收起：日常操作集中在终端，命令/隧道/历史面板按需展开，把纵向空间让给终端。
   const [bottomDockCollapsed, setBottomDockCollapsed] = useState(true);
-  const [transferProgressItems, setTransferProgressItems] = useState<TransferProgressItem[]>([]);
   const [agentBridgeRequests, setAgentBridgeRequests] = useState<AgentBridgeRequest[]>([]);
   const [agentCommandEdits, setAgentCommandEdits] = useState<Record<string, string>>({});
   const [agentExpandedRequestIds, setAgentExpandedRequestIds] = useState<Record<string, boolean>>({});
   const [explorerColumnWidths, setExplorerColumnWidths] = useState(explorerDefaultColumnWidths);
   const pathByConnectionRef = useRef<Record<string, string>>({});
-  const runtimeRefreshInFlightRef = useRef(false);
-  // 刷新进行中又收到刷新请求时置位，当前刷新结束后补跑一次，避免切换连接时漏刷、加载动画卡住。
-  const runtimeRefreshPendingRef = useRef(false);
-  // 展开明细的刷新序号用于丢弃旧请求，避免收起或切换连接后把过期结果写回界面。
-  const runtimeResourceRefreshSeqRef = useRef(0);
-  // 进程/线程资源明细可能需要 1~2 秒；同一展开态下避免轮询并发堆积。
-  const runtimeResourceRefreshInFlightRef = useRef(false);
-  const runtimeStorageFilesRefreshSeqRef = useRef(0);
-  // 大文件扫描可能超过刷新间隔；同一连接同一展开态下只允许一个扫描请求在路上。
-  const runtimeStorageFilesRefreshInFlightRef = useRef(false);
-  const runtimeConnectionsRefreshSeqRef = useRef(0);
-  // 连接明细轮询同样防并发重入，收起或切换连接时用序号丢弃过期响应。
-  const runtimeConnectionsRefreshInFlightRef = useRef(false);
-  const sessionTabDragStateRef = useRef<SessionTabDragState>(null);
-  const sessionTabDropTargetRef = useRef<SessionTabDropTarget>(null);
-  const sessionTabListRef = useRef<HTMLDivElement | null>(null);
-  const sessionTabScrollbarDragRef = useRef<SessionTabScrollbarDragState | null>(null);
   const explorerListRef = useRef<HTMLDivElement | null>(null);
   const bottomPanelActionsRef = useRef<HTMLDivElement | null>(null);
   const explorerScrollRafRef = useRef<number | null>(null);
@@ -386,6 +270,11 @@ export default function App() {
 
   const t = useCallback((key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements), [settings.uiLanguage]);
+  const {
+    dismiss: dismissTransferProgress,
+    items: transferProgressItems,
+    run: runTransferProgress,
+  } = useTransferProgress(t('saved'));
   const runtimeResourceSourceLabel = useCallback((source: RuntimeResourceSource) => {
     const labelKeyBySource: Record<RuntimeResourceSource, TranslationKey> = {
       system: 'runtimeResourceSourceSystem',
@@ -469,6 +358,33 @@ export default function App() {
     () => connections.find((item) => item.id === activeRemoteConnectionId),
     [activeRemoteConnectionId, connections],
   );
+  const {
+    refreshRuntimeOverviewOnce,
+    runtimeConnections,
+    runtimeConnectionsError,
+    runtimeConnectionsLoading,
+    runtimeResourceError,
+    runtimeResourceLoading,
+    runtimeResourceMetric,
+    runtimeResourceTarget,
+    runtimeResourceUsage,
+    runtimeStorageFiles,
+    runtimeStorageFilesError,
+    runtimeStorageFilesLoading,
+    setRuntimeResourceMetric,
+    setRuntimeResourceTarget,
+  } = useRuntimeMonitor({
+    activeRemoteConnectionId,
+    connectionsExpanded,
+    memoryResourcesExpanded,
+    refreshRuntimeOverview,
+    setConnectionsExpanded,
+    setCpuCoresExpanded,
+    setMemoryResourcesExpanded,
+    setStorageFilesExpanded,
+    settings,
+    storageFilesExpanded,
+  });
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -704,234 +620,6 @@ export default function App() {
     };
   }, [openAgentRequestPanel, refreshAgentBridgeRequests, setStatusMessage]);
 
-  const dismissTransferProgress = useCallback((id: string) => {
-    setTransferProgressItems((current) => current.filter((item) => item.id !== id));
-  }, []);
-  const runTransferProgress = useCallback(async (title: string, task: (setPercent: (percent: number) => void) => Promise<void>) => {
-    const id = crypto.randomUUID();
-    const setPercent = (percent: number) => {
-      setTransferProgressItems((current) =>
-        current.map((item) => (item.id === id ? { ...item, percent: clamp(percent, 0, 100) } : item)),
-      );
-    };
-
-    setTransferProgressItems((current) => [
-      { id, title, percent: 8, status: 'running' },
-      ...current.slice(0, 3),
-    ]);
-    try {
-      // 当前任务只在关键阶段更新百分比，避免传输过程中高频 setState 影响终端输入流畅度。
-      await task(setPercent);
-      setTransferProgressItems((current) =>
-        current.map((item) => (item.id === id ? { ...item, percent: 100, status: 'success', message: t('saved') } : item)),
-      );
-      window.setTimeout(() => dismissTransferProgress(id), 3000);
-    } catch (error) {
-      setTransferProgressItems((current) =>
-        current.map((item) => (
-          item.id === id
-            ? { ...item, percent: 100, status: 'error', message: error instanceof Error ? error.message : String(error) }
-            : item
-        )),
-      );
-    }
-  }, [dismissTransferProgress, t]);
-
-  const refreshRuntimeOverviewOnce = useCallback(() => {
-    // 正在刷新时不并发重入，只记下“还需再刷一次”的诉求；否则切换连接时新刷新会被丢弃，
-    // 导致运行状态加载动画一直空转到下一次定时器才恢复。
-    if (runtimeRefreshInFlightRef.current) {
-      runtimeRefreshPendingRef.current = true;
-      return;
-    }
-    const run = () => {
-      runtimeRefreshInFlightRef.current = true;
-      runtimeRefreshPendingRef.current = false;
-      void refreshRuntimeOverview().finally(() => {
-        runtimeRefreshInFlightRef.current = false;
-        // 刷新期间若又发起过（如切换了连接），补跑一次以覆盖最新的活动连接，避免漏刷。
-        if (runtimeRefreshPendingRef.current) {
-          run();
-        }
-      });
-    };
-    run();
-  }, [refreshRuntimeOverview]);
-
-  const refreshRuntimeResourceUsageOnce = useCallback(() => {
-    if (!activeRemoteConnectionId || !memoryResourcesExpanded || runtimeResourceRefreshInFlightRef.current) {
-      return;
-    }
-
-    const requestSeq = ++runtimeResourceRefreshSeqRef.current;
-    runtimeResourceRefreshInFlightRef.current = true;
-    setRuntimeResourceLoading(true);
-    setRuntimeResourceError('');
-    void backend.fetchRuntimeResourceUsage(activeRemoteConnectionId, {
-      source: settings.runtimeResourceSource ?? 'system',
-      metric: runtimeResourceMetric,
-      target: runtimeResourceTarget,
-      limit: runtimeResourceDetailLimit,
-    }).then((usage) => {
-      if (requestSeq !== runtimeResourceRefreshSeqRef.current) {
-        return;
-      }
-      setRuntimeResourceUsage(usage);
-      setRuntimeResourceError(usage.error ?? '');
-    }).catch((error) => {
-      if (requestSeq !== runtimeResourceRefreshSeqRef.current) {
-        return;
-      }
-      // 刷新失败时保留旧明细，避免网络抖动或远端命令慢导致展开区突然清空。
-      setRuntimeResourceError(error instanceof Error ? error.message : String(error));
-    }).finally(() => {
-      if (requestSeq === runtimeResourceRefreshSeqRef.current) {
-        runtimeResourceRefreshInFlightRef.current = false;
-        setRuntimeResourceLoading(false);
-      }
-    });
-  }, [activeRemoteConnectionId, memoryResourcesExpanded, runtimeResourceMetric, runtimeResourceTarget, settings.runtimeResourceSource]);
-
-  useEffect(() => {
-    if (!memoryResourcesExpanded || !activeRemoteConnectionId) {
-      runtimeResourceRefreshSeqRef.current += 1;
-      runtimeResourceRefreshInFlightRef.current = false;
-      setRuntimeResourceLoading(false);
-      return undefined;
-    }
-
-    // 内存明细展开、切换 CPU/内存、切换进程/线程或来源设置变化时都会立即刷新一次。
-    // 后续按资源设置里的进程状态刷新频率轮询；收起时 cleanup 会关闭轮询。
-    refreshRuntimeResourceUsageOnce();
-    const timer = window.setInterval(
-      refreshRuntimeResourceUsageOnce,
-      Math.max(1, settings.runtimeResourceRefreshIntervalSec ?? 3) * 1000,
-    );
-    return () => {
-      runtimeResourceRefreshSeqRef.current += 1;
-      runtimeResourceRefreshInFlightRef.current = false;
-      window.clearInterval(timer);
-    };
-  }, [activeRemoteConnectionId, memoryResourcesExpanded, refreshRuntimeResourceUsageOnce, settings.runtimeResourceRefreshIntervalSec]);
-
-  // 存储最大文件扫描按展开态触发；未选连接或已收起时直接跳过，减少远端磁盘遍历。
-  const refreshRuntimeStorageFilesOnce = useCallback(() => {
-    if (!activeRemoteConnectionId || !storageFilesExpanded || runtimeStorageFilesRefreshInFlightRef.current) {
-      return;
-    }
-
-    const requestSeq = ++runtimeStorageFilesRefreshSeqRef.current;
-    runtimeStorageFilesRefreshInFlightRef.current = true;
-    setRuntimeStorageFilesLoading(true);
-    setRuntimeStorageFilesError('');
-    void backend.fetchRuntimeStorageFiles(activeRemoteConnectionId).then((files) => {
-      if (requestSeq !== runtimeStorageFilesRefreshSeqRef.current) {
-        return;
-      }
-      setRuntimeStorageFiles(files);
-      setRuntimeStorageFilesError(files.error ?? '');
-    }).catch((error) => {
-      if (requestSeq !== runtimeStorageFilesRefreshSeqRef.current) {
-        return;
-      }
-      // 刷新失败时保留旧文件列表，避免一次扫描超时导致已展示的大文件数据消失。
-      setRuntimeStorageFilesError(error instanceof Error ? error.message : String(error));
-    }).finally(() => {
-      if (requestSeq === runtimeStorageFilesRefreshSeqRef.current) {
-        runtimeStorageFilesRefreshInFlightRef.current = false;
-        setRuntimeStorageFilesLoading(false);
-      }
-    });
-  }, [activeRemoteConnectionId, storageFilesExpanded]);
-
-  useEffect(() => {
-    if (!storageFilesExpanded || !activeRemoteConnectionId) {
-      runtimeStorageFilesRefreshSeqRef.current += 1;
-      runtimeStorageFilesRefreshInFlightRef.current = false;
-      setRuntimeStorageFilesLoading(false);
-      return undefined;
-    }
-
-    // 存储展开时立即扫描一次，后续按资源设置里的大文件状态刷新频率轮询；收起时 cleanup 会关闭轮询。
-    refreshRuntimeStorageFilesOnce();
-    const timer = window.setInterval(
-      refreshRuntimeStorageFilesOnce,
-      Math.max(5, settings.runtimeStorageRefreshIntervalSec ?? 5) * 1000,
-    );
-    return () => {
-      runtimeStorageFilesRefreshSeqRef.current += 1;
-      runtimeStorageFilesRefreshInFlightRef.current = false;
-      window.clearInterval(timer);
-    };
-  }, [activeRemoteConnectionId, refreshRuntimeStorageFilesOnce, settings.runtimeStorageRefreshIntervalSec, storageFilesExpanded]);
-
-  // 连接明细按展开态触发；读取 /proc 网络表开销小，但仍只在本行展开时才请求，收起即停止。
-  const refreshRuntimeConnectionsOnce = useCallback(() => {
-    if (!activeRemoteConnectionId || !connectionsExpanded || runtimeConnectionsRefreshInFlightRef.current) {
-      return;
-    }
-
-    const requestSeq = ++runtimeConnectionsRefreshSeqRef.current;
-    runtimeConnectionsRefreshInFlightRef.current = true;
-    setRuntimeConnectionsLoading(true);
-    setRuntimeConnectionsError('');
-    void backend.fetchRuntimeConnectionList(activeRemoteConnectionId).then((list) => {
-      if (requestSeq !== runtimeConnectionsRefreshSeqRef.current) {
-        return;
-      }
-      setRuntimeConnections(list);
-      setRuntimeConnectionsError(list.error ?? '');
-    }).catch((error) => {
-      if (requestSeq !== runtimeConnectionsRefreshSeqRef.current) {
-        return;
-      }
-      // 刷新失败时保留旧明细，避免一次网络抖动清空已展示的连接列表。
-      setRuntimeConnectionsError(error instanceof Error ? error.message : String(error));
-    }).finally(() => {
-      if (requestSeq === runtimeConnectionsRefreshSeqRef.current) {
-        runtimeConnectionsRefreshInFlightRef.current = false;
-        setRuntimeConnectionsLoading(false);
-      }
-    });
-  }, [activeRemoteConnectionId, connectionsExpanded]);
-
-  useEffect(() => {
-    if (!connectionsExpanded || !activeRemoteConnectionId) {
-      runtimeConnectionsRefreshSeqRef.current += 1;
-      runtimeConnectionsRefreshInFlightRef.current = false;
-      setRuntimeConnectionsLoading(false);
-      return undefined;
-    }
-
-    // 展开时立即拉取一次，随后跟随运行状态主刷新频率轮询（最低 5 秒），与连接数主行保持同节奏。
-    refreshRuntimeConnectionsOnce();
-    const timer = window.setInterval(
-      refreshRuntimeConnectionsOnce,
-      Math.max(5, settings.runtimeRefreshIntervalSec) * 1000,
-    );
-    return () => {
-      runtimeConnectionsRefreshSeqRef.current += 1;
-      runtimeConnectionsRefreshInFlightRef.current = false;
-      window.clearInterval(timer);
-    };
-  }, [activeRemoteConnectionId, connectionsExpanded, refreshRuntimeConnectionsOnce, settings.runtimeRefreshIntervalSec]);
-
-  // 活动远端连接变化时（关闭 SSH tab、切到其它连接或断开），收起运行状态所有下拉并清空已暂存的明细。
-  // 否则下拉会停留在上一个连接的内存/存储数据上：无连接时轮询已停止无法刷新，看起来像卡死；
-  // 切到其它连接时又会短暂显示旧连接数据，语义错误。收起后用户重新展开即按新连接重新拉取。
-  useEffect(() => {
-    setCpuCoresExpanded(false);
-    setMemoryResourcesExpanded(false);
-    setStorageFilesExpanded(false);
-    setConnectionsExpanded(false);
-    setRuntimeResourceUsage(null);
-    setRuntimeResourceError('');
-    setRuntimeStorageFiles(null);
-    setRuntimeStorageFilesError('');
-    setRuntimeConnections(null);
-    setRuntimeConnectionsError('');
-  }, [activeRemoteConnectionId]);
-
   useEffect(() => {
     if (!bootstrapped) {
       void bootstrap();
@@ -1045,31 +733,6 @@ export default function App() {
       window.removeEventListener('keydown', onEscape);
     };
   }, []);
-
-  // 文件右键菜单渲染后按视口边界回拉位置，防止靠近面板右/下缘时被裁切；useLayoutEffect 在绘制前完成，无跳动。
-  useLayoutEffect(() => {
-    const menu = fileContextMenuRef.current;
-    if (!fileContextMenu || !menu) {
-      return;
-    }
-
-    const margin = 8;
-    const rect = menu.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    let left = fileContextMenu.x;
-    let top = fileContextMenu.y;
-    if (left + rect.width > viewportWidth - margin) {
-      left = Math.max(margin, viewportWidth - rect.width - margin);
-    }
-    if (top + rect.height > viewportHeight - margin) {
-      top = Math.max(margin, viewportHeight - rect.height - margin);
-    }
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
-    // 二级菜单约 160px 宽，主菜单右侧放不下时翻转到左边展开。
-    setCopyNameSubmenuFlipLeft(left + rect.width + 160 > viewportWidth - margin);
-  }, [fileContextMenu]);
 
   useEffect(() => {
     if (!sessions.length) {
@@ -1356,223 +1019,6 @@ export default function App() {
   ]
     .filter(Boolean)
     .join(' ');
-  useFlipListAnimation(sessionTabListRef, '[data-session-id]', [sessions.map((session) => session.id).join('|')]);
-
-  const updateSessionTabScrollbar = useCallback(() => {
-    const listElement = sessionTabListRef.current;
-    if (!listElement) {
-      setSessionTabScrollbar((current) => (
-        current.visible || current.thumbLeft || current.thumbWidth
-          ? { visible: false, thumbLeft: 0, thumbWidth: 0 }
-          : current
-      ));
-      return;
-    }
-
-    const maxScrollLeft = Math.max(0, listElement.scrollWidth - listElement.clientWidth);
-    if (maxScrollLeft <= 1) {
-      setSessionTabScrollbar((current) => (
-        current.visible || current.thumbLeft || current.thumbWidth
-          ? { visible: false, thumbLeft: 0, thumbWidth: 0 }
-          : current
-      ));
-      return;
-    }
-
-    // thumb 宽度按可视区域比例计算，并保留最小可拖动宽度，避免连接很多时滑块过短。
-    const trackWidth = Math.max(1, listElement.clientWidth - 8);
-    const thumbWidth = Math.min(trackWidth, Math.max(24, Math.round((trackWidth * listElement.clientWidth) / listElement.scrollWidth)));
-    const maxThumbTravel = Math.max(1, trackWidth - thumbWidth);
-    const thumbLeft = Math.round((listElement.scrollLeft / maxScrollLeft) * maxThumbTravel);
-    setSessionTabScrollbar((current) => (
-      current.visible === true && current.thumbLeft === thumbLeft && current.thumbWidth === thumbWidth
-        ? current
-        : { visible: true, thumbLeft, thumbWidth }
-    ));
-  }, []);
-
-  useLayoutEffect(() => {
-    updateSessionTabScrollbar();
-    const listElement = sessionTabListRef.current;
-    if (!listElement) {
-      return undefined;
-    }
-
-    const handleResize = () => updateSessionTabScrollbar();
-    const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(handleResize);
-    resizeObserver?.observe(listElement);
-    if (listElement.parentElement) {
-      resizeObserver?.observe(listElement.parentElement);
-    }
-    window.addEventListener('resize', handleResize);
-
-    return () => {
-      resizeObserver?.disconnect();
-      window.removeEventListener('resize', handleResize);
-    };
-  }, [agentSidebarCollapsed, connections, sessions, sidebarCollapsed, updateSessionTabScrollbar]);
-
-  const handleSessionTabScroll = useCallback(() => {
-    updateSessionTabScrollbar();
-  }, [updateSessionTabScrollbar]);
-
-  const startSessionTabScrollbarDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) {
-      return;
-    }
-
-    const listElement = sessionTabListRef.current;
-    if (!listElement || !sessionTabScrollbar.visible) {
-      return;
-    }
-
-    const maxScrollLeft = Math.max(0, listElement.scrollWidth - listElement.clientWidth);
-    const maxThumbTravel = Math.max(1, event.currentTarget.clientWidth - sessionTabScrollbar.thumbWidth);
-    const trackRect = event.currentTarget.getBoundingClientRect();
-    // 点击轨道时先把滑块移动到鼠标附近，再进入拖动，避免细条难以精准命中。
-    const nextThumbLeft = clamp(event.clientX - trackRect.left - sessionTabScrollbar.thumbWidth / 2, 0, maxThumbTravel);
-    listElement.scrollLeft = (nextThumbLeft / maxThumbTravel) * maxScrollLeft;
-    sessionTabScrollbarDragRef.current = {
-      pointerId: event.pointerId,
-      originX: event.clientX,
-      originScrollLeft: listElement.scrollLeft,
-      maxScrollLeft,
-      maxThumbTravel,
-    };
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    updateSessionTabScrollbar();
-  }, [sessionTabScrollbar.thumbWidth, sessionTabScrollbar.visible, updateSessionTabScrollbar]);
-
-  const handleSessionTabScrollbarPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    const dragState = sessionTabScrollbarDragRef.current;
-    const listElement = sessionTabListRef.current;
-    if (!dragState || dragState.pointerId !== event.pointerId || !listElement) {
-      return;
-    }
-
-    const scrollDelta = ((event.clientX - dragState.originX) / dragState.maxThumbTravel) * dragState.maxScrollLeft;
-    listElement.scrollLeft = clamp(dragState.originScrollLeft + scrollDelta, 0, dragState.maxScrollLeft);
-    updateSessionTabScrollbar();
-  }, [updateSessionTabScrollbar]);
-
-  const finishSessionTabScrollbarDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    const dragState = sessionTabScrollbarDragRef.current;
-    if (!dragState || dragState.pointerId !== event.pointerId) {
-      return;
-    }
-
-    event.currentTarget.releasePointerCapture?.(event.pointerId);
-    sessionTabScrollbarDragRef.current = null;
-    updateSessionTabScrollbar();
-  }, [updateSessionTabScrollbar]);
-
-  const resolveSessionTabDropTarget = useCallback((event: PointerEvent, currentDrag: NonNullable<SessionTabDragState>): SessionTabDropTarget => {
-    const target = document.elementFromPoint(event.clientX, event.clientY);
-    const targetSessionTab = target?.closest<HTMLElement>('[data-session-id]');
-    const targetSessionId = targetSessionTab?.dataset.sessionId;
-
-    // 顶部会话标签是横向列表，落点用左右半区判断；空白区域允许直接拖到末尾。
-    if (targetSessionId === currentDrag.id) {
-      return null;
-    }
-    if (targetSessionId) {
-      return {
-        sessionId: targetSessionId,
-        placement: resolveInlineInsertPlacement(event, targetSessionTab),
-      };
-    }
-    if (isPointInsideElement(event, sessionTabListRef.current)) {
-      return { type: 'end' };
-    }
-    return null;
-  }, []);
-
-  const startSessionTabDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>, session: TerminalSession, label: string) => {
-    if (event.button !== 0) {
-      return;
-    }
-    if ((event.target as HTMLElement).closest('.session-tab-close')) {
-      return;
-    }
-
-    event.stopPropagation();
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    // 会话标签拖拽只改变前端排序，不触碰后端 PTY，拖动过程中保持当前终端输入状态。
-    setSessionContextMenu(null);
-    setSessionTabDragState({
-      id: session.id,
-      label,
-      originX: event.clientX,
-      originY: event.clientY,
-      currentX: event.clientX,
-      currentY: event.clientY,
-    });
-  }, []);
-
-  useEffect(() => {
-    sessionTabDragStateRef.current = sessionTabDragState;
-  }, [sessionTabDragState]);
-
-  useEffect(() => {
-    sessionTabDropTargetRef.current = sessionTabDropTarget;
-  }, [sessionTabDropTarget]);
-
-  useEffect(() => {
-    if (!sessionTabDragState) {
-      return;
-    }
-
-    const handlePointerMove = (event: PointerEvent) => {
-      setSessionTabDragState((current) => {
-        if (!current) {
-          return current;
-        }
-
-        const nextDropTarget = resolveSessionTabDropTarget(event, current);
-        setSessionTabDropTarget((previous) => (
-          JSON.stringify(previous) === JSON.stringify(nextDropTarget) ? previous : nextDropTarget
-        ));
-        return { ...current, currentX: event.clientX, currentY: event.clientY };
-      });
-    };
-
-    const handlePointerUp = (event: PointerEvent) => {
-      const currentDrag = sessionTabDragStateRef.current;
-      if (!currentDrag) {
-        setSessionTabDragState(null);
-        setSessionTabDropTarget(null);
-        return;
-      }
-
-      const movedDistance = Math.hypot(event.clientX - currentDrag.originX, event.clientY - currentDrag.originY);
-      const finalDropTarget = sessionTabDropTargetRef.current ?? resolveSessionTabDropTarget(event, currentDrag);
-      setSessionTabDragState(null);
-      setSessionTabDropTarget(null);
-      if (movedDistance < 6 || !finalDropTarget) {
-        // 点击标签时也会先进入 pointer 拖拽流程；移动距离不足时按普通点击处理，避免拖拽监听吞掉 tab 切换。
-        if (movedDistance < 6) {
-          selectSession(currentDrag.id);
-        }
-        return;
-      }
-
-      const currentSessionIds = sessions.map((session) => session.id);
-      if ('type' in finalDropTarget && finalDropTarget.type === 'end') {
-        reorderSessions(moveItemToEnd(currentSessionIds, currentDrag.id));
-        return;
-      }
-      if (!('type' in finalDropTarget)) {
-        reorderSessions(moveItemToInsert(currentSessionIds, currentDrag.id, finalDropTarget.sessionId, finalDropTarget.placement));
-      }
-    };
-
-    window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', handlePointerUp, { once: true });
-    return () => {
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', handlePointerUp);
-    };
-  }, [Boolean(sessionTabDragState), reorderSessions, resolveSessionTabDropTarget, selectSession, sessions]);
   const explorerGridTemplate = useMemo(() => explorerColumnWidths.map((width) => `${width}px`).join(' '), [explorerColumnWidths]);
   const explorerGridMinWidth = useMemo(
     () => explorerColumnWidths.reduce((total, width) => total + width, 0) + 46,
@@ -2110,447 +1556,77 @@ export default function App() {
     '--app-grid-columns': `${sidebarCollapsed ? '' : 'auto 4px '}minmax(0, 1fr)${agentSidebarCollapsed ? '' : ' 4px auto'}`,
     '--main-workspace-min-width': `${mainWorkspaceMinWidth}px`,
   } as CSSProperties;
-  // AI 执行请求面板复用原底部 tab 的审批卡片，统一保持命令编辑、日志查看和审批按钮行为。
+  // 审批视图通过功能组件复用；App 只提供排序结果和审批用例。
   const agentRequestPanel = (
-    <div className="stack panel-stack agent-request-panel">
-      {orderedAgentBridgeRequests.length ? (
-        orderedAgentBridgeRequests.map((request) => {
-          const isExpanded = agentExpandedRequestIds[request.id] ?? request.status === 'pending';
-          const machineLabel = getAgentRequestMachineLabel(request, connections);
-          const summaryLabel = getAgentRequestSummary(request);
-          // 执行结果里带回本次走的通道；未完成或非命令类请求时不显示该行。
-          const executionResult = request.result as
-            | { executionMode?: string; fallbackReason?: string }
-            | undefined;
-          const executionModeLabel = executionResult?.executionMode
-            ? executionResult.executionMode === 'terminal'
-              ? t('agentRequestModeTerminal')
-              : `${t('agentRequestModeHidden')}${executionResult.fallbackReason ? `（${executionResult.fallbackReason}）` : ''}`
-            : '';
-
-          return (
-            <div key={request.id} className={`agent-request-card status-${request.status} ${isExpanded ? 'is-expanded' : 'is-collapsed'}`}>
-              <button
-                aria-expanded={isExpanded}
-                className="agent-request-header"
-                onClick={() => toggleAgentRequestExpanded(request)}
-                type="button"
-              >
-                {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                <span className="agent-request-title">
-                  <strong>{request.kind}</strong>
-                  <span>{request.title} · {new Date(request.createdAt).toLocaleString()}</span>
-                </span>
-                <span className={`status-badge status-${request.status}`}>{request.status}</span>
-              </button>
-              <div className="agent-request-summary">
-                <span>{t('agentRequestMachine')}</span>
-                <strong>{machineLabel}</strong>
-                <span>{request.kind === 'run_command' ? t('agentRequestCommand') : t('agentRequestTarget')}</span>
-                <strong>{summaryLabel}</strong>
-                {executionModeLabel ? (
-                  <>
-                    {/* 如实告知本次是在终端里可见执行还是走了后台通道，避免用户误以为一定能看到过程。 */}
-                    <span>{t('agentRequestExecutionMode')}</span>
-                    <strong>{executionModeLabel}</strong>
-                  </>
-                ) : null}
-              </div>
-              {isExpanded ? (
-                <>
-                  {request.kind === 'run_command' ? (
-                    <label>
-                      <span>{t('agentRequestCommand')}</span>
-                      <textarea
-                        // 内置 AI 请求在对话内审批；这里作为审计记录只读展示，避免出现两个可操作入口。
-                        disabled={request.status !== 'pending' || Boolean(request.conversationId)}
-                        rows={3}
-                        spellCheck={false}
-                        value={agentCommandEdits[request.id] ?? request.command ?? ''}
-                        onChange={(event) => setAgentCommandEdits((current) => ({ ...current, [request.id]: event.target.value }))}
-                      />
-                    </label>
-                  ) : null}
-                  {request.path ? (
-                    <p className="agent-request-path">
-                      {request.path}{request.newPath ? ` -> ${request.newPath}` : ''}
-                    </p>
-                  ) : null}
-                  {request.contentPreview ? <pre className="agent-request-output">{request.contentPreview}</pre> : null}
-                  {request.logs.length ? (
-                    <div className="agent-request-logs">
-                      {request.logs.map((line, index) => <span key={`${request.id}-log-${index}`}>{line}</span>)}
-                    </div>
-                  ) : null}
-                  {request.error ? <div className="sync-action-feedback is-error">{request.error}</div> : null}
-                  {request.result ? <pre className="agent-request-output">{JSON.stringify(request.result, null, 2)}</pre> : null}
-                  {request.status === 'pending' && request.conversationId ? (
-                    <div className="agent-request-record-hint">{t('agentRequestApproveInChat')}</div>
-                  ) : null}
-                  {request.status === 'pending' && !request.conversationId ? (
-                    <div className="section-row compact">
-                      <button className="primary-button" onClick={() => approveAgentBridgeRequest(request)} type="button">
-                        <Play size={16} /> {t('approveAgentRequest')}
-                      </button>
-                      <button className="secondary-button" onClick={() => rejectAgentBridgeRequest(request)} type="button">
-                        <X size={16} /> {t('rejectAgentRequest')}
-                      </button>
-                    </div>
-                  ) : null}
-                </>
-              ) : null}
-            </div>
-          );
-        })
-      ) : (
-        <div className="empty-state">{t('agentBridgeRequestsEmpty')}</div>
-      )}
-    </div>
+    <AgentRequestPanel
+      approveRequest={approveAgentBridgeRequest}
+      commandEdits={agentCommandEdits}
+      connections={connections}
+      expandedRequestIds={agentExpandedRequestIds}
+      rejectRequest={rejectAgentBridgeRequest}
+      requests={orderedAgentBridgeRequests}
+      setCommandEdits={setAgentCommandEdits}
+      t={t}
+      toggleExpanded={toggleAgentRequestExpanded}
+    />
   );
 
   return (
     <div className={shellClassName} style={appShellStyle}>
       {/* 自定义标题栏：关闭原生装饰后承载操作入口和窗口控制，中间空白区作为拖动手柄。 */}
-      <header className="app-titlebar">
-        <div className="app-titlebar-actions">
-          <button
-            aria-label={t('newConnection')}
-            className="titlebar-action-button"
-            onClick={() => openConnectionForm()}
-            title={t('newConnection')}
-            type="button"
-          >
-            <Plus size={16} /> <span className="button-label">{t('newConnection')}</span>
-          </button>
-          <button
-            className="titlebar-action-button"
-            onClick={() => setConnectionsOpen(true)}
-            title={t('manageConnections')}
-            type="button"
-          >
-            <FolderTree size={16} /> <span className="button-label">{t('manageConnections')}</span>
-          </button>
-          <button
-            className="titlebar-action-button"
-            onClick={() => setLocalTerminalsOpen(true)}
-            title={t('localTerminalTitle')}
-            type="button"
-          >
-            <Laptop size={16} /> <span className="button-label">{t('localTerminalTitle')}</span>
-          </button>
-        </div>
-        {/* 中间空白区专用于拖动窗口，避免按钮区误触发拖动。 */}
-        <div className="app-titlebar-drag" data-tauri-drag-region />
-        <div className="app-titlebar-system">
-          {/* 更新按钮常驻，支持主动点击检测；检测中图标旋转，发现新版本时右上角显示红点提示。 */}
-          <button
-            aria-label={t('checkUpdates')}
-            className="titlebar-icon-button"
-            disabled={appUpdateChecking}
-            onClick={() => void handleTitlebarCheckUpdate()}
-            title={t('checkUpdates')}
-            type="button"
-          >
-            <CloudDownload className={appUpdateChecking ? 'is-spinning' : ''} size={16} />
-            {updateCheckResult?.updateAvailable ? <span className="titlebar-badge-dot" /> : null}
-          </button>
-          {/* 主题按钮：浅色下显示月亮（点击进入深色），深色下显示太阳（点击回到浅色）。 */}
-          <button
-            aria-label={settings.themeMode === 'dark' ? t('switchToLightMode') : t('switchToDarkMode')}
-            className="titlebar-icon-button"
-            onClick={handleToggleTheme}
-            title={settings.themeMode === 'dark' ? t('switchToLightMode') : t('switchToDarkMode')}
-            type="button"
-          >
-            {settings.themeMode === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
-          </button>
-          <button
-            aria-label={t('openSettings')}
-            className="titlebar-icon-button"
-            onClick={() => {
-              setSettingsTab('appearance');
-              setSettingsOpen(true);
-            }}
-            title={t('openSettings')}
-            type="button"
-          >
-            <Settings size={16} />
-          </button>
-          <TitlebarWindowControls t={t} />
-        </div>
-      </header>
+      <AppTitlebar
+        checkingUpdate={appUpdateChecking}
+        onCheckUpdate={handleTitlebarCheckUpdate}
+        onCreateConnection={() => openConnectionForm()}
+        onManageConnections={() => setConnectionsOpen(true)}
+        onManageLocalTerminals={() => setLocalTerminalsOpen(true)}
+        onOpenSettings={() => {
+          setSettingsTab('appearance');
+          setSettingsOpen(true);
+        }}
+        onToggleTheme={handleToggleTheme}
+        t={t}
+        themeMode={settings.themeMode}
+        updateAvailable={Boolean(updateCheckResult?.updateAvailable)}
+      />
 
       <div className="app-body">
       {!sidebarCollapsed ? (
       <aside className="sidebar card" style={{ minWidth: sidePanelMinWidth, width: sidebarWidth }}>
-        <section className="sidebar-panel runtime-panel" style={{ height: runtimePanelHeight }}>
-          <div className="section-row runtime-header">
-            <h3>{runtimeHostLabel}</h3>
-            {/* 刷新进行中时图标持续旋转，给出“正在刷新”的即时反馈。 */}
-            <button className="icon-button" disabled={!hasActiveRemoteSession} onClick={refreshRuntimeOverviewOnce} type="button">
-              <RefreshCw className={runtimeLoading ? 'is-spinning' : ''} size={16} />
-            </button>
-          </div>
-
-          {/* 无旧数据的首次加载才显示遮罩动画；有旧数据时后台静默刷新，保留上次内容不闪烁。 */}
-          <div className={`runtime-list ${runtimeLoading && !runtimeOverview ? 'is-panel-loading' : ''}`}>
-            {runtimeLoading && !runtimeOverview ? (
-              <div className="panel-loading-overlay">
-                <RefreshCw className="is-spinning" size={18} />
-                <span>{t('panelRefreshing')}</span>
-              </div>
-            ) : null}
-            {runtimeItems.map(({ id, icon: Icon, label, percent, value }) => {
-              // CPU、内存、存储和连接数主行承担各自展开入口；行内不再放箭头，保持左侧状态区横向空间稳定。
-              const isCpuMetric = id === 'cpu';
-              const isMemoryMetric = id === 'memory';
-              const isStorageMetric = id === 'storage';
-              const isConnectionsMetric = id === 'connections';
-              const cpuCoreCount = runtimeOverview?.cpuCores?.length ?? 0;
-              const isCpuExpandable = isCpuMetric && cpuCoreCount > 0;
-              const isMemoryExpandable = isMemoryMetric && Boolean(activeRemoteConnectionId);
-              const isStorageExpandable = isStorageMetric && Boolean(activeRemoteConnectionId);
-              const isConnectionsExpandable = isConnectionsMetric && Boolean(activeRemoteConnectionId);
-              const isExpandableMetric = isCpuExpandable || isMemoryExpandable || isStorageExpandable || isConnectionsExpandable;
-              const expanded = isCpuMetric
-                ? cpuCoresExpanded
-                : isMemoryMetric
-                  ? memoryResourcesExpanded
-                  : isStorageMetric
-                    ? storageFilesExpanded
-                    : isConnectionsMetric
-                      ? connectionsExpanded
-                      : undefined;
-              const controlsId = isCpuExpandable
-                ? 'runtime-cpu-core-list'
-                : isMemoryExpandable
-                  ? 'runtime-memory-resource-list'
-                  : isStorageExpandable
-                    ? 'runtime-storage-file-list'
-                    : isConnectionsExpandable
-                      ? 'runtime-connection-list'
-                  : undefined;
-              return (
-                <div key={id} className="runtime-row-group">
-                  <button
-                    aria-controls={controlsId}
-                    aria-expanded={isExpandableMetric ? expanded : undefined}
-                    className={`runtime-row metric-tone-${metricTone(percent)} ${isExpandableMetric ? 'is-expandable-metric-row' : ''} ${isExpandableMetric ? 'is-clickable' : ''}`}
-                    disabled={!isExpandableMetric}
-                    onClick={() => {
-                      if (isCpuExpandable) {
-                        setCpuCoresExpanded((current) => !current);
-                      }
-                      if (isMemoryExpandable) {
-                        setMemoryResourcesExpanded((current) => !current);
-                      }
-                      if (isStorageExpandable) {
-                        setStorageFilesExpanded((current) => !current);
-                      }
-                      if (isConnectionsExpandable) {
-                        setConnectionsExpanded((current) => !current);
-                      }
-                    }}
-                    type="button"
-                  >
-                    <div className="metric-label">
-                      <Icon size={14} />
-                      <span>{label}</span>
-                    </div>
-                    <div className="metric-bar-cell">
-                      {percent !== undefined ? (
-                        <div className="metric-progress-track" aria-label={`${label} ${percent.toFixed(0)}%`}>
-                          <span className="metric-progress-fill" style={{ width: `${percent}%` }} />
-                        </div>
-                      ) : null}
-                      <span className="metric-value">{value}</span>
-                    </div>
-                  </button>
-                  {isCpuMetric && cpuCoresExpanded && cpuCoreCount > 0 ? (
-                    <div className="runtime-core-list" id="runtime-cpu-core-list">
-                      {runtimeOverview?.cpuCores.map((core) => {
-                        const percentValue = clamp(core.percent, 0, 100);
-                        return (
-                          <div key={core.name} className={`runtime-core-row metric-tone-${metricTone(percentValue)}`}>
-                            <span>{core.name}</span>
-                            <div className="metric-bar-cell">
-                              <div className="metric-progress-track" aria-label={`${core.name} ${percentValue.toFixed(0)}%`}>
-                                <span className="metric-progress-fill" style={{ width: `${percentValue}%` }} />
-                              </div>
-                              <span className="metric-value">{percentValue.toFixed(0)}%</span>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : null}
-                  {isMemoryMetric && memoryResourcesExpanded ? (
-                    <div className="runtime-resource-panel" id="runtime-memory-resource-list">
-                      <div className="runtime-resource-toolbar">
-                        <div className="runtime-segmented-control" aria-label={t('runtimeResourceMetric')}>
-                          <button
-                            className={runtimeResourceMetric === 'memory' ? 'is-active' : ''}
-                            onClick={() => setRuntimeResourceMetric('memory')}
-                            type="button"
-                          >
-                            {t('runtimeResourceMetricMemory')}
-                          </button>
-                          <button
-                            className={runtimeResourceMetric === 'cpu' ? 'is-active' : ''}
-                            onClick={() => setRuntimeResourceMetric('cpu')}
-                            type="button"
-                          >
-                            {t('runtimeResourceMetricCpu')}
-                          </button>
-                        </div>
-                        <div className="runtime-segmented-control" aria-label={t('runtimeResourceTarget')}>
-                          <button
-                            className={runtimeResourceTarget === 'process' ? 'is-active' : ''}
-                            onClick={() => setRuntimeResourceTarget('process')}
-                            type="button"
-                          >
-                            {t('runtimeResourceTargetProcess')}
-                          </button>
-                          <button
-                            className={runtimeResourceTarget === 'thread' ? 'is-active' : ''}
-                            onClick={() => setRuntimeResourceTarget('thread')}
-                            type="button"
-                          >
-                            {t('runtimeResourceTargetThread')}
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="runtime-resource-header">
-                        <span>#</span>
-                        <span>
-                          {runtimeResourceTarget === 'thread' ? t('runtimeResourceTargetThread') : t('runtimeResourceTargetProcess')}
-                          {' · '}
-                          {runtimeResourceSourceLabel((runtimeResourceUsage?.source ?? settings.runtimeResourceSource ?? 'system') as RuntimeResourceSource)}
-                        </span>
-                        <span>{t('metricCpu')}</span>
-                        <span>{t('metricMemory')}</span>
-                      </div>
-
-                      {runtimeResourceUsage?.items.length ? (
-                        <div className="runtime-resource-table">
-                          {runtimeResourceUsage.items.map((item, index) => (
-                            <div className="runtime-resource-row" key={`${item.id}-${index}`} title={item.detail}>
-                              <span className="runtime-resource-rank">{item.rank}</span>
-                              <span className="runtime-resource-name">
-                                <strong>{item.name || item.id}</strong>
-                                <small>{item.context}</small>
-                              </span>
-                              <span>{item.cpu}</span>
-                              <span>{item.memory}</span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : runtimeResourceLoading ? (
-                        <div className="runtime-resource-empty">
-                          {t('panelRefreshing')}
-                        </div>
-                      ) : runtimeResourceError || !runtimeResourceLoading ? (
-                        <div className="runtime-resource-empty">
-                          {runtimeResourceError || t('runtimeResourceEmpty')}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {isStorageMetric && storageFilesExpanded ? (
-                    <div className="runtime-storage-panel" id="runtime-storage-file-list">
-                      <div className="runtime-storage-header">
-                        <span>#</span>
-                        <span>{t('runtimeStorageFileName')}</span>
-                        <span>{t('runtimeStorageFileSize')}</span>
-                      </div>
-
-                      {runtimeStorageFiles?.items.length ? (
-                        <div className="runtime-storage-table">
-                          {runtimeStorageFiles.items.map((item) => (
-                            <div
-                              className="runtime-storage-row"
-                              key={`${item.path}-${item.rank}`}
-                              title={`${item.name}\n${item.path}\n${item.size}`}
-                            >
-                              <span className="runtime-storage-rank">{item.rank}</span>
-                              <span className="runtime-storage-file">
-                                <strong>{item.name}</strong>
-                                <small>{item.path}</small>
-                              </span>
-                              <span className="runtime-storage-size">{item.size}</span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : runtimeStorageFilesLoading ? (
-                        <div className="runtime-resource-empty">
-                          {t('panelRefreshing')}
-                        </div>
-                      ) : runtimeStorageFilesError || !runtimeStorageFilesLoading ? (
-                        <div className="runtime-resource-empty">
-                          {runtimeStorageFilesError || t('runtimeStorageFilesEmpty')}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {isConnectionsMetric && connectionsExpanded ? (
-                    <div className="runtime-connection-panel" id="runtime-connection-list">
-                      {/* 连接表读自远端主机的内核，列里的“本机”是那台主机而非用户电脑；不写清这行 127.0.0.1 极易被误读成自己的机器 */}
-                      <div className="runtime-connection-note">
-                        {t('runtimeConnectionsPerspective', { host: runtimeHostLabel })}
-                      </div>
-                      <div className="runtime-connection-header">
-                        <span>#</span>
-                        <span>{t('runtimeConnectionLocal')}</span>
-                        <span>{t('runtimeConnectionRemote')}</span>
-                      </div>
-
-                      {runtimeConnections?.items.length ? (
-                        <div className="runtime-connection-table">
-                          {runtimeConnections.items.map((item, index) => (
-                            <div
-                              className="runtime-connection-row"
-                              key={`${item.local}-${item.remote}-${index}`}
-                              title={`${item.local} ↔ ${item.remote}`}
-                            >
-                              <span className="runtime-connection-rank">{index + 1}</span>
-                              <span className="runtime-connection-addr">
-                                {/* SSH 管理连接带标签置顶，与主行 TCP/SSH 计数口径一致 */}
-                                {item.isSsh ? <em className="runtime-connection-ssh-tag">SSH</em> : null}
-                                {item.local}
-                              </span>
-                              <span className="runtime-connection-addr">{item.remote}</span>
-                            </div>
-                          ))}
-                          {/* 远端连接数超出单次采集上限时提示剩余条数，避免列表被误读为全量 */}
-                          {runtimeConnections.total > runtimeConnections.items.length ? (
-                            <div className="runtime-resource-empty">
-                              {t('runtimeConnectionsOmitted', { count: runtimeConnections.total - runtimeConnections.items.length })}
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : runtimeConnectionsLoading ? (
-                        <div className="runtime-resource-empty">
-                          {t('panelRefreshing')}
-                        </div>
-                      ) : runtimeConnectionsError || !runtimeConnectionsLoading ? (
-                        <div className="runtime-resource-empty">
-                          {runtimeConnectionsError || t('runtimeConnectionsEmpty')}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
-            {/* 系统版本信息跟随运行状态列表滚动，运行区被拖小时不会固定占位压住运行时长。 */}
-            <div className="runtime-extra">
-              <span>{runtimeOverview?.os ?? '--'}</span>
-            </div>
-          </div>
-        </section>
-
-        <div
+        <RuntimePanel
+          activeRemoteConnectionId={activeRemoteConnectionId}
+          connectionsExpanded={connectionsExpanded}
+          cpuCoresExpanded={cpuCoresExpanded}
+          hasActiveRemoteSession={hasActiveRemoteSession}
+          height={runtimePanelHeight}
+          memoryResourcesExpanded={memoryResourcesExpanded}
+          onRefresh={refreshRuntimeOverviewOnce}
+          runtimeConnections={runtimeConnections ?? undefined}
+          runtimeConnectionsError={runtimeConnectionsError}
+          runtimeConnectionsLoading={runtimeConnectionsLoading}
+          runtimeHostLabel={runtimeHostLabel}
+          runtimeItems={runtimeItems}
+          runtimeLoading={runtimeLoading}
+          runtimeOverview={runtimeOverview}
+          runtimeResourceError={runtimeResourceError}
+          runtimeResourceLoading={runtimeResourceLoading}
+          runtimeResourceMetric={runtimeResourceMetric}
+          runtimeResourceSource={settings.runtimeResourceSource ?? 'system'}
+          runtimeResourceSourceLabel={runtimeResourceSourceLabel}
+          runtimeResourceTarget={runtimeResourceTarget}
+          runtimeResourceUsage={runtimeResourceUsage ?? undefined}
+          runtimeStorageFiles={runtimeStorageFiles ?? undefined}
+          runtimeStorageFilesError={runtimeStorageFilesError}
+          runtimeStorageFilesLoading={runtimeStorageFilesLoading}
+          setConnectionsExpanded={setConnectionsExpanded}
+          setCpuCoresExpanded={setCpuCoresExpanded}
+          setMemoryResourcesExpanded={setMemoryResourcesExpanded}
+          setRuntimeResourceMetric={setRuntimeResourceMetric}
+          setRuntimeResourceTarget={setRuntimeResourceTarget}
+          setStorageFilesExpanded={setStorageFilesExpanded}
+          storageFilesExpanded={storageFilesExpanded}
+          t={t}
+        />        <div
           className="resize-handle resize-handle-sidebar-horizontal"
           onPointerDown={(event) => {
             const startHeight = runtimePanelHeight;
@@ -2560,287 +1636,74 @@ export default function App() {
           }}
         />
 
-        <section ref={explorerPanelRef} className={`sidebar-panel explorer-panel ${localFileDropActive ? 'is-local-drop-active' : ''}`}>
-          <div className="explorer-toolbar">
-            <div className="explorer-toolbar-actions">
-              <label className="secondary-button slim file-upload-button" title={t('upload')}>
-                <Upload size={14} />
-                <input
-                  className="hidden-file-input"
-                  disabled={!hasActiveRemoteSession}
-                  multiple
-                  type="file"
-                  onChange={(event) => {
-                    uploadFilesWithProgress(Array.from(event.currentTarget.files ?? []));
-                    event.currentTarget.value = '';
-                  }}
-                />
-              </label>
-              <label className="secondary-button slim file-upload-button" title={t('uploadFolder')}>
-                <FolderTree size={14} />
-                <input
-                  {...{ directory: '', webkitdirectory: '' }}
-                  className="hidden-file-input"
-                  disabled={!hasActiveRemoteSession}
-                  multiple
-                  type="file"
-                  onChange={(event) => {
-                    const folderFiles = Array.from(event.currentTarget.files ?? []);
-                    uploadFolderWithProgress(folderFiles);
-                    event.currentTarget.value = '';
-                  }}
-                />
-              </label>
-              <button
-                className={`secondary-button slim ${remoteDownloadDragPaths.length ? 'is-drop-target' : ''}`}
-                disabled={!hasActiveRemoteSession}
-                onClick={() => downloadPathsWithProgress(selectedFilePaths)}
-                onDragOver={(event) => {
-                  if (hasActiveRemoteSession) {
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = 'copy';
-                  }
-                }}
-                onDrop={dropRemoteSelectionToDownload}
-                title={remoteDownloadDragPaths.length ? t('dropToDownload') : t('download')}
-                type="button"
-              >
-                <Download size={14} />
-              </button>
-              <span className="explorer-toolbar-spacer" />
-              <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles(parentPath(currentRemotePath))} type="button">
-                <ChevronUp size={14} />
-                {t('up')}
-              </button>
-              <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles()} title={t('refresh')} type="button">
-                {/* 文件刷新进行中时图标旋转，提示后台正在拉取目录。 */}
-                <RefreshCw className={filesLoading ? 'is-spinning' : ''} size={14} />
-              </button>
-            </div>
-            <div className="address-bar">
-              <input
-                className="address-input"
-                disabled={!hasActiveRemoteSession}
-                placeholder={t('addressBarPlaceholder')}
-                value={pathInput}
-                onChange={(event) => setPathInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    void refreshFiles(pathInput.trim() || '~');
-                  }
-                }}
-              />
-              <button
-                className="secondary-button slim address-go-button"
-                disabled={!hasActiveRemoteSession}
-                onClick={() => void refreshFiles(pathInput.trim() || '~')}
-                title={t('goToPath')}
-                type="button"
-              >
-                {/* 重要逻辑：使用 CornerDownLeft ↩︎ 图标作为前往按钮，文字收起以提高美观度，悬浮显示前往 */}
-                <CornerDownLeft size={14} />
-              </button>
-            </div>
-          </div>
-
-          <div className="explorer-shell explorer-shell-dense">
-            <div
-              ref={explorerListRef}
-              className="explorer-list"
-              onKeyDown={handleExplorerKeyDown}
-              onScroll={handleExplorerScroll}
-              tabIndex={hasActiveRemoteSession ? 0 : -1}
-            >
-              <div className="explorer-list-header" style={explorerGridStyle}>
-                {[t('fieldName'), t('fieldSize'), t('fieldType'), t('fieldModifiedAt'), t('fieldPermission'), t('fieldOwnerGroup')].map((label, index, labels) => (
-                  <span key={`${label}-${index}`} className="explorer-column-header">
-                    <span>{label}</span>
-                    {index < labels.length - 1 ? (
-                      <button
-                        aria-label={`${label} 调整列宽`}
-                        className="explorer-column-resizer"
-                        onPointerDown={(event) => beginExplorerColumnResize(event, index)}
-                        title={`${label} 调整列宽`}
-                        type="button"
-                      />
-                    ) : null}
-                  </span>
-                ))}
-              </div>
-
-              {files.length ? (
-                <div
-                  className="explorer-virtual-body"
-                  style={{ height: files.length * explorerRowHeight, minWidth: explorerGridMinWidth }}
-                >
-                  {explorerVirtualRange.entries.map(({ file, index }) => {
-                    const Icon = fileLabelIcon(file);
-                    const isSelected = selectedFilePathSet.has(file.path);
-                    // 文件表格列宽通常较窄，悬浮提示必须复用单元格展示文本，避免省略号场景下看到不同格式。
-                    const fileSizeLabel = file.isDir ? '' : formatBytes(file.size);
-                    const fileTypeLabel = formatFileType(file, t('directoryLabel'), t('symlinkLabel'), t('fileLabel'));
-                    const fileModifiedAtLabel = formatTimestamp(file.modifiedAt);
-                    const filePermissionLabel = file.permissions ?? '--';
-                    const fileOwnerGroupLabel = formatOwnerGroup(file);
-                    return (
-                      <div
-                        key={file.path}
-                        className={`explorer-row is-virtual ${index % 2 === 0 ? '' : 'is-odd'} ${isSelected ? 'is-selected' : ''}`}
-                        onContextMenu={(event) => {
-                          event.preventDefault();
-                          if (!selectedFilePathSet.has(file.path)) {
-                            setSelectedFilePath(file.path);
-                            setSelectedFilePaths([file.path]);
-                          }
-                          setFileContextMenu({ file, x: event.clientX, y: event.clientY });
-                        }}
-                        onDoubleClick={() => openRemoteFileEntry(file)}
-                        style={{ height: explorerRowHeight, transform: `translateY(${index * explorerRowHeight}px)` }}
-                      >
-                        <button
-                          className="explorer-row-main"
-                          disabled={!hasActiveRemoteSession}
-                          draggable={hasActiveRemoteSession}
-                          onClick={(event) => selectExplorerFile(file, event)}
-                          onDragEnd={() => setRemoteDownloadDragPaths([])}
-                          onDragStart={(event) => startRemoteDownloadDrag(file, event)}
-                          style={explorerGridStyle}
-                          type="button"
-                        >
-                          <span className="explorer-name" title={file.name}>
-                            <Icon size={16} />
-                            <strong>{file.name}</strong>
-                          </span>
-                          <span title={fileSizeLabel || undefined}>{fileSizeLabel}</span>
-                          <span title={fileTypeLabel}>{fileTypeLabel}</span>
-                          <span title={fileModifiedAtLabel}>{fileModifiedAtLabel}</span>
-                          <span title={filePermissionLabel}>{filePermissionLabel}</span>
-                          <span title={fileOwnerGroupLabel}>{fileOwnerGroupLabel}</span>
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : filesLoading ? (
-                // 列表为空且正在加载时显示刷新动画，而不是直接闪出“空目录”文案。
-                <div className="panel-loading-overlay is-inline">
-                  <RefreshCw className="is-spinning" size={18} />
-                  <span>{t('panelRefreshing')}</span>
-                </div>
-              ) : (
-                <div className="empty-state">{t('remoteFilesEmpty')}</div>
-              )}
-            </div>
-          </div>
-        </section>
+        <FileExplorerPanel
+          beginColumnResize={beginExplorerColumnResize}
+          currentRemotePath={currentRemotePath}
+          downloadPaths={downloadPathsWithProgress}
+          dropRemoteSelectionToDownload={dropRemoteSelectionToDownload}
+          explorerGridMinWidth={explorerGridMinWidth}
+          explorerGridStyle={explorerGridStyle}
+          explorerListRef={explorerListRef}
+          explorerPanelRef={explorerPanelRef}
+          files={files}
+          filesLoading={filesLoading}
+          handleKeyDown={handleExplorerKeyDown}
+          handleScroll={handleExplorerScroll}
+          hasActiveRemoteSession={hasActiveRemoteSession}
+          localFileDropActive={localFileDropActive}
+          openEntry={openRemoteFileEntry}
+          pathInput={pathInput}
+          refreshFiles={refreshFiles}
+          remoteDownloadDragPaths={remoteDownloadDragPaths}
+          selectFile={selectExplorerFile}
+          selectedFilePathSet={selectedFilePathSet}
+          selectedFilePaths={selectedFilePaths}
+          setFileContextMenu={setFileContextMenu}
+          setPathInput={setPathInput}
+          setRemoteDownloadDragPaths={setRemoteDownloadDragPaths}
+          setSelectedFilePath={setSelectedFilePath}
+          setSelectedFilePaths={setSelectedFilePaths}
+          startRemoteDownloadDrag={startRemoteDownloadDrag}
+          t={t}
+          uploadFiles={uploadFilesWithProgress}
+          uploadFolder={uploadFolderWithProgress}
+          virtualEntries={explorerVirtualRange.entries}
+        />
       </aside>
       ) : null}
 
-      {fileContextMenu ? (() => {
-          // 复制/复制名称作用于选区（右键命中已选中项时）或单个右键目标；粘贴仅在同连接有暂存内容时可用。
-          const menuPaths = selectedFilePathSet.has(fileContextMenu.file.path) ? selectedFilePaths : [fileContextMenu.file.path];
-          const canPaste = Boolean(fileClipboard && fileClipboard.connectionId === activeConnectionId && fileClipboard.paths.length);
-          return (
-          <div ref={fileContextMenuRef} className="context-menu file-context-menu" style={{ left: fileContextMenu.x, top: fileContextMenu.y }} onClick={(event) => event.stopPropagation()}>
-            {selectedFilePathSet.has(fileContextMenu.file.path) && selectedFilePaths.length > 1 ? (
-              <>
-                <button className="context-menu-item" onClick={() => {
-                  downloadPathsWithProgress(selectedFilePaths);
-                  setFileContextMenu(null);
-                }} type="button">
-                  {t('fileMenuDownloadSelected')} ({selectedFilePaths.length})
-                </button>
-                <button className="context-menu-item danger" onClick={() => deleteSelectedRemotePaths(selectedFilePaths)} type="button">
-                  {t('fileMenuDeleteSelected')} ({selectedFilePaths.length})
-                </button>
-              </>
-            ) : null}
-            {fileContextMenu.file.isDir ? (
-              <button className="context-menu-item" onClick={() => {
-                void refreshFiles(fileContextMenu.file.path);
-                setFileContextMenu(null);
-              }} type="button">{t('fileMenuOpen')}</button>
-            ) : null}
-            {!fileContextMenu.file.isDir && isEditableFile(fileContextMenu.file.path) ? (
-              <button className="context-menu-item" onClick={() => {
-                openRemoteFileWithProgress(fileContextMenu.file.path);
-                setFileContextMenu(null);
-              }} type="button">{t('fileMenuEdit')}</button>
-            ) : null}
-            <button className="context-menu-item" onClick={() => {
-              downloadFileWithProgress(fileContextMenu.file.path);
-              setFileContextMenu(null);
-            }} type="button">{t('fileMenuDownload')}</button>
-            <div className="context-menu-item has-submenu" tabIndex={0}>
-              <span className="context-menu-item-label"><Copy size={14} /> {t('fileMenuCopyName')}</span>
-              <ChevronRight className="context-submenu-caret" size={12} />
-              <div className={`context-menu file-context-menu context-submenu${copyNameSubmenuFlipLeft ? ' flip-left' : ''}`}>
-                <button className="context-menu-item" onClick={() => copyFileNameToClipboard(fileContextMenu.file.name)} type="button">{t('fileMenuCopyFileName')}</button>
-                <button className="context-menu-item" onClick={() => copyFileNameToClipboard(fileContextMenu.file.path)} type="button">{t('fileMenuCopyFullPath')}</button>
-              </div>
-            </div>
-            <button className="context-menu-item" onClick={() => copyRemoteSelection(menuPaths)} type="button">
-              {t('fileMenuCopy')}{menuPaths.length > 1 ? ` (${menuPaths.length})` : ''}
-            </button>
-            <button className="context-menu-item" disabled={!canPaste} onClick={pasteRemoteClipboard} type="button">{t('fileMenuPaste')}</button>
-            <button className="context-menu-item" onClick={() => {
-              const nextName = window.prompt(t('rename'), fileContextMenu.file.name);
-              if (nextName) {
-                void renameRemotePath(fileContextMenu.file.path, nextName);
-              }
-              setFileContextMenu(null);
-            }} type="button">{t('fileMenuRename')}</button>
-            <button className="context-menu-item danger" onClick={() => {
-              deleteSelectedRemotePaths(menuPaths);
-            }} type="button">{t('fileMenuDelete')}</button>
-          </div>
-          );
-        })() : null}
+      {fileContextMenu ? (
+        <FileContextMenu
+          activeConnectionId={activeConnectionId}
+          clipboard={fileClipboard}
+          copyName={copyFileNameToClipboard}
+          copySelection={copyRemoteSelection}
+          deletePaths={deleteSelectedRemotePaths}
+          downloadFile={downloadFileWithProgress}
+          downloadPaths={downloadPathsWithProgress}
+          onClose={() => setFileContextMenu(null)}
+          openEditor={openRemoteFileWithProgress}
+          pasteClipboard={pasteRemoteClipboard}
+          refreshFiles={refreshFiles}
+          renamePath={renameRemotePath}
+          selectedFilePathSet={selectedFilePathSet}
+          selectedFilePaths={selectedFilePaths}
+          t={t}
+          target={fileContextMenu}
+        />
+      ) : null}
 
       {sessionContextMenu && sessionContextSession ? (
-        <div
-          className="context-menu session-context-menu"
-          style={{ left: sessionContextMenu.x, top: sessionContextMenu.y }}
-          onClick={(event) => event.stopPropagation()}
-        >
-          {(() => {
-            const sessionIndex = sessions.findIndex((session) => session.id === sessionContextSession.id);
-            const leftSessionIds = sessions.slice(0, Math.max(0, sessionIndex)).map((session) => session.id);
-            const rightSessionIds = sessions.slice(sessionIndex + 1).map((session) => session.id);
-            const otherSessionIds = sessions.filter((session) => session.id !== sessionContextSession.id).map((session) => session.id);
-            // 关闭全部需要包含当前右键标签，批量关闭函数会按当前标签顺序逐个释放后端会话。
-            const allSessionIds = sessions.map((session) => session.id);
-            return (
-              <>
-                <button className="context-menu-item" onClick={() => closeSessionBatch([sessionContextSession.id])} type="button">
-                  <X size={14} /> {t('closeSessionAction')}
-                </button>
-                <button className="context-menu-item" disabled={!leftSessionIds.length} onClick={() => closeSessionBatch(leftSessionIds)} type="button">
-                  <ChevronLeft size={14} /> {t('closeSessionsLeft')}
-                </button>
-                <button className="context-menu-item" disabled={!rightSessionIds.length} onClick={() => closeSessionBatch(rightSessionIds)} type="button">
-                  <ChevronRight size={14} /> {t('closeSessionsRight')}
-                </button>
-                <button className="context-menu-item" disabled={!otherSessionIds.length} onClick={() => closeSessionBatch(otherSessionIds)} type="button">
-                  <X size={14} /> {t('closeOtherSessions')}
-                </button>
-                <button className="context-menu-item" onClick={() => closeSessionBatch(allSessionIds)} type="button">
-                  <Trash2 size={14} /> {t('closeAllSessions')}
-                </button>
-                <button className="context-menu-item" onClick={() => duplicateSession(sessionContextSession)} type="button">
-                  <CopyPlus size={14} /> {t('duplicateSession')}
-                </button>
-                <button className="context-menu-item" onClick={() => reconnectSession(sessionContextSession)} type="button">
-                  <RotateCcw size={14} /> {t('reconnectSession')}
-                </button>
-                <button className="context-menu-item" onClick={() => copySessionConnection(sessionContextSession)} type="button">
-                  <Copy size={14} /> {t('copyConnectionInfo')}
-                </button>
-              </>
-            );
-          })()}
-        </div>
+        <SessionContextMenu
+          closeSessionBatch={closeSessionBatch}
+          copyConnection={copySessionConnection}
+          duplicateSession={duplicateSession}
+          reconnectSession={reconnectSession}
+          session={sessionContextSession}
+          sessions={sessions}
+          t={t}
+          target={sessionContextMenu}
+        />
       ) : null}
 
       {!sidebarCollapsed ? (
@@ -2871,88 +1734,21 @@ export default function App() {
             {sidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
           </button>
           <div className="session-strip">
-            <div className="session-tab-scroll-shell">
-              <div
-                className={`tab-list session-tab-list ${
-                  sessionTabDropTarget && 'type' in sessionTabDropTarget && sessionTabDropTarget.type === 'end' ? 'is-drop-end' : ''
-                }`}
-                onScroll={handleSessionTabScroll}
-                ref={sessionTabListRef}
-              >
-                {sessions.map((session) => {
-                  const sessionLabel = session.kind === 'local'
-                    ? formatLocalTerminalTabLabel(session, t('localTerminalTitle'))
-                    : connections.find((item) => item.id === session.connectionId)?.name ?? session.title;
-                  return (
-                    <div
-                      key={session.id}
-                      data-session-id={session.id}
-                      className={`session-tab ${session.id === activeSessionId ? 'is-active' : ''} ${
-                        sessionTabDragState?.id === session.id ? 'is-dragging' : ''
-                      } ${
-                        sessionTabDropTarget && !('type' in sessionTabDropTarget) && sessionTabDropTarget.sessionId === session.id
-                          ? `is-drop-${sessionTabDropTarget.placement}`
-                          : ''
-                      }`}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        setSessionContextMenu({ sessionId: session.id, x: event.clientX, y: event.clientY });
-                      }}
-                      onPointerDown={(event) => startSessionTabDrag(event, session, sessionLabel)}
-                    >
-                      <button className="session-tab-trigger" onClick={() => selectSession(session.id)} type="button">
-                        {session.kind === 'local' && getLocalTerminalIcon(session.title, session.localCommand ?? '') ? (
-                          <img
-                            src={getLocalTerminalIcon(session.title, session.localCommand ?? '')!}
-                            className="session-status-icon-image"
-                            alt=""
-                            title={translateStatus(settings.uiLanguage, session.status)}
-                          />
-                        ) : (
-                          <span
-                            aria-label={translateStatus(settings.uiLanguage, session.status)}
-                            className={sessionStatusClassName(session.status)}
-                            title={translateStatus(settings.uiLanguage, session.status)}
-                          />
-                        )}
-                        <span>{sessionLabel}</span>
-                      </button>
-                      <button
-                        aria-label={t('closeSessionAction')}
-                        className="session-tab-close"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void closeSession(session.id);
-                        }}
-                        title={t('closeSessionAction')}
-                        type="button"
-                      >
-                        <X size={10} />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-              {sessionTabScrollbar.visible ? (
-                <div
-                  aria-hidden="true"
-                  className="session-tab-scrollbar"
-                  onPointerCancel={finishSessionTabScrollbarDrag}
-                  onPointerDown={startSessionTabScrollbarDrag}
-                  onPointerMove={handleSessionTabScrollbarPointerMove}
-                  onPointerUp={finishSessionTabScrollbarDrag}
-                >
-                  <div
-                    className="session-tab-scrollbar-thumb"
-                    style={{
-                      transform: `translateX(${sessionTabScrollbar.thumbLeft}px)`,
-                      width: sessionTabScrollbar.thumbWidth,
-                    }}
-                  />
-                </div>
-              ) : null}
-            </div>
+            <SessionTabBar
+              activeSessionId={activeSessionId}
+              closeLabel={t('closeSessionAction')}
+              connections={connections}
+              layoutKey={`${sidebarCollapsed}:${agentSidebarCollapsed}:${sidebarWidth}:${agentSidebarWidth}`}
+              localTerminalTitle={t('localTerminalTitle')}
+              onCloseSession={closeSession}
+              onOpenContextMenu={(sessionId, x, y) => {
+                setSessionContextMenu({ sessionId, x, y });
+              }}
+              onReorderSessions={reorderSessions}
+              onSelectSession={selectSession}
+              sessions={sessions}
+              uiLanguage={settings.uiLanguage}
+            />
           </div>
 
           <div className="workspace-toolbar-actions">
@@ -3004,204 +1800,52 @@ export default function App() {
             }}
           />
 
-          <section className={`bottom-dock card ${bottomDockCollapsed ? 'is-collapsed' : ''}`} style={bottomDockCollapsed ? undefined : { height: bottomHeight }}>
-            <header className="panel-tab-row">
-              <div className="tab-list">
-                {bottomTabs.map((tab) => {
-                  const Icon = tab.icon;
-                  return (
-                    <button
-                      key={tab.id}
-                      className={`panel-tab ${activeBottomTab === tab.id ? 'is-active' : ''}`}
-                      onClick={() => {
-                        setGlobalBottomTab(tab.id);
-                        if (activeRemoteConnectionId) {
-                          setBottomTabByConnection((current) => ({ ...current, [activeRemoteConnectionId]: tab.id }));
-                        }
-                      }}
-                      type="button"
-                    >
-                      <Icon size={16} />
-                      <span>{t(tab.labelKey)}</span>
-                    </button>
-                  );
-                })}
-              </div>
-              <div ref={bottomPanelActionsRef} className={`panel-tab-actions ${bottomPanelNeedsCompactActions ? 'is-compact-actions' : ''}`}>
-                <button
-                  className="secondary-button slim"
-                  onClick={() => setBottomDockCollapsed((current) => !current)}
-                  style={buildActionButtonStyle(bottomDockCollapsed ? t('expandBottomDock') : t('collapseBottomDock'), bottomPanelNeedsCompactActions)}
-                  title={bottomDockCollapsed ? t('expandBottomDock') : t('collapseBottomDock')}
-                  type="button"
-                >
-                  {bottomDockCollapsed ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                  {renderActionButtonLabel(bottomDockCollapsed ? t('expandBottomDock') : t('collapseBottomDock'), bottomPanelNeedsCompactActions)}
-                </button>
-                {activeBottomTab === 'commands' ? (
-                  <button
-                    className="primary-button"
-                    disabled={!hasActiveRemoteSession || !activeCommand.trim()}
-                    onClick={() => {
-                      if (activeSessionId) {
-                        void sendCommand(activeSessionId);
-                      }
-                    }}
-                    style={buildActionButtonStyle(t('sendToTerminal'), bottomPanelNeedsCompactActions)}
-                    type="button"
-                  >
-                    <Play size={16} /> {renderActionButtonLabel(t('sendToTerminal'), bottomPanelNeedsCompactActions)}
-                  </button>
-                ) : null}
-                {activeBottomTab === 'tunnels' ? (
-                  <>
-                    <button
-                      className="secondary-button"
-                      disabled={!connectionTunnels.some((item) => item.status !== 'running')}
-                      onClick={() => void startAllTunnels()}
-                      style={buildActionButtonStyle(t('tunnelStartAll'), bottomPanelNeedsCompactActions)}
-                      type="button"
-                    >
-                      <Play size={16} /> {renderActionButtonLabel(t('tunnelStartAll'), bottomPanelNeedsCompactActions)}
-                    </button>
-                    <button
-                      className="secondary-button"
-                      disabled={!connectionTunnels.some((item) => item.status === 'running')}
-                      onClick={() => void stopAllTunnels()}
-                      style={buildActionButtonStyle(t('tunnelStopAll'), bottomPanelNeedsCompactActions)}
-                      type="button"
-                    >
-                      <Square size={16} /> {renderActionButtonLabel(t('tunnelStopAll'), bottomPanelNeedsCompactActions)}
-                    </button>
-                    <button
-                      className="primary-button"
-                      disabled={!activeConnectionId}
-                      onClick={() => void openTunnel()}
-                      style={buildActionButtonStyle(t('newTunnel'), bottomPanelNeedsCompactActions)}
-                      type="button"
-                    >
-                      <Plus size={16} /> {renderActionButtonLabel(t('newTunnel'), bottomPanelNeedsCompactActions)}
-                    </button>
-                  </>
-                ) : null}
-                {activeBottomTab === 'history' ? (
-                  <button
-                    className="secondary-button slim"
-                    disabled={!activeRemoteConnectionId}
-                    onClick={() => {
-                      if (activeRemoteConnectionId) {
-                        void refreshRemoteHistory(activeRemoteConnectionId);
-                      }
-                    }}
-                    style={buildActionButtonStyle(t('refresh'), bottomPanelNeedsCompactActions)}
-                    type="button"
-                  >
-                    {/* 历史刷新进行中时图标旋转，提示后台正在读取远端历史。 */}
-                    <RefreshCw className={historyLoading ? 'is-spinning' : ''} size={14} /> {renderActionButtonLabel(t('refresh'), bottomPanelNeedsCompactActions)}
-                  </button>
-                ) : null}
-              </div>
-            </header>
-
-            <div className="panel-body dock-body">
-              {activeBottomTab === 'commands' ? (
-                <div className="stack command-panel fill-height">
-                  <textarea
-                    className="command-editor"
-                    disabled={!hasActiveRemoteSession}
-                    placeholder={t('commandTextareaPlaceholder')}
-                    rows={8}
-                    spellCheck={false}
-                    value={activeCommand}
-                    onChange={(event) => {
-                      if (!activeSessionId) {
-                        return;
-                      }
-                      setCommandBuffer(activeSessionId, event.target.value);
-                    }}
-                  />
-
-                </div>
-              ) : null}
-
-              {activeBottomTab === 'tunnels' ? (
-                <div className="stack panel-stack">
-                  <div className="tunnel-grid">
-                    {connectionTunnels.length ? (
-                      connectionTunnels.map((tunnel) => (
-                        <div key={tunnel.id} className="tunnel-card">
-                          <div>
-                            <strong>{tunnel.name}</strong>
-                            <p>
-                              {tunnel.bindAddress}:{tunnel.localPort}{' -> '}
-                              {tunnel.remoteHost}:{tunnel.remotePort}
-                            </p>
-                          </div>
-                          <div className="section-row compact">
-                            <span className={`status-badge status-${tunnel.status}`}>{translateStatus(settings.uiLanguage, tunnel.status)}</span>
-                            {/* 编辑隧道只更新配置并停止旧监听，避免运行中改端点后后台仍占用旧端口。 */}
-                            <button className="ghost-button slim" onClick={() => editTunnel(tunnel)} type="button">
-                              <Pencil size={14} /> {t('edit')}
-                            </button>
-                            {tunnel.status === 'running' ? (
-                              <button className="ghost-button slim" onClick={() => void closeTunnel(tunnel.id)} type="button">
-                                <Square size={14} /> {t('stop')}
-                              </button>
-                            ) : (
-                              <button className="ghost-button slim" onClick={() => void startTunnel(tunnel.id)} type="button">
-                                <Play size={14} /> {t('start')}
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="empty-state">{t('noTunnels')}</div>
-                    )}
-                  </div>
-                </div>
-              ) : null}
-
-              {activeBottomTab === 'history' ? (
-                <div className="stack panel-stack">
-                  <div className="history-list">
-                    {connectionHistory.length ? (
-                      connectionHistory.map((item) => (
-                        <button
-                          key={item.id}
-                          className="history-row"
-                          disabled={!activeSessionId}
-                          onClick={() => {
-                            if (!activeSessionId) {
-                              return;
-                            }
-                            setCommandBuffer(activeSessionId, item.command);
-                            if (activeRemoteConnectionId) {
-                              setBottomTabByConnection((current) => ({ ...current, [activeRemoteConnectionId]: 'commands' }));
-                            }
-                          }}
-                          type="button"
-                        >
-                          {/* 命令保留换行以完整显示长命令；右侧执行时间恒定单行右对齐，无真实时间时显示占位符。 */}
-                          <strong>{item.command}</strong>
-                          <span>{item.executedAt ? new Date(item.executedAt).toLocaleString() : '—'}</span>
-                        </button>
-                      ))
-                    ) : historyLoading ? (
-                      // 历史为空且正在加载时显示刷新动画，避免先闪一下“无历史”再出现列表。
-                      <div className="panel-loading-overlay is-inline">
-                        <RefreshCw className="is-spinning" size={18} />
-                        <span>{t('panelRefreshing')}</span>
-                      </div>
-                    ) : (
-                      <div className="empty-state">{t('noHistory')}</div>
-                    )}
-                  </div>
-                </div>
-              ) : null}
-
-            </div>
-          </section>
+          <BottomDock
+            actionsRef={bottomPanelActionsRef}
+            activeBottomTab={activeBottomTab}
+            activeCommand={activeCommand}
+            activeConnectionId={activeConnectionId}
+            activeRemoteConnectionId={activeRemoteConnectionId}
+            activeSessionId={activeSessionId}
+            collapsed={bottomDockCollapsed}
+            compactActions={bottomPanelNeedsCompactActions}
+            connectionHistory={connectionHistory}
+            connectionTunnels={connectionTunnels}
+            hasActiveRemoteSession={hasActiveRemoteSession}
+            height={bottomHeight}
+            historyLoading={historyLoading}
+            onChangeCommand={(command) => {
+              if (activeSessionId) {
+                setCommandBuffer(activeSessionId, command);
+              }
+            }}
+            onChangeTab={(tab) => {
+              setGlobalBottomTab(tab);
+              if (activeRemoteConnectionId) {
+                setBottomTabByConnection((current) => ({ ...current, [activeRemoteConnectionId]: tab }));
+              }
+            }}
+            onCloseTunnel={closeTunnel}
+            onEditTunnel={editTunnel}
+            onOpenTunnel={openTunnel}
+            onRefreshHistory={() => activeRemoteConnectionId ? refreshRemoteHistory(activeRemoteConnectionId) : undefined}
+            onSelectHistory={(command) => {
+              if (!activeSessionId) {
+                return;
+              }
+              setCommandBuffer(activeSessionId, command);
+              if (activeRemoteConnectionId) {
+                setBottomTabByConnection((current) => ({ ...current, [activeRemoteConnectionId]: 'commands' }));
+              }
+            }}
+            onSendCommand={() => activeSessionId ? sendCommand(activeSessionId) : undefined}
+            onStartAllTunnels={startAllTunnels}
+            onStartTunnel={startTunnel}
+            onStopAllTunnels={stopAllTunnels}
+            onToggleCollapsed={() => setBottomDockCollapsed((current) => !current)}
+            t={t}
+            uiLanguage={settings.uiLanguage}
+          />
         </div>
       </main>
 
@@ -3221,59 +1865,22 @@ export default function App() {
             });
           }}
         />
-        <aside
-          className={`agent-sidebar card ${agentSidebarCollapsed ? 'is-hidden' : ''}`}
-          style={{ minWidth: sidePanelMinWidth, width: agentSidebarWidth }}
-        >
-          <header className="agent-sidebar-header panel-tab-row">
-            <div className="tab-list">
-              <button
-                className={`panel-tab ${agentSidebarTab === 'chat' ? 'is-active' : ''}`}
-                onClick={() => setAgentSidebarTab('chat')}
-                type="button"
-              >
-                <Bot size={16} />
-                <span>{t('panelAgentChat')}</span>
-              </button>
-              <button
-                className={`panel-tab ${agentSidebarTab === 'requests' ? 'is-active' : ''}`}
-                onClick={() => setAgentSidebarTab('requests')}
-                type="button"
-              >
-                <ShieldCheck size={16} />
-                <span>{t('panelAgentRequests')}</span>
-              </button>
-            </div>
-            {agentSidebarTab === 'requests' ? (
-              <button className="secondary-button slim" onClick={() => clearAgentBridgeRequests()} type="button">
-                <Trash2 size={14} /> {t('clearAgentBridgeRequests')}
-              </button>
-            ) : null}
-          </header>
-          <div ref={agentSidebarBodyRef} className="agent-sidebar-body">
-            <div className={`agent-sidebar-tab-panel ${agentSidebarTab === 'chat' ? '' : 'is-hidden'}`}>
-              <Suspense fallback={<div className="empty-state">{t('working')}</div>}>
-                <AgentChatPanel
-                  approvalRequests={agentChatApprovalRequests}
-                  codeFontFamily={buildPreviewFontFamily(settings)}
-                  fontFamily={buildAgentChatFontFamily(
-                    // 对话字体独立于终端：未单独配置（空字体 / 0 字号）时回落到终端对应设置。
-                    settings.agentChatLatinFontFamily || settings.shellLatinFontFamily || settings.shellFontFamily,
-                    settings.agentChatCjkFontFamily || settings.shellCjkFontFamily || settings.shellLatinFontFamily || settings.shellFontFamily,
-                  )}
-                  fontSize={settings.agentChatFontSize || settings.shellFontSize}
-                  onApproveRequest={approveAgentBridgeRequest}
-                  onRejectRequest={rejectAgentBridgeRequest}
-                  providers={agentProviders}
-                  t={t}
-                />
-              </Suspense>
-            </div>
-            <div className={`agent-sidebar-tab-panel ${agentSidebarTab === 'requests' ? '' : 'is-hidden'}`}>
-              {agentRequestPanel}
-            </div>
-          </div>
-        </aside>
+        <AgentSidebar
+          approvalRequests={agentChatApprovalRequests}
+          bodyRef={agentSidebarBodyRef}
+          collapsed={agentSidebarCollapsed}
+          mounted={agentSidebarMounted}
+          onApproveRequest={approveAgentBridgeRequest}
+          onClearRequests={clearAgentBridgeRequests}
+          onRejectRequest={rejectAgentBridgeRequest}
+          onTabChange={setAgentSidebarTab}
+          providers={agentProviders}
+          requestPanel={agentRequestPanel}
+          settings={settings}
+          t={t}
+          tab={agentSidebarTab}
+          width={agentSidebarWidth}
+        />
         </> : null}
       </>
       </div>
@@ -3307,33 +1914,7 @@ export default function App() {
       <EditorModal onSaveWithProgress={saveRemoteFileWithProgress} />
       <ConnectionFormModal />
       <TunnelFormModal />
-      {transferProgressItems.length ? (
-        <div className="transfer-progress-stack">
-          {transferProgressItems.map((item) => (
-            <div key={item.id} className={`transfer-progress-card is-${item.status}`}>
-              <div className="section-row compact">
-                <strong>{item.title}</strong>
-                <button className="icon-button transfer-progress-close" onClick={() => dismissTransferProgress(item.id)} type="button">
-                  <X size={12} />
-                </button>
-              </div>
-              <div className="transfer-progress-track">
-                <span className="transfer-progress-fill" style={{ width: `${item.percent}%` }} />
-              </div>
-              <span>{item.message ?? `${item.percent.toFixed(0)}%`}</span>
-            </div>
-          ))}
-        </div>
-      ) : null}
-      {sessionTabDragState ? (
-        <div
-          className="drag-preview"
-          style={{ left: sessionTabDragState.currentX + 10, top: sessionTabDragState.currentY + 10 }}
-        >
-          <TerminalSquare size={13} />
-          <span>{sessionTabDragState.label}</span>
-        </div>
-      ) : null}
+      <TransferProgressStack dismiss={dismissTransferProgress} items={transferProgressItems} />
     </div>
   );
 }
