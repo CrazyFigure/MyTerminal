@@ -2,6 +2,34 @@ import { create } from 'zustand';
 
 import { backend } from './backend';
 import { translate } from './i18n';
+import {
+  clearQueuedTerminalInput,
+  extractCompletedTerminalInputLines,
+  flushQueuedTerminalInput,
+  isBulkTerminalInput,
+  normalizeCommandPanelTerminalInput,
+  normalizeRemoteTerminalContinuationEnter,
+  queueTerminalInput,
+  shouldFlushTerminalInputImmediately,
+  terminalBulkInputFlushDelayMs,
+  terminalInteractiveInputFlushDelayMs,
+} from './application/terminal/inputQueue';
+import {
+  buildConnectionProfile,
+  emptyConnectionDraft,
+  emptyJumpHostDraft,
+  emptyProxyDraft,
+  getConnectionDraftValidationKey,
+  isGroupOrChildPath,
+  mergeConnectionGroups,
+  normalizeConnectionGroupPath,
+  normalizeLoadedConnection,
+} from './domain/connections/model';
+import { isUsableRemoteSession, isUsableTerminalSession } from './domain/sessions/model';
+import { defaultLocalTerminals, defaultSettings } from './domain/settings/defaults';
+import { guessNextRemotePath, parentRemotePath } from './domain/terminal/navigation';
+import { emptyTunnelDraft, getTunnelDraftValidationKey } from './domain/tunnels/model';
+import { toBase64, uploadRemoteName } from './infrastructure/fileTransfer';
 import type {
   AppSettings,
   ConnectionDraft,
@@ -13,8 +41,6 @@ import type {
   RemoteFileEntry,
   RuntimeOverview,
   SessionStatus,
-  SshJumpHost,
-  SshProxyConfig,
   TerminalSession,
   TerminalOutputChunk,
   TunnelDraft,
@@ -25,284 +51,11 @@ import type {
   WorkspacePanel,
 } from './types';
 
-const defaultSettings: AppSettings = {
-  uiLanguage: 'zh-CN',
-  themeMode: 'light',
-  runtimeRefreshIntervalSec: 1,
-  // 大文件扫描独立于常规运行状态，默认 5 秒刷新一次。
-  runtimeStorageRefreshIntervalSec: 5,
-  // 进程/线程资源明细只在内存展开时刷新，默认 3 秒。
-  runtimeResourceRefreshIntervalSec: 3,
-  runtimeResourceSource: 'system',
-  sshKeepaliveIntervalSec: 30,
-  shellLatinFontFamily: 'JetBrains Mono',
-  shellCjkFontFamily: 'Microsoft YaHei UI',
-  shellFontFamily: 'JetBrains Mono',
-  shellFontSize: 15,
-  terminalBackground: '#f7f7f7',
-  terminalForeground: '#111111',
-  accentColor: '#4f46e5',
-  backgroundImage: '',
-  terminalBackgroundImageOpacity: 0.18,
-  terminalBackgroundImageFit: 'cover',
-  terminalRightClickBehavior: 'paste',
-  terminalLineWrapMode: 'wrap',
-  terminalMatchSelection: true,
-  // 行号栏默认显示行号与时间戳，与常见远程终端习惯保持一致。
-  terminalGutterShowLineNumber: true,
-  terminalGutterShowTimestamp: true,
-  compactSidebar: false,
-  showCommandGhost: true,
-  // Windows 硬件加速默认开启；软件渲染仅作为显卡兼容与本机对照选项，不预设其一定更省内存。
-  hardwareAcceleration: true,
-  connectionGroups: [],
-  connectionOrder: [],
-  quickCommands: ['pwd', 'ls -la', 'docker ps'],
-  webdav: {
-    baseUrl: '',
-    username: '',
-    password: '',
-    syncPassphrase: '',
-    remotePath: '/myterminal',
-  },
-  agentBridge: {
-    enabled: false,
-    autoExecute: false,
-    allowedConnectionIds: [],
-    defaultTimeoutSec: 60,
-    maxOutputBytes: 200000,
-    visibleExecution: true,
-  },
-};
-
-// 本地终端默认提供“纯 shell”和常见 AI CLI，空命令由后端解释为打开系统 shell。
-const defaultLocalTerminals: LocalTerminalSettings = {
-  shellPath: '',
-  commands: [
-    { id: 'shell', name: '本地终端', command: '', builtIn: true },
-    { id: 'claude', name: 'claude', command: 'claude', builtIn: true },
-    { id: 'codex', name: 'codex', command: 'codex', builtIn: true },
-    { id: 'opencode', name: 'opencode', command: 'opencode', builtIn: true },
-  ],
-  profiles: [],
-};
-
 // 状态栏展示命令名时把空命令转成可读名称，避免用户看到空白提示。
 const localTerminalCommandLabel = (settings: AppSettings, command: string) =>
   command.trim() || translate(settings.uiLanguage, 'localTerminalTitle');
 
-const emptyConnectionDraft = (): ConnectionDraft => ({
-  id: '',
-  protocol: 'ssh',
-  name: '',
-  groupPath: '',
-  host: '',
-  port: 22,
-  username: 'root',
-  authMethod: 'password',
-  password: '',
-  privateKeyPath: '',
-  privateKeyText: '',
-  passphrase: '',
-  jumpHosts: [],
-  proxy: {
-    enabled: false,
-    type: 'socks5',
-    host: '',
-    port: 1080,
-    username: '',
-    password: '',
-  },
-  note: '',
-});
-
-const emptyTunnelDraft = (): TunnelDraft => ({
-  id: '',
-  connectionId: '',
-  name: '',
-  bindAddress: '127.0.0.1',
-  localPort: 15432,
-  remoteHost: '127.0.0.1',
-  remotePort: 5432,
-});
-
-const toBase64 = async (file: File) => {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  let binary = '';
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte);
-  });
-  return btoa(binary);
-};
-
-const uploadRemoteName = (file: File) => {
-  // 目录上传依赖浏览器提供的 webkitRelativePath 保留根目录和子目录；单文件上传没有该字段时退回文件名。
-  const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
-  const normalized = relativePath
-    .replace(/\\/g, '/')
-    .split('/')
-    .filter((part) => part && part !== '.' && part !== '..')
-    .join('/');
-  return normalized || file.name;
-};
-
-// 跳板机草稿默认用独立 id 保持增删排序稳定；认证字段按主机独立保存，支持多级链路不同账号。
-const emptyJumpHostDraft = (): SshJumpHost => ({
-  id: crypto.randomUUID(),
-  name: '',
-  host: '',
-  port: 22,
-  username: '',
-  authMethod: 'password',
-  password: '',
-  privateKeyPath: '',
-  privateKeyText: '',
-  passphrase: '',
-});
-
-// 代理草稿允许临时关闭但保留输入值，默认 SOCKS5/1080 更贴近常见本地代理习惯。
-const emptyProxyDraft = (): SshProxyConfig => ({
-  enabled: false,
-  type: 'socks5',
-  host: '',
-  port: 1080,
-  username: '',
-  password: '',
-});
-
-const parentRemotePath = (path: string) => {
-  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
-  const parts = normalized.split('/').filter(Boolean);
-  parts.pop();
-  return normalized.startsWith('/') ? `/${parts.join('/')}` || '/' : parts.join('/');
-};
-
-// 分组路径统一使用相对路径形式，便于前端树渲染与后端设置持久化保持同一套判断规则。
-const normalizeConnectionGroupPath = (value?: string) =>
-  (value ?? '')
-    .trim()
-    .replace(/\\/g, '/')
-    .replace(/^\/+|\/+$/g, '')
-    .replace(/\/+/g, '/');
-
-const clampPort = (value: number | undefined, fallback = 22) => {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return fallback;
-  }
-  return Math.min(65535, Math.max(1, Math.trunc(value)));
-};
-
-const trimToUndefined = (value?: string) => {
-  if (typeof value !== 'string') {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed ? trimmed : undefined;
-};
-
-const keepTextIfPresent = (value?: string) => {
-  if (typeof value !== 'string') {
-    return undefined;
-  }
-  return value.trim() ? value : undefined;
-};
-
-const normalizeAuthMethod = (authMethod?: string) => (authMethod === 'privateKey' ? 'privateKey' : 'password');
-
-// 连接保存前统一清洗跳板机字段：空敏感字段不落到无意义字符串，端口不合法时回退 SSH 默认端口。
-const normalizeJumpHost = (jumpHost: SshJumpHost): SshJumpHost => {
-  const authMethod = normalizeAuthMethod(jumpHost.authMethod);
-  return {
-    id: jumpHost.id || crypto.randomUUID(),
-    name: trimToUndefined(jumpHost.name),
-    host: jumpHost.host.trim(),
-    port: clampPort(jumpHost.port),
-    username: jumpHost.username.trim(),
-    authMethod,
-    password: authMethod === 'password' ? jumpHost.password ?? '' : undefined,
-    privateKeyPath: authMethod === 'privateKey' ? trimToUndefined(jumpHost.privateKeyPath) : undefined,
-    privateKeyText: authMethod === 'privateKey' ? keepTextIfPresent(jumpHost.privateKeyText) : undefined,
-    passphrase: authMethod === 'privateKey' ? keepTextIfPresent(jumpHost.passphrase) : undefined,
-  };
-};
-
-// 代理只作用于第一跳；关闭时仍保留配置，方便用户临时启停。
-const normalizeProxyConfig = (proxy?: SshProxyConfig): SshProxyConfig => ({
-  enabled: Boolean(proxy?.enabled),
-  type: proxy?.type === 'http' ? 'http' : 'socks5',
-  host: proxy?.host?.trim() ?? '',
-  port: clampPort(proxy?.port, 1080),
-  username: trimToUndefined(proxy?.username),
-  password: keepTextIfPresent(proxy?.password),
-});
-
-// 旧连接没有 protocol/jumpHosts/proxy 字段，加载到前端状态时补齐默认值，避免编辑旧连接时报 undefined。
-const normalizeLoadedConnection = (connection: ConnectionProfile): ConnectionProfile => ({
-  ...connection,
-  protocol: connection.protocol === 'rdp' ? 'rdp' : 'ssh',
-  jumpHosts: Array.isArray(connection.jumpHosts) ? connection.jumpHosts : [],
-  proxy: normalizeProxyConfig(connection.proxy),
-});
-
-// 删除、重命名分组都需要同时处理子分组，路径前缀判断必须只命中完整层级。
-const isGroupOrChildPath = (value: string | undefined, groupPath: string) => {
-  const normalized = normalizeConnectionGroupPath(value);
-  return Boolean(groupPath) && (normalized === groupPath || normalized.startsWith(`${groupPath}/`));
-};
-
-// 显式分组和连接表单里的分组会在这里去重，但保留传入顺序以支持用户拖拽排序。
-const mergeConnectionGroups = (...groups: Array<Array<string | undefined>>) =>
-  Array.from(
-    new Set(
-      groups
-        .flat()
-        .map((groupPath) => normalizeConnectionGroupPath(groupPath))
-        .filter(Boolean),
-    ),
-  );
-
-const stripWrappedQuotes = (value: string) => value.replace(/^['"]|['"]$/g, '');
-
-const guessNextRemotePath = (currentPath: string, commandText: string) => {
-  const lastLine = commandText
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .at(-1);
-
-  if (!lastLine) {
-    return undefined;
-  }
-
-  const match = lastLine.match(/^cd(?:\s+(.+?))?\s*;?$/);
-  if (!match) {
-    return undefined;
-  }
-
-  const rawTarget = stripWrappedQuotes((match[1]?.trim() ?? '').replace(/^--\s+/, ''));
-  if (!rawTarget || rawTarget === '~') {
-    return '~';
-  }
-  if (rawTarget === '.') {
-    return currentPath || '~';
-  }
-  if (rawTarget === '..') {
-    return parentRemotePath(currentPath) || '~';
-  }
-  if (rawTarget.startsWith('/') || rawTarget.startsWith('~')) {
-    return rawTarget;
-  }
-
-  return `${currentPath.replace(/\/$/, '')}/${rawTarget}`.replace(/\/+/g, '/');
-};
-
 const terminalOutputEventName = 'myterminal-terminal-output';
-
-// 只有可交互远端会话才允许驱动文件、历史和运行状态刷新，异常/关闭会话只保留终端残留输出用于排查。
-const isUsableRemoteSession = (session?: TerminalSession): session is TerminalSession =>
-  session?.kind !== 'local' && (session?.status === 'connected' || session?.status === 'stub');
-const isUsableTerminalSession = (session?: TerminalSession): session is TerminalSession =>
-  Boolean(session && !['closed', 'error'].includes(session.status));
 
 // 终端输出和 PTY 尺寸时间线走浏览器事件直达 xterm，避免高频数据通过 React 状态触发整页重渲染。
 const emitTerminalOutput = (chunk: TerminalOutputChunk) => {
@@ -312,35 +65,6 @@ const emitTerminalOutput = (chunk: TerminalOutputChunk) => {
   }
 
   window.dispatchEvent(new CustomEvent(terminalOutputEventName, { detail: chunk }));
-};
-
-// 终端输入跨 Tauri IPC 写入：交互按键只合并同一浏览器事件轮次，避免固定延迟造成远端 echo 成批出现。
-const terminalInputBuffers = new Map<string, string>();
-const terminalInputFlushPromises = new Map<string, Promise<void>>();
-// 即时刷新任务只用微任务排队，不用 setTimeout；同一轮 onData 的多段输入会自然合并，下一轮按键会立刻发出。
-const terminalInputImmediateFlushSessions = new Set<string>();
-const terminalInputFlushTimers = new Map<string, number>();
-const terminalInputFlushTimerDelays = new Map<string, number>();
-// 终端直接输入不会经过命令面板；按会话记录当前命令行，用于识别回车后的 cd 并兜底刷新文件管理。
-const terminalInputLineBuffers = new Map<string, string>();
-// 大段粘贴保留极短合并窗口，避免一次粘贴拆成大量 IPC；普通按键和编辑键不走这个延迟。
-const terminalBulkInputFlushDelayMs = 8;
-// 普通可打印字符使用单帧级合并，降低 WebView->Rust IPC 频率，同时把体感延迟压在不可感知范围内。
-const terminalInteractiveInputFlushDelayMs = 2;
-// xterm 的方向键/Delete 等控制序列通常只有 3-4 字节；超过该阈值基本可视为粘贴或程序批量输入。
-const terminalBulkInputThreshold = 64;
-
-// 会话关闭或重连时清理尚未写入的输入，避免旧 PTY 已释放后仍被延迟刷新命中。
-const clearQueuedTerminalInput = (sessionId: string) => {
-  const pendingTimer = terminalInputFlushTimers.get(sessionId);
-  if (pendingTimer) {
-    window.clearTimeout(pendingTimer);
-    terminalInputFlushTimers.delete(sessionId);
-    terminalInputFlushTimerDelays.delete(sessionId);
-  }
-  terminalInputImmediateFlushSessions.delete(sessionId);
-  terminalInputBuffers.delete(sessionId);
-  terminalInputLineBuffers.delete(sessionId);
 };
 
 // 自动重连计划：仅针对已成功连上又掉线的 SSH 会话，按指数退避有限次重试，避免永久断连。
@@ -359,196 +83,6 @@ const cancelAutoReconnect = (sessionId: string) => {
     window.clearTimeout(entry.timer);
   }
   autoReconnectBySession.delete(sessionId);
-};
-
-// 输入刷新会串行写入后端，避免同一个会话出现并发写入导致字符顺序抖动。
-const flushQueuedTerminalInput = (sessionId: string) => {
-  const pendingTimer = terminalInputFlushTimers.get(sessionId);
-  if (pendingTimer) {
-    window.clearTimeout(pendingTimer);
-    terminalInputFlushTimers.delete(sessionId);
-    terminalInputFlushTimerDelays.delete(sessionId);
-  }
-
-  const runningFlush = terminalInputFlushPromises.get(sessionId);
-  if (runningFlush) {
-    return runningFlush;
-  }
-
-  const flushPromise = (async () => {
-    while (true) {
-      const payload = terminalInputBuffers.get(sessionId);
-      if (!payload) {
-        terminalInputBuffers.delete(sessionId);
-        return;
-      }
-
-      terminalInputBuffers.set(sessionId, '');
-      await backend.writeTerminalInput(sessionId, payload);
-    }
-  })().finally(() => {
-    terminalInputFlushPromises.delete(sessionId);
-  });
-
-  terminalInputFlushPromises.set(sessionId, flushPromise);
-  return flushPromise;
-};
-
-// 交互输入入队后用微任务立即刷新，去掉固定毫秒级等待；这保持远端 echo 语义，不做本地假回显。
-const scheduleImmediateTerminalInputFlush = (sessionId: string) => {
-  if (terminalInputImmediateFlushSessions.has(sessionId)) {
-    return;
-  }
-  terminalInputImmediateFlushSessions.add(sessionId);
-  window.queueMicrotask(() => {
-    terminalInputImmediateFlushSessions.delete(sessionId);
-    void flushQueuedTerminalInput(sessionId).catch(() => undefined);
-  });
-};
-
-// 批量输入才使用短定时窗口，多个粘贴分片会并成一次后端写入，降低 SSH channel 抖动。
-const scheduleDelayedTerminalInputFlush = (sessionId: string, flushDelayMs: number) => {
-  const pendingTimer = terminalInputFlushTimers.get(sessionId);
-  if (pendingTimer) {
-    const pendingDelayMs = terminalInputFlushTimerDelays.get(sessionId) ?? terminalBulkInputFlushDelayMs;
-    if (flushDelayMs >= pendingDelayMs) {
-      return;
-    }
-    window.clearTimeout(pendingTimer);
-    terminalInputFlushTimers.delete(sessionId);
-    terminalInputFlushTimerDelays.delete(sessionId);
-  }
-
-  const timer = window.setTimeout(() => {
-    terminalInputFlushTimers.delete(sessionId);
-    terminalInputFlushTimerDelays.delete(sessionId);
-    void flushQueuedTerminalInput(sessionId).catch(() => undefined);
-  }, flushDelayMs);
-  terminalInputFlushTimers.set(sessionId, timer);
-  terminalInputFlushTimerDelays.set(sessionId, flushDelayMs);
-};
-
-// 终端输入默认立即刷新；仅对大段文本启用短窗口合并，避免牺牲单字符输入跟手感。
-const queueTerminalInput = (sessionId: string, data: string, flushDelayMs = 0) => {
-  terminalInputBuffers.set(sessionId, `${terminalInputBuffers.get(sessionId) ?? ''}${data}`);
-
-  if (flushDelayMs <= 0) {
-    const pendingTimer = terminalInputFlushTimers.get(sessionId);
-    if (pendingTimer) {
-      window.clearTimeout(pendingTimer);
-      terminalInputFlushTimers.delete(sessionId);
-      terminalInputFlushTimerDelays.delete(sessionId);
-    }
-    scheduleImmediateTerminalInputFlush(sessionId);
-    return;
-  }
-
-  scheduleDelayedTerminalInputFlush(sessionId, flushDelayMs);
-};
-
-const isTerminalEditingInput = (data: string) => data.includes('\x7f') || data.includes('\b') || data.includes('\x1b[3~');
-// 回车、Tab、控制序列和编辑键必须立即送到远端；粘贴文本里包含换行时也要立刻刷新，避免命令执行和 cwd 同步滞后。
-const shouldFlushTerminalInputImmediately = (data: string) =>
-  data.includes('\r') ||
-  data.includes('\n') ||
-  data === '\t' ||
-  data.includes('\x1b') ||
-  isTerminalEditingInput(data);
-// 大段文本不属于逐键交互，允许 8ms 合并；普通字符走 2ms 合并，控制序列仍立即进入远端 PTY。
-const isBulkTerminalInput = (data: string) => data.length > terminalBulkInputThreshold && !isTerminalEditingInput(data);
-
-// 命令行预测只关心用户输入的可见文本；终端能力响应和控制序列必须先剥离，避免 XTVERSION 等回包污染下一条 cd。
-const terminalBracketedPasteBoundaryPattern = /\x1b\[(?:200|201)~/g;
-const terminalStringEscapeSequencePattern = /\x1b(?:P|\]|\^|_|X)[\s\S]*?(?:\x07|\x1b\\)/g;
-const terminalCsiSequencePattern = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
-const terminalShortEscapeSequencePattern = /\x1b./g;
-
-const normalizeTerminalInputForCommandTracking = (data: string) =>
-  data
-    .replace(terminalBracketedPasteBoundaryPattern, '')
-    .replace(terminalStringEscapeSequencePattern, '')
-    .replace(terminalCsiSequencePattern, '')
-    .replace(terminalShortEscapeSequencePattern, '');
-
-// Shell 只把奇数个行尾反斜杠中的最后一个视为续行转义；偶数个表示最后一个反斜杠本身已被转义。
-const hasUnescapedTrailingBackslash = (value: string) => {
-  let count = 0;
-  for (let index = value.length - 1; index >= 0 && value[index] === '\\'; index -= 1) {
-    count += 1;
-  }
-  return count % 2 === 1;
-};
-
-// xterm 的 Enter 默认是 CR；行尾反斜杠必须与 LF 组成明确的 `\\\n`，避免远端 stty 的 CR 映射差异把它提前提交。
-const normalizeRemoteTerminalContinuationEnter = (sessionId: string, data: string) => (
-  (data === '\r' || data === '\n')
-  && hasUnescapedTrailingBackslash(terminalInputLineBuffers.get(sessionId) ?? '')
-    ? '\n'
-    : data
-);
-
-// “命令”底栏可能同时包含多条命令与续行：普通换行按终端 Enter 发送 CR，反斜杠后的换行固定发送 LF。
-// 最后一行没有换行时按其结尾补 Enter 或续行 LF；若文本已停在换行后，则不再擅自二次提交。
-const normalizeCommandPanelTerminalInput = (rawCommand: string) => {
-  const normalized = rawCommand.replace(/\r\n?/g, '\n');
-  let payload = '';
-  let currentLine = '';
-  for (const character of normalized) {
-    if (character !== '\n') {
-      currentLine += character;
-      payload += character;
-      continue;
-    }
-    payload += hasUnescapedTrailingBackslash(currentLine) ? '\n' : '\r';
-    currentLine = '';
-  }
-  if (!normalized.endsWith('\n')) {
-    payload += hasUnescapedTrailingBackslash(currentLine) ? '\n' : '\r';
-  }
-  return payload;
-};
-
-const extractCompletedTerminalInputLines = (sessionId: string, data: string) => {
-  let currentLine = terminalInputLineBuffers.get(sessionId) ?? '';
-  const completedLines: string[] = [];
-  let continuationLineBreaks = 0;
-
-  for (const character of normalizeTerminalInputForCommandTracking(data)) {
-    if (character === '\x03' || character === '\x15') {
-      // Ctrl+C / Ctrl+U 会放弃当前命令行，前端预测也必须同步清空，避免下一次回车误判旧 cd。
-      currentLine = '';
-      continue;
-    }
-    if (character === '\x7f' || character === '\b') {
-      currentLine = currentLine.slice(0, -1);
-      continue;
-    }
-    if (character === '\r' || character === '\n') {
-      if (hasUnescapedTrailingBackslash(currentLine)) {
-        // Shell 解析时会删除反斜杠与紧随其后的换行；前端命令跟踪也按同样规则拼接后续物理行。
-        currentLine = currentLine.slice(0, -1);
-        continuationLineBreaks += 1;
-        continue;
-      }
-      const completedLine = currentLine.trim();
-      if (completedLine) {
-        completedLines.push(completedLine);
-      }
-      currentLine = '';
-      continue;
-    }
-    if (character === '\t' || character >= ' ') {
-      currentLine += character;
-    }
-  }
-
-  if (currentLine) {
-    terminalInputLineBuffers.set(sessionId, currentLine);
-  } else {
-    terminalInputLineBuffers.delete(sessionId);
-  }
-
-  return { completedLines, continuationLineBreaks };
 };
 
 // 远端刷新请求可能被快速 cd、目录双击或自动轮询连续触发；序号只允许最后一次结果落到界面。
@@ -588,107 +122,6 @@ const statusText = (
   key: Parameters<typeof translate>[1],
   replacements?: Parameters<typeof translate>[2],
 ) => translate(settings.uiLanguage, key, replacements);
-
-const isValidPort = (value: number) => Number.isInteger(value) && value >= 1 && value <= 65535;
-
-// 隧道草稿先校验本地必填项和端口范围，端口占用等运行态问题交给启动监听时返回明确错误。
-const getTunnelDraftValidationKey = (draft: TunnelDraft) => {
-  if (!draft.name.trim()) {
-    return 'validationNameRequired' as const;
-  }
-  if (!draft.bindAddress.trim()) {
-    return 'validationBindAddressRequired' as const;
-  }
-  if (!isValidPort(draft.localPort) || !isValidPort(draft.remotePort)) {
-    return 'validationPortInvalid' as const;
-  }
-  if (!draft.remoteHost.trim()) {
-    return 'validationRemoteHostRequired' as const;
-  }
-
-  return undefined;
-};
-
-const getConnectionDraftValidationKey = (draft: ConnectionDraft) => {
-  if (!draft.name.trim()) {
-    return 'validationNameRequired' as const;
-  }
-  if (!draft.host.trim()) {
-    return 'validationHostRequired' as const;
-  }
-  if (!draft.username.trim()) {
-    return 'validationUsernameRequired' as const;
-  }
-  if (!isValidPort(draft.port)) {
-    return 'validationPortInvalid' as const;
-  }
-
-  if (draft.protocol === 'rdp') {
-    if (!draft.password.trim()) {
-      return 'validationPasswordRequired' as const;
-    }
-  } else if (draft.authMethod === 'privateKey') {
-    if (!draft.privateKeyPath.trim() && !draft.privateKeyText.trim()) {
-      return 'validationPrivateKeyRequired' as const;
-    }
-  } else if (!draft.password.trim()) {
-    return 'validationPasswordRequired' as const;
-  }
-
-  for (const jumpHost of draft.protocol === 'ssh' ? draft.jumpHosts : []) {
-    if (!jumpHost.host.trim()) {
-      return 'validationJumpHostRequired' as const;
-    }
-    if (!jumpHost.username.trim()) {
-      return 'validationJumpUsernameRequired' as const;
-    }
-    if (!isValidPort(jumpHost.port)) {
-      return 'validationPortInvalid' as const;
-    }
-    if (jumpHost.authMethod === 'privateKey') {
-      if (!jumpHost.privateKeyPath?.trim() && !jumpHost.privateKeyText?.trim()) {
-        return 'validationJumpPrivateKeyRequired' as const;
-      }
-    } else if (!jumpHost.password?.trim()) {
-      return 'validationJumpPasswordRequired' as const;
-    }
-  }
-
-  if (draft.protocol === 'ssh' && draft.proxy.enabled) {
-    if (!draft.proxy.host.trim()) {
-      return 'validationProxyHostRequired' as const;
-    }
-    if (!isValidPort(draft.proxy.port)) {
-      return 'validationPortInvalid' as const;
-    }
-  }
-
-  return undefined;
-};
-
-const buildConnectionProfile = (draft: ConnectionDraft): ConnectionProfile => {
-  // RDP 固定使用 Windows 账号密码；隐藏的 SSH 高级配置不随 RDP 保存，避免协议切换后误用旧链路。
-  const protocol = draft.protocol === 'rdp' ? 'rdp' : 'ssh';
-  const authMethod = protocol === 'rdp' ? 'password' : draft.authMethod === 'privateKey' ? 'privateKey' : 'password';
-
-  return {
-    id: draft.id || crypto.randomUUID(),
-    protocol,
-    name: draft.name.trim(),
-    groupPath: normalizeConnectionGroupPath(draft.groupPath) || undefined,
-    host: draft.host.trim(),
-    port: draft.port,
-    username: draft.username.trim(),
-    authMethod,
-    password: authMethod === 'password' ? draft.password : undefined,
-    privateKeyPath: authMethod === 'privateKey' ? draft.privateKeyPath : undefined,
-    privateKeyText: authMethod === 'privateKey' ? draft.privateKeyText : undefined,
-    passphrase: authMethod === 'privateKey' ? draft.passphrase : undefined,
-    jumpHosts: protocol === 'ssh' ? draft.jumpHosts.map((jumpHost) => normalizeJumpHost(jumpHost)) : [],
-    proxy: protocol === 'ssh' ? normalizeProxyConfig(draft.proxy) : emptyProxyDraft(),
-    note: draft.note?.trim() || undefined,
-  };
-};
 
 type ConnectionTestResult = {
   kind: 'success' | 'error';
@@ -1014,20 +447,20 @@ export const useAppStore = create<StoreState>((set, get) => ({
         name: connection.name || connection.host,
       });
       await backend.testConnection(connection);
-      set((state) => ({
+      set({
         loading: false,
         connectionTestResult: { kind: 'success', message },
         statusMessage: message,
-      }));
+      });
     } catch (error) {
       const message = statusText(get().settings, 'statusConnectionTestFailed', {
         reason: error instanceof Error ? error.message : String(error),
       });
-      set((state) => ({
+      set({
         loading: false,
         connectionTestResult: { kind: 'error', message },
         statusMessage: message,
-      }));
+      });
     }
   },
 
