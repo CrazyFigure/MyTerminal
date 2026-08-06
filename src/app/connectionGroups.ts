@@ -1,6 +1,11 @@
 /* 本模块由原 App 入口按业务边界拆出；迁移仅调整依赖方向，不改变运行逻辑。 */
 import { useLayoutEffect, useRef, type DependencyList, type RefObject } from 'react';
 import type { ConnectionProfile } from '../types';
+import { isGroupOrChildPath, normalizeConnectionGroupPath } from '../domain/connections/model';
+
+// 兼容现有组件命名，同时统一复用连接领域中的路径判定规则，避免 Store 与界面产生两套实现。
+export { normalizeConnectionGroupPath };
+export const isConnectionGroupOrChildPath = isGroupOrChildPath;
 
 export type InsertPlacement = 'before' | 'after';
 
@@ -64,24 +69,6 @@ export const connectionManagerResizerWidth = 12;
 
 
 export const connectionTableActionMinWidth = 220;
-
-
-
-// 连接分组需要合并显式分组和连接自带 groupPath，保证空分组也能展示和继续维护。
-export const normalizeConnectionGroupPath = (value?: string) =>
-  (value ?? '')
-    .trim()
-    .replace(/\\/g, '/')
-    .replace(/^\/+|\/+$/g, '')
-    .replace(/\/+/g, '/');
-
-
-
-// 删除和筛选分组时要包含子分组，但不能把同名前缀误判为子级。
-export const isConnectionGroupOrChildPath = (value: string | undefined, groupPath: string) => {
-  const normalized = normalizeConnectionGroupPath(value);
-  return Boolean(groupPath) && (normalized === groupPath || normalized.startsWith(`${groupPath}/`));
-};
 
 
 

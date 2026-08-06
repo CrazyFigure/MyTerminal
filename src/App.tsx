@@ -27,13 +27,8 @@ import {
   CopyPlus,
   CornerDownLeft,
   Download,
-  FileCode2,
-  FileSymlink,
-  FileText,
-  FolderOpen,
   FolderTree,
   HardDrive,
-  History,
   Laptop,
   MemoryStick,
   Moon,
@@ -61,13 +56,14 @@ import { buildAgentChatFontFamily } from './terminalFonts';
 // 等高频更新触发无关组件（尤其是未打开的弹窗）重渲染。
 import { useShallow } from 'zustand/react/shallow';
 import { UpdateModal, type UpdateDownloadProgress } from './UpdateModal';
-import type { AgentBridgeRequest, AgentProvider, ConnectionProfile, RemoteFileEntry, RuntimeConnectionList, RuntimeResourceMetric, RuntimeResourceTarget, RuntimeResourceUsage, RuntimeResourceSource, RuntimeStorageFiles, TerminalSession, TunnelRecord } from './types';
+import type { AgentBridgeRequest, AgentProvider, RemoteFileEntry, RuntimeConnectionList, RuntimeResourceMetric, RuntimeResourceTarget, RuntimeResourceUsage, RuntimeResourceSource, RuntimeStorageFiles, TerminalSession, TunnelRecord } from './types';
 import { useDraggableModals } from './useDraggableModals';
 import { ConnectionFormModal } from './components/ConnectionFormModal';
 import { ConnectionManagerModal } from './components/ConnectionManagerModal';
 import { EditorModal } from './components/EditorModal';
 import { LocalTerminalManagerModal } from './components/LocalTerminalManagerModal';
-import { SettingsModal, type SettingsTab } from './components/SettingsModal';
+import { SettingsModal } from './components/SettingsModal';
+import type { SettingsTab } from './features/settings';
 import { TitlebarWindowControls } from './components/TitlebarWindowControls';
 import { TunnelFormModal } from './components/TunnelFormModal';
 import { buildPreviewFontFamily } from './app/fonts';
@@ -75,6 +71,41 @@ import { beginResize, clamp } from './app/layout';
 import { formatLocalTerminalTabLabel, getLocalTerminalIcon } from './app/localTerminal';
 import { isTauriRuntime } from './app/runtime';
 import { translateUpdateCheckError } from './app/updates';
+import { isUsableRemoteSession } from './domain/sessions/model';
+import {
+  agentBridgeNotificationApproveActionId,
+  agentBridgeNotificationRejectActionId,
+  agentBridgeNotificationTagPrefix,
+  getAgentRequestMachineLabel,
+  getAgentRequestSummary,
+} from './features/agent';
+import {
+  explorerColumnLimits,
+  explorerDefaultColumnWidths,
+  explorerOverscanRows,
+  explorerRowHeight,
+  fileLabelIcon,
+  formatBytes,
+  formatFileType,
+  formatOwnerGroup,
+  formatTimestamp,
+  isEditableFile,
+  parentPath,
+} from './features/files';
+import { metricTone, parseMetricPercent, runtimeResourceDetailLimit } from './features/runtime';
+import { sessionStatusClassName } from './features/sessions';
+import {
+  bottomTabs,
+  buildActionButtonStyle,
+  estimateInlineButtonWidth,
+  renderActionButtonLabel,
+  type BottomPanelTab,
+  mainWorkspaceMinWidth,
+  resolveRuntimePanelMaxHeight,
+  resolveSidePanelMaxWidth,
+  sidePanelMinWidth,
+  sidebarRuntimeMinHeight,
+} from './features/workspace';
 import {
   isPointInsideElement,
   moveItemToEnd,
@@ -86,8 +117,6 @@ import {
 // 终端内核和 AI 对话都不是绘制应用骨架的前置条件；动态加载可让标题栏、侧栏和操作区先进入可用状态。
 const TerminalWorkspace = lazy(() => import('./TerminalWorkspace').then((module) => ({ default: module.TerminalWorkspace })));
 const AgentChatPanel = lazy(() => import('./AgentChatPanel').then((module) => ({ default: module.AgentChatPanel })));
-
-type BottomPanelTab = 'commands' | 'tunnels' | 'history';
 type FileContextMenuState = {
   file: RemoteFileEntry;
   x: number;
@@ -128,339 +157,6 @@ type TransferProgressItem = {
   status: 'running' | 'success' | 'error';
   message?: string;
 };
-
-// 文件管理列宽保持紧凑默认值，同时给名称列更多可扩展空间，方便长文件名场景手动拉宽。
-const explorerDefaultColumnWidths = [220, 70, 62, 132, 92, 118];
-// 文件管理列表使用固定行高做虚拟滚动，目录文件很多时也只渲染视口附近的行。
-const explorerRowHeight = 27;
-// 视口上下各多渲染少量缓冲行，避免快速滚动时出现空白闪烁。
-const explorerOverscanRows = 10;
-const explorerColumnLimits = [
-  { min: 150, max: 680 },
-  { min: 58, max: 140 },
-  { min: 54, max: 130 },
-  { min: 112, max: 220 },
-  { min: 78, max: 180 },
-  { min: 90, max: 220 },
-];
-// AI 执行通知用稳定 tag 去重，避免 MCP 客户端重试时 Windows 通知中心堆出重复消息。
-const agentBridgeNotificationTagPrefix = 'myterminal-agent-bridge';
-// Windows toast 按钮的动作 ID 和 Rust 端保持一致，前端事件回来后直接分派审批结果。
-const agentBridgeNotificationApproveActionId = 'approve-agent-request';
-const agentBridgeNotificationRejectActionId = 'reject-agent-request';
-// 通知正文只保留短摘要，防止长命令或长路径把 Windows toast 挤得难以阅读。
-const agentRequestSummaryMaxLength = 160;
-// 左右侧栏允许比旧版 320px 更窄，展开双侧栏时优先把横向空间留给终端和底部操作区。
-const sidePanelMinWidth = 240;
-const sidePanelMaxWidth = 560;
-// AI 对话栏承载长文本与代码块，需要比文件树宽得多；按窗口比例上限，大屏时能拖到接近 3/5。
-const agentSidebarMaxWidthRatio = 0.6;
-// AI 栏展开时主工作区可以让到更窄——终端本身在窄宽下仍可用，用户是主动选择看对话。
-const agentSidebarMainWorkspaceMinWidth = 420;
-// 左侧上下分区都保留约 120px 最小可用高度，避免文件管理区被限制成半屏起步。
-const sidebarRuntimeMinHeight = 120;
-const sidebarExplorerMinHeight = 120;
-// app 外壳 padding、sidebar padding、分隔拖拽条和 gap 都要从可分配高度里预留出来。
-const sidebarVerticalChromeBudget = 28;
-// 主工作区保底宽度用于反推侧栏最大可拖宽度，避免左右栏继续挤压中间按钮和终端。
-const mainWorkspaceMinWidth = 720;
-// 应用外壳左右 padding 和侧栏拖拽柄宽度参与宽度预算，保证 JS 钳制与 CSS 网格尺寸一致。
-const appShellHorizontalPadding = 8;
-const sidePanelResizeHandleWidth = 4;
-// 内存展开区只展示前 4 项，降低远端 ps 查询和前端渲染负担。
-const runtimeResourceDetailLimit = 4;
-
-const normalizeAgentRequestSummary = (value: string, maxLength = agentRequestSummaryMaxLength) => {
-  const normalized = value.replace(/\s+/g, ' ').trim();
-  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3)}...` : normalized;
-};
-
-const getAgentRequestSummary = (request: AgentBridgeRequest) => {
-  // 审批卡片和系统通知共用同一套摘要规则，保证收起态与通知里看到的是同一个执行目标。
-  if (request.kind === 'run_command' && request.command?.trim()) {
-    return normalizeAgentRequestSummary(request.command);
-  }
-  if (request.path) {
-    const pathSummary = request.newPath ? `${request.path} -> ${request.newPath}` : request.path;
-    return normalizeAgentRequestSummary(pathSummary);
-  }
-  if (request.contentPreview?.trim()) {
-    return normalizeAgentRequestSummary(request.contentPreview);
-  }
-  return normalizeAgentRequestSummary(request.title || request.kind);
-};
-
-const getAgentRequestMachineLabel = (request: AgentBridgeRequest, connections: ConnectionProfile[]) => {
-  const connection = connections.find((item) => item.id === request.connectionId);
-  if (!connection) {
-    return request.connectionId;
-  }
-
-  // SSH 机器信息只展示定位字段，避免把认证材料或备注等敏感配置带入通知和收起态。
-  return `${connection.name} · ${connection.username}@${connection.host}:${connection.port}`;
-};
-
-const bottomTabs: Array<{ id: BottomPanelTab; labelKey: TranslationKey; icon: typeof TerminalSquare }> = [
-  { id: 'commands', labelKey: 'panelCommands', icon: TerminalSquare },
-  { id: 'tunnels', labelKey: 'panelTunnels', icon: Cable },
-  { id: 'history', labelKey: 'panelHistory', icon: History },
-];
-
-// 动作按钮紧凑态使用显式分行，中文优先保留业务词组，英文按单词长度均衡切分，避免 CSS 自动断成 3/1 之类的畸形结果。
-const splitActionButtonLabel = (label: string) => {
-  const trimmed = label.trim();
-  if (trimmed.length <= 1) {
-    return [trimmed];
-  }
-
-  const words = trimmed.split(/\s+/).filter(Boolean);
-  if (words.length > 1 && /^[\x00-\x7F]+$/.test(trimmed)) {
-    if (words.length === 2) {
-      return words;
-    }
-
-    let bestIndex = 1;
-    let bestDelta = Number.POSITIVE_INFINITY;
-    for (let index = 1; index < words.length; index += 1) {
-      const left = words.slice(0, index).join(' ');
-      const right = words.slice(index).join(' ');
-      const delta = Math.abs(left.length - right.length);
-      if (delta < bestDelta) {
-        bestDelta = delta;
-        bestIndex = index;
-      }
-    }
-    return [words.slice(0, bestIndex).join(' '), words.slice(bestIndex).join(' ')];
-  }
-
-  const characters = Array.from(trimmed.replace(/\s+/g, ''));
-  if (characters.length <= 1) {
-    return [trimmed];
-  }
-
-  // “功能栏”是固定业务词组，紧凑态应保留为一行，避免出现“收起功 / 能栏”这种破坏语义的分割。
-  const functionDockSuffix = '功能栏';
-  if (trimmed.endsWith(functionDockSuffix) && characters.length > functionDockSuffix.length) {
-    return [
-      characters.slice(0, characters.length - functionDockSuffix.length).join(''),
-      functionDockSuffix,
-    ];
-  }
-
-  const firstLineLength = Math.ceil(characters.length / 2);
-  return [characters.slice(0, firstLineLength).join(''), characters.slice(firstLineLength).join('')];
-};
-
-// 普通按钮保持自然横排；只有紧凑动作区才使用预切分行，图标和文字宽度互不挤压。
-const renderActionButtonLabel = (label: string, compact = false) => {
-  if (!compact) {
-    return <span className="button-label">{label}</span>;
-  }
-
-  return (
-    <span className="button-label is-compact" aria-label={label}>
-      {splitActionButtonLabel(label).map((line, index) => (
-        <span key={`${line}-${index}`} className="button-label-line">
-          {line}
-        </span>
-      ))}
-    </span>
-  );
-};
-
-// 底部动作区只在自然横排放不下时进入紧凑模式；估算值偏保守，避免空间充足时仍然强制换行。
-const estimateInlineButtonWidth = (label: string) => {
-  const trimmed = label.trim();
-  const asciiOnly = /^[\x00-\x7F]+$/.test(trimmed);
-  const textWidth = asciiOnly ? trimmed.length * 8.5 : Array.from(trimmed).length * 15;
-  return Math.max(64, Math.ceil(textWidth + 48));
-};
-
-// 紧凑态宽度按换行后最长一行计算，让“全部/开启”这类按钮真正变窄，而不是统一占用大宽度。
-const estimateCompactButtonWidth = (label: string) => {
-  const lines = splitActionButtonLabel(label);
-  const asciiOnly = /^[\x00-\x7F]+$/.test(label.trim());
-  const longestLineWidth = lines.reduce((maxWidth, line) => {
-    const lineWidth = asciiOnly ? line.length * 8.5 : Array.from(line).length * 15;
-    return Math.max(maxWidth, lineWidth);
-  }, 0);
-  return Math.max(62, Math.ceil(longestLineWidth + 44));
-};
-
-// 紧凑态按钮宽度写入 CSS 变量，避免统一 flex 宽度把已经换行的短文案又撑宽。
-const buildActionButtonStyle = (label: string, compact: boolean): CSSProperties | undefined => {
-  if (!compact) {
-    return undefined;
-  }
-  return { '--compact-action-button-width': `${estimateCompactButtonWidth(label)}px` } as CSSProperties;
-};
-
-const resolveSidePanelMaxWidth = (
-  oppositePanelVisible: boolean,
-  oppositePanelWidth: number,
-  // AI 对话栏用更宽的上限与更小的主工作区保底，其余侧栏维持原有克制的尺寸。
-  isAgentPanel = false,
-) => {
-  if (typeof window === 'undefined') {
-    return isAgentPanel ? Math.round(1180 * agentSidebarMaxWidthRatio) : sidePanelMaxWidth;
-  }
-
-  const occupiedByChrome =
-    appShellHorizontalPadding +
-    sidePanelResizeHandleWidth +
-    (oppositePanelVisible ? sidePanelResizeHandleWidth + oppositePanelWidth : 0);
-  const workspaceFloor = isAgentPanel
-    ? agentSidebarMainWorkspaceMinWidth
-    : mainWorkspaceMinWidth;
-  const ceiling = isAgentPanel
-    ? Math.round(window.innerWidth * agentSidebarMaxWidthRatio)
-    : sidePanelMaxWidth;
-  const availableWidth = window.innerWidth - occupiedByChrome - workspaceFloor;
-  return Math.max(sidePanelMinWidth, Math.min(ceiling, Math.floor(availableWidth)));
-};
-
-// 运行状态区域最大高度由文件管理区最小高度反推，拖拽到底时仍给文件管理保留可操作空间。
-const resolveRuntimePanelMaxHeight = () => {
-  if (typeof window === 'undefined') {
-    return 380;
-  }
-
-  return Math.max(
-    sidebarRuntimeMinHeight,
-    window.innerHeight - sidebarExplorerMinHeight - sidebarVerticalChromeBudget,
-  );
-};
-
-const parentPath = (path: string) => {
-  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
-  if (!normalized || normalized === '/' || normalized === '~') {
-    return '~';
-  }
-
-  const parts = normalized.split('/').filter(Boolean);
-  parts.pop();
-  return normalized.startsWith('/') ? `/${parts.join('/')}` || '/' : parts.join('/') || '~';
-};
-
-const isEditableFile = (path: string) => {
-  const normalized = path.toLowerCase();
-  return [
-    '.txt',
-    '.md',
-    '.json',
-    '.yaml',
-    '.yml',
-    '.toml',
-    '.ini',
-    '.conf',
-    '.xml',
-    '.env',
-    '.sh',
-    '.bash',
-    '.zsh',
-    '.ps1',
-    '.py',
-    '.rs',
-    '.js',
-    '.ts',
-    '.tsx',
-    '.jsx',
-    '.java',
-    '.go',
-    '.sql',
-    '.log',
-    '.csv',
-  ].some((extension) => normalized.endsWith(extension));
-};
-
-const formatBytes = (value: number) => {
-  if (!Number.isFinite(value) || value <= 0) {
-    return '0 B';
-  }
-  if (value < 1024) {
-    return `${value} B`;
-  }
-  if (value < 1024 * 1024) {
-    return `${(value / 1024).toFixed(1)} KB`;
-  }
-  if (value < 1024 * 1024 * 1024) {
-    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-  }
-  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-};
-
-const formatTimestamp = (value?: string) => {
-  if (!value) {
-    return '--';
-  }
-
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
-};
-
-// 文件类型列优先表达用户真正关心的类别，普通文件再退回扩展名。
-const formatFileType = (file: RemoteFileEntry, directoryLabel: string, symlinkLabel: string, fileLabel: string) => {
-  if (file.isSymlink) {
-    return symlinkLabel;
-  }
-  if (file.isDir) {
-    return directoryLabel;
-  }
-
-  const extension = file.name.split('.').pop();
-  return extension && extension !== file.name ? extension : fileLabel;
-};
-
-// 属主列沿用 FinalShell 常见的 owner/group 组合展示，缺失时保持占位。
-const formatOwnerGroup = (file: RemoteFileEntry) => {
-  if (file.owner && file.group) {
-    return `${file.owner}/${file.group}`;
-  }
-
-  return file.owner ?? file.group ?? '--';
-};
-
-const parseMetricPercent = (value: string) => {
-  const match = value.match(/\((\d+(?:\.\d+)?)%\)|(\d+(?:\.\d+)?)\s*%/);
-  const rawPercent = match?.[1] ?? match?.[2];
-  if (!rawPercent) {
-    return undefined;
-  }
-
-  const percent = Number(rawPercent);
-  return Number.isFinite(percent) ? clamp(percent, 0, 100) : undefined;
-};
-
-// 运行状态颜色只表达资源紧张程度，阈值保持简单直观，方便快速扫一眼定位高占用。
-const metricTone = (percent?: number) => {
-  if (percent === undefined) {
-    return 'neutral';
-  }
-  if (percent >= 85) {
-    return 'danger';
-  }
-  if (percent >= 65) {
-    return 'warning';
-  }
-  return 'ok';
-};
-
-const fileLabelIcon = (file: RemoteFileEntry) => {
-  if (file.isSymlink) {
-    return FileSymlink;
-  }
-  if (file.isDir) {
-    return FolderOpen;
-  }
-  return isEditableFile(file.path) ? FileCode2 : FileText;
-};
-
-// 会话状态只在标签栏用紧凑图标表达，避免把连接/断开信息写进终端正文影响 Shell 阅读。
-const sessionStatusClassName = (status?: string) => `session-status-icon status-${status ?? 'idle'}`;
-
-// 只有真实可用的 SSH 会话才驱动文件、运行状态和历史刷新，本地终端只占用终端标签页。
-const isUsableRemoteSession = (session?: TerminalSession) =>
-  session?.kind !== 'local' && (session?.status === 'connected' || session?.status === 'stub');
 
 export default function App() {
   // 所有业务弹窗复用标题栏拖动能力；偏移仅存在于本次打开的 DOM 节点，关闭后自动复位。
