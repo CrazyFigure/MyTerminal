@@ -157,6 +157,11 @@ fn default_terminal_session_kind() -> String {
     "ssh".into()
 }
 
+// 历史连接文件没有协议字段，默认按原有 SSH 语义加载，保证升级后无需迁移即可继续使用。
+fn default_connection_protocol() -> String {
+    "ssh".into()
+}
+
 fn default_local_terminal_title() -> String {
     "本地终端".into()
 }
@@ -569,6 +574,9 @@ impl Default for AppSettings {
 pub struct ConnectionProfile {
     #[serde(default = "new_id")]
     pub id: String,
+    /// ssh 使用内置终端能力，rdp 调用 Windows 系统远程桌面客户端。
+    #[serde(default = "default_connection_protocol")]
+    pub protocol: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -1146,6 +1154,9 @@ pub struct StoredAppSettings {
 pub struct StoredConnectionProfile {
     #[serde(default = "new_id")]
     pub id: String,
+    /// 旧文件反序列化时回退 SSH，新保存的数据显式写入协议，避免再靠端口猜类型。
+    #[serde(default = "default_connection_protocol")]
+    pub protocol: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -1226,5 +1237,27 @@ impl Default for StoredSshProxyConfig {
             username: None,
             password_encrypted: String::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod connection_profile_compatibility_tests {
+    use super::ConnectionProfile;
+
+    #[test]
+    fn legacy_connection_without_protocol_defaults_to_ssh() {
+        // 0.6.6 及更早版本没有 protocol；直接反序列化旧结构必须保持 SSH 和 22 端口语义。
+        let connection: ConnectionProfile = serde_json::from_value(serde_json::json!({
+            "id": "legacy-ssh",
+            "name": "Legacy Linux",
+            "host": "192.168.1.10",
+            "username": "root",
+            "password": "secret",
+            "tags": []
+        }))
+        .expect("legacy connection should deserialize");
+
+        assert_eq!(connection.protocol, "ssh");
+        assert_eq!(connection.port, 22);
     }
 }

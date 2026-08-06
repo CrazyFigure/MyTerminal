@@ -45,6 +45,7 @@ import {
   Laptop,
   MemoryStick,
   Minus,
+  Monitor,
   Moon,
   Pencil,
   Play,
@@ -85,6 +86,7 @@ import { UpdateModal, type UpdateDownloadProgress } from './UpdateModal';
 import type { AgentBridgeRequest, AgentBridgeStatus, AgentModel, AgentProtocol, AgentProvider, AppSettings, ConnectionDraft, ConnectionProfile, LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, RemoteFileEntry, RuntimeConnectionList, RuntimeResourceMetric, RuntimeResourceTarget, RuntimeResourceUsage, RuntimeResourceSource, RuntimeStorageFiles, SshJumpHost, TerminalSession, TunnelRecord, UiLanguage, UpdateCheckResult } from './types';
 import { AgentChatPanel } from './AgentChatPanel';
 import { CustomSelect } from './CustomSelect';
+import { useDraggableModals } from './useDraggableModals';
 
 const MonacoEditor = lazy(() => import('./MonacoEditor'));
 
@@ -169,8 +171,8 @@ const explorerColumnLimits = [
   { min: 90, max: 220 },
 ];
 
-// 连接列表默认列宽继续收窄，优先保证操作按钮完整露出，避免管理弹窗出现横向滚动条。
-const connectionTableDefaultColumnWidths = [24, 136, 168, 54, 86];
+// 名称列优先容纳可读机器名；主机与用户名仍可拖拽扩宽，操作按钮保持完整露出且不引入横向滚动条。
+const connectionTableDefaultColumnWidths = [24, 184, 130, 54, 94];
 const connectionTableColumnLimits = [
   { min: 24, max: 24 },
   { min: 96, max: 360 },
@@ -781,7 +783,11 @@ const getConnectionValidationKey = (draft: ConnectionDraft) => {
     return 'validationPortInvalid' as const;
   }
 
-  if (draft.authMethod === 'privateKey') {
+  if (draft.protocol === 'rdp') {
+    if (!draft.password.trim()) {
+      return 'validationPasswordRequired' as const;
+    }
+  } else if (draft.authMethod === 'privateKey') {
     if (!draft.privateKeyPath.trim() && !draft.privateKeyText.trim()) {
       return 'validationPrivateKeyRequired' as const;
     }
@@ -789,7 +795,7 @@ const getConnectionValidationKey = (draft: ConnectionDraft) => {
     return 'validationPasswordRequired' as const;
   }
 
-  for (const jumpHost of draft.jumpHosts) {
+  for (const jumpHost of draft.protocol === 'ssh' ? draft.jumpHosts : []) {
     if (!jumpHost.host.trim()) {
       return 'validationJumpHostRequired' as const;
     }
@@ -808,7 +814,7 @@ const getConnectionValidationKey = (draft: ConnectionDraft) => {
     }
   }
 
-  if (draft.proxy.enabled) {
+  if (draft.protocol === 'ssh' && draft.proxy.enabled) {
     if (!draft.proxy.host.trim()) {
       return 'validationProxyHostRequired' as const;
     }
@@ -1384,16 +1390,43 @@ function ConnectionFormModal() {
 
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements);
-  const isPrivateKeyMode = connectionDraft.authMethod === 'privateKey';
+  const isRdpConnection = connectionDraft.protocol === 'rdp';
+  const isPrivateKeyMode = !isRdpConnection && connectionDraft.authMethod === 'privateKey';
   const passwordToggleLabel = revealPassword ? t('hideSecret') : t('showSecret');
   const passphraseToggleLabel = revealPassphrase ? t('hideSecret') : t('showSecret');
   const validationKey = getConnectionValidationKey(connectionDraft);
   const canSubmit = !validationKey && !loading;
-  const connectionTabs: Array<{ id: ConnectionFormTab; label: string }> = [
-    { id: 'basic', label: t('connectionTabBasic') },
-    { id: 'jumpHosts', label: t('connectionTabJumpHosts') },
-    { id: 'proxy', label: t('connectionTabProxy') },
-  ];
+  const connectionTabs: Array<{ id: ConnectionFormTab; label: string }> = isRdpConnection
+    ? [{ id: 'basic', label: t('connectionTabBasic') }]
+    : [
+        { id: 'basic', label: t('connectionTabBasic') },
+        { id: 'jumpHosts', label: t('connectionTabJumpHosts') },
+        { id: 'proxy', label: t('connectionTabProxy') },
+      ];
+  const selectProtocol = (protocol: ConnectionDraft['protocol']) => {
+    if (protocol === connectionDraft.protocol) {
+      return;
+    }
+
+    // 只替换另一协议的默认值；用户手工配置过的端口和账号必须原样保留，切换后可继续调整。
+    updateConnectionDraft('protocol', protocol);
+    if (protocol === 'rdp') {
+      if (connectionDraft.port === 22) {
+        updateConnectionDraft('port', 3389);
+      }
+      if (connectionDraft.username === 'root') {
+        updateConnectionDraft('username', 'Administrator');
+      }
+      setActiveTab('basic');
+      return;
+    }
+    if (connectionDraft.port === 3389) {
+      updateConnectionDraft('port', 22);
+    }
+    if (connectionDraft.username === 'Administrator') {
+      updateConnectionDraft('username', 'root');
+    }
+  };
   const updateJumpHost = (id: string, patch: Partial<SshJumpHost>) => {
     // 跳板机按数组顺序执行，更新时仅替换命中的一级，避免重排破坏用户配置的跳转链。
     updateConnectionDraft('jumpHosts', connectionDraft.jumpHosts.map((jumpHost) => (
@@ -1485,6 +1518,29 @@ function ConnectionFormModal() {
         <div className="connection-form-panels">
           <div className={`connection-form-panel ${activeTab === 'basic' ? 'is-active' : ''}`}>
             <div className="form-grid">
+              <div className="form-field span-2">
+                <span>{t('fieldConnectionProtocol')}</span>
+                <div className="connection-protocol-selector" role="group" aria-label={t('fieldConnectionProtocol')}>
+                  <button
+                    aria-pressed={!isRdpConnection}
+                    className={`connection-protocol-option ${!isRdpConnection ? 'is-active' : ''}`}
+                    onClick={() => selectProtocol('ssh')}
+                    type="button"
+                  >
+                    <TerminalSquare size={17} />
+                    <span>{t('connectionProtocolSsh')}</span>
+                  </button>
+                  <button
+                    aria-pressed={isRdpConnection}
+                    className={`connection-protocol-option ${isRdpConnection ? 'is-active' : ''}`}
+                    onClick={() => selectProtocol('rdp')}
+                    type="button"
+                  >
+                    <Monitor size={17} />
+                    <span>{t('connectionProtocolRdp')}</span>
+                  </button>
+                </div>
+              </div>
               <label>
                 <span>{t('fieldName')}</span>
                 <input value={connectionDraft.name} onChange={(event) => updateConnectionDraft('name', event.target.value)} />
@@ -1530,24 +1586,31 @@ function ConnectionFormModal() {
               </label>
               <label>
                 <span>{t('fieldPort')}</span>
-                <input {...portTextInputProps} value={connectionDraft.port} onChange={(event) => updateConnectionDraft('port', Number(event.target.value) || 22)} />
+                <input {...portTextInputProps} value={connectionDraft.port} onChange={(event) => updateConnectionDraft('port', Number(event.target.value) || (isRdpConnection ? 3389 : 22))} />
               </label>
               <label>
                 <span>{t('fieldUsername')}</span>
                 <input value={connectionDraft.username} onChange={(event) => updateConnectionDraft('username', event.target.value)} />
               </label>
-              <div className="form-field">
-                <span>{t('fieldAuthMethod')}</span>
-                <CustomSelect
-                  aria-label={t('fieldAuthMethod')}
-                  value={connectionDraft.authMethod}
-                  onChange={(val) => updateConnectionDraft('authMethod', val === 'privateKey' ? 'privateKey' : 'password')}
-                  options={[
-                    { value: 'password', label: t('authMethodPassword') },
-                    { value: 'privateKey', label: t('authMethodPrivateKey') },
-                  ]}
-                />
-              </div>
+              {!isRdpConnection ? (
+                <div className="form-field">
+                  <span>{t('fieldAuthMethod')}</span>
+                  <CustomSelect
+                    aria-label={t('fieldAuthMethod')}
+                    value={connectionDraft.authMethod}
+                    onChange={(val) => updateConnectionDraft('authMethod', val === 'privateKey' ? 'privateKey' : 'password')}
+                    options={[
+                      { value: 'password', label: t('authMethodPassword') },
+                      { value: 'privateKey', label: t('authMethodPrivateKey') },
+                    ]}
+                  />
+                </div>
+              ) : (
+                <div className="connection-rdp-hint">
+                  <Monitor size={16} />
+                  <span>{t('connectionRdpHint')}</span>
+                </div>
+              )}
               {isPrivateKeyMode ? (
                 <>
                   <label className="span-2">
@@ -1823,7 +1886,7 @@ function ConnectionFormModal() {
             {t('cancel')}
           </button>
           <button className="secondary-button" disabled={loading} onClick={() => void testConnectionDraft()} type="button">
-            {t('testConnection')}
+            {t(isRdpConnection ? 'testRdpConnection' : 'testConnection')}
           </button>
           <button className="primary-button" disabled={!canSubmit} onClick={() => void saveConnectionDraft()} type="button">
             {t('saveConnection')}
@@ -2381,7 +2444,28 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
                       >
                         <GripVertical size={14} />
                       </button>
-                      <span title={connection.name}>{connection.name}</span>
+                      <div className="connection-name-cell" title={connection.name}>
+                        {connection.protocol === 'rdp' ? (
+                          <span
+                            aria-label={t('connectionProtocolRdp')}
+                            className="connection-type-icon"
+                            role="img"
+                            title={t('connectionProtocolRdp')}
+                          >
+                            <Monitor size={13} />
+                          </span>
+                        ) : (
+                          <span
+                            aria-label={t('connectionProtocolSsh')}
+                            className="connection-type-icon"
+                            role="img"
+                            title={t('connectionProtocolSsh')}
+                          >
+                            <TerminalSquare size={13} />
+                          </span>
+                        )}
+                        <span>{connection.name}</span>
+                      </div>
                       <span title={connection.host}>{connection.host}</span>
                       <span title={String(connection.port)}>{connection.port}</span>
                       <span title={connection.username}>{connection.username}</span>
@@ -3034,13 +3118,18 @@ function SettingsModal({
     systemFonts,
     isTerminalFontFamilyAvailable,
   );
+  // AI 执行只支持 SSH；RDP 连接保留在统一管理页，但不能进入远端命令白名单。
+  const agentSshConnections = useMemo(
+    () => connections.filter((connection) => connection.protocol !== 'rdp'),
+    [connections],
+  );
   const agentAutoGroups = useMemo(
-    () => buildConnectionGroupTree(draftSettings.connectionGroups, connections),
-    [connections, draftSettings.connectionGroups],
+    () => buildConnectionGroupTree(draftSettings.connectionGroups, agentSshConnections),
+    [agentSshConnections, draftSettings.connectionGroups],
   );
   const agentAutoUngroupedConnections = useMemo(
-    () => connections.filter((connection) => !normalizeConnectionGroupPath(connection.groupPath)),
-    [connections],
+    () => agentSshConnections.filter((connection) => !normalizeConnectionGroupPath(connection.groupPath)),
+    [agentSshConnections],
   );
   const terminalPreviewStyle = useMemo<CSSProperties>(
     () => ({
@@ -4468,7 +4557,7 @@ function SettingsModal({
                         <p>{t('executionConnectionsDesc')}</p>
                       </div>
                       <div className="agent-connection-list">
-                        {connections.length ? (
+                        {agentSshConnections.length ? (
                           <AgentAutoConnectionTree
                             allowedConnectionIds={draftSettings.agentBridge.allowedConnectionIds}
                             nodes={agentAutoGroups}
@@ -4625,6 +4714,8 @@ const translateUpdateCheckError = (reason: string, language: UiLanguage): string
 };
 
 export default function App() {
+  // 所有业务弹窗复用标题栏拖动能力；偏移仅存在于本次打开的 DOM 节点，关闭后自动复位。
+  useDraggableModals();
   // 右侧 AI 栏分为对话与审批两个页签；默认停在对话，审批有新请求时会自动切过去。
   const [agentSidebarTab, setAgentSidebarTab] = useState<'chat' | 'requests'>('chat');
   // AI 端点列表（含明文密钥）缓存在前端，供侧边栏对话与设置页共用。
