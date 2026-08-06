@@ -217,7 +217,6 @@ const normalizeConnection = (connection: ConnectionProfile): ConnectionProfile =
     protocol,
     groupPath: trimToUndefined(connection.groupPath)?.replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''),
     port: clampPort(connection.port, protocol === 'rdp' ? 3389 : 22),
-    tags: Array.isArray(connection.tags) ? connection.tags : [],
     authMethod,
     password: authMethod === 'privateKey' ? undefined : connection.password ?? '',
     privateKeyPath: authMethod === 'privateKey' ? trimToUndefined(connection.privateKeyPath) : undefined,
@@ -352,7 +351,6 @@ const mockConnections: ConnectionProfile[] = [
     jumpHosts: [],
     proxy: normalizeProxyConfig(undefined),
     note: 'Windows 远程桌面预览连接。',
-    tags: ['windows', 'build'],
   },
   {
     id: 'local-demo-1',
@@ -372,7 +370,6 @@ const mockConnections: ConnectionProfile[] = [
       port: 1080,
     },
     note: 'Stub connection for UI preview.',
-    tags: ['demo', 'linux'],
   },
 ];
 

@@ -180,6 +180,12 @@ const connectionTableColumnLimits = [
   { min: 48, max: 96 },
   { min: 72, max: 220 },
 ];
+// 连接管理左右分栏保留足够的分组可读宽度和连接表格操作空间，拖动只在当前弹窗内生效。
+const connectionManagerSidebarDefaultWidth = 280;
+const connectionManagerSidebarMinWidth = 200;
+const connectionManagerSidebarMaxWidth = 480;
+const connectionManagerTableMinWidth = 360;
+const connectionManagerResizerWidth = 12;
 // 端口只允许键盘录入，不使用 number 类型，避免浏览器步进按钮和鼠标滚轮隐式改值。
 const portTextInputProps = {
   type: 'text',
@@ -319,8 +325,13 @@ const nowIso = () => new Date().toISOString();
 // 空命令代表直接打开本地 shell，是本地终端和 AI CLI 之间的兜底启动项。
 const localTerminalShellCommand = { id: 'shell', name: '本地终端', command: '', builtIn: true };
 
-// 根据命令名称和实际命令内容，动态匹配对应的高清彩色图标路径。
-// 若匹配到专属 AI 工具，返回其图标路径；若是纯本地终端，则返回本地终端默认图标；其余自定义或未匹配命令返回 null。
+// Pi 名称很短，必须按独立命令词匹配，避免把 pip、spin 等普通命令误识别成 Pi Coding Agent。
+const matchesPiLocalTerminalCommand = (name: string, command: string) => {
+  const piCommandPattern = /(^|[\s\\/'"]+)pi(?:\.(?:exe|cmd|bat|ps1))?(?=$|[\s'"])/i;
+  return piCommandPattern.test(name) || piCommandPattern.test(command);
+};
+
+// 根据命令名称和实际命令内容动态匹配工具图标；纯 Shell 使用本地图标，未匹配的自定义命令不显示图标。
 const getLocalTerminalIcon = (name: string, command: string) => {
   const lowerName = name.toLowerCase();
   const lowerCmd = command.toLowerCase();
@@ -366,32 +377,19 @@ const getLocalTerminalIcon = (name: string, command: string) => {
   if (lowerName.includes('grok') || lowerCmd.includes('grok')) {
     return '/icons/grok.svg';
   }
+  if (matchesPiLocalTerminalCommand(name, command)) {
+    return '/icons/pi.svg';
+  }
   if (lowerName === '本地终端' || !command.trim()) {
     return '/icons/local.svg';
   }
   return null;
 };
 
-// 判定某个命令是否拥有专属的高清 AI 工具图标
+// 专属图标直接复用统一匹配结果，避免新增工具时列表图标和标签标题规则不同步。
 const hasExclusiveLocalTerminalIcon = (name: string, command: string) => {
-  const lowerName = name.toLowerCase();
-  const lowerCmd = command.toLowerCase();
-  return (
-    lowerName.includes('claude') || lowerCmd.includes('claude') ||
-    lowerName.includes('codex') || lowerCmd.includes('codex') ||
-    lowerName.includes('opencode') || lowerCmd.includes('opencode') ||
-    lowerName.includes('qwen') || lowerCmd.includes('qwen') ||
-    lowerName.includes('gemini') || lowerCmd.includes('gemini') ||
-    lowerName.includes('deepseek') || lowerCmd.includes('deepseek') ||
-    lowerName.includes('copilot') || lowerCmd.includes('copilot') ||
-    lowerName.includes('amazon') || lowerCmd.includes('amazon') || lowerName.includes('aws') || lowerCmd.includes('aws') ||
-    lowerName.includes('groq') || lowerCmd.includes('groq') ||
-    lowerName.includes('kimi') || lowerCmd.includes('kimi') || lowerName.includes('moonshot') || lowerCmd.includes('moonshot') ||
-    lowerName.includes('mistral') || lowerCmd.includes('mistral') ||
-    lowerName.includes('cline') || lowerCmd.includes('cline') ||
-    lowerName.includes('cursor') || lowerCmd.includes('cursor') ||
-    lowerName.includes('grok') || lowerCmd.includes('grok')
-  );
+  const iconPath = getLocalTerminalIcon(name, command);
+  return Boolean(iconPath && iconPath !== '/icons/local.svg');
 };
 
 // 本地终端标题要兼容空命令，避免纯 shell 会话显示成“ · 目录”。
@@ -1675,14 +1673,6 @@ function ConnectionFormModal() {
                 </label>
               )}
               <label className="span-2">
-                <span>{t('fieldTags')}</span>
-                <input
-                  value={Array.isArray(connectionDraft.tags) ? connectionDraft.tags.join(', ') : connectionDraft.tags}
-                  onChange={(event) => updateConnectionDraft('tags', event.target.value)}
-                  placeholder={t('tagsPlaceholder')}
-                />
-              </label>
-              <label className="span-2">
                 <span>{t('fieldNote')}</span>
                 <textarea value={connectionDraft.note ?? ''} onChange={(event) => updateConnectionDraft('note', event.target.value)} rows={2} />
               </label>
@@ -1989,9 +1979,11 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
   const [dragState, setDragState] = useState<ConnectionManagerDragState>(null);
   const [dropTarget, setDropTarget] = useState<ConnectionManagerDropTarget>(null);
   const [connectionTableColumnWidths, setConnectionTableColumnWidths] = useState(connectionTableDefaultColumnWidths);
+  const [groupSidebarWidth, setGroupSidebarWidth] = useState(connectionManagerSidebarDefaultWidth);
   const dragStateRef = useRef<ConnectionManagerDragState>(null);
   const dropTargetRef = useRef<ConnectionManagerDropTarget>(null);
   const managerWasOpenRef = useRef(false);
+  const connectionManagerLayoutRef = useRef<HTMLDivElement | null>(null);
   const groupSidebarRef = useRef<HTMLElement | null>(null);
   const connectionTableBodyRef = useRef<HTMLDivElement | null>(null);
   const {
@@ -2058,6 +2050,40 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
       setConnectionTableColumnWidths((current) => current.map((width, index) => (index === columnIndex ? nextWidth : width)));
     });
   }, [connectionTableColumnWidths]);
+  const beginConnectionManagerSidebarResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    const startWidth = groupSidebarWidth;
+    const layoutWidth = connectionManagerLayoutRef.current?.getBoundingClientRect().width ?? 0;
+    const dynamicMaxWidth = layoutWidth > 0
+      ? layoutWidth - connectionManagerTableMinWidth - connectionManagerResizerWidth
+      : connectionManagerSidebarMaxWidth;
+    const maxWidth = Math.max(
+      connectionManagerSidebarMinWidth,
+      Math.min(connectionManagerSidebarMaxWidth, dynamicMaxWidth),
+    );
+
+    // 拖动时同步更新 CSS 变量，左右面板即时预览；松手后保留本次弹窗中的宽度。
+    beginResize(event, (moveEvent, startX) => {
+      setGroupSidebarWidth(clamp(
+        startWidth + moveEvent.clientX - startX,
+        connectionManagerSidebarMinWidth,
+        maxWidth,
+      ));
+    });
+  }, [groupSidebarWidth]);
+  const handleConnectionManagerSidebarResizeKeyDown = useCallback((event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    const resizeStep = event.shiftKey ? 40 : 10;
+    const direction = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0;
+    if (!direction) {
+      return;
+    }
+
+    event.preventDefault();
+    setGroupSidebarWidth((current) => clamp(
+      current + direction * resizeStep,
+      connectionManagerSidebarMinWidth,
+      connectionManagerSidebarMaxWidth,
+    ));
+  }, []);
   useFlipListAnimation(groupSidebarRef, '[data-group-path]', [orderedGroupPaths.join('|')]);
   useFlipListAnimation(connectionTableBodyRef, '[data-connection-id]', [visibleConnections.map((connection) => connection.id).join('|')]);
   const canSaveGroup = Boolean(normalizeConnectionGroupPath(groupDraft));
@@ -2330,7 +2356,11 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
           </div>
         </div>
 
-        <div className="connection-manager-layout">
+        <div
+          className="connection-manager-layout"
+          ref={connectionManagerLayoutRef}
+          style={{ '--connection-group-sidebar-width': `${groupSidebarWidth}px` } as CSSProperties}
+        >
           <aside
             className={`connection-groups-sidebar ${dropTarget?.type === 'group-end' ? 'is-drop-end' : ''}`}
             ref={groupSidebarRef}
@@ -2398,6 +2428,20 @@ function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () 
               </button>
             </div>
           </aside>
+
+          <button
+            aria-label={t('resizeConnectionPanels')}
+            aria-orientation="vertical"
+            aria-valuemax={connectionManagerSidebarMaxWidth}
+            aria-valuemin={connectionManagerSidebarMinWidth}
+            aria-valuenow={Math.round(groupSidebarWidth)}
+            className="connection-manager-resizer"
+            onKeyDown={handleConnectionManagerSidebarResizeKeyDown}
+            onPointerDown={beginConnectionManagerSidebarResize}
+            role="separator"
+            title={t('resizeConnectionPanels')}
+            type="button"
+          />
 
           <section className="connection-table-shell">
             <div className="section-row compact">

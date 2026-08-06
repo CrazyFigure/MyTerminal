@@ -114,7 +114,6 @@ const emptyConnectionDraft = (): ConnectionDraft => ({
     password: '',
   },
   note: '',
-  tags: [],
 });
 
 const emptyTunnelDraft = (): TunnelDraft => ({
@@ -243,7 +242,6 @@ const normalizeLoadedConnection = (connection: ConnectionProfile): ConnectionPro
   protocol: connection.protocol === 'rdp' ? 'rdp' : 'ssh',
   jumpHosts: Array.isArray(connection.jumpHosts) ? connection.jumpHosts : [],
   proxy: normalizeProxyConfig(connection.proxy),
-  tags: Array.isArray(connection.tags) ? connection.tags : [],
 });
 
 // 删除、重命名分组都需要同时处理子分组，路径前缀判断必须只命中完整层级。
@@ -689,12 +687,6 @@ const buildConnectionProfile = (draft: ConnectionDraft): ConnectionProfile => {
     jumpHosts: protocol === 'ssh' ? draft.jumpHosts.map((jumpHost) => normalizeJumpHost(jumpHost)) : [],
     proxy: protocol === 'ssh' ? normalizeProxyConfig(draft.proxy) : emptyProxyDraft(),
     note: draft.note?.trim() || undefined,
-    tags: Array.isArray(draft.tags)
-      ? draft.tags
-      : String(draft.tags)
-          .split(',')
-          .map((item) => item.trim())
-          .filter(Boolean),
   };
 };
 
@@ -927,7 +919,6 @@ export const useAppStore = create<StoreState>((set, get) => ({
               : [],
             proxy: connection.proxy ? { ...emptyProxyDraft(), ...connection.proxy } : emptyProxyDraft(),
             note: connection.note ?? '',
-            tags: [...connection.tags],
           }
         : {
             ...emptyConnectionDraft(),
@@ -1157,13 +1148,12 @@ export const useAppStore = create<StoreState>((set, get) => ({
       copyIndex += 1;
     }
 
-    // 复制连接时保留认证、标签和备注等配置，只替换 id、名称和当前分组选区，避免误改原连接。
+    // 复制连接时保留认证和备注等配置，只替换 id、名称和当前分组选区，避免误改原连接。
     const duplicatedConnection: ConnectionProfile = {
       ...source,
       id: crypto.randomUUID(),
       name: nextName,
       groupPath: targetGroupPath || undefined,
-      tags: [...source.tags],
     };
     const saved = await backend.upsertConnection(duplicatedConnection, false);
     const sourceIndex = settings.connectionOrder.indexOf(source.id);

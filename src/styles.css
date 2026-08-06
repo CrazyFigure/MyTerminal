@@ -2715,9 +2715,48 @@ select:disabled {
 
 .connection-manager-layout {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: var(--connection-group-sidebar-width, 280px) 12px minmax(0, 1fr);
+  gap: 0;
   min-height: 0;
+}
+
+/* 分隔条扩大透明命中区并保留细线视觉，悬停、按下和键盘聚焦时都即时反馈可拖动状态。 */
+.connection-manager-resizer {
+  position: relative;
+  min-width: 12px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.connection-manager-resizer::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 50%;
+  width: 1px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.38);
+  transform: translateX(-50%);
+  transition: width 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.connection-manager-resizer:hover::before,
+.connection-manager-resizer:active::before,
+.connection-manager-resizer:focus-visible::before {
+  width: 3px;
+  background: var(--app-active-border);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+.connection-manager-resizer:focus-visible {
+  outline: 2px solid var(--app-active-border);
+  outline-offset: -3px;
 }
 
 .connection-groups-sidebar,
@@ -2838,7 +2877,8 @@ select:disabled {
 .connection-table-scroll {
   min-height: 0;
   max-width: 100%;
-  overflow-x: hidden;
+  /* 左侧分组拉宽后表格可能小于固定列总宽度，保留横向滚动以确保操作列始终可访问。 */
+  overflow-x: auto;
   overflow-y: auto;
 }
 
@@ -4957,6 +4997,11 @@ select:disabled {
 
   .connection-manager-layout {
     grid-template-columns: 1fr;
+  }
+
+  /* 窄窗口改为纵向堆叠，不保留无意义的横向分隔条。 */
+  .connection-manager-resizer {
+    display: none;
   }
 
   .agent-bridge-power {

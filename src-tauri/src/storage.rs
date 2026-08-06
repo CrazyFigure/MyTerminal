@@ -405,7 +405,6 @@ impl StorageService {
                         password: (!proxy_password.is_empty()).then_some(proxy_password),
                     },
                     note: item.note,
-                    tags: item.tags,
                 })
             })
             .collect()
@@ -464,7 +463,6 @@ impl StorageService {
                         password_encrypted: crypto.encrypt_local(item.proxy.password.as_deref().unwrap_or(""))?,
                     },
                     note: item.note.clone(),
-                    tags: item.tags.clone(),
                 })
             })
             .collect();
