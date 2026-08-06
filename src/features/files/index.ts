@@ -12,3 +12,5 @@ export {
   isEditableFile,
   parentPath,
 } from './presentation';
+export { FileExplorerPanel, type FileContextMenuTarget } from './FileExplorerPanel';
+export { FileContextMenu, type RemoteFileClipboard } from './FileContextMenu';

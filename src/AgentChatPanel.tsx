@@ -1,54 +1,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
-  Bot,
-  ChevronDown,
-  ChevronRight,
   History,
-  Play,
   Plus,
   Send,
   SlidersHorizontal,
   Square,
-  Terminal as TerminalIcon,
-  Trash2,
-  User,
-  X,
 } from 'lucide-react';
 
 import { CustomSelect } from './CustomSelect';
-import { MarkdownView } from './MarkdownView';
 import { backend } from './backend';
+import { AgentChatHistory } from './features/agent/AgentChatHistory';
+import { AgentChatMessages } from './features/agent/AgentChatMessages';
+import { AgentChatOptions } from './features/agent/AgentChatOptions';
+import {
+  MAX_CONVERSATIONS,
+  buildWireHistory,
+  deriveTitle,
+  newId,
+  withSyncedLegacy,
+  type AgentChatEvent,
+  type AgentConversation,
+} from './features/agent/chatModel';
+import { resolveAgentChatMessageParts } from './features/agent/chatPresentation';
 import type { TranslationKey } from './i18n';
 import type {
   AgentChatMessage,
   AgentChatPart,
   AgentChatToolCall,
   AgentBridgeRequest,
-  AgentEffort,
   AgentProvider,
   AgentRunOptions,
 } from './types';
-
-/** 后端 agent-chat-event 事件负载。 */
-type AgentChatEvent =
-  | { type: 'textDelta'; conversationId: string; text: string }
-  | { type: 'toolCall'; conversationId: string; id: string; name: string; arguments: unknown }
-  | { type: 'toolResult'; conversationId: string; id: string; name: string; content: string; isError: boolean }
-  | { type: 'completed'; conversationId: string; stopReason: string }
-  | { type: 'compacted'; conversationId: string; droppedMessages: number }
-  | { type: 'failed'; conversationId: string; message: string };
-
-/** 一段可切换的历史对话。 */
-interface AgentConversation {
-  id: string;
-  /** 标题取首条用户消息，方便在历史列表里辨认。 */
-  title: string;
-  messages: AgentChatMessage[];
-  updatedAt: number;
-  /** 记住该对话用的端点与模型，重新打开时恢复选择。 */
-  providerId?: string;
-  modelId?: string;
-}
 
 interface AgentChatPanelProps {
   providers: AgentProvider[];
@@ -64,106 +46,9 @@ interface AgentChatPanelProps {
   t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
 }
 
-const newId = () => crypto.randomUUID();
-/** 历史对话只保留最近若干条，避免无限占用内存。 */
-const MAX_CONVERSATIONS = 30;
 /** 输入框自适应高度的上下限，兼顾单行简短指令与多行任务描述。 */
 const COMPOSER_MIN_HEIGHT = 38;
 const COMPOSER_MAX_HEIGHT = 180;
-
-const previewText = (value: string, max = 4000) =>
-  value.length > max ? `${value.slice(0, max)}…` : value;
-
-/** 取出消息的有序展示片段；旧存档没有 parts 时按「正文在前、工具在后」兜底，保持向下兼容。 */
-const messageParts = (message: AgentChatMessage): AgentChatPart[] => {
-  if (message.parts && message.parts.length) {
-    return message.parts;
-  }
-  const parts: AgentChatPart[] = [];
-  if (message.content) {
-    parts.push({ type: 'text', text: message.content });
-  }
-  for (const call of message.toolCalls) {
-    parts.push({ type: 'tool', call });
-  }
-  return parts;
-};
-
-/** 由有序片段反推 content / toolCalls，使后端投影与持久化字段始终和 parts 同步。 */
-const withSyncedLegacy = (message: AgentChatMessage): AgentChatMessage => {
-  const parts = message.parts ?? [];
-  let content = '';
-  const toolCalls: AgentChatToolCall[] = [];
-  for (const part of parts) {
-    if (part.type === 'text') {
-      content += part.text;
-    } else {
-      toolCalls.push(part.call);
-    }
-  }
-  return { ...message, content, toolCalls };
-};
-
-/** 传给后端的一条消息；与 Rust 侧 ChatMessage 形状一致。 */
-interface WireMessage {
-  role: string;
-  content: string;
-  toolCalls: { id: string; name: string; arguments: unknown }[];
-  toolResults: { toolCallId: string; name: string; content: string; isError: boolean }[];
-}
-
-/**
- * 把界面上的消息列表转成协议要求的形状。
- *
- * 界面为了展示方便，把工具调用和它的结果都挂在助手消息下；
- * 但三种协议都要求「助手回合发起调用 → 紧随其后的用户回合回传结果」，
- * 所以这里要把结果拆出来单独成一条用户消息，否则模型看不到工具到底返回了什么。
- */
-const buildWireHistory = (messages: AgentChatMessage[]): WireMessage[] => {
-  const wire: WireMessage[] = [];
-  for (const message of messages) {
-    const hasContent = message.content.trim().length > 0;
-    // 既无正文也无工具调用的空占位（上一轮失败留下的）必须丢弃，否则 API 会因空块报错。
-    if (hasContent || message.toolCalls.length) {
-      wire.push({
-        role: message.role,
-        content: message.content,
-        toolCalls: message.toolCalls.map((call) => ({
-          id: call.id,
-          name: call.name,
-          arguments: call.arguments,
-        })),
-        toolResults: [],
-      });
-    }
-
-    const finished = message.toolCalls.filter((call) => call.result !== undefined);
-    if (finished.length) {
-      wire.push({
-        role: 'user',
-        content: '',
-        toolCalls: [],
-        toolResults: finished.map((call) => ({
-          toolCallId: call.id,
-          name: call.name,
-          content: call.result ?? '',
-          isError: Boolean(call.isError),
-        })),
-      });
-    }
-  }
-  return wire;
-};
-
-/** 用首条用户消息生成标题；空对话给占位名。 */
-const deriveTitle = (messages: AgentChatMessage[], fallback: string) => {
-  const first = messages.find((item) => item.role === 'user' && item.content.trim());
-  if (!first) {
-    return fallback;
-  }
-  const line = first.content.trim().split('\n')[0];
-  return line.length > 40 ? `${line.slice(0, 40)}…` : line;
-};
 
 export function AgentChatPanel({
   providers,
@@ -191,7 +76,6 @@ export function AgentChatPanel({
     compactThreshold: 0.65,
     autoCompact: true,
   });
-  const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
   const activeIdRef = useRef('');
   // 对话列表的同步镜像：发送时要在状态提交前就读到最新历史，只靠 state 会拿到上一帧的值。
   const conversationsRef = useRef<AgentConversation[]>([]);
@@ -365,7 +249,7 @@ export function AgentChatPanel({
             case 'textDelta': {
               // 文本增量并入最后一个文本片段；若上一片段是工具调用，则新开一段，
               // 这样「工具之后的总结」会排在工具卡片后面，而不是被拼到最前面。
-              const parts = [...(next[index].parts ?? messageParts(next[index]))];
+              const parts = [...(next[index].parts ?? resolveAgentChatMessageParts(next[index]))];
               const lastPart = parts[parts.length - 1];
               if (lastPart && lastPart.type === 'text') {
                 parts[parts.length - 1] = { type: 'text', text: lastPart.text + payload.text };
@@ -382,12 +266,12 @@ export function AgentChatPanel({
                 arguments: payload.arguments,
               };
               const toolPart: AgentChatPart = { type: 'tool', call };
-              const parts = [...(next[index].parts ?? messageParts(next[index])), toolPart];
+              const parts = [...(next[index].parts ?? resolveAgentChatMessageParts(next[index])), toolPart];
               next[index] = withSyncedLegacy({ ...next[index], parts });
               break;
             }
             case 'toolResult': {
-              const parts = (next[index].parts ?? messageParts(next[index])).map((part) =>
+              const parts = (next[index].parts ?? resolveAgentChatMessageParts(next[index])).map((part) =>
                 part.type === 'tool' && part.call.id === payload.id
                   ? { type: 'tool' as const, call: { ...part.call, result: payload.content, isError: payload.isError } }
                   : part,
@@ -556,6 +440,41 @@ export function AgentChatPanel({
     }
   }, []);
 
+  // 切换历史对话时恢复其端点和模型，并重置瞬时反馈；消息滚动在下一轮渲染后重新贴底。
+  const selectHistoryConversation = (conversationId: string) => {
+    const conversation = conversationsRef.current.find((item) => item.id === conversationId);
+    if (!conversation) {
+      return;
+    }
+    setActiveId(conversation.id);
+    activeIdRef.current = conversation.id;
+    if (conversation.providerId && providers.some((provider) => provider.id === conversation.providerId)) {
+      setProviderId(conversation.providerId);
+      if (conversation.modelId) {
+        setModelId(conversation.modelId);
+      }
+    }
+    setHistoryOpen(false);
+    setError(null);
+    setNotice(null);
+    stickToBottomRef.current = true;
+  };
+
+  // 删除当前对话时回退到最近一条有内容的记录；没有历史则保留可继续输入的空会话入口。
+  const deleteHistoryConversation = (conversationId: string) => {
+    const next = conversationsRef.current.filter((entry) => entry.id !== conversationId);
+    conversationsRef.current = next;
+    setConversations(next);
+    if (conversationId === activeIdRef.current) {
+      const fallback = next.find((entry) => entry.messages.length)?.id ?? next[0]?.id ?? '';
+      setActiveId(fallback);
+      activeIdRef.current = fallback;
+    }
+    void backend.deleteAgentConversation(conversationId).catch(() => {
+      // 本地删除失败不回滚界面；下次启动会重新读到，用户可再次删除。
+    });
+  };
+
   // 空的新会话只是输入入口：没说过话就不进历史列表，也不会在落盘时留下占位。
   const historyItems = conversations.filter((item) => item.messages.length);
 
@@ -627,122 +546,23 @@ export function AgentChatPanel({
       </div>
 
       {settingsOpen ? (
-        <div className="agent-chat-options">
-          <label>
-            <span>{t('agentChatEffort')}</span>
-            <CustomSelect
-              aria-label={t('agentChatEffort')}
-              onChange={(value) =>
-                setRunOptions((current) => ({ ...current, effort: value as AgentEffort }))
-              }
-              options={[
-                { value: 'default', label: t('agentChatEffortDefault') },
-                { value: 'low', label: 'low' },
-                { value: 'medium', label: 'medium' },
-                { value: 'high', label: 'high' },
-                { value: 'xhigh', label: 'xhigh' },
-                { value: 'max', label: 'max' },
-              ]}
-              value={runOptions.effort}
-            />
-          </label>
-          <label className="agent-chat-option-inline">
-            <input
-              checked={runOptions.autoCompact}
-              onChange={(event) =>
-                setRunOptions((current) => ({ ...current, autoCompact: event.target.checked }))
-              }
-              type="checkbox"
-            />
-            <span title={t('agentChatAutoCompactDesc')}>{t('agentChatAutoCompact')}</span>
-          </label>
-          {runOptions.autoCompact ? (
-            <label>
-              <span>
-                {t('agentChatCompactThreshold')}（{Math.round(runOptions.compactThreshold * 100)}%）
-              </span>
-              {/* 1% 步进：阈值对压缩时机影响敏感，粗调容易一次跨过头。 */}
-              <input
-                max={95}
-                min={30}
-                onChange={(event) =>
-                  setRunOptions((current) => ({
-                    ...current,
-                    compactThreshold: Number(event.target.value) / 100,
-                  }))
-                }
-                step={1}
-                type="range"
-                value={Math.round(runOptions.compactThreshold * 100)}
-              />
-            </label>
-          ) : null}
-          <p className="agent-chat-option-hint">
-            {t('agentChatContextHint', {
-              window: activeProvider?.models.find((item) => item.id === modelId)?.contextWindow ?? 0,
-            })}
-          </p>
-        </div>
+<AgentChatOptions
+          activeProvider={activeProvider}
+          modelId={modelId}
+          onUpdate={setRunOptions}
+          runOptions={runOptions}
+          t={t}
+        />
       ) : null}
 
       {historyOpen ? (
-        <div className="agent-chat-history">
-          {historyItems.length ? (
-            historyItems.map((item) => (
-              <div
-                key={item.id}
-                className={`agent-chat-history-item ${item.id === activeId ? 'is-active' : ''}`}
-              >
-                <button
-                  onClick={() => {
-                    setActiveId(item.id);
-                    activeIdRef.current = item.id;
-                    // 恢复该对话当时用的端点与模型，避免接着用别的模型继续聊。
-                    if (item.providerId && providers.some((p) => p.id === item.providerId)) {
-                      setProviderId(item.providerId);
-                      if (item.modelId) {
-                        setModelId(item.modelId);
-                      }
-                    }
-                    setHistoryOpen(false);
-                    setError(null);
-                    setNotice(null);
-                    stickToBottomRef.current = true;
-                  }}
-                  type="button"
-                >
-                  <span>{item.title}</span>
-                  <small>{new Date(item.updatedAt).toLocaleString()}</small>
-                </button>
-                <button
-                  className="icon-button"
-                  onClick={() => {
-                    const next = conversationsRef.current.filter((entry) => entry.id !== item.id);
-                    conversationsRef.current = next;
-                    setConversations(next);
-                    // 删掉当前对话时自动切到最近一条有内容的对话；
-                    // 都没有就回落到空的新会话，保证面板始终可以输入。
-                    if (item.id === activeIdRef.current) {
-                      const fallback =
-                        next.find((entry) => entry.messages.length)?.id ?? next[0]?.id ?? '';
-                      setActiveId(fallback);
-                      activeIdRef.current = fallback;
-                    }
-                    void backend.deleteAgentConversation(item.id).catch(() => {
-                      // 本地删除失败不回滚界面；下次启动会重新读到，用户可再删一次。
-                    });
-                  }}
-                  title={t('agentChatDelete')}
-                  type="button"
-                >
-                  <Trash2 size={13} />
-                </button>
-              </div>
-            ))
-          ) : (
-            <div className="empty-state">{t('agentChatHistoryEmpty')}</div>
-          )}
-        </div>
+<AgentChatHistory
+          activeId={activeId}
+          items={historyItems}
+          onDelete={deleteHistoryConversation}
+          onSelect={selectHistoryConversation}
+          t={t}
+        />
       ) : null}
 
       {activeProvider && !activeProvider.hasApiKey ? (
@@ -751,113 +571,18 @@ export function AgentChatPanel({
       {notice ? <div className="agent-chat-notice">{notice}</div> : null}
       {error ? <div className="sync-action-feedback is-error">{error}</div> : null}
 
-      <div
-        className="agent-chat-body"
-        onScroll={(event) => {
-          const node = event.currentTarget;
-          // 距底部 40px 内视为“贴底”，用户上翻后停止自动滚动。
-          stickToBottomRef.current =
-            node.scrollHeight - node.scrollTop - node.clientHeight < 40;
+<AgentChatMessages
+        activeConversationId={activeId}
+        approvalRequests={approvalRequests}
+        bodyRef={bodyRef}
+        messages={messages}
+        onApproveRequest={onApproveRequest}
+        onRejectRequest={onRejectRequest}
+        onStickToBottomChange={(stuck) => {
+          stickToBottomRef.current = stuck;
         }}
-        ref={bodyRef}
-      >
-        {messages.length ? (
-          messages.map((message) => (
-            <div key={message.id} className={`agent-chat-message is-${message.role}`}>
-              <div className="agent-chat-message-role">
-                {message.role === 'user' ? <User size={13} /> : <Bot size={13} />}
-              </div>
-              <div className="agent-chat-message-body">
-                {message.role === 'user' ? (
-                  // 用户输入保持纯文本原样展示，不按 Markdown 解析。
-                  message.content ? <p className="agent-chat-user-text">{message.content}</p> : null
-                ) : (
-                  <>
-                    {/* 助手回复按到达顺序渲染：文本段与工具段交替，保证「先工具、后总结」与真实执行一致。 */}
-                    {messageParts(message).map((part, partIndex) => {
-                      if (part.type === 'text') {
-                        return part.text ? <MarkdownView key={partIndex} source={part.text} /> : null;
-                      }
-                      const call = part.call;
-                      const expanded = expandedTools[call.id] ?? false;
-                      // 审批记录按对话与工具调用双重匹配，避免并发或同名工具把按钮挂到错误位置。
-                      const approvalRequest = approvalRequests.find(
-                        (request) => request.conversationId === activeId && request.toolCallId === call.id,
-                      );
-                      return (
-                        <div key={partIndex} className={`agent-chat-tool ${call.isError ? 'is-error' : ''}`}>
-                          <button
-                            aria-expanded={expanded}
-                            className="agent-chat-tool-header"
-                            onClick={() =>
-                              setExpandedTools((current) => ({ ...current, [call.id]: !expanded }))
-                            }
-                            type="button"
-                          >
-                            {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                            <TerminalIcon size={13} />
-                            <strong>{call.name}</strong>
-                            <span>
-                              {call.result === undefined
-                                ? t('agentChatToolRunning')
-                                : call.isError
-                                  ? t('agentChatToolFailed')
-                                  : t('agentChatToolDone')}
-                            </span>
-                          </button>
-                          {approvalRequest ? (
-                            <div className={`agent-chat-approval status-${approvalRequest.status}`}>
-                              <div className="agent-chat-approval-status">
-                                <span>{t('panelAgentRequests')}</span>
-                                <span className={`status-badge status-${approvalRequest.status}`}>
-                                  {approvalRequest.status}
-                                </span>
-                              </div>
-                              {approvalRequest.status === 'pending' ? (
-                                <div className="section-row compact">
-                                  <button
-                                    className="primary-button"
-                                    onClick={() => onApproveRequest(approvalRequest)}
-                                    type="button"
-                                  >
-                                    <Play size={14} /> {t('approveAgentRequest')}
-                                  </button>
-                                  <button
-                                    className="secondary-button"
-                                    onClick={() => onRejectRequest(approvalRequest)}
-                                    type="button"
-                                  >
-                                    <X size={14} /> {t('rejectAgentRequest')}
-                                  </button>
-                                </div>
-                              ) : null}
-                            </div>
-                          ) : null}
-                          {expanded ? (
-                            <>
-                              <pre className="agent-chat-tool-payload">
-                                {previewText(JSON.stringify(call.arguments, null, 2))}
-                              </pre>
-                              {call.result !== undefined ? (
-                                <pre className="agent-chat-tool-payload">{previewText(call.result)}</pre>
-                              ) : null}
-                            </>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                    {!message.content && !message.toolCalls.length ? (
-                      <p className="agent-chat-thinking">{t('agentChatThinking')}</p>
-                    ) : null}
-                  </>
-                )}
-              </div>
-            </div>
-          ))
-        ) : (
-          <div className="empty-state">{t('agentChatEmpty')}</div>
-        )}
-      </div>
+        t={t}
+      />
 
       <div className="agent-chat-composer">
         <textarea

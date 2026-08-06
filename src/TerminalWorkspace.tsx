@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from 'react';
-import { Terminal, type IDisposable } from '@xterm/xterm';
+import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 
 import { backend } from './backend';
@@ -8,39 +8,28 @@ import { translate } from './i18n';
 import { TerminalOutputCache, type TerminalReplayEntry } from './terminalCache';
 import { buildTerminalFontFamily } from './terminalFonts';
 import type { AppSettings, TerminalOutputChunk, TerminalSession } from './types';
+import { useTerminalGutterController } from './terminal/useTerminalGutterController';
+import { useTerminalHighlightController } from './terminal/useTerminalHighlightController';
+import { useTerminalLayoutController } from './terminal/useTerminalLayoutController';
+import { useTerminalVerticalScrollbarController } from './terminal/useTerminalVerticalScrollbarController';
 
 import {
   buildTerminalBackgroundImageStyle,
-  buildTerminalHighlightPath,
   buildTerminalTheme,
   canAcceptTerminalInput,
-  clampTerminalNumber,
-  cloneTerminalSelectionPosition,
-  collectTerminalMatchRanges,
-  collectTerminalPromptHighlightMatches,
   countTerminalXtVersionQueries,
-  createTerminalHighlightPathElement,
   findTerminalInverseCursorColumn,
-  formatTerminalGutterClock,
-  formatTerminalHighlightSvgNumber,
   isRemoteHttpImage,
   isTerminalAiAgentSession,
   isWindowsTerminalHost,
   measureTerminalBufferLineContentColumns,
-  normalizeTerminalMatchSelection,
-  normalizeTerminalSelectionSnapshotText,
   parseTerminalOscRgbColor,
   parseTerminalRgbColor,
-  readTerminalSelectionTextFromBuffer,
   resolveTerminalBackgroundImage,
   resolveTerminalCellVisualBackgroundRgb,
   resolveTerminalColorContrastRatio,
   resolveTerminalColors,
-  resolveTerminalMatchHighlightColors,
-  resolveTerminalMatchRange,
   resolveTerminalMinimumContrastRatio,
-  resolveTerminalSelectionLength,
-  roundHorizontalColumns,
   shouldAnchorTerminalImeToPrompt,
   shouldHideLocalTerminalCursor,
   shouldUseManagedTerminalCursor,
@@ -50,30 +39,14 @@ import {
   terminalBracketedPasteEndSequence,
   terminalBracketedPasteStartSequence,
   terminalCursorFollowAfterInputMs,
-  terminalCursorFollowMarginColumns,
   terminalCursorHideSequence,
   terminalCursorMinimumContrastRatio,
   terminalCursorRecoveryIdleMs,
   terminalCursorShowSequence,
   terminalDefaultScrollbackRows,
-  terminalGutterCharWidthRatio,
-  terminalGutterFontScale,
-  terminalGutterHorizontalPaddingPx,
-  terminalGutterMaxTrackedLines,
-  terminalGutterMinDigits,
-  terminalGutterMinFontSizePx,
-  terminalGutterMinWidthPx,
-  terminalGutterTimestampCharCount,
-  terminalGutterWrappedLineSymbol,
-  terminalHighlightCornerRadiusPx,
   terminalHighlightSvgNamespace,
-  terminalHorizontalLinePaddingColumns,
-  terminalHorizontalMaxColumns,
   terminalManagedCursorInputGraceMs,
   terminalManagedCursorOutputIdleMs,
-  terminalMatchHighlightGapPx,
-  terminalMatchHighlightMaxRanges,
-  terminalMatchHighlightOverscanRows,
   terminalOutputEventName,
   terminalPromptBorderMinCharacters,
   terminalPromptBorderSearchDistanceRows,
@@ -81,34 +54,15 @@ import {
   terminalPromptHighlightDarkColors,
   terminalPromptHighlightLightColors,
   terminalPromptSearchRows,
-  terminalPromptSegmentHorizontalInsetPx,
-  terminalPromptSegmentUnderlineHeightPx,
-  terminalScrollbarReservePx,
-  terminalSelectionHighlightBackground,
-  terminalSelectionHighlightBorder,
-  terminalSelectionPositionHasRange,
-  terminalVerticalScrollbarBottomInsetPx,
-  terminalVerticalScrollbarMinThumbHeightPx,
-  terminalVerticalScrollbarRevealZonePx,
-  terminalVerticalScrollbarTopInsetPx,
   terminalXtVersionReplyBatchSize,
   terminalXtVersionResponse,
-  translateTerminalBufferLineWithWrap,
   type TerminalGutterMarkerEntry,
   type TerminalGutterSessionData,
-  type TerminalHighlightStrip,
-  type TerminalHorizontalOverflowEvidence,
-  type TerminalLayoutSize,
-  type TerminalMatchDecorationRange,
-  type TerminalMatchRange,
   type TerminalPromptAnchor,
   type TerminalPromptRowCache,
   type TerminalReplayDeferredOutput,
   type TerminalReplayState,
   type TerminalRgbColor,
-  type TerminalSelectionSnapshot,
-  type TerminalVerticalScrollbarDragState,
-  type TerminalVerticalScrollbarMetrics,
   type TerminalXtVersionQueryParserState,
 } from './terminal/support';
 
@@ -141,30 +95,32 @@ export function TerminalWorkspace({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  // 行号控制器通过稳定引用延迟调用后方定义的尺寸同步函数，避免 Hook 初始化阶段访问未初始化闭包。
+  const scheduleTerminalSizeSyncRef = useRef<() => void>(() => undefined);
   // 终端原始输出改用有界分片缓存：按会话/全局字节封顶、LRU 淘汰，并绑定后端确认的 PTY 尺寸；
   // 关闭会话时显式回收，既避免长期内存增长，也保证标签切换后动态覆盖行可按原几何重放。
   const outputCacheRef = useRef(new TerminalOutputCache());
   // 提示符命令行覆盖层基于 xterm 已解析缓冲区绘制，因此实时输出、标签切换和缓存重放共用同一条路径。
-  const terminalPromptHighlightOverlayRef = useRef<SVGSVGElement | null>(null);
-  const terminalPromptHighlightFrameRef = useRef<number | null>(null);
-  const terminalMatchOverlayRef = useRef<SVGSVGElement | null>(null);
-  const terminalMatchDecorationDisposablesRef = useRef<IDisposable[]>([]);
-  const terminalMatchHighlightFrameRef = useRef<number | null>(null);
-  const terminalSelectionOverlayRef = useRef<SVGSVGElement | null>(null);
-  const terminalSelectionOverlayFrameRef = useRef<number | null>(null);
-  const terminalSelectionSnapshotRef = useRef<TerminalSelectionSnapshot | null>(null);
-  const terminalSelectionRestoreActiveRef = useRef(false);
   const terminalContrastCursorRef = useRef<HTMLDivElement | null>(null);
   const terminalContrastCursorFrameRef = useRef<number | null>(null);
   // Codex 托管光标只在提交和持续输出期间暂停；输出稳定后即使输入框为空也必须自动恢复。
   const terminalManagedCursorSuppressedRef = useRef(false);
   const terminalManagedCursorInputGraceUntilRef = useRef(0);
   const terminalManagedCursorOutputIdleTimerRef = useRef<number | null>(null);
-  const terminalVerticalScrollbarRef = useRef<HTMLDivElement | null>(null);
-  const terminalVerticalScrollbarThumbRef = useRef<HTMLDivElement | null>(null);
-  const terminalVerticalScrollbarFrameRef = useRef<number | null>(null);
-  const terminalVerticalScrollbarTimeoutRef = useRef<number | null>(null);
-  const terminalVerticalScrollbarDragRef = useRef<TerminalVerticalScrollbarDragState | null>(null);
+  // 自绘滚动条以独立交互控制器管理帧、计时器和拖拽状态；工作区仅负责编排 DOM 生命周期。
+  const {
+    disposeTerminalVerticalScrollbarController,
+    handleTerminalMouseMove,
+    handleTerminalVerticalScrollbarMouseEnter,
+    handleTerminalVerticalScrollbarMouseLeave,
+    hideTerminalVerticalScrollbar,
+    scheduleTerminalVerticalScrollbarSync,
+    startTerminalVerticalScrollbarDrag,
+    stopTerminalVerticalScrollbarDrag,
+    syncTerminalVerticalScrollbarDrag,
+    terminalVerticalScrollbarRef,
+    terminalVerticalScrollbarThumbRef,
+  } = useTerminalVerticalScrollbarController({ containerRef, terminalRef });
   // 行号栏容器与逐行行数据、时间戳追踪状态；追踪状态随会话切换重置。
   const terminalGutterRef = useRef<HTMLDivElement | null>(null);
   const terminalGutterFrameRef = useRef<number | null>(null);
@@ -182,13 +138,10 @@ export function TerminalWorkspace({
   const terminalXtVersionParserStateBySessionRef = useRef(new Map<string, TerminalXtVersionQueryParserState>());
   // 按会话持久保存的逻辑行时间线；切换会话不清空，保证历史时间恒定。
   const terminalGutterSessionDataRef = useRef<Record<string, TerminalGutterSessionData>>({});
-  const terminalSelectionDragActiveRef = useRef(false);
-  const terminalSelectionDragFrameRef = useRef<number | null>(null);
   const onTerminalDataRef = useRef(onTerminalData);
   const onTerminalProtocolDataRef = useRef(onTerminalProtocolData);
   const sessionRef = useRef<TerminalSession | undefined>(session);
   const resizeFrameRef = useRef<number | null>(null);
-  const cursorFollowFrameRef = useRef<number | null>(null);
   // 追踪远端最近一次 DECTCEM 是否把光标设为隐藏,配合空闲看门狗做悬空隐藏光标的自愈。
   const terminalRemoteCursorHiddenRef = useRef(false);
   const terminalCursorRecoveryTimerRef = useRef<number | null>(null);
@@ -197,14 +150,6 @@ export function TerminalWorkspace({
   const terminalPromptRowCacheRef = useRef<TerminalPromptRowCache | null>(null);
   const lastLocalTerminalInputAtRef = useRef(0);
   const terminalLocalInputEditingRef = useRef(false);
-  // 横向模式只保存“软换行已证实”的内容宽度高水位；可视窗口本身变宽不能污染该值，否则缩窗后会凭空出现横向滚动。
-  const terminalHorizontalContentColsRef = useRef(0);
-  // 会话切走再切回时恢复真实长内容的高水位，避免缓存重放只看底部短行而丢失历史长行宽度。
-  const terminalHorizontalContentColsBySessionRef = useRef<Record<string, number>>({});
-  // 缓存重放结束后仅执行一次全缓冲测量，之后高频输出仍只测当前窗口，控制扫描开销。
-  const terminalHorizontalFullBufferMeasurePendingRef = useRef(false);
-  const terminalHorizontalOverflowEvidenceRef = useRef<TerminalHorizontalOverflowEvidence | null>(null);
-  const terminalHorizontalPostShrinkCeilingRef = useRef<number | null>(null);
   const remoteTerminalSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const pendingFocusSessionIdRef = useRef<string | null>(session?.id ?? null);
   const terminalLineWrapMode = settings.terminalLineWrapMode ?? 'wrap';
@@ -247,6 +192,36 @@ export function TerminalWorkspace({
   const terminalPromptHighlightColorsRef = useRef(
     settings.themeMode === 'dark' ? terminalPromptHighlightDarkColors : terminalPromptHighlightLightColors,
   );
+  const isDarkThemeRef = useRef(settings.themeMode === 'dark');
+  // 三类终端高亮共享缓冲区测量和选区快照，由一个渲染域控制器保证重排与销毁顺序一致。
+  const {
+    captureTerminalSelectionSnapshot,
+    clearTerminalMatchOverlay,
+    clearTerminalPromptHighlights,
+    clearTerminalSelectionSnapshot,
+    disposeTerminalHighlightController,
+    resolveTerminalSelectionSnapshot,
+    scheduleTerminalMatchHighlightRefresh,
+    scheduleTerminalPromptHighlightRefresh,
+    scheduleTerminalSelectionOverlaySync,
+    startTerminalSelectionDragSync,
+    stopTerminalSelectionDragSync,
+    syncTerminalAuxiliaryLayerSizes,
+    syncTerminalSelectionOverlay,
+    terminalMatchOverlayRef,
+    terminalPromptHighlightOverlayRef,
+    terminalSelectionOverlayRef,
+    terminalSelectionRestoreActiveRef,
+  } = useTerminalHighlightController({
+    containerRef,
+    isAiAgentTerminalSessionRef,
+    isDarkThemeRef,
+    sessionRef,
+    terminalMatchSelectionRef,
+    terminalPromptHighlightColorsRef,
+    terminalRef,
+    terminalVerticalScrollbarRef,
+  });
   // 行号栏两个开关缓存进 ref，命令式同步逻辑读取时无需依赖闭包中的最新 props。
   const gutterShowLineNumber = settings.terminalGutterShowLineNumber !== false;
   const gutterShowTimestamp = settings.terminalGutterShowTimestamp !== false;
@@ -333,6 +308,7 @@ export function TerminalWorkspace({
   terminalPromptHighlightColorsRef.current = settings.themeMode === 'dark'
     ? terminalPromptHighlightDarkColors
     : terminalPromptHighlightLightColors;
+  isDarkThemeRef.current = settings.themeMode === 'dark';
   gutterShowLineNumberRef.current = gutterShowLineNumber;
   gutterShowTimestampRef.current = gutterShowTimestamp;
   terminalFontSizeRef.current = settings.shellFontSize;
@@ -771,1076 +747,30 @@ export function TerminalWorkspace({
     });
   };
 
-  const clearTerminalMatchOverlay = () => {
-    const terminal = terminalRef.current;
-    const hadDecorations = terminalMatchDecorationDisposablesRef.current.length > 0;
-    for (const disposable of terminalMatchDecorationDisposablesRef.current) {
-      disposable.dispose();
-    }
-    terminalMatchDecorationDisposablesRef.current = [];
-    if (hadDecorations && terminal && terminal.rows > 0) {
-      // 匹配文字前景色由 xterm decoration 接管，清除 decoration 后必须重绘可视行，避免旧色残留。
-      terminal.refresh(0, terminal.rows - 1);
-    }
-
-    const overlay = terminalMatchOverlayRef.current;
-    if (!overlay) {
-      return;
-    }
-
-    overlay.replaceChildren();
-    const container = containerRef.current;
-    if (container) {
-      syncTerminalHighlightOverlaySize(overlay, container);
-    }
-  };
-
-  const terminalMatchRangeToDecorationRanges = (range: TerminalMatchRange) => {
-    const terminal = terminalRef.current;
-    if (!terminal) {
-      return [];
-    }
-
-    const ranges: TerminalMatchDecorationRange[] = [];
-    let row = range.row;
-    let column = range.col;
-    let remainingSize = range.size;
-    while (remainingSize > 0) {
-      const width = Math.min(Math.max(terminal.cols - column, 0), remainingSize);
-      if (width > 0) {
-        ranges.push({ row, column, width });
-      }
-      remainingSize -= width;
-      row += 1;
-      column = 0;
-      if (width <= 0) {
-        break;
-      }
-    }
-    return ranges;
-  };
-
-  const syncTerminalMatchDecorations = (ranges: TerminalMatchRange[], foregroundColor?: string) => {
-    const terminal = terminalRef.current;
-    const hadDecorations = terminalMatchDecorationDisposablesRef.current.length > 0;
-    for (const disposable of terminalMatchDecorationDisposablesRef.current) {
-      disposable.dispose();
-    }
-    terminalMatchDecorationDisposablesRef.current = [];
-
-    if (!terminal || !foregroundColor) {
-      if (hadDecorations && terminal && terminal.rows > 0) {
-        terminal.refresh(0, terminal.rows - 1);
-      }
-      return;
-    }
-
-    const buffer = terminal.buffer.active;
-    const disposables: IDisposable[] = [];
-    for (const range of ranges) {
-      for (const decorationRange of terminalMatchRangeToDecorationRanges(range)) {
-        // xterm marker 以当前光标为基准定位缓冲区行，匹配范围来自绝对 buffer row，需要转换成 cursorYOffset。
-        const markerOffset = decorationRange.row - buffer.baseY - buffer.cursorY;
-        const marker = terminal.registerMarker(markerOffset);
-        if (!marker) {
-          continue;
-        }
-        const decoration = terminal.registerDecoration({
-          marker,
-          x: decorationRange.column,
-          width: decorationRange.width,
-          foregroundColor,
-          layer: 'top',
-        });
-        if (!decoration) {
-          marker.dispose();
-          continue;
-        }
-        disposables.push(marker, decoration);
-      }
-    }
-    terminalMatchDecorationDisposablesRef.current = disposables;
-    if ((hadDecorations || disposables.length > 0) && terminal.rows > 0) {
-      // xterm decoration 只在重绘后才会把匹配项文字改成深色，避免深色模式下白字压在浅色块上。
-      terminal.refresh(0, terminal.rows - 1);
-    }
-  };
-
-  // 覆盖层宽高必须来自 xterm 实际内容盒，不能读取 container.scrollWidth；
-  // 否则旧覆盖层自身会参与 scrollWidth 计算，把横向滚动范围持续撑大。
-  const resolveTerminalAuxiliaryLayerSize = (container: HTMLDivElement) => {
-    const terminalElement = terminalRef.current?.element;
-    if (!terminalElement) {
-      return {
-        width: Math.ceil(container.clientWidth),
-        height: Math.ceil(container.clientHeight),
-      };
-    }
-
-    const containerRect = container.getBoundingClientRect();
-    const terminalRect = terminalElement.getBoundingClientRect();
-    return {
-      width: Math.ceil(Math.max(container.clientWidth, terminalRect.right - containerRect.left + container.scrollLeft)),
-      height: Math.ceil(Math.max(container.clientHeight, terminalRect.bottom - containerRect.top + container.scrollTop)),
-    };
-  };
-
-  const syncTerminalHighlightOverlaySize = (overlay: SVGSVGElement, container: HTMLDivElement) => {
-    const { width, height } = resolveTerminalAuxiliaryLayerSize(container);
-    overlay.setAttribute('width', `${width}`);
-    overlay.setAttribute('height', `${height}`);
-    overlay.style.width = `${width}px`;
-    overlay.style.height = `${height}px`;
-  };
-
-  // 横向列宽变化后立即回收两个 SVG 辅助层，避免下一帧刷新前仍由旧宽度撑出空白滚动范围。
-  const syncTerminalAuxiliaryLayerSizes = () => {
-    const container = containerRef.current;
-    if (!container) {
-      return;
-    }
-
-    const overlays = [
-      terminalPromptHighlightOverlayRef.current,
-      terminalMatchOverlayRef.current,
-      terminalSelectionOverlayRef.current,
-    ];
-    for (const overlay of overlays) {
-      if (overlay) {
-        syncTerminalHighlightOverlaySize(overlay, container);
-      }
-    }
-  };
-
-  const resolveTerminalVerticalScrollbarMetrics = (): TerminalVerticalScrollbarMetrics | undefined => {
-    const container = containerRef.current;
-    const terminal = terminalRef.current;
-    if (!container || !terminal) {
-      return undefined;
-    }
-
-    const buffer = terminal.buffer.active;
-    const totalRows = Math.max(terminal.rows, buffer.length);
-    const maxScrollLine = Math.max(0, totalRows - terminal.rows);
-    // 轨道默认 display:none，不能读取自身 clientHeight；用容器高度减去 CSS 上下留白计算。
-    const trackHeight = Math.max(
-      0,
-      container.clientHeight - terminalVerticalScrollbarTopInsetPx - terminalVerticalScrollbarBottomInsetPx,
-    );
-    if (maxScrollLine <= 0 || trackHeight <= 0) {
-      return undefined;
-    }
-
-    // 拇指高度按当前可视行占总缓冲行的比例计算，并保留最小可拖拽尺寸。
-    const thumbHeight = Math.min(
-      trackHeight,
-      Math.max(terminalVerticalScrollbarMinThumbHeightPx, Math.round((trackHeight * terminal.rows) / totalRows)),
-    );
-    const maxThumbTop = Math.max(0, trackHeight - thumbHeight);
-    const viewportY = clampTerminalNumber(buffer.viewportY, 0, maxScrollLine);
-    const thumbTop = maxThumbTop > 0 ? Math.round((viewportY / maxScrollLine) * maxThumbTop) : 0;
-    return { thumbHeight, thumbTop, maxThumbTop, maxScrollLine };
-  };
-
-  const scrollTerminalVerticalScrollbarToThumbTop = (
-    thumbTop: number,
-    metrics: Pick<TerminalVerticalScrollbarMetrics, 'maxThumbTop' | 'maxScrollLine'>,
-  ) => {
-    const terminal = terminalRef.current;
-    if (!terminal) {
-      return;
-    }
-
-    const safeThumbTop = clampTerminalNumber(thumbTop, 0, metrics.maxThumbTop);
-    const scrollRatio = metrics.maxThumbTop > 0 ? safeThumbTop / metrics.maxThumbTop : 0;
-    terminal.scrollToLine(Math.round(scrollRatio * metrics.maxScrollLine));
-    syncTerminalVerticalScrollbar();
-  };
-
-  const syncTerminalVerticalScrollbar = () => {
-    const container = containerRef.current;
-    const scrollbar = terminalVerticalScrollbarRef.current;
-    const thumb = terminalVerticalScrollbarThumbRef.current;
-    if (!container || !scrollbar || !thumb) {
-      return;
-    }
-
-    // 该滚动条已经移动到横向滚动容器的外部；由 CSS right 属性固定在右侧，无需再手动叠加 scrollLeft 计算 left。
-
-    const metrics = resolveTerminalVerticalScrollbarMetrics();
-    const isScrollable = Boolean(metrics);
-    scrollbar.classList.toggle('is-scrollable', isScrollable);
-    if (!metrics) {
-      scrollbar.classList.remove('is-visible', 'is-dragging');
-      return;
-    }
-
-    thumb.style.height = `${metrics.thumbHeight}px`;
-    thumb.style.transform = `translateY(${metrics.thumbTop}px)`;
-  };
-
-  const scheduleTerminalVerticalScrollbarSync = () => {
-    if (terminalVerticalScrollbarFrameRef.current !== null) {
-      return;
-    }
-
-    terminalVerticalScrollbarFrameRef.current = window.requestAnimationFrame(() => {
-      terminalVerticalScrollbarFrameRef.current = null;
-      syncTerminalVerticalScrollbar();
-
-      // 上下滚动时短暂展示竖向滚动条，滚动停止后自动隐藏。
-      showTerminalVerticalScrollbar();
-      if (terminalVerticalScrollbarTimeoutRef.current !== null) {
-        window.clearTimeout(terminalVerticalScrollbarTimeoutRef.current);
-      }
-      terminalVerticalScrollbarTimeoutRef.current = window.setTimeout(() => {
-        terminalVerticalScrollbarTimeoutRef.current = null;
-        hideTerminalVerticalScrollbar();
-      }, 1200);
-    });
-  };
-
-  const showTerminalVerticalScrollbar = () => {
-    syncTerminalVerticalScrollbar();
-    const scrollbar = terminalVerticalScrollbarRef.current;
-    if (scrollbar?.classList.contains('is-scrollable')) {
-      scrollbar.classList.add('is-visible');
-    }
-  };
-
-  const hideTerminalVerticalScrollbar = () => {
-    if (terminalVerticalScrollbarDragRef.current) {
-      return;
-    }
-
-    terminalVerticalScrollbarRef.current?.classList.remove('is-visible');
-  };
-
-  // 鼠标靠近终端右侧边缘时展示自绘竖向滚动条，移开后隐藏。
-  const handleTerminalMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
-    const container = containerRef.current;
-    if (!container) {
-      hideTerminalVerticalScrollbar();
-      return;
-    }
-
-    const containerRect = container.getBoundingClientRect();
-    const isNearRightEdge = containerRect.right - event.clientX <= terminalVerticalScrollbarRevealZonePx;
-    if (isNearRightEdge) {
-      // 鼠标在右侧区域时，取消自动隐藏定时器，保持滚动条常驻。
-      if (terminalVerticalScrollbarTimeoutRef.current !== null) {
-        window.clearTimeout(terminalVerticalScrollbarTimeoutRef.current);
-        terminalVerticalScrollbarTimeoutRef.current = null;
-      }
-      showTerminalVerticalScrollbar();
-      return;
-    }
-
-    // 鼠标不在右侧区域时，如果没有正在运行的滚动隐藏定时器则立刻隐藏。
-    if (terminalVerticalScrollbarTimeoutRef.current === null) {
-      hideTerminalVerticalScrollbar();
-    }
-  };
-
-  const startTerminalVerticalScrollbarDrag = (event: MouseEvent) => {
-    if (event.button !== 0) {
-      return;
-    }
-
-    const scrollbar = terminalVerticalScrollbarRef.current;
-    const thumb = terminalVerticalScrollbarThumbRef.current;
-    const metrics = resolveTerminalVerticalScrollbarMetrics();
-    if (!scrollbar || !thumb || !metrics) {
-      return;
-    }
-
-    const trackRect = scrollbar.getBoundingClientRect();
-    const isThumbDrag = thumb.contains(event.target as Node);
-    const nextThumbTop = isThumbDrag
-      ? metrics.thumbTop
-      : clampTerminalNumber(event.clientY - trackRect.top - metrics.thumbHeight / 2, 0, metrics.maxThumbTop);
-    if (!isThumbDrag) {
-      scrollTerminalVerticalScrollbarToThumbTop(nextThumbTop, metrics);
-    }
-
-    terminalVerticalScrollbarDragRef.current = {
-      originY: event.clientY,
-      originThumbTop: nextThumbTop,
-      maxThumbTop: metrics.maxThumbTop,
-      maxScrollLine: metrics.maxScrollLine,
-    };
-    scrollbar.classList.add('is-visible', 'is-dragging');
-    event.preventDefault();
-    event.stopPropagation();
-  };
-
-  const syncTerminalVerticalScrollbarDrag = (event: MouseEvent) => {
-    const dragState = terminalVerticalScrollbarDragRef.current;
-    if (!dragState) {
-      return;
-    }
-
-    scrollTerminalVerticalScrollbarToThumbTop(
-      dragState.originThumbTop + event.clientY - dragState.originY,
-      dragState,
-    );
-    event.preventDefault();
-    event.stopPropagation();
-  };
-
-  const stopTerminalVerticalScrollbarDrag = () => {
-    terminalVerticalScrollbarDragRef.current = null;
-    terminalVerticalScrollbarRef.current?.classList.remove('is-dragging');
-  };
-
   // 会话切换或缓存重放前只回收 marker（定位信息），不触碰按会话持久保存的稳定行号与时间线。
-  const resetTerminalGutterMarkers = () => {
-    for (const entry of terminalGutterMarkersRef.current) {
-      entry.marker.dispose();
-    }
-    terminalGutterMarkersRef.current = [];
-  };
-
-  // 取（必要时初始化）某会话的稳定逻辑行时间线；只有首次占用新 buffer 行时才追加时间。
-  const ensureTerminalGutterSessionData = (sessionId: string) => {
-    let data = terminalGutterSessionDataRef.current[sessionId];
-    if (!data) {
-      data = { times: [], base: 0 };
-      terminalGutterSessionDataRef.current[sessionId] = data;
-    }
-    return data;
-  };
-
-  // 新逻辑行首次落到屏幕或 scrollback 时追加时间；回车覆盖、光标上移后重画同一行都不能推进编号。
-  const appendTerminalGutterLogicalLine = (sessionId: string, nowMs: number) => {
-    const data = ensureTerminalGutterSessionData(sessionId);
-    data.times.push(nowMs);
-    // 超出上限时从最旧端回收，并累加 base，保证累计序号不回退。
-    if (data.times.length > terminalGutterMaxTrackedLines) {
-      const drop = data.times.length - terminalGutterMaxTrackedLines;
-      data.times.splice(0, drop);
-      data.base += drop;
-    }
-  };
-
-  // 硬换行后光标已落到新的一行，为该行注册一个 marker 作为逻辑行位置锚点。
-  const registerTerminalGutterLine = (nowMs = Date.now()) => {
-    const terminal = terminalRef.current;
-    const sessionId = sessionRef.current?.id;
-    if (!terminal || !sessionId) {
-      return;
-    }
-
-    // 防护：若光标落到的新行是软换行续行（部分 xterm 版本自动折行也会触发 onLineFeed），则不建 marker，
-    // 使 marker 仅对应逻辑行，让续行正确显示为占位符，也避免折行片段重复占用稳定行号。
-    const buffer = terminal.buffer.active;
-    const bufferRow = buffer.baseY + buffer.cursorY;
-    if (buffer.getLine(bufferRow)?.isWrapped) {
-      return;
-    }
-
-    // Docker Compose 等程序会反复“上移光标 + LF”覆盖同一组进度行；已有存活 marker 时必须复用原行号。
-    const existingEntry = terminalGutterMarkersRef.current.find((entry) => entry.marker.line === bufferRow);
-    if (existingEntry) {
-      return;
-    }
-
-    const marker = terminal.registerMarker(0);
-    if (!marker) {
-      return;
-    }
-
-    let logicalNumber: number;
-    if (terminalGutterReplayActiveRef.current) {
-      // 重放期间只建立相对顺序，完成后统一对齐到会话已有累计编号，避免切换会话时重复累加。
-      logicalNumber = terminalGutterReplayNextLogicalNumberRef.current;
-      terminalGutterReplayNextLogicalNumberRef.current += 1;
-    } else {
-      appendTerminalGutterLogicalLine(sessionId, nowMs);
-      logicalNumber = resolveTerminalGutterCounter();
-    }
-    terminalGutterMarkersRef.current.push({ marker, logicalNumber });
-
-    // 缓存重放会同步触发大量换行；超过阈值时惰性回收已被裁剪（line<0）的 marker，避免数组无界增长。
-    const markers = terminalGutterMarkersRef.current;
-    if (markers.length > terminal.rows + terminalScrollbackRowsRef.current + 64) {
-      terminalGutterMarkersRef.current = markers.filter((entry) => entry.marker.line >= 0);
-    }
-  };
-
-  // 缓存重放结束后把存活 marker 从末端对齐到会话累计编号；首次展示的缓存则补齐缺少的稳定行记录。
-  const finishTerminalGutterReplay = (nowMs: number, completedReplay: TerminalReplayState) => {
-    const activeReplay = terminalActiveReplayRef.current;
-    if (
-      !activeReplay
-      || activeReplay.generation !== completedReplay.generation
-      || activeReplay.sessionId !== completedReplay.sessionId
-    ) {
-      return false;
-    }
-
-    terminalActiveReplayRef.current = null;
-    terminalGutterReplayActiveRef.current = false;
-    // 快速切换会话时旧 write 回调即使最后到达，也不能把它的 gutter 数据归到当前会话。
-    if (sessionRef.current?.id !== completedReplay.sessionId) {
-      return false;
-    }
-    if (!completedReplay.sessionId) {
-      return true;
-    }
-    const sessionId = completedReplay.sessionId;
-    const liveEntries = terminalGutterMarkersRef.current.filter((entry) => entry.marker.line >= 0);
-    const data = ensureTerminalGutterSessionData(sessionId);
-    const trackedTotal = data.base + data.times.length;
-    if (trackedTotal < liveEntries.length) {
-      const missingLineCount = liveEntries.length - trackedTotal;
-      for (let index = 0; index < missingLineCount; index += 1) {
-        appendTerminalGutterLogicalLine(sessionId, nowMs);
-      }
-    }
-
-    const totalLogical = Math.max(resolveTerminalGutterCounter(), liveEntries.length);
-    for (let index = 0; index < liveEntries.length; index += 1) {
-      liveEntries[index].logicalNumber = totalLogical - (liveEntries.length - 1 - index);
-    }
-    terminalGutterMarkersRef.current = liveEntries;
-    return true;
-  };
-
-  // 当前会话累计逻辑行数（= 最新一行的编号）。
-  const resolveTerminalGutterCounter = () => {
-    const sessionId = sessionRef.current?.id;
-    const data = sessionId ? terminalGutterSessionDataRef.current[sessionId] : undefined;
-    return data ? data.base + data.times.length : 0;
-  };
-
-  // 行号栏当前需要的像素宽度：按显示项和最大逻辑行号位宽估算，两项都关闭时保留右键命中宽度。
-  const resolveTerminalGutterWidth = () => {
-    if (!gutterShowLineNumberRef.current && !gutterShowTimestampRef.current) {
-      return terminalGutterMinWidthPx;
-    }
-
-    const fontSize = Math.max(terminalGutterMinFontSizePx, terminalFontSizeRef.current * terminalGutterFontScale);
-    const charWidth = fontSize * terminalGutterCharWidthRatio;
-    let charCount = 0;
-    if (gutterShowTimestampRef.current) {
-      charCount += terminalGutterTimestampCharCount;
-    }
-    if (gutterShowLineNumberRef.current) {
-      const maxLogical = resolveTerminalGutterCounter();
-      const digits = Math.max(terminalGutterMinDigits, String(Math.max(1, maxLogical)).length);
-      // 行号和时间戳之间留 1 个字符间距。
-      charCount += digits + (gutterShowTimestampRef.current ? 1 : 0);
-    }
-    return Math.ceil(charCount * charWidth) + terminalGutterHorizontalPaddingPx * 2;
-  };
-
-  // 行号栏通过真正缩小 surface 的宽度来占位（marginLeft + width），而不是加 padding：FitAddon 读的是
-  // 父容器 border-box 宽度、只扣 .xterm 自身 padding，若用容器 padding 占位会导致列数被高估、右侧字符被裁。
-  const applyTerminalGutterWidth = (width: number) => {
-    const container = containerRef.current;
-    if (!container || terminalGutterWidthRef.current === width) {
-      return;
-    }
-    terminalGutterWidthRef.current = width;
-    if (width > 0) {
-      container.style.marginLeft = `${width}px`;
-      container.style.width = `calc(100% - ${width}px)`;
-    } else {
-      container.style.marginLeft = '';
-      container.style.width = '';
-    }
-    // 宽度变化会改变正文可用列宽，主动重排一次终端尺寸，避免自动换行模式下右侧字符被裁剪。
-    scheduleTerminalSizeSync();
-  };
-
-  // 行号栏渲染：按当前可见 buffer 行逐行绘制时间戳与逻辑行号，软换行续行显示占位符，
-  // 光标所在行显示实时时钟。gutter 固定在左侧，横向滚动时不随正文移动。
-  const syncTerminalGutter = (nowMs: number) => {
-    const terminal = terminalRef.current;
-    const container = containerRef.current;
-    const gutter = terminalGutterRef.current;
-    const workspace = container?.parentElement;
-    const screen = terminal?.element?.querySelector<HTMLElement>('.xterm-screen');
-    if (!terminal || !container || !gutter || !workspace || !screen) {
-      return;
-    }
-
-    const showNumber = gutterShowLineNumberRef.current;
-    const showTime = gutterShowTimestampRef.current;
-
-    // 无会话（空态）或本地终端（PowerShell/TUI 不需要时间/行号栏）时收起整条左栏并把宽度归零，
-    // 让 surface 恢复全宽——本地终端的自动换行据此按全宽排版；SSH 会话则有左栏占位、按缩减后的宽度排版。
-    if (!sessionRef.current || sessionRef.current.kind === 'local') {
-      gutter.style.display = 'none';
-      applyTerminalGutterWidth(0);
-      return;
-    }
-
-    const width = resolveTerminalGutterWidth();
-    applyTerminalGutterWidth(width);
-    gutter.style.display = 'block';
-
-    if (terminal.cols <= 0 || terminal.rows <= 0) {
-      return;
-    }
-
-    const workspaceRect = workspace.getBoundingClientRect();
-    const surfaceRect = container.getBoundingClientRect();
-    const screenRect = screen.getBoundingClientRect();
-    const cellHeight = screenRect.height / terminal.rows;
-    const fontSize = Math.max(terminalGutterMinFontSizePx, terminalFontSizeRef.current * terminalGutterFontScale);
-    const buffer = terminal.buffer.active;
-    const firstVisibleRow = buffer.viewportY;
-    const cursorBufferRow = buffer.baseY + buffer.cursorY;
-
-    // 存活 marker 自带稳定逻辑行号；重放完成时已从末端对齐，日常动态覆盖不会再次改号。
-    const liveMarkers = terminalGutterMarkersRef.current.filter((entry) => entry.marker.line >= 0);
-    // 时间线尚未建立（会话刚打开）时用存活 marker 数兜底，避免最旧行推出非正编号。
-    const totalLogical = Math.max(resolveTerminalGutterCounter(), liveMarkers.length);
-    const sessionData = sessionRef.current?.id ? terminalGutterSessionDataRef.current[sessionRef.current.id] : undefined;
-    // buffer 行 -> 逻辑行编号；同一 buffer 行可能有多个历史 marker（reflow 后），取最新（末端）的编号。
-    const logicalNumberByBufferRow = new Map<number, number>();
-    for (let index = 0; index < liveMarkers.length; index += 1) {
-      logicalNumberByBufferRow.set(liveMarkers[index].marker.line, liveMarkers[index].logicalNumber);
-    }
-    const digits = Math.max(terminalGutterMinDigits, String(Math.max(1, totalLogical)).length);
-
-    // 按逻辑编号取该行到达时刻；编号已回收出时间线窗口时返回 undefined（极旧历史行不显示时间）。
-    const resolveLineTime = (logicalNumber: number) => {
-      if (!sessionData) {
-        return undefined;
-      }
-      const timeIndex = logicalNumber - 1 - sessionData.base;
-      return timeIndex >= 0 && timeIndex < sessionData.times.length ? sessionData.times[timeIndex] : undefined;
-    };
-
-    // 当前光标所在“逻辑行”的起始 buffer 行：从光标行向上跳过软换行续行，得到这条逻辑行的第一物理行。
-    let activeLineStartRow = cursorBufferRow;
-    while (activeLineStartRow > 0 && buffer.getLine(activeLineStartRow)?.isWrapped) {
-      activeLineStartRow -= 1;
-    }
-    // 当前逻辑行若还没有落 marker（例如刚新起一行），用累计行数兜底，保证底部当前行始终有编号。
-    const activeLogicalNumber = logicalNumberByBufferRow.get(activeLineStartRow) ?? Math.max(1, totalLogical);
-
-    // gutter 覆盖 surface 左侧外部的占位区（marginLeft 让出的宽度），对齐 xterm 内容顶部与高度。
-    gutter.style.left = `${surfaceRect.left - workspaceRect.left - width}px`;
-    gutter.style.top = `${screenRect.top - workspaceRect.top}px`;
-    gutter.style.width = `${width}px`;
-    gutter.style.height = `${screenRect.height}px`;
-    gutter.style.fontSize = `${fontSize}px`;
-
-    const rows: HTMLDivElement[] = [];
-    for (let i = 0; i < terminal.rows; i += 1) {
-      const bufferRow = firstVisibleRow + i;
-      if (bufferRow >= buffer.length) {
-        break;
-      }
-      const line = buffer.getLine(bufferRow);
-      const logicalNumber = logicalNumberByBufferRow.get(bufferRow);
-      // 只有“当前逻辑行”所覆盖的物理行属于活动行（时间走实时时钟并高亮）；光标下方的空行不算。
-      const isActiveLine = bufferRow >= activeLineStartRow && bufferRow <= cursorBufferRow;
-      const isActiveLineStart = bufferRow === activeLineStartRow;
-
-      const rowElement = document.createElement('div');
-      rowElement.className = 'terminal-gutter-line';
-      rowElement.style.top = `${i * cellHeight}px`;
-      rowElement.style.height = `${cellHeight}px`;
-      if (isActiveLine) {
-        rowElement.classList.add('is-active');
-      }
-
-      if (showTime) {
-        const timeSpan = document.createElement('span');
-        timeSpan.className = 'terminal-gutter-time';
-        // 活动逻辑行起始行显示实时时钟；其余逻辑行按编号显示各自真实到达时刻，软换行续行留空。
-        let arrival: number | undefined;
-        if (isActiveLineStart) {
-          arrival = nowMs;
-        } else if (logicalNumber !== undefined) {
-          arrival = resolveLineTime(logicalNumber);
-        }
-        timeSpan.textContent = arrival !== undefined ? `[${formatTerminalGutterClock(arrival)}]` : '';
-        rowElement.appendChild(timeSpan);
-      }
-
-      if (showNumber) {
-        const numberSpan = document.createElement('span');
-        numberSpan.className = 'terminal-gutter-number';
-        numberSpan.style.minWidth = `${digits}ch`;
-        if (logicalNumber !== undefined) {
-          numberSpan.textContent = String(logicalNumber);
-        } else if (isActiveLineStart) {
-          // 当前逻辑行尚未落 marker 时用兜底编号，保证底部当前行始终有编号。
-          numberSpan.textContent = String(activeLogicalNumber);
-        } else if (line?.isWrapped) {
-          // 软换行续行不占逻辑号，用占位符表示它接续上一行。
-          numberSpan.textContent = terminalGutterWrappedLineSymbol;
-        } else {
-          // 没有 marker 的非续行（例如光标下方的空行）不显示编号。
-          numberSpan.textContent = '';
-        }
-        rowElement.appendChild(numberSpan);
-      }
-
-      rows.push(rowElement);
-    }
-
-    gutter.replaceChildren(...rows);
-  };
-
-  const scheduleTerminalGutterSync = () => {
-    if (terminalGutterFrameRef.current !== null) {
-      return;
-    }
-    terminalGutterFrameRef.current = window.requestAnimationFrame(() => {
-      terminalGutterFrameRef.current = null;
-      syncTerminalGutter(Date.now());
-    });
-  };
-
-  const clearTerminalSelectionOverlay = () => {
-    const overlay = terminalSelectionOverlayRef.current;
-    if (overlay) {
-      overlay.replaceChildren();
-      const container = containerRef.current;
-      if (container) {
-        syncTerminalHighlightOverlaySize(overlay, container);
-      }
-    }
-  };
-
-  // 选区快照只记录用户已经确认过的 xterm 选区；主动清空时同步回收选区层和匹配层。
-  const clearTerminalSelectionSnapshot = (clearVisuals = true) => {
-    terminalSelectionSnapshotRef.current = null;
-    if (!clearVisuals) {
-      return;
-    }
-    clearTerminalSelectionOverlay();
-    clearTerminalMatchOverlay();
-  };
-
-  const captureTerminalSelectionSnapshot = () => {
-    const terminal = terminalRef.current;
-    const selectionPosition = terminal?.getSelectionPosition();
-    if (!terminal || !selectionPosition || !terminal.hasSelection() || !terminalSelectionPositionHasRange(selectionPosition)) {
-      return undefined;
-    }
-
-    const selectionText = terminal.getSelection();
-    if (!selectionText.length) {
-      return undefined;
-    }
-
-    const snapshot: TerminalSelectionSnapshot = {
-      text: selectionText,
-      position: cloneTerminalSelectionPosition(selectionPosition),
-      cols: terminal.cols,
-      sessionId: sessionRef.current?.id,
-    };
-    terminalSelectionSnapshotRef.current = snapshot;
-    return snapshot;
-  };
-
-  const isTerminalSelectionSnapshotUsable = (snapshot: TerminalSelectionSnapshot) => {
-    const terminal = terminalRef.current;
-    if (
-      !terminal ||
-      snapshot.sessionId !== sessionRef.current?.id ||
-      snapshot.cols !== terminal.cols ||
-      !terminalSelectionPositionHasRange(snapshot.position)
-    ) {
-      return false;
-    }
-
-    const bufferedText = readTerminalSelectionTextFromBuffer(terminal, snapshot.position);
-    return Boolean(bufferedText.length) &&
-      normalizeTerminalSelectionSnapshotText(bufferedText) === normalizeTerminalSelectionSnapshotText(snapshot.text);
-  };
-
-  // 滚动/翻页/布局刷新可能让 xterm 短暂丢掉原生选区；快照仍能通过缓冲区文本校验时继续用于重绘。
-  const resolveTerminalSelectionSnapshot = () => {
-    const liveSnapshot = captureTerminalSelectionSnapshot();
-    if (liveSnapshot) {
-      return liveSnapshot;
-    }
-
-    const snapshot = terminalSelectionSnapshotRef.current;
-    if (!snapshot) {
-      return undefined;
-    }
-    if (!isTerminalSelectionSnapshotUsable(snapshot)) {
-      terminalSelectionSnapshotRef.current = null;
-      return undefined;
-    }
-    return snapshot;
-  };
-
-  const restoreTerminalSelectionFromSnapshot = (snapshot: TerminalSelectionSnapshot) => {
-    const terminal = terminalRef.current;
-    if (!terminal || terminal.hasSelection()) {
-      return;
-    }
-
-    const selectionLength = resolveTerminalSelectionLength(snapshot.position, terminal.cols);
-    if (selectionLength <= 0) {
-      return;
-    }
-
-    terminalSelectionRestoreActiveRef.current = true;
-    try {
-      // 恢复 xterm 原生选区，保证右键复制等原有能力不会因为内部 resize/scroll 刷新而丢失。
-      terminal.select(snapshot.position.start.x, snapshot.position.start.y, selectionLength);
-    } finally {
-      terminalSelectionRestoreActiveRef.current = false;
-    }
-  };
-
-  const resolveTerminalHighlightMetrics = () => {
-    const terminal = terminalRef.current;
-    const container = containerRef.current;
-    if (!terminal || !container) {
-      return undefined;
-    }
-    const screen = terminal.element?.querySelector<HTMLElement>('.xterm-screen');
-    if (!screen || terminal.cols <= 0 || terminal.rows <= 0) {
-      return undefined;
-    }
-
-    const containerRect = container.getBoundingClientRect();
-    const screenRect = screen.getBoundingClientRect();
-    const buffer = terminal.buffer.active;
-    const cellWidth = screenRect.width / terminal.cols;
-    const cellHeight = screenRect.height / terminal.rows;
-    const firstVisibleRow = buffer.viewportY;
-    const lastVisibleRow = firstVisibleRow + terminal.rows - 1;
-    return {
-      terminal,
-      container,
-      cellWidth,
-      cellHeight,
-      firstVisibleRow,
-      lastVisibleRow,
-      leftBase: screenRect.left - containerRect.left + container.scrollLeft,
-      topBase: screenRect.top - containerRect.top + container.scrollTop,
-      cornerRadius: Math.min(terminalHighlightCornerRadiusPx, Math.max(2.5, cellHeight * 0.28)),
-    };
-  };
-
-  const terminalRowsToHighlightStrips = (
-    startRow: number,
-    endRow: number,
-    getColumns: (row: number) => { startColumn: number; endColumn: number },
-  ) => {
-    const metrics = resolveTerminalHighlightMetrics();
-    if (!metrics) {
-      return undefined;
-    }
-
-    const strips: TerminalHighlightStrip[] = [];
-    const firstRow = Math.max(startRow, metrics.firstVisibleRow);
-    const lastRow = Math.min(endRow, metrics.lastVisibleRow);
-    for (let row = firstRow; row <= lastRow; row += 1) {
-      const { startColumn, endColumn } = getColumns(row);
-      const safeStartColumn = Math.min(Math.max(startColumn, 0), metrics.terminal.cols);
-      const safeEndColumn = Math.min(Math.max(endColumn, 0), metrics.terminal.cols);
-      if (safeEndColumn <= safeStartColumn) {
-        continue;
-      }
-      const top = metrics.topBase + (row - metrics.firstVisibleRow) * metrics.cellHeight;
-      strips.push({
-        left: metrics.leftBase + safeStartColumn * metrics.cellWidth,
-        top,
-        right: metrics.leftBase + safeEndColumn * metrics.cellWidth,
-        bottom: top + metrics.cellHeight,
-      });
-    }
-
-    return { metrics, strips };
-  };
-
-  const syncTerminalSelectionOverlay = () => {
-    const terminal = terminalRef.current;
-    const container = containerRef.current;
-    const overlay = terminalSelectionOverlayRef.current;
-    if (!terminal || !container || !overlay) {
-      clearTerminalSelectionOverlay();
-      return;
-    }
-
-    const metrics = resolveTerminalHighlightMetrics();
-    const selectionSnapshot = resolveTerminalSelectionSnapshot();
-    if (selectionSnapshot && !terminal.hasSelection()) {
-      restoreTerminalSelectionFromSnapshot(selectionSnapshot);
-    }
-
-    let resolved: { metrics: NonNullable<ReturnType<typeof resolveTerminalHighlightMetrics>>; strips: TerminalHighlightStrip[] } | undefined;
-    if (selectionSnapshot) {
-      resolved = terminalRowsToHighlightStrips(selectionSnapshot.position.start.y, selectionSnapshot.position.end.y, (row) => ({
-        startColumn: row === selectionSnapshot.position.start.y ? selectionSnapshot.position.start.x : 0,
-        endColumn: row === selectionSnapshot.position.end.y ? selectionSnapshot.position.end.x : terminal.cols,
-      }));
-    } else if (metrics) {
-      const containerRect = container.getBoundingClientRect();
-      const strips = Array.from(terminal.element?.querySelectorAll<HTMLElement>('.xterm-selection div') ?? [])
-        .map((selectionBlock) => {
-          const rect = selectionBlock.getBoundingClientRect();
-          return {
-            left: rect.left - containerRect.left + container.scrollLeft,
-            top: rect.top - containerRect.top + container.scrollTop,
-            right: rect.right - containerRect.left + container.scrollLeft,
-            bottom: rect.bottom - containerRect.top + container.scrollTop,
-          };
-        })
-        .filter((strip) => strip.right > strip.left && strip.bottom > strip.top);
-      resolved = { metrics, strips };
-    }
-    if (!resolved) {
-      clearTerminalSelectionOverlay();
-      return;
-    }
-
-    const pathValue = buildTerminalHighlightPath(resolved.strips, resolved.metrics.cornerRadius);
-    const path = pathValue
-      ? createTerminalHighlightPathElement(
-        'terminal-selection-rounded-shape',
-        terminalSelectionHighlightBackground,
-        terminalSelectionHighlightBorder,
-        pathValue,
-      )
-      : undefined;
-    syncTerminalHighlightOverlaySize(overlay, container);
-    overlay.replaceChildren(...(path ? [path] : []));
-  };
-
-  const scheduleTerminalSelectionOverlaySync = () => {
-    if (terminalSelectionOverlayFrameRef.current !== null) {
-      return;
-    }
-
-    terminalSelectionOverlayFrameRef.current = window.requestAnimationFrame(() => {
-      terminalSelectionOverlayFrameRef.current = null;
-      syncTerminalSelectionOverlay();
-    });
-  };
-
-  const stopTerminalSelectionDragSync = () => {
-    terminalSelectionDragActiveRef.current = false;
-    if (terminalSelectionDragFrameRef.current !== null) {
-      window.cancelAnimationFrame(terminalSelectionDragFrameRef.current);
-      terminalSelectionDragFrameRef.current = null;
-    }
-    syncTerminalSelectionOverlay();
-  };
-
-  const scheduleTerminalSelectionDragSync = () => {
-    if (!terminalSelectionDragActiveRef.current || terminalSelectionDragFrameRef.current !== null) {
-      return;
-    }
-
-    terminalSelectionDragFrameRef.current = window.requestAnimationFrame(() => {
-      terminalSelectionDragFrameRef.current = null;
-      syncTerminalSelectionOverlay();
-      scheduleTerminalSelectionDragSync();
-    });
-  };
-
-  // xterm 的 selection change 在拖拽中不一定逐帧触发；鼠标按住时主动同步圆角层，避免临时露出空背景。
-  const startTerminalSelectionDragSync = (event: MouseEvent) => {
-    if (event.button !== 0 || terminalVerticalScrollbarRef.current?.contains(event.target as Node)) {
-      return;
-    }
-    // 新一轮鼠标选区必须从干净快照开始，避免单击空白取消选区后继续显示旧高亮。
-    clearTerminalSelectionSnapshot();
-    terminalSelectionDragActiveRef.current = true;
-    scheduleTerminalSelectionDragSync();
-  };
-
-  const terminalMatchRangeToHighlightStrips = (
-    range: TerminalMatchRange,
-    metrics: NonNullable<ReturnType<typeof resolveTerminalHighlightMetrics>>,
-  ) => {
-    const strips: TerminalHighlightStrip[] = [];
-    let row = range.row;
-    let column = range.col;
-    let remainingSize = range.size;
-    while (remainingSize > 0) {
-      const width = Math.min(Math.max(metrics.terminal.cols - column, 0), remainingSize);
-      if (width > 0 && row >= metrics.firstVisibleRow && row <= metrics.lastVisibleRow) {
-        const top = metrics.topBase + (row - metrics.firstVisibleRow) * metrics.cellHeight;
-        const horizontalGap = Math.min(terminalMatchHighlightGapPx, (width * metrics.cellWidth) / 3);
-        const verticalGap = Math.min(terminalMatchHighlightGapPx, metrics.cellHeight / 4);
-        const isFirstRangeRow = row === range.row;
-        const isLastRangeRow = remainingSize <= width;
-        strips.push({
-          left: metrics.leftBase + column * metrics.cellWidth + horizontalGap,
-          top: top + (isFirstRangeRow ? verticalGap : 0),
-          right: metrics.leftBase + (column + width) * metrics.cellWidth - horizontalGap,
-          bottom: top + metrics.cellHeight - (isLastRangeRow ? verticalGap : 0),
-        });
-      }
-      remainingSize -= width;
-      row += 1;
-      column = 0;
-      if (width <= 0) {
-        break;
-      }
-    }
-    return { metrics, strips };
-  };
-
-  const clearTerminalPromptHighlights = () => {
-    const overlay = terminalPromptHighlightOverlayRef.current;
-    if (!overlay) {
-      return;
-    }
-    overlay.replaceChildren();
-    const container = containerRef.current;
-    if (container) {
-      syncTerminalHighlightOverlaySize(overlay, container);
-    }
-  };
-
-  // 提示符识别发生在 xterm 解析后的普通缓冲区，不依赖原始输出分片；同一逻辑自然覆盖实时 SSH、本地 Shell 与缓存重放。
-  const refreshTerminalPromptHighlights = () => {
-    const terminal = terminalRef.current;
-    const container = containerRef.current;
-    const overlay = terminalPromptHighlightOverlayRef.current;
-    const metrics = resolveTerminalHighlightMetrics();
-    if (
-      !terminal
-      || !container
-      || !overlay
-      || !metrics
-      || terminal.buffer.active.type !== 'normal'
-      || isAiAgentTerminalSessionRef.current
-    ) {
-      clearTerminalPromptHighlights();
-      return;
-    }
-
-    const matches = collectTerminalPromptHighlightMatches(
-      terminal,
-      metrics.firstVisibleRow,
-      metrics.lastVisibleRow + 1,
-    );
-    const colors = terminalPromptHighlightColorsRef.current;
-    const elements: SVGElement[] = [];
-    for (const match of matches) {
-      // 只绘制提示符分段下划线；命令正文、终端底色和背景图片均保持原样。
-      const logicalLine = translateTerminalBufferLineWithWrap(terminal, match.row);
-      for (const segment of match.segments) {
-        const range = resolveTerminalMatchRange(
-          terminal,
-          match.row,
-          logicalLine.offsets,
-          segment.start,
-          segment.end - segment.start,
-        );
-        if (!range) {
-          continue;
-        }
-        const segmentHighlight = terminalMatchRangeToHighlightStrips(range, metrics);
-        for (const strip of segmentHighlight.strips) {
-          const width = Math.max(0, strip.right - strip.left - terminalPromptSegmentHorizontalInsetPx * 2);
-          if (width <= 0) {
-            continue;
-          }
-          const underline = document.createElementNS(terminalHighlightSvgNamespace, 'rect');
-          underline.setAttribute('class', 'terminal-prompt-segment-underline');
-          underline.setAttribute('x', formatTerminalHighlightSvgNumber(strip.left + terminalPromptSegmentHorizontalInsetPx));
-          underline.setAttribute('y', formatTerminalHighlightSvgNumber(strip.bottom - terminalPromptSegmentUnderlineHeightPx));
-          underline.setAttribute('width', formatTerminalHighlightSvgNumber(width));
-          underline.setAttribute('height', `${terminalPromptSegmentUnderlineHeightPx}`);
-          underline.setAttribute('rx', '1');
-          underline.setAttribute('fill', colors.segments[segment.kind]);
-          elements.push(underline);
-        }
-      }
-    }
-
-    syncTerminalHighlightOverlaySize(overlay, container);
-    overlay.replaceChildren(...elements);
-  };
-
-  const scheduleTerminalPromptHighlightRefresh = () => {
-    if (terminalPromptHighlightFrameRef.current !== null) {
-      return;
-    }
-    terminalPromptHighlightFrameRef.current = window.requestAnimationFrame(() => {
-      terminalPromptHighlightFrameRef.current = null;
-      refreshTerminalPromptHighlights();
-    });
-  };
-
-  const refreshTerminalMatchHighlights = () => {
-    const terminal = terminalRef.current;
-    const container = containerRef.current;
-    const overlay = terminalMatchOverlayRef.current;
-    const metrics = resolveTerminalHighlightMetrics();
-    const selectionSnapshot = resolveTerminalSelectionSnapshot();
-    if (!terminal || !container || !overlay || !metrics || !terminalMatchSelectionRef.current || !selectionSnapshot) {
-      clearTerminalMatchOverlay();
-      return;
-    }
-
-    if (!terminal.hasSelection()) {
-      restoreTerminalSelectionFromSnapshot(selectionSnapshot);
-    }
-
-    const term = normalizeTerminalMatchSelection(selectionSnapshot.text);
-    if (!term) {
-      clearTerminalMatchOverlay();
-      return;
-    }
-
-    const buffer = terminal.buffer.active;
-    const firstHighlightedRow = Math.max(0, buffer.viewportY - terminalMatchHighlightOverscanRows);
-    const lastHighlightedRowExclusive = Math.min(
-      buffer.length,
-      buffer.viewportY + terminal.rows + terminalMatchHighlightOverscanRows,
-    );
-    const ranges = collectTerminalMatchRanges(
-      terminal,
-      term,
-      firstHighlightedRow,
-      lastHighlightedRowExclusive,
-      terminalMatchHighlightMaxRanges,
-    );
-
-    const paths: SVGPathElement[] = [];
-    const matchHighlightColors = resolveTerminalMatchHighlightColors(settings.themeMode === 'dark');
-    syncTerminalMatchDecorations(ranges, matchHighlightColors.foreground);
-    for (const range of ranges) {
-      const resolved = terminalMatchRangeToHighlightStrips(range, metrics);
-      if (!resolved.strips.length) {
-        continue;
-      }
-      const pathValue = buildTerminalHighlightPath(resolved.strips, resolved.metrics.cornerRadius);
-      if (pathValue) {
-        paths.push(createTerminalHighlightPathElement(
-          'terminal-match-rounded-shape',
-          matchHighlightColors.background,
-          matchHighlightColors.border,
-          pathValue,
-        ));
-      }
-    }
-
-    syncTerminalHighlightOverlaySize(overlay, container);
-    overlay.replaceChildren(...paths);
-  };
-
-  const scheduleTerminalMatchHighlightRefresh = () => {
-    if (terminalMatchHighlightFrameRef.current !== null) {
-      return;
-    }
-
-    terminalMatchHighlightFrameRef.current = window.requestAnimationFrame(() => {
-      terminalMatchHighlightFrameRef.current = null;
-      refreshTerminalMatchHighlights();
-    });
-  };
+  const {
+    finishTerminalGutterReplay,
+    registerTerminalGutterLine,
+    resetTerminalGutterMarkers,
+    scheduleTerminalGutterSync,
+  } = useTerminalGutterController({
+    containerRef,
+    gutterShowLineNumberRef,
+    gutterShowTimestampRef,
+    scheduleTerminalSizeSync: () => scheduleTerminalSizeSyncRef.current(),
+    sessionRef,
+    terminalActiveReplayRef,
+    terminalFontSizeRef,
+    terminalGutterFrameRef,
+    terminalGutterMarkersRef,
+    terminalGutterRef,
+    terminalGutterReplayActiveRef,
+    terminalGutterReplayNextLogicalNumberRef,
+    terminalGutterSessionDataRef,
+    terminalGutterWidthRef,
+    terminalRef,
+    terminalScrollbackRowsRef,
+  });
 
   // 本地键盘输入和粘贴会触发行编辑回显；记录时间后，后续短时间内的光标移动才允许自动横向跟随。
   const markLocalTerminalInputForCursorFollow = () => {
@@ -1854,6 +784,31 @@ export function TerminalWorkspace({
   // 远端程序定时刷新也会移动 xterm 光标；超过本地输入窗口后不再把它视为需要跟随的编辑光标。
   const hasRecentLocalTerminalInputForCursorFollow = () =>
     performance.now() - lastLocalTerminalInputAtRef.current <= terminalCursorFollowAfterInputMs;
+
+  // 长行布局控制器集中维护按会话高水位、扩列证据和光标跟随帧；工作区只调用布局用例。
+  const {
+    applyTerminalLayoutSize,
+    disposeTerminalLayoutController,
+    resolveTerminalLayoutSize,
+    scheduleTerminalCursorFollow,
+    terminalHorizontalContentColsBySessionRef,
+    terminalHorizontalContentColsRef,
+    terminalHorizontalFullBufferMeasurePendingRef,
+    terminalHorizontalOverflowEvidenceRef,
+    terminalHorizontalPostShrinkCeilingRef,
+  } = useTerminalLayoutController({
+    containerRef,
+    fitAddonRef,
+    hasRecentLocalTerminalInputForCursorFollow,
+    scheduleTerminalSizeSync: () => scheduleTerminalSizeSyncRef.current(),
+    sessionRef,
+    setTerminalHasHorizontalOverflow,
+    syncTerminalAuxiliaryLayerSizes,
+    terminalActiveReplayRef,
+    terminalLineWrapModeRef,
+    terminalLocalInputEditingRef,
+    terminalRef,
+  });
 
   // 会话级渲染选项必须先于缓存重放生效，保证切换普通终端和 AI TUI 时滚屏历史策略一致。
   const applyTerminalSessionBehaviorOptions = () => {
@@ -1877,274 +832,6 @@ export function TerminalWorkspace({
     if (terminal.options.minimumContrastRatio !== terminalMinimumContrastRatioRef.current) {
       terminal.options.minimumContrastRatio = terminalMinimumContrastRatioRef.current;
     }
-  };
-
-  // 横向滚动模式只有在目标列数真正超过可视列数时才扩宽 xterm 元素，避免空会话也出现底部滑块。
-  const applyTerminalElementWidth = (targetCols: number, visibleCols: number) => {
-    const container = containerRef.current;
-    const terminal = terminalRef.current;
-    const terminalElement = terminal?.element;
-    if (!container || !terminal || !terminalElement) {
-      return;
-    }
-
-    const hasHorizontalOverflow = terminalLineWrapModeRef.current === 'horizontal' && targetCols > visibleCols;
-    if (!hasHorizontalOverflow) {
-      terminalElement.style.width = '100%';
-      container.scrollLeft = 0;
-      syncTerminalAuxiliaryLayerSizes();
-      return;
-    }
-
-    const containerWidth = Number.parseFloat(window.getComputedStyle(container).width) || container.clientWidth;
-    const fallbackCellWidth = (terminal.options.fontSize ?? 15) * 0.62;
-    const cellWidth = visibleCols > 0 && containerWidth > 0
-      ? containerWidth / visibleCols
-      : fallbackCellWidth;
-    const targetWidth = Math.ceil(Math.max(containerWidth, targetCols * Math.max(4, cellWidth) + terminalScrollbarReservePx));
-    terminalElement.style.width = `${targetWidth}px`;
-    syncTerminalAuxiliaryLayerSizes();
-  };
-
-  // 横向扩列只接受真实 soft-wrap 作为溢出证据：scp/top 等动态状态行会填满 PTY，但 CR 覆盖行不会产生续行，不能驱动尺寸正反馈。
-  const measureTerminalBufferConfirmedOverflowColumns = () => {
-    const terminal = terminalRef.current;
-    if (!terminal) {
-      return 0;
-    }
-
-    const buffer = terminal.buffer.active;
-    const snapshotColumns = terminal.cols;
-    const measureEntireBuffer = terminalHorizontalFullBufferMeasurePendingRef.current;
-    terminalHorizontalFullBufferMeasurePendingRef.current = false;
-    // 输出到达或显式布局变化时测量当前窗口；缓存重放完成时测量一次全缓冲，竖向滚动本身不触发 resize。
-    const requestedFirstLine = measureEntireBuffer ? 0 : Math.max(0, buffer.viewportY);
-    const requestedLastLine = measureEntireBuffer
-      ? buffer.length
-      : Math.min(buffer.length, requestedFirstLine + terminal.rows);
-    // isWrapped 记录在续行自身；视口切进逻辑行中段时必须向两侧补齐，否则会把真实长行测短。
-    let firstMeasuredLine = requestedFirstLine;
-    while (firstMeasuredLine > 0 && buffer.getLine(firstMeasuredLine)?.isWrapped) {
-      firstMeasuredLine -= 1;
-    }
-    let lastMeasuredLine = requestedLastLine;
-    while (lastMeasuredLine < buffer.length && buffer.getLine(lastMeasuredLine)?.isWrapped) {
-      lastMeasuredLine += 1;
-    }
-
-    let confirmedOverflowColumns = 0;
-    let currentLineColumns = 0;
-    let currentCompletedSegmentColumns = 0;
-    let currentLineStart = firstMeasuredLine;
-    let currentLineHasSoftWrap = false;
-    let currentLineStarted = false;
-    // 只提交与原请求窗口相交、且确实超过本次 xterm 折行边界的完整逻辑行。
-    const commitLogicalLine = (lineEnd: number) => {
-      const intersectsRequestedRange = lineEnd > requestedFirstLine && currentLineStart < requestedLastLine;
-      if (
-        currentLineStarted
-        && intersectsRequestedRange
-        && currentLineHasSoftWrap
-        && currentLineColumns > snapshotColumns
-      ) {
-        confirmedOverflowColumns = Math.max(confirmedOverflowColumns, currentLineColumns);
-      }
-    };
-
-    for (let lineIndex = firstMeasuredLine; lineIndex < lastMeasuredLine; lineIndex += 1) {
-      const line = buffer.getLine(lineIndex);
-      if (!line) {
-        commitLogicalLine(lineIndex);
-        currentLineStarted = false;
-        currentLineColumns = 0;
-        currentCompletedSegmentColumns = 0;
-        currentLineHasSoftWrap = false;
-        continue;
-      }
-
-      const lineColumns = measureTerminalBufferLineContentColumns(line, snapshotColumns);
-      if (line.isWrapped && currentLineStarted) {
-        const previousLine = buffer.getLine(lineIndex - 1);
-        const previousLastCell = previousLine?.getCell(snapshotColumns - 1);
-        const continuationFirstCell = line.getCell(0);
-        // 已有续行说明前一物理段确实走到右边界；仅对“宽字符放不下最后一格”产生的空占位回退 1 列。
-        const hasWideCharacterWrapGap =
-          continuationFirstCell?.getWidth() === 2
-          && !previousLastCell?.getChars().trim();
-        currentCompletedSegmentColumns += Math.max(0, snapshotColumns - (hasWideCharacterWrapGap ? 1 : 0));
-        currentLineColumns = currentCompletedSegmentColumns + lineColumns;
-        currentLineHasSoftWrap = true;
-      } else {
-        commitLogicalLine(lineIndex);
-        currentLineStart = lineIndex;
-        currentLineColumns = lineColumns;
-        currentCompletedSegmentColumns = 0;
-        // scrollback 顶端可能裁掉逻辑行首；保留 isWrapped 证据，但仍要求剩余内容本身超过 snapshotColumns 才扩列。
-        currentLineHasSoftWrap = line.isWrapped;
-        currentLineStarted = true;
-      }
-    }
-    commitLogicalLine(lastMeasuredLine);
-    return confirmedOverflowColumns;
-  };
-
-  // 横向模式只根据已确认的内容溢出提高会话高水位；可视宽度和远端重绘光标都不能反向污染高水位。
-  const resolveHorizontalTerminalColumns = (visibleCols: number) => {
-    const terminal = terminalRef.current;
-    if (!terminalLineWrapModeRef.current || terminalLineWrapModeRef.current !== 'horizontal' || !terminal) {
-      return visibleCols;
-    }
-
-    // 缩窗后的二次测量最多恢复到缩列前宽度，旧的满宽进度帧不能借 reflow 再额外推高一档。
-    const postShrinkCeiling = terminalHorizontalPostShrinkCeilingRef.current;
-    terminalHorizontalPostShrinkCeilingRef.current = null;
-    const confirmedOverflowColumns = measureTerminalBufferConfirmedOverflowColumns();
-    if (confirmedOverflowColumns > terminal.cols) {
-      const previousEvidence = terminalHorizontalOverflowEvidenceRef.current;
-      const currentEdgeOverflow = confirmedOverflowColumns - terminal.cols;
-      const previousEdgeOverflow = previousEvidence
-        ? previousEvidence.contentColumns - previousEvidence.snapshotColumns
-        : 0;
-      const followsPreviousResize = Boolean(
-        previousEvidence
-        && terminal.cols > previousEvidence.snapshotColumns
-        && confirmedOverflowColumns - previousEvidence.contentColumns
-          >= terminal.cols - previousEvidence.snapshotColumns - terminalHorizontalLinePaddingColumns
-        && Math.abs(currentEdgeOverflow - previousEdgeOverflow) <= terminalHorizontalLinePaddingColumns,
-      );
-      const repeatsResponsiveEdge = Boolean(
-        previousEvidence?.widthResponsive
-        && terminal.cols === previousEvidence.snapshotColumns
-        && confirmedOverflowColumns <= previousEvidence.contentColumns + terminalHorizontalLinePaddingColumns,
-      );
-      const isActivelyEditingLocalInput =
-        terminalLocalInputEditingRef.current && hasRecentLocalTerminalInputForCursorFollow();
-      // 紧随 resize 的同幅增长无条件视为尺寸响应；同宽重复帧仅允许真实 Shell 行编辑用后续字符突破。
-      if (followsPreviousResize || (!isActivelyEditingLocalInput && repeatsResponsiveEdge)) {
-        terminalHorizontalOverflowEvidenceRef.current = {
-          // 同一宽度的重复边缘帧固定基准，不随每个字符滑动；真正内容再增长超过余量后仍可恢复扩列。
-          contentColumns: repeatsResponsiveEdge && previousEvidence
-            ? previousEvidence.contentColumns
-            : confirmedOverflowColumns,
-          snapshotColumns: terminal.cols,
-          widthResponsive: true,
-        };
-        return Math.max(visibleCols, terminalHorizontalContentColsRef.current);
-      }
-
-      terminalHorizontalOverflowEvidenceRef.current = {
-        contentColumns: confirmedOverflowColumns,
-        snapshotColumns: terminal.cols,
-        widthResponsive: Boolean(
-          postShrinkCeiling
-          && confirmedOverflowColumns >= postShrinkCeiling - terminalHorizontalLinePaddingColumns,
-        ),
-      };
-      const measuredColumns = Math.min(
-        postShrinkCeiling ?? terminalHorizontalMaxColumns,
-        roundHorizontalColumns(
-          confirmedOverflowColumns + terminalHorizontalLinePaddingColumns,
-          visibleCols,
-        ),
-      );
-      terminalHorizontalContentColsRef.current = Math.max(
-        terminalHorizontalContentColsRef.current,
-        measuredColumns,
-      );
-      const sessionId = sessionRef.current?.id;
-      if (sessionId) {
-        terminalHorizontalContentColsBySessionRef.current[sessionId] = terminalHorizontalContentColsRef.current;
-      }
-    }
-    return Math.max(visibleCols, terminalHorizontalContentColsRef.current);
-  };
-
-  // 横向模式不使用 fitAddon.fit 直接改列数，而是按可视行数 + 动态目标列数手动 resize。
-  const resolveTerminalLayoutSize = (): TerminalLayoutSize | undefined => {
-    const terminal = terminalRef.current;
-    const proposed = fitAddonRef.current?.proposeDimensions();
-    if (!terminal || !proposed) {
-      return undefined;
-    }
-
-    const visibleCols = Math.max(2, proposed.cols);
-    const rows = Math.max(1, proposed.rows);
-    // 横向浏览需要的扩列同时作用于 xterm 渲染层和远端 PTY：readline 只有拿到与 xterm 相同的列宽，
-    // 才能在翻历史命令时按正确的物理行数发送清除序列，避免长命令的多余行/右侧内容残留。
-    const renderCols = terminalLineWrapModeRef.current === 'horizontal'
-      ? resolveHorizontalTerminalColumns(visibleCols)
-      : visibleCols;
-    return { renderCols, remoteCols: renderCols, rows, visibleCols };
-  };
-
-  // 前端渲染尺寸和横向滚动状态集中在这里更新，缓存重放前也可复用以清掉旧宽度。
-  const applyTerminalLayoutSize = (nextLayoutSize: TerminalLayoutSize) => {
-    const terminal = terminalRef.current;
-    if (!terminal) {
-      return;
-    }
-
-    const hasHorizontalOverflow = terminalLineWrapModeRef.current === 'horizontal' && nextLayoutSize.renderCols > nextLayoutSize.visibleCols;
-    // 底部滑块和底部留白只在确实有横向溢出时启用，空会话和普通短输出保持干净画面。
-    setTerminalHasHorizontalOverflow((current) => current === hasHorizontalOverflow ? current : hasHorizontalOverflow);
-    applyTerminalElementWidth(nextLayoutSize.renderCols, nextLayoutSize.visibleCols);
-    const previousColumns = terminal.cols;
-    if (terminal.cols !== nextLayoutSize.renderCols || terminal.rows !== nextLayoutSize.rows) {
-      terminal.resize(nextLayoutSize.renderCols, nextLayoutSize.rows);
-    }
-    applyTerminalElementWidth(nextLayoutSize.renderCols, nextLayoutSize.visibleCols);
-    if (
-      terminalLineWrapModeRef.current === 'horizontal'
-      && !terminalActiveReplayRef.current
-      && nextLayoutSize.renderCols < previousColumns
-    ) {
-      // 缩列本身才会让此前可容纳的静态长行产生 soft-wrap；下一帧复测一次，且回扩不会再次进入该分支。
-      terminalHorizontalPostShrinkCeilingRef.current = previousColumns;
-      scheduleTerminalSizeSync();
-    }
-  };
-
-  // 输入、回显和程序重绘移动光标后，横向模式需要把视口跟到光标并保留右侧余量。
-  const scrollTerminalCursorIntoView = () => {
-    const container = containerRef.current;
-    const terminal = terminalRef.current;
-    if (!container || !terminal || terminalLineWrapModeRef.current !== 'horizontal' || !hasRecentLocalTerminalInputForCursorFollow()) {
-      return;
-    }
-
-    const maxScrollLeft = Math.max(0, container.scrollWidth - container.clientWidth);
-    if (maxScrollLeft <= 0) {
-      return;
-    }
-
-    const proposed = fitAddonRef.current?.proposeDimensions();
-    const visibleCols = Math.max(1, proposed?.cols ?? Math.round(terminal.cols * container.clientWidth / Math.max(container.scrollWidth, 1)));
-    const cellWidth = container.clientWidth / visibleCols;
-    const cursorX = Math.min(Math.max(terminal.buffer.active.cursorX, 0), terminal.cols);
-    const cursorLeft = cursorX * cellWidth;
-    const margin = terminalCursorFollowMarginColumns * cellWidth;
-    const viewportLeft = container.scrollLeft;
-    const viewportRight = viewportLeft + container.clientWidth;
-
-    if (cursorLeft + margin > viewportRight) {
-      container.scrollLeft = Math.min(maxScrollLeft, cursorLeft + margin - container.clientWidth);
-      return;
-    }
-    if (cursorLeft - margin < viewportLeft) {
-      container.scrollLeft = Math.max(0, cursorLeft - margin);
-    }
-  };
-
-  // 光标跟随合并到下一帧执行，避免大段输出时每个字符移动都触发布局计算。
-  const scheduleTerminalCursorFollow = () => {
-    if (terminalLineWrapModeRef.current !== 'horizontal' || cursorFollowFrameRef.current !== null || !hasRecentLocalTerminalInputForCursorFollow()) {
-      return;
-    }
-
-    cursorFollowFrameRef.current = window.requestAnimationFrame(() => {
-      cursorFollowFrameRef.current = null;
-      scrollTerminalCursorIntoView();
-    });
   };
 
   // 远端悬空隐藏光标的自愈:输出空闲后,若仍处于 Shell 主缓冲区且光标被判定为隐藏,补发一次显示序列。
@@ -2510,6 +1197,8 @@ export function TerminalWorkspace({
       syncTerminalSizeToRemote();
     });
   };
+  // 每次渲染都刷新桥接函数，使行号控制器始终使用当前设置与会话状态计算终端尺寸。
+  scheduleTerminalSizeSyncRef.current = scheduleTerminalSizeSync;
 
   useEffect(() => {
     if (!containerRef.current || terminalRef.current) {
@@ -2864,18 +1553,8 @@ export function TerminalWorkspace({
     containerRef.current.addEventListener('mousedown', startTerminalSelectionDragSync, true);
     containerRef.current.addEventListener('scroll', handleTerminalSurfaceScroll);
     verticalScrollbar.addEventListener('mousedown', startTerminalVerticalScrollbarDrag);
-    const handleScrollbarMouseEnter = () => {
-      if (terminalVerticalScrollbarTimeoutRef.current !== null) {
-        window.clearTimeout(terminalVerticalScrollbarTimeoutRef.current);
-        terminalVerticalScrollbarTimeoutRef.current = null;
-      }
-      showTerminalVerticalScrollbar();
-    };
-    const handleScrollbarMouseLeave = () => {
-      hideTerminalVerticalScrollbar();
-    };
-    verticalScrollbar.addEventListener('mouseenter', handleScrollbarMouseEnter);
-    verticalScrollbar.addEventListener('mouseleave', handleScrollbarMouseLeave);
+    verticalScrollbar.addEventListener('mouseenter', handleTerminalVerticalScrollbarMouseEnter);
+    verticalScrollbar.addEventListener('mouseleave', handleTerminalVerticalScrollbarMouseLeave);
     // 每秒刷新一次行号栏，让最底部当前行的时间戳跟随实时时钟走动。
     terminalGutterClockTimerRef.current = window.setInterval(() => {
       // 页面隐藏（最小化/切后台）时跳过纯 UI 的时钟重绘，避免无谓布局与重绘开销；恢复时统一补一次。
@@ -2934,33 +1613,15 @@ export function TerminalWorkspace({
       containerRef.current?.removeEventListener('mousedown', startTerminalSelectionDragSync, true);
       containerRef.current?.removeEventListener('scroll', handleTerminalSurfaceScroll);
       verticalScrollbar.removeEventListener('mousedown', startTerminalVerticalScrollbarDrag);
-      verticalScrollbar.removeEventListener('mouseenter', handleScrollbarMouseEnter);
-      verticalScrollbar.removeEventListener('mouseleave', handleScrollbarMouseLeave);
+      verticalScrollbar.removeEventListener('mouseenter', handleTerminalVerticalScrollbarMouseEnter);
+      verticalScrollbar.removeEventListener('mouseleave', handleTerminalVerticalScrollbarMouseLeave);
       gutter.removeEventListener('contextmenu', handleGutterContextMenu);
       if (resizeFrameRef.current !== null) {
         window.cancelAnimationFrame(resizeFrameRef.current);
         resizeFrameRef.current = null;
       }
-      if (cursorFollowFrameRef.current !== null) {
-        window.cancelAnimationFrame(cursorFollowFrameRef.current);
-        cursorFollowFrameRef.current = null;
-      }
-      if (terminalMatchHighlightFrameRef.current !== null) {
-        window.cancelAnimationFrame(terminalMatchHighlightFrameRef.current);
-        terminalMatchHighlightFrameRef.current = null;
-      }
-      if (terminalPromptHighlightFrameRef.current !== null) {
-        window.cancelAnimationFrame(terminalPromptHighlightFrameRef.current);
-        terminalPromptHighlightFrameRef.current = null;
-      }
-      if (terminalSelectionOverlayFrameRef.current !== null) {
-        window.cancelAnimationFrame(terminalSelectionOverlayFrameRef.current);
-        terminalSelectionOverlayFrameRef.current = null;
-      }
-      if (terminalSelectionDragFrameRef.current !== null) {
-        window.cancelAnimationFrame(terminalSelectionDragFrameRef.current);
-        terminalSelectionDragFrameRef.current = null;
-      }
+      disposeTerminalLayoutController();
+      disposeTerminalHighlightController();
       if (terminalImeCompositionFrameRef.current !== null) {
         window.cancelAnimationFrame(terminalImeCompositionFrameRef.current);
         terminalImeCompositionFrameRef.current = null;
@@ -2969,10 +1630,7 @@ export function TerminalWorkspace({
         window.cancelAnimationFrame(terminalContrastCursorFrameRef.current);
         terminalContrastCursorFrameRef.current = null;
       }
-      if (terminalVerticalScrollbarFrameRef.current !== null) {
-        window.cancelAnimationFrame(terminalVerticalScrollbarFrameRef.current);
-        terminalVerticalScrollbarFrameRef.current = null;
-      }
+      disposeTerminalVerticalScrollbarController();
       if (terminalGutterFrameRef.current !== null) {
         window.cancelAnimationFrame(terminalGutterFrameRef.current);
         terminalGutterFrameRef.current = null;
@@ -2992,8 +1650,6 @@ export function TerminalWorkspace({
       document.removeEventListener('visibilitychange', handleTerminalGutterVisibilityRefresh);
       terminalImeComposingRef.current = false;
       clearTerminalImePromptAnchor();
-      terminalSelectionDragActiveRef.current = false;
-      terminalVerticalScrollbarDragRef.current = null;
       clearTerminalSelectionSnapshot();
       resetTerminalGutterMarkers();
       hideTerminalContrastCursor();
