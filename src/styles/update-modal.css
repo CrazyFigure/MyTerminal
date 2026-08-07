@@ -119,17 +119,6 @@
   color: var(--app-accent, #4f46e5);
 }
 
-.update-modal-error {
-  padding: 10px 12px;
-  border: 1px solid rgba(220, 38, 38, 0.28);
-  border-radius: 8px;
-  background: rgba(254, 226, 226, 0.72);
-  color: #991b1b;
-  font-size: 0.85rem;
-  line-height: 1.5;
-  word-break: break-word;
-}
-
 /* 更新弹窗底部的固定承载容器（包含进度条、错误提示和动作按钮） */
 .update-modal-footer {
   display: flex;

@@ -5,13 +5,7 @@ import type { TranslationKey } from "../../i18n";
 import type { AppSettings, ConnectionProfile } from "../../types";
 import { AgentAutoConnectionTree } from "./AgentAutoConnectionTree";
 
-type ActionFeedback = {
-  kind: "is-success" | "is-error";
-  message: string;
-};
-
 type Props = {
-  actionFeedback?: ActionFeedback;
   actionRunning: boolean;
   bridgeSwitchBusy: boolean;
   connections: ConnectionProfile[];
@@ -31,7 +25,6 @@ type Props = {
 
 // 执行设置围绕 AgentBridge 策略聚合草稿，连接白名单仅在关闭全局自动执行时参与展示和判定。
 export function ExecutionSettingsSection({
-  actionFeedback,
   actionRunning,
   bridgeSwitchBusy,
   connections,
@@ -63,12 +56,6 @@ export function ExecutionSettingsSection({
             {saving ? t("working") : t("saveExecutionSettings")}
           </button>
         </div>
-        {actionFeedback ? (
-          <div className={`sync-action-feedback ${actionFeedback.kind}`}>
-            {actionFeedback.message}
-          </div>
-        ) : null}
-
         <div className="form-grid settings-single-column-grid">
           <div className="agent-toggle-field settings-inline-toggle">
             <span>{t("fieldAgentBridgeAutoExecute")}</span>

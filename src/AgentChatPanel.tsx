@@ -12,6 +12,7 @@ import { backend } from './backend';
 import { AgentChatHistory } from './features/agent/AgentChatHistory';
 import { AgentChatMessages } from './features/agent/AgentChatMessages';
 import { AgentChatOptions } from './features/agent/AgentChatOptions';
+import { FloatingToast } from './shared/ui/FloatingToast';
 import {
   MAX_CONVERSATIONS,
   buildWireHistory,
@@ -545,6 +546,8 @@ export function AgentChatPanel({
         </button>
       </div>
 
+      {error ? <FloatingToast message={error} onDismiss={() => setError(null)} tone="error" /> : null}
+
       {settingsOpen ? (
 <AgentChatOptions
           activeProvider={activeProvider}
@@ -569,7 +572,6 @@ export function AgentChatPanel({
         <div className="sync-action-feedback is-error">{t('agentChatMissingKey')}</div>
       ) : null}
       {notice ? <div className="agent-chat-notice">{notice}</div> : null}
-      {error ? <div className="sync-action-feedback is-error">{error}</div> : null}
 
 <AgentChatMessages
         activeConversationId={activeId}

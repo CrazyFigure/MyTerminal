@@ -19,7 +19,6 @@ type Props = {
   onLoadSystemFonts: () => void;
   onSave: () => void | Promise<unknown>;
   onUpdate: (updater: (settings: AppSettings) => AppSettings) => void;
-  saveMessage: string;
   selectedCjkFontFamily: string;
   selectedLatinFontFamily: string;
   t: (
@@ -42,7 +41,6 @@ export function AppearanceSettingsSection({
   onLoadSystemFonts,
   onSave,
   onUpdate,
-  saveMessage,
   selectedCjkFontFamily,
   selectedLatinFontFamily,
   t,
@@ -428,9 +426,6 @@ export function AppearanceSettingsSection({
       </section>
 
       <div className="modal-actions">
-        {saveMessage ? (
-          <span className="inline-save-feedback">{saveMessage}</span>
-        ) : null}
         <button
           className="primary-button"
           disabled={!hasSettingsChanges}

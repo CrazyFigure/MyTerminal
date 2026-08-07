@@ -3,13 +3,7 @@ import { Download, Eye, EyeOff, RefreshCw, Save, Upload } from "lucide-react";
 import type { TranslationKey } from "../../i18n";
 import type { AppSettings } from "../../types";
 
-type ActionFeedback = {
-  kind: "is-success" | "is-error";
-  message: string;
-};
-
 type Props = {
-  feedback: Record<string, ActionFeedback>;
   hasChanges: boolean;
   onDownload: () => void | Promise<unknown>;
   onExportLocal: () => void | Promise<unknown>;
@@ -31,7 +25,6 @@ type Props = {
 
 // 同步设置分区只呈现 WebDAV 草稿和传输意图；远程调用、备份选择及恢复后的跨域刷新由编排层处理。
 export function SyncSettingsSection({
-  feedback,
   hasChanges,
   onDownload,
   onExportLocal,
@@ -76,21 +69,6 @@ export function SyncSettingsSection({
             </button>
           </div>
         </div>
-        {feedback["test-webdav"] ? (
-          <div
-            className={`sync-action-feedback ${feedback["test-webdav"].kind}`}
-          >
-            {feedback["test-webdav"].message}
-          </div>
-        ) : null}
-        {feedback["save-webdav"] ? (
-          <div
-            className={`sync-action-feedback ${feedback["save-webdav"].kind}`}
-          >
-            {feedback["save-webdav"].message}
-          </div>
-        ) : null}
-
         <div className="form-grid">
           <label className="span-2">
             <span>{t("webdavBaseUrl")}</span>
@@ -163,15 +141,6 @@ export function SyncSettingsSection({
           <p>{t("webdavTransferDesc")}</p>
         </div>
 
-        {feedback["upload-config"] || feedback["download-config"] ? (
-          <div
-            className={`sync-action-feedback ${feedback["upload-config"] ? feedback["upload-config"].kind : feedback["download-config"]?.kind}`}
-          >
-            {feedback["upload-config"]?.message ||
-              feedback["download-config"]?.message}
-          </div>
-        ) : null}
-
         <div className="sync-transfer-actions">
           <button
             className="primary-button"
@@ -202,15 +171,6 @@ export function SyncSettingsSection({
         <div>
           <h3>{t("syncSectionLocal")}</h3>
         </div>
-
-        {feedback["export-local"] || feedback["import-local"] ? (
-          <div
-            className={`sync-action-feedback ${feedback["export-local"] ? feedback["export-local"].kind : feedback["import-local"]?.kind}`}
-          >
-            {feedback["export-local"]?.message ||
-              feedback["import-local"]?.message}
-          </div>
-        ) : null}
 
         <div className="sync-transfer-actions">
           <button

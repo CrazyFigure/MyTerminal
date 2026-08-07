@@ -1905,6 +1905,7 @@ export default function App() {
           setAppUpdateCheckError(null);
         }}
         onDownload={() => void handleAppInstallUpdate()}
+        onErrorDismiss={() => setAppUpdateError(null)}
         onOpenRelease={(url) => openAppExternalLink(url)}
         open={appUpdateModalOpen}
         progress={appUpdateProgress}

@@ -5,6 +5,7 @@
 /* 用 flex 而非固定行数的 grid：错误提示、历史列表都是条件渲染，
    固定 grid-template-rows 会在缺行时把 1fr 分配给输入框，导致消息区被压扁。 */
 .agent-chat-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -916,32 +917,4 @@
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.update-check-result {
-  padding: 8px 10px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  border-radius: 8px;
-  font-size: 0.84rem;
-  word-break: break-word;
-}
-
-.update-check-result.is-update-available {
-  color: #075985;
-  background: rgba(224, 242, 254, 0.74);
-}
-
-.update-check-result.is-up-to-date {
-  color: #166534;
-  background: rgba(220, 252, 231, 0.68);
-}
-
-.update-check-result.is-success {
-  color: #166534;
-  background: rgba(220, 252, 231, 0.68);
-}
-
-.update-check-result.is-error {
-  color: #991b1b;
-  background: rgba(254, 226, 226, 0.72);
 }

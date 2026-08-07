@@ -4,13 +4,7 @@ import type { TranslationKey } from "../../i18n";
 import type { AgentBridgeStatus } from "../../types";
 import { buildAgentMcpConfig } from "./model";
 
-type ActionFeedback = {
-  kind: "is-success" | "is-error";
-  message: string;
-};
-
 type Props = {
-  copyFeedback?: ActionFeedback;
   enabled: boolean;
   onCopyConfig: () => void | Promise<unknown>;
   onEnabledChange: (enabled: boolean) => void | Promise<unknown>;
@@ -25,7 +19,6 @@ type Props = {
 
 // Agent Bridge 分区聚合运行状态、启停意图与接入配置，状态切换事务仍由弹窗编排层负责。
 export function AgentBridgeSettingsSection({
-  copyFeedback,
   enabled,
   onCopyConfig,
   onEnabledChange,
@@ -86,11 +79,6 @@ export function AgentBridgeSettingsSection({
             <Copy size={16} /> {t("copyAgentBridgeConfig")}
           </button>
         </div>
-        {copyFeedback ? (
-          <div className={`sync-action-feedback ${copyFeedback.kind}`}>
-            {copyFeedback.message}
-          </div>
-        ) : null}
         <div className="agent-bridge-code-grid">
           <label className="span-2">
             <span>{t("agentBridgeMcpConfig")}</span>

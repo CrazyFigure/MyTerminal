@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { Download, ExternalLink, X } from 'lucide-react';
 import type { UpdateCheckResult } from './types';
 import type { TranslationKey } from './i18n';
+import { FloatingToast } from './shared/ui/FloatingToast';
 
 export type UpdateDownloadProgress = {
   downloadedBytes: number;
@@ -22,6 +23,7 @@ type UpdateModalProps = {
   t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
   onClose: () => void;
   onDownload: () => void;
+  onErrorDismiss?: () => void;
   onOpenRelease: (url: string) => void;
 };
 
@@ -49,6 +51,7 @@ export function UpdateModal({
   t,
   onClose,
   onDownload,
+  onErrorDismiss,
   onOpenRelease,
 }: UpdateModalProps) {
   const releaseBody = result?.releaseBody;
@@ -140,6 +143,10 @@ export function UpdateModal({
           </button>
         </div>
 
+        {error ? (
+          <FloatingToast message={error} onDismiss={() => onErrorDismiss?.()} tone="error" />
+        ) : null}
+
         <div className="update-modal-body">
           <div className="update-modal-meta">
             <span>{t('releasePublishedAt')}</span>
@@ -162,8 +169,8 @@ export function UpdateModal({
         </div>
 
         <div className="update-modal-footer">
-          {/* 下载进度条与错误提示（置于外层以防在慢速网络或大日志下被滚动遮挡） */}
-          {(downloading || progress || error) && (
+          {/* 下载进度属于持续状态，继续固定在底部；瞬时错误由当前更新弹窗内的悬浮提示承载。 */}
+          {(downloading || progress) && (
             <div className="update-modal-footer-info">
               {downloading || progress ? (
                 <div className="update-modal-progress">
@@ -179,9 +186,6 @@ export function UpdateModal({
                   </div>
                   <div className="update-modal-progress-percent">{progressPercent}%</div>
                 </div>
-              ) : null}
-              {error ? (
-                <div className="update-modal-error">{error}</div>
               ) : null}
             </div>
           )}
