@@ -77,6 +77,7 @@ export function AgentSidebar({
                 settings.agentChatCjkFontFamily || settings.shellCjkFontFamily || settings.shellLatinFontFamily || settings.shellFontFamily,
               )}
               fontSize={settings.agentChatFontSize || settings.shellFontSize}
+              lineHeight={settings.agentChatLineHeight ?? 1.6}
               onApproveRequest={onApproveRequest}
               onRejectRequest={onRejectRequest}
               providers={providers}

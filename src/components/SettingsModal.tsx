@@ -215,6 +215,7 @@ export function SettingsModal({
     () => ({
       fontFamily: buildPreviewFontFamily(draftSettings),
       fontSize: draftSettings.shellFontSize,
+      lineHeight: draftSettings.shellLineHeight ?? 1.18,
       background: draftSettings.terminalBackground,
       color: draftSettings.terminalForeground,
     }),
@@ -228,6 +229,7 @@ export function SettingsModal({
         draftSettings.agentChatCjkFontFamily || configuredCjkFontFamily,
       ),
       fontSize: draftSettings.agentChatFontSize || draftSettings.shellFontSize,
+      lineHeight: draftSettings.agentChatLineHeight ?? 1.6,
     }),
     [configuredCjkFontFamily, configuredLatinFontFamily, draftSettings],
   );
@@ -758,6 +760,7 @@ export function SettingsModal({
                 enabled={draftSettings.agentBridge.enabled}
                 onCopyConfig={copyAgentMcpConfig}
                 onEnabledChange={setAgentBridgeEnabled}
+                onOpenExecutionSettings={() => onTabChange('execution')}
                 status={agentBridgeStatus}
                 switchBusy={agentBridgeSwitchBusy}
                 switchLabel={agentBridgeSwitchLabel}

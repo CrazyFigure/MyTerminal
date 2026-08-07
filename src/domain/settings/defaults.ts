@@ -15,6 +15,8 @@ export const defaultSettings: AppSettings = {
   shellCjkFontFamily: 'Microsoft YaHei UI',
   shellFontFamily: 'JetBrains Mono',
   shellFontSize: 15,
+  // 终端行高沿用历史硬编码值，升级后画面密度保持不变。
+  shellLineHeight: 1.18,
   terminalBackground: '#f7f7f7',
   terminalForeground: '#111111',
   accentColor: '#4f46e5',

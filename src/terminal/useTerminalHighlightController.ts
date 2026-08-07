@@ -19,7 +19,9 @@ import {
   terminalHighlightSvgNamespace,
   terminalMatchHighlightGapPx,
   terminalMatchHighlightMaxRanges,
+  terminalMatchHighlightMaxVerticalGapPx,
   terminalMatchHighlightOverscanRows,
+  terminalMatchHighlightVerticalGapRatio,
   terminalPromptSegmentHorizontalInsetPx,
   terminalPromptSegmentUnderlineHeightPx,
   terminalSelectionHighlightBackground,
@@ -332,7 +334,12 @@ export function useTerminalHighlightController({
       lastVisibleRow,
       leftBase: screenRect.left - containerRect.left + container.scrollLeft,
       topBase: screenRect.top - containerRect.top + container.scrollTop,
-      cornerRadius: Math.min(terminalHighlightCornerRadiusPx, Math.max(2.5, cellHeight * 0.28)),
+      // 最后一项约束半径不超过行高的 40%，防止小字号叠小行高时圆角路径自交。
+      cornerRadius: Math.min(
+        terminalHighlightCornerRadiusPx,
+        Math.max(2.5, cellHeight * 0.28),
+        cellHeight / 2.5,
+      ),
     };
   };
 
@@ -477,7 +484,14 @@ export function useTerminalHighlightController({
       if (width > 0 && row >= metrics.firstVisibleRow && row <= metrics.lastVisibleRow) {
         const top = metrics.topBase + (row - metrics.firstVisibleRow) * metrics.cellHeight;
         const horizontalGap = Math.min(terminalMatchHighlightGapPx, (width * metrics.cellWidth) / 3);
-        const verticalGap = Math.min(terminalMatchHighlightGapPx, metrics.cellHeight / 4);
+        // 垂直内缩按行高等比缩放：小行高时由下限兜住可见间隙，大行高时封顶避免色块贴满整行。
+        const verticalGap = Math.min(
+          terminalMatchHighlightMaxVerticalGapPx,
+          Math.max(
+            terminalMatchHighlightGapPx,
+            metrics.cellHeight * terminalMatchHighlightVerticalGapRatio,
+          ),
+        );
         const isFirstRangeRow = row === range.row;
         const isLastRangeRow = remainingSize <= width;
         strips.push({

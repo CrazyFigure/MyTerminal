@@ -674,7 +674,8 @@ export function TerminalWorkspace({
     const cursorColor = useDarkCursor ? '#111827' : '#f8fafc';
     const outlineColor = useDarkCursor ? 'rgba(248, 250, 252, 0.9)' : 'rgba(17, 24, 39, 0.9)';
     const cursorWidth = Math.max(2, Math.min(3, cellWidth * 0.18));
-    const cursorHeight = Math.max(10, cellHeight * 0.78);
+    // 下限保证小字号下光标仍可见，但绝不超过行高本身，否则会溢出到相邻行。
+    const cursorHeight = Math.max(Math.min(10, cellHeight), cellHeight * 0.78);
     const cursorLeft = screenRect.left - containerRect.left + container.scrollLeft + cursorColumn * cellWidth;
     const cursorTop = screenRect.top - containerRect.top + container.scrollTop + visibleCursorRow * cellHeight;
     const maxLeft = Math.max(0, container.scrollWidth - cursorWidth);
@@ -1215,7 +1216,8 @@ export function TerminalWorkspace({
       fontFamily: terminalFontFamily,
       fontSize: settings.shellFontSize,
       letterSpacing: 0,
-      lineHeight: 1.18,
+      // 行高来自设置；xterm 对小于 1 的行高会直接抛错，异常配置由 normalizer 兜底后再兜一层。
+      lineHeight: settings.shellLineHeight ?? 1.18,
       minimumContrastRatio: terminalMinimumContrastRatioRef.current,
       scrollback: terminalScrollbackRows,
       theme: terminalTheme,
@@ -1803,6 +1805,8 @@ export function TerminalWorkspace({
     // 字体和终端主题变化才重新测量 xterm；背景图适配/透明度只更新底层图片，不能牵动字符画布缩放。
     terminal.options.fontFamily = terminalFontFamily;
     terminal.options.fontSize = settings.shellFontSize;
+    // 行高由 xterm 监听后自动重建画布，自绘高亮依赖同一动画帧重排，不残留旧位置。
+    terminal.options.lineHeight = settings.shellLineHeight ?? 1.18;
     terminal.options.letterSpacing = 0;
     terminal.options.theme = terminalTheme;
     terminalCursorColorRef.current = parseTerminalRgbColor(terminalTheme.cursor);
@@ -1816,7 +1820,7 @@ export function TerminalWorkspace({
       scheduleTerminalContrastCursorSync();
       scheduleTerminalVerticalScrollbarSync();
     });
-  }, [settings.shellFontSize, terminalFontFamily, terminalTheme]);
+  }, [settings.shellFontSize, settings.shellLineHeight, terminalFontFamily, terminalTheme]);
 
   useEffect(() => {
     if (settings.terminalMatchSelection ?? true) {
@@ -1827,11 +1831,11 @@ export function TerminalWorkspace({
     clearTerminalMatchOverlay();
   }, [settings.terminalMatchSelection]);
 
-  // 行号栏显示项、字号或会话类型变化后重算宽度并重绘：本地会话整条左栏隐藏（宽度归零），会改变正文列宽，需重新 fit。
+  // 行号栏显示项、字号、行高或会话类型变化后重算宽度并重绘：本地会话整条左栏隐藏（宽度归零），会改变正文列宽，需重新 fit。
   useEffect(() => {
     scheduleTerminalGutterSync();
     scheduleTerminalSizeSync();
-  }, [gutterShowLineNumber, gutterShowTimestamp, settings.shellFontSize, session?.kind]);
+  }, [gutterShowLineNumber, gutterShowTimestamp, settings.shellFontSize, settings.shellLineHeight, session?.kind]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

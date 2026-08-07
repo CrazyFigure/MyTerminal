@@ -33,6 +33,16 @@ pub(super) fn default_shell_font_size() -> u16 {
     15
 }
 
+// 终端行高倍数，沿用前端历史硬编码值；xterm 对小于 1 的行高会直接抛错。
+pub(super) fn default_shell_line_height() -> f32 {
+    1.18
+}
+
+// AI 对话正文行高倍数，与终端行高相互独立，不跟随终端设置。
+pub(super) fn default_agent_chat_line_height() -> f32 {
+    1.6
+}
+
 pub(super) fn default_runtime_refresh_interval_sec() -> u16 {
     1
 }
@@ -477,6 +487,9 @@ pub struct AppSettings {
     pub shell_font_family: String,
     #[serde(default = "default_shell_font_size")]
     pub shell_font_size: u16,
+    /// 终端行高倍数；前端 normalizer 会把范围夹在 1.0~2.5，防止 xterm 因非法行高抛错。
+    #[serde(default = "default_shell_line_height")]
+    pub shell_line_height: f32,
     /// 右侧 AI 对话英文字体；None 表示跟随终端英文字体，回落由前端解析。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_chat_latin_font_family: Option<String>,
@@ -486,6 +499,9 @@ pub struct AppSettings {
     /// 右侧 AI 对话字体大小（px）；0 表示跟随终端字体大小，回落由前端解析。
     #[serde(default)]
     pub agent_chat_font_size: u16,
+    /// 右侧 AI 对话正文行高倍数；与终端行高独立，没有“跟随终端”语义。
+    #[serde(default = "default_agent_chat_line_height")]
+    pub agent_chat_line_height: f32,
     #[serde(default = "default_terminal_background")]
     pub terminal_background: String,
     #[serde(default = "default_terminal_foreground")]
@@ -547,9 +563,11 @@ impl Default for AppSettings {
             shell_cjk_font_family: default_shell_cjk_font_family(),
             shell_font_family: "JetBrains Mono".into(),
             shell_font_size: 15,
+            shell_line_height: default_shell_line_height(),
             agent_chat_latin_font_family: None,
             agent_chat_cjk_font_family: None,
             agent_chat_font_size: 0,
+            agent_chat_line_height: default_agent_chat_line_height(),
             terminal_background: "#f7f7f7".into(),
             terminal_foreground: "#111111".into(),
             accent_color: "#4f46e5".into(),

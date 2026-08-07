@@ -1,4 +1,4 @@
-import { Copy } from "lucide-react";
+import { Copy, ShieldCheck } from "lucide-react";
 
 import type { TranslationKey } from "../../i18n";
 import type { AgentBridgeStatus } from "../../types";
@@ -8,6 +8,7 @@ type Props = {
   enabled: boolean;
   onCopyConfig: () => void | Promise<unknown>;
   onEnabledChange: (enabled: boolean) => void | Promise<unknown>;
+  onOpenExecutionSettings: () => void;
   status: AgentBridgeStatus | null;
   switchBusy: boolean;
   switchLabel: string;
@@ -22,6 +23,7 @@ export function AgentBridgeSettingsSection({
   enabled,
   onCopyConfig,
   onEnabledChange,
+  onOpenExecutionSettings,
   status,
   switchBusy,
   switchLabel,
@@ -32,9 +34,19 @@ export function AgentBridgeSettingsSection({
       <section
         className={`settings-section-block agent-bridge-control ${switchBusy ? "is-pending" : ""}`}
       >
-        <div className="agent-bridge-control-main">
+        <div className="section-row">
           <div>
             <h3>{t("agentBridgeTitle")}</h3>
+          </div>
+          {/* MCP 页与 AI 助手页共用同一份执行规则，这里只做跳转入口，避免出现第二份可编辑表单。 */}
+          <div className="section-row compact">
+            <button
+              className="secondary-button slim agent-provider-header-action"
+              onClick={onOpenExecutionSettings}
+              type="button"
+            >
+              <ShieldCheck size={14} /> {t("openExecutionSettings")}
+            </button>
           </div>
         </div>
         <div
