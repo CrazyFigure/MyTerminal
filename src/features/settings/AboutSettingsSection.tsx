@@ -3,12 +3,9 @@ import { ExternalLink, RefreshCw } from 'lucide-react';
 import type { TranslationKey } from '../../i18n';
 import type { UpdateCheckResult } from '../../types';
 
-type UpdateFeedback = { kind: 'is-success' | 'is-error'; message: string } | null;
-
 type Props = {
   appVersion: string;
   checking: boolean;
-  feedback: UpdateFeedback;
   formatReleaseTime: (value?: string) => string;
   installing: boolean;
   onCheck: () => void | Promise<unknown>;
@@ -22,7 +19,6 @@ type Props = {
 export function AboutSettingsSection({
   appVersion,
   checking,
-  feedback,
   formatReleaseTime,
   installing,
   onCheck,
@@ -58,14 +54,6 @@ export function AboutSettingsSection({
             </button>
           ) : null}
         </div>
-        {result && !result.updateAvailable ? (
-          <div className="update-check-result is-up-to-date">{t('statusUpdateNotAvailable')}</div>
-        ) : null}
-        {feedback ? (
-          <div className={`update-check-result ${feedback.kind === 'is-success' ? 'is-success' : 'is-error'}`}>
-            {feedback.message}
-          </div>
-        ) : null}
       </section>
     </div>
   );

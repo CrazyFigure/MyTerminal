@@ -5,13 +5,7 @@ import type { TranslationKey } from "../../i18n";
 import type { AgentModel, AgentProtocol, AgentProvider } from "../../types";
 import { agentProtocolUrlSpec, previewAgentRequestUrl } from "./model";
 
-type ActionFeedback = {
-  kind: "is-success" | "is-error";
-  message: string;
-};
-
 type Props = {
-  actionFeedback?: ActionFeedback;
   hasChanges: boolean;
   onAddModel: (providerId: string) => void;
   onAddProvider: () => void;
@@ -36,7 +30,6 @@ type Props = {
 
 // AI 端点分区只编辑端点聚合草稿；协议地址推导和模型列表操作都收敛在此功能边界内。
 export function AgentProviderSettingsSection({
-  actionFeedback,
   hasChanges,
   onAddModel,
   onAddProvider,
@@ -286,12 +279,6 @@ export function AgentProviderSettingsSection({
         ) : (
           <div className="empty-state">{t("agentProvidersEmpty")}</div>
         )}
-
-        {actionFeedback ? (
-          <div className={`sync-action-feedback ${actionFeedback.kind}`}>
-            {actionFeedback.message}
-          </div>
-        ) : null}
 
         <div className="section-row compact">
           <button

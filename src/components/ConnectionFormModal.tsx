@@ -8,6 +8,7 @@ import type { ConnectionDraft, SshJumpHost } from '../types';
 import { CustomSelect } from '../CustomSelect';
 import { collectOrderedGroupPaths, normalizeConnectionGroupPath } from '../app/connectionGroups';
 import { portTextInputProps } from '../app/formControls';
+import { FloatingToast } from '../shared/ui/FloatingToast';
 
 export type ConnectionFormTab = 'basic' | 'jumpHosts' | 'proxy';
 
@@ -97,6 +98,7 @@ export function ConnectionFormModal() {
     showConnectionForm,
     connectionDraft,
     connectionTestResult,
+    clearConnectionTestResult,
     closeConnectionForm,
     updateConnectionDraft,
     saveConnectionDraft,
@@ -109,6 +111,7 @@ export function ConnectionFormModal() {
       showConnectionForm: state.showConnectionForm,
       connectionDraft: state.connectionDraft,
       connectionTestResult: state.connectionTestResult,
+      clearConnectionTestResult: state.clearConnectionTestResult,
       closeConnectionForm: state.closeConnectionForm,
       updateConnectionDraft: state.updateConnectionDraft,
       saveConnectionDraft: state.saveConnectionDraft,
@@ -232,6 +235,14 @@ export function ConnectionFormModal() {
             <X size={18} />
           </button>
         </div>
+
+        {connectionTestResult ? (
+          <FloatingToast
+            message={connectionTestResult.message}
+            onDismiss={clearConnectionTestResult}
+            tone={connectionTestResult.kind}
+          />
+        ) : null}
 
         <div className="tab-list connection-form-tabs">
           {connectionTabs.map((tab) => (
@@ -595,13 +606,8 @@ export function ConnectionFormModal() {
         </div>
 
         <div className="connection-form-feedback">
-          {/* 校验和测试结果固定在同一个反馈行里，避免提示数量变化时打乱弹窗网格高度。 */}
+          {/* 字段校验属于持续可操作指引，继续留在表单底部；测试结果改由弹窗内悬浮提示承载。 */}
           {validationKey ? <p className="field-hint validation-hint">{t(validationKey)}</p> : null}
-          {connectionTestResult ? (
-            <p className={`field-hint connection-test-result ${connectionTestResult.kind === 'error' ? 'is-error' : 'is-success'}`}>
-              {connectionTestResult.message}
-            </p>
-          ) : null}
         </div>
 
         <div className="modal-actions">

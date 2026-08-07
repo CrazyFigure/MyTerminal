@@ -13,10 +13,8 @@ type Props = {
   draftSettings: AppSettings;
   hasDefaultChanges: boolean;
   hasSettingsChanges: boolean;
-  onClearSaveMessage: () => void;
   onSave: () => void | Promise<unknown>;
   onUpdate: (updater: (settings: AppSettings) => AppSettings) => void;
-  saveMessage: string;
   t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
 };
 
@@ -25,10 +23,8 @@ export function ResourceSettingsSection({
   draftSettings,
   hasDefaultChanges,
   hasSettingsChanges,
-  onClearSaveMessage,
   onSave,
   onUpdate,
-  saveMessage,
   t,
 }: Props) {
   return (
@@ -77,10 +73,8 @@ export function ResourceSettingsSection({
         </div>
       </section>
       <div className="modal-actions">
-        {saveMessage ? <span className="inline-save-feedback">{saveMessage}</span> : null}
         <button className="secondary-button resource-settings-reset-button" disabled={!hasDefaultChanges} onClick={() => {
           onUpdate((current) => ({ ...current, ...resourceSettingsDefaults }));
-          onClearSaveMessage();
         }} type="button">
           <RotateCcw size={16} /> {t('resetResourceSettings')}
         </button>

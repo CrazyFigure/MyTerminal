@@ -23,6 +23,7 @@ import { buildConnectionGroupTree, normalizeConnectionGroupPath } from '../app/c
 import { buildPreviewFontFamily } from '../app/fonts';
 import { isTauriRuntime } from '../app/runtime';
 import { translateUpdateCheckError } from '../app/updates';
+import { FloatingToast, type FloatingToastTone } from '../shared/ui/FloatingToast';
 import { BackupSelectorModal } from '../features/settings/BackupSelectorModal';
 import {
   AboutSettingsSection,
@@ -89,13 +90,11 @@ export function SettingsModal({
     })),
   );
   const [revealWebdavPassword, setRevealWebdavPassword] = useState(false);
-  const [settingsSaveMessage, setSettingsSaveMessage] = useState('');
   const [settingsActionRunning, setSettingsActionRunning] = useState('');
   const [draftSettings, setDraftSettings] = useState<AppSettings>(settings);
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [updateCheckResult, setUpdateCheckResult] = useState<UpdateCheckResult | null>(null);
-  const [updateFeedback, setUpdateFeedback] = useState<{ kind: 'is-success' | 'is-error'; message: string } | null>(null);
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
   const [updateDownloadProgress, setUpdateDownloadProgress] = useState<UpdateDownloadProgress | null>(null);
   const [updateModalError, setUpdateModalError] = useState<string | null>(null);
@@ -103,9 +102,13 @@ export function SettingsModal({
   const [updateCheckError, setUpdateCheckError] = useState<string | null>(null);
   const [agentBridgeStatus, setAgentBridgeStatus] = useState<AgentBridgeStatus | null>(null);
   const [agentBridgeTransition, setAgentBridgeTransition] = useState<'starting' | 'stopping' | ''>('');
-  const settingsSaveTimerRef = useRef<number | null>(null);
-  const [actionFeedbackMap, setActionFeedbackMap] = useState<Record<string, { kind: 'is-success' | 'is-error'; message: string }>>({});
-  const actionFeedbackTimerRef = useRef<Record<string, number>>({});
+  // 设置弹窗只保留一个局部提示槽；递增编号保证连续相同文案也会重新启动一秒展示周期。
+  const settingsFeedbackSequenceRef = useRef(0);
+  const [settingsFeedback, setSettingsFeedback] = useState<{
+    id: number;
+    tone: FloatingToastTone;
+    message: string;
+  } | null>(null);
   const [backupSelectorOpen, setBackupSelectorOpen] = useState(false);
   const [backupList, setBackupList] = useState<string[]>([]);
   const backupSelectorResolveRef = useRef<((value: string | null) => void) | null>(null);
@@ -253,23 +256,20 @@ export function SettingsModal({
       return { ...current, agentBridge: { ...current.agentBridge, allowedConnectionIds } };
     });
   };
-  const showSettingsFeedback = (message: string) => {
-    setSettingsSaveMessage(message);
-    if (settingsSaveTimerRef.current !== null) {
-      window.clearTimeout(settingsSaveTimerRef.current);
-    }
-    // 设置反馈只短暂停留，避免把工具面板变成常驻通知区。
-    settingsSaveTimerRef.current = window.setTimeout(() => {
-      setSettingsSaveMessage('');
-      settingsSaveTimerRef.current = null;
-    }, 3000);
+  const showSettingsFeedback = (tone: FloatingToastTone, message: string) => {
+    settingsFeedbackSequenceRef.current += 1;
+    setSettingsFeedback({ id: settingsFeedbackSequenceRef.current, tone, message });
   };
   const persistSettingsWithFeedback = async () => {
-    const saved = await persistSettings(draftSettings);
-    setDraftSettings(saved);
-    void refreshAgentBridgeStatus();
-    showSettingsFeedback(t('statusSettingsSaved'));
-    showActionFeedback('save-webdav', 'is-success', t('statusSettingsSaved'));
+    try {
+      const saved = await persistSettings(draftSettings);
+      setDraftSettings(saved);
+      void refreshAgentBridgeStatus();
+      showSettingsFeedback('success', t('statusSettingsSaved'));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      showSettingsFeedback('error', `${t('statusSettingsFailed')} ${reason}`.trim());
+    }
   };
   const refreshAgentBridgeStatus = async () => {
     try {
@@ -282,22 +282,12 @@ export function SettingsModal({
     }
   };
   const copyAgentMcpConfig = async () => {
-    await writeClipboardText(buildAgentMcpConfig(agentBridgeStatus));
-    showActionFeedback('copy-agent-config', 'is-success', t('statusAgentBridgeConfigCopied'));
-  };
-  const showActionFeedback = (actionKey: string, kind: 'is-success' | 'is-error', message: string) => {
-    setActionFeedbackMap((prev) => ({ ...prev, [actionKey]: { kind, message } }));
-    if (actionFeedbackTimerRef.current[actionKey]) {
-      window.clearTimeout(actionFeedbackTimerRef.current[actionKey]);
+    try {
+      await writeClipboardText(buildAgentMcpConfig(agentBridgeStatus));
+      showSettingsFeedback('success', t('statusAgentBridgeConfigCopied'));
+    } catch (error) {
+      showSettingsFeedback('error', error instanceof Error ? error.message : String(error));
     }
-    actionFeedbackTimerRef.current[actionKey] = window.setTimeout(() => {
-      setActionFeedbackMap((prev) => {
-        const next = { ...prev };
-        delete next[actionKey];
-        return next;
-      });
-      delete actionFeedbackTimerRef.current[actionKey];
-    }, 5000);
   };
 
   const addAgentProvider = () => {
@@ -374,29 +364,20 @@ export function SettingsModal({
       // 基线与草稿同步后，未再次修改时保存按钮恢复禁用。
       setAgentProvidersBaseline(saved);
       onAgentProvidersSaved(saved);
-      showActionFeedback('save-agent-providers', 'is-success', t('statusSettingsSaved'));
+      showSettingsFeedback('success', t('statusSettingsSaved'));
     } catch (error) {
-      showActionFeedback(
-        'save-agent-providers',
-        'is-error',
-        error instanceof Error ? error.message : String(error),
-      );
+      showSettingsFeedback('error', error instanceof Error ? error.message : String(error));
     }
   };
 
   const runSettingsAction = async (actionKey: string, action: () => Promise<void>, successMessage?: string) => {
     setSettingsActionRunning(actionKey);
-    // 清除该按钮的旧反馈，显示 working 状态
-    setActionFeedbackMap((prev) => {
-      const next = { ...prev };
-      delete next[actionKey];
-      return next;
-    });
+    // 新动作开始时清除上一条提示，避免执行中的旧结果被误认为本次动作已经完成。
+    setSettingsFeedback(null);
     try {
       await action();
       const message = successMessage ?? useAppStore.getState().statusMessage;
-      showActionFeedback(actionKey, 'is-success', message);
-      showSettingsFeedback(message);
+      showSettingsFeedback('success', message);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       // 用户主动取消（如下载弹窗点取消），不展示错误提示
@@ -405,8 +386,7 @@ export function SettingsModal({
         return;
       }
       const message = t('statusWebdavActionFailed', { reason });
-      showActionFeedback(actionKey, 'is-error', message);
-      showSettingsFeedback(message);
+      showSettingsFeedback('error', message);
     } finally {
       setSettingsActionRunning('');
     }
@@ -448,7 +428,7 @@ export function SettingsModal({
       if (confirmedStatus) {
         setAgentBridgeStatus(confirmedStatus);
       }
-      showSettingsFeedback(enabled ? t('statusAgentBridgeStarted') : t('statusAgentBridgeStopped'));
+      showSettingsFeedback('success', enabled ? t('statusAgentBridgeStarted') : t('statusAgentBridgeStopped'));
     } catch (error) {
       applyEnabled(previousEnabled);
       const status = await refreshAgentBridgeStatus();
@@ -456,7 +436,7 @@ export function SettingsModal({
         applyEnabled(status.enabled);
       }
       const reason = error instanceof Error ? error.message : String(error);
-      showSettingsFeedback(t('statusAgentBridgeToggleFailed', { reason }));
+      showSettingsFeedback('error', t('statusAgentBridgeToggleFailed', { reason }));
     } finally {
       setAgentBridgeTransition('');
     }
@@ -495,7 +475,7 @@ export function SettingsModal({
   };
   const handleCheckForUpdates = async () => {
     setUpdateChecking(true);
-    setUpdateFeedback(null);
+    setSettingsFeedback(null);
     setUpdateCheckResult(null);
     setUpdateDownloadProgress(null);
     setUpdateCheckError(null);
@@ -520,15 +500,15 @@ export function SettingsModal({
     }
 
     setUpdateInstalling(true);
-    setUpdateFeedback(null);
+    setSettingsFeedback(null);
     setUpdateModalError(null);
     setUpdateDownloadProgress(null);
     try {
       // 安装动作只在用户点击后触发；后端会下载 Release 安装包并启动安装程序。
       const installerPath = await installUpdate(updateCheckResult);
-      // 下载完成且安装器已启动，关闭弹窗并在设置页内保留成功信息。
+      // 下载完成且安装器已启动，关闭更新弹窗，并在它所属的设置弹窗内显示一秒成功提示。
       setUpdateModalOpen(false);
-      setUpdateFeedback({ kind: 'is-success', message: t('statusUpdateInstallStartedWithPath', { path: installerPath }) });
+      showSettingsFeedback('success', t('statusUpdateInstallStartedWithPath', { path: installerPath }));
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       // 用户主动取消（如下载弹窗点取消），不展示错误提示
@@ -630,7 +610,7 @@ export function SettingsModal({
   useEffect(() => {
     if (open) {
       setDraftSettings(settings);
-      setSettingsSaveMessage('');
+      setSettingsFeedback(null);
       setSettingsActionRunning('');
       // 打开设置页时同步定时检测缓存的结果，避免首页已发现更新而关于页仍显示旧版本。
       setUpdateCheckResult(storeUpdateCheckResult);
@@ -656,17 +636,6 @@ export function SettingsModal({
       };
     });
   }, [open, selectedCjkFontFamily, selectedLatinFontFamily, systemFontsLoaded]);
-
-  useEffect(() => {
-    return () => {
-      if (settingsSaveTimerRef.current !== null) {
-        window.clearTimeout(settingsSaveTimerRef.current);
-      }
-      Object.values(actionFeedbackTimerRef.current).forEach((timer) => {
-        window.clearTimeout(timer);
-      });
-    };
-  }, []);
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -721,6 +690,15 @@ export function SettingsModal({
           </button>
         </div>
 
+        {settingsFeedback ? (
+          <FloatingToast
+            key={settingsFeedback.id}
+            message={settingsFeedback.message}
+            onDismiss={() => setSettingsFeedback(null)}
+            tone={settingsFeedback.tone}
+          />
+        ) : null}
+
         <div className="settings-shell">
 <SettingsNavigation activeTab={activeTab} onTabChange={onTabChange} t={t} />
 
@@ -738,7 +716,6 @@ export function SettingsModal({
                 onLoadSystemFonts={loadSystemFontsOnce}
                 onSave={persistSettingsWithFeedback}
                 onUpdate={updateDraftSettings}
-                saveMessage={settingsSaveMessage}
                 selectedCjkFontFamily={selectedCjkFontFamily}
                 selectedLatinFontFamily={selectedLatinFontFamily}
                 t={t}
@@ -751,17 +728,14 @@ export function SettingsModal({
                 draftSettings={draftSettings}
                 hasDefaultChanges={hasResourceSettingsChangesFromDefaults}
                 hasSettingsChanges={hasSettingsChanges}
-                onClearSaveMessage={() => setSettingsSaveMessage('')}
                 onSave={persistSettingsWithFeedback}
                 onUpdate={updateDraftSettings}
-                saveMessage={settingsSaveMessage}
                 t={t}
               />
             ) : null}
 
             {activeTab === 'sync' ? (
 <SyncSettingsSection
-                feedback={actionFeedbackMap}
                 hasChanges={hasSettingsChanges}
                 onDownload={handleDownloadConfig}
                 onExportLocal={handleExportLocalConfig}
@@ -781,7 +755,6 @@ export function SettingsModal({
 
             {activeTab === 'agent' ? (
 <AgentBridgeSettingsSection
-                copyFeedback={actionFeedbackMap['copy-agent-config']}
                 enabled={draftSettings.agentBridge.enabled}
                 onCopyConfig={copyAgentMcpConfig}
                 onEnabledChange={setAgentBridgeEnabled}
@@ -794,7 +767,6 @@ export function SettingsModal({
 
             {activeTab === 'agentChat' ? (
 <AgentProviderSettingsSection
-                actionFeedback={actionFeedbackMap['save-agent-providers']}
                 hasChanges={hasAgentProviderChanges}
                 onAddModel={addAgentModel}
                 onAddProvider={addAgentProvider}
@@ -818,7 +790,6 @@ export function SettingsModal({
 
             {activeTab === 'execution' ? (
 <ExecutionSettingsSection
-                actionFeedback={actionFeedbackMap['save-execution-settings']}
                 actionRunning={Boolean(settingsActionRunning)}
                 bridgeSwitchBusy={agentBridgeSwitchBusy}
                 connections={agentSshConnections}
@@ -838,7 +809,6 @@ export function SettingsModal({
               <AboutSettingsSection
                 appVersion={appVersion}
                 checking={updateChecking}
-                feedback={updateFeedback}
                 formatReleaseTime={formatReleaseTime}
                 installing={updateInstalling}
                 onCheck={handleCheckForUpdates}
@@ -863,6 +833,7 @@ export function SettingsModal({
           setUpdateCheckError(null);
         }}
         onDownload={() => void handleInstallUpdate()}
+        onErrorDismiss={() => setUpdateModalError(null)}
         onOpenRelease={(url) => openExternalLink(url)}
         open={updateModalOpen}
         progress={updateDownloadProgress}
