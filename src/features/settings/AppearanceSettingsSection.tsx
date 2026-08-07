@@ -1,11 +1,14 @@
 import type { CSSProperties } from "react";
-import { Save, Upload } from "lucide-react";
+import { RotateCcw, Save, Upload } from "lucide-react";
 
 import { clamp } from "../../app/layout";
 import { CustomSelect } from "../../CustomSelect";
 import type { TranslationKey } from "../../i18n";
 import type { AppSettings, UiLanguage } from "../../types";
-import { terminalBackgroundFitOptions } from "./model";
+import {
+  appearanceFieldDefaults,
+  terminalBackgroundFitOptions,
+} from "./model";
 
 type Props = {
   agentChatCjkOptions: string[];
@@ -139,17 +142,79 @@ export function AppearanceSettingsSection({
           </div>
           <label>
             <span>{t("fieldFontSize")}</span>
-            <input
-              onChange={(event) =>
-                onUpdate((current) => ({
-                  ...current,
-                  shellFontSize: Number(event.target.value) || 15,
-                }))
-              }
-              onWheel={(event) => event.currentTarget.blur()}
-              type="number"
-              value={draftSettings.shellFontSize}
-            />
+            <div className="field-with-reset">
+              <input
+                onChange={(event) =>
+                  onUpdate((current) => ({
+                    ...current,
+                    shellFontSize:
+                      Number(event.target.value) ||
+                      appearanceFieldDefaults.shellFontSize,
+                  }))
+                }
+                onWheel={(event) => event.currentTarget.blur()}
+                type="number"
+                value={draftSettings.shellFontSize}
+              />
+              <button
+                aria-label={t("resetResourceSettings")}
+                className="icon-button field-reset-button"
+                disabled={
+                  draftSettings.shellFontSize ===
+                  appearanceFieldDefaults.shellFontSize
+                }
+                onClick={() =>
+                  onUpdate((current) => ({
+                    ...current,
+                    shellFontSize: appearanceFieldDefaults.shellFontSize,
+                  }))
+                }
+                title={t("resetResourceSettings")}
+                type="button"
+              >
+                <RotateCcw size={14} />
+              </button>
+            </div>
+          </label>
+          {/* 行高是字号的倍数；xterm 对小于 1 的行高会直接抛错，下限锁死在 1。 */}
+          <label>
+            <span>{t("fieldLineHeight")}</span>
+            <div className="field-with-reset">
+              <input
+                max={2.5}
+                min={1}
+                onChange={(event) =>
+                  onUpdate((current) => ({
+                    ...current,
+                    shellLineHeight:
+                      Number(event.target.value) ||
+                      appearanceFieldDefaults.shellLineHeight,
+                  }))
+                }
+                onWheel={(event) => event.currentTarget.blur()}
+                step={0.05}
+                type="number"
+                value={draftSettings.shellLineHeight}
+              />
+              <button
+                aria-label={t("resetResourceSettings")}
+                className="icon-button field-reset-button"
+                disabled={
+                  draftSettings.shellLineHeight ===
+                  appearanceFieldDefaults.shellLineHeight
+                }
+                onClick={() =>
+                  onUpdate((current) => ({
+                    ...current,
+                    shellLineHeight: appearanceFieldDefaults.shellLineHeight,
+                  }))
+                }
+                title={t("resetResourceSettings")}
+                type="button"
+              >
+                <RotateCcw size={14} />
+              </button>
+            </div>
           </label>
           <div
             className="font-preview-panel span-2"
@@ -217,19 +282,89 @@ export function AppearanceSettingsSection({
           </div>
           <label>
             <span>{t("fieldFontSize")}</span>
-            <input
-              max={48}
-              min={0}
-              onChange={(event) =>
-                onUpdate((current) => ({
-                  ...current,
-                  agentChatFontSize: Number(event.target.value) || 0,
-                }))
-              }
-              onWheel={(event) => event.currentTarget.blur()}
-              type="number"
-              value={draftSettings.agentChatFontSize ?? 0}
-            />
+            <div className="field-with-reset">
+              <input
+                max={48}
+                min={0}
+                onChange={(event) =>
+                  onUpdate((current) => ({
+                    ...current,
+                    agentChatFontSize: Number(event.target.value) || 0,
+                  }))
+                }
+                onWheel={(event) => event.currentTarget.blur()}
+                type="number"
+                value={
+                  draftSettings.agentChatFontSize ??
+                  appearanceFieldDefaults.agentChatFontSize
+                }
+              />
+              <button
+                aria-label={t("resetResourceSettings")}
+                className="icon-button field-reset-button"
+                disabled={
+                  (draftSettings.agentChatFontSize ??
+                    appearanceFieldDefaults.agentChatFontSize) ===
+                  appearanceFieldDefaults.agentChatFontSize
+                }
+                onClick={() =>
+                  onUpdate((current) => ({
+                    ...current,
+                    agentChatFontSize:
+                      appearanceFieldDefaults.agentChatFontSize,
+                  }))
+                }
+                title={t("resetResourceSettings")}
+                type="button"
+              >
+                <RotateCcw size={14} />
+              </button>
+            </div>
+          </label>
+          {/* 对话行高与终端行高相互独立，没有“0 表示跟随”语义；预览面板实时反映基准值效果。 */}
+          <label>
+            <span>{t("fieldLineHeight")}</span>
+            <div className="field-with-reset">
+              <input
+                max={2.5}
+                min={1}
+                onChange={(event) =>
+                  onUpdate((current) => ({
+                    ...current,
+                    agentChatLineHeight:
+                      Number(event.target.value) ||
+                      appearanceFieldDefaults.agentChatLineHeight,
+                  }))
+                }
+                onWheel={(event) => event.currentTarget.blur()}
+                step={0.05}
+                type="number"
+                value={
+                  draftSettings.agentChatLineHeight ??
+                  appearanceFieldDefaults.agentChatLineHeight
+                }
+              />
+              <button
+                aria-label={t("resetResourceSettings")}
+                className="icon-button field-reset-button"
+                disabled={
+                  (draftSettings.agentChatLineHeight ??
+                    appearanceFieldDefaults.agentChatLineHeight) ===
+                  appearanceFieldDefaults.agentChatLineHeight
+                }
+                onClick={() =>
+                  onUpdate((current) => ({
+                    ...current,
+                    agentChatLineHeight:
+                      appearanceFieldDefaults.agentChatLineHeight,
+                  }))
+                }
+                title={t("resetResourceSettings")}
+                type="button"
+              >
+                <RotateCcw size={14} />
+              </button>
+            </div>
           </label>
           {/* 空字体与 0 字号都表示跟随终端设置，老配置升级后对话区观感保持不变。 */}
           <p className="field-hint">{t("agentChatFontSizeHint")}</p>

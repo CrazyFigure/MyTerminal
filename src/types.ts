@@ -177,12 +177,16 @@ export interface AppSettings {
   /** 旧配置兼容字段；保存时会同步为中英文字体组合。 */
   shellFontFamily: string;
   shellFontSize: number;
+  /** 终端行高倍数；xterm 要求 >= 1，本地默认 1.18。 */
+  shellLineHeight: number;
   /** 右侧 AI 对话英文字体；为空表示跟随终端英文字体。 */
   agentChatLatinFontFamily?: string;
   /** 右侧 AI 对话中文字体；为空表示跟随终端中文字体。 */
   agentChatCjkFontFamily?: string;
   /** 右侧 AI 对话字体大小（px）；0 表示跟随终端字体大小。 */
   agentChatFontSize?: number;
+  /** 右侧 AI 对话正文行高倍数；与终端行高相互独立，不跟随终端。 */
+  agentChatLineHeight?: number;
   terminalBackground: string;
   terminalForeground: string;
   accentColor: string;

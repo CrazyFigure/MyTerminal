@@ -29,6 +29,7 @@ export const mockSettings: AppSettings = {
   shellCjkFontFamily: "Microsoft YaHei UI",
   shellFontFamily: "JetBrains Mono",
   shellFontSize: 15,
+  shellLineHeight: 1.18,
   terminalBackground: "#f7f7f7",
   terminalForeground: "#111111",
   accentColor: "#4f46e5",

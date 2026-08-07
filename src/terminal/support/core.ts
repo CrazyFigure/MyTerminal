@@ -167,6 +167,13 @@ export const terminalHighlightBorderWidthPx = 1;
 // 匹配块之间需要有可见间隙；只收缩每个命中块的外边缘，跨行命中内部仍保持连贯。
 export const terminalMatchHighlightGapPx = 1.5;
 
+// 垂直内缩随行高按比例放大，避免大行高下色块贴满整行糊成一片。
+// 系数按默认行高 1.18 + 字号 15（单元格约 17.7px）反推，使默认观感与固定 1.5px 保持一致。
+export const terminalMatchHighlightVerticalGapRatio = 0.085;
+
+// 超大字号下间隙不再继续放大，防止色块被压得过扁。
+export const terminalMatchHighlightMaxVerticalGapPx = 6;
+
 // 提示符各部分只用底部细色条区分，不铺命令行背景，完整保留终端底色与背景图片。
 export const terminalPromptHighlightLightColors: TerminalPromptHighlightColors =
   {

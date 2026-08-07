@@ -145,12 +145,16 @@ pub struct StoredAppSettings {
     pub shell_font_family: String,
     #[serde(default = "default_shell_font_size")]
     pub shell_font_size: u16,
+    #[serde(default = "default_shell_line_height")]
+    pub shell_line_height: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_chat_latin_font_family: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_chat_cjk_font_family: Option<String>,
     #[serde(default)]
     pub agent_chat_font_size: u16,
+    #[serde(default = "default_agent_chat_line_height")]
+    pub agent_chat_line_height: f32,
     #[serde(default = "default_terminal_background")]
     pub terminal_background: String,
     #[serde(default = "default_terminal_foreground")]

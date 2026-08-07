@@ -40,6 +40,18 @@ export const resourceSettingsDefaults = {
   | 'sshKeepaliveIntervalSec'
 >;
 
+// 外观页“重置”按单个字段恢复产品默认值（只改该字段，不影响同区域其它设置）。
+// 终端字号/行高取 defaults.ts 的历史值；AI 对话字号 0 表示跟随终端，行高独立默认 1.6。
+export const appearanceFieldDefaults: Record<
+  'shellFontSize' | 'shellLineHeight' | 'agentChatFontSize' | 'agentChatLineHeight',
+  number
+> = {
+  shellFontSize: 15,
+  shellLineHeight: 1.18,
+  agentChatFontSize: 0,
+  agentChatLineHeight: 1.6,
+};
+
 
 
 

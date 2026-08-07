@@ -1299,6 +1299,30 @@ select:disabled {
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
 }
 
+/* 数值输入框右侧贴一个单字段重置按钮；input 保持 flex 伸缩，按钮固定宽度不被压缩。 */
+.field-with-reset {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.field-with-reset input {
+  flex: 1;
+  min-width: 0;
+}
+
+.field-reset-button {
+  flex: none;
+  width: 30px;
+  height: 30px;
+}
+
+/* 已是默认值时按钮置灰，既提示“无需重置”，也避免制造无意义的草稿改动。 */
+.field-reset-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* 外观页与执行页的数字输入框隐藏右侧增减按钮，配合 onWheel 失焦一起杜绝滚轮误改数值。 */
 .settings-appearance-pane input[type="number"]::-webkit-inner-spin-button,
 .settings-appearance-pane input[type="number"]::-webkit-outer-spin-button,
@@ -3855,10 +3879,6 @@ select:disabled {
 
 .agent-bridge-control.is-pending {
   border-color: rgba(79, 70, 229, 0.24);
-}
-
-.agent-bridge-control-main {
-  display: block;
 }
 
 .agent-bridge-power {

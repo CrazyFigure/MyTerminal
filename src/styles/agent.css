@@ -204,7 +204,8 @@
   background: color-mix(in srgb, var(--app-accent, #4f46e5) 12%, transparent);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  line-height: 1.55;
+  /* 用户消息比正文略紧凑，系数按原值 1.55 / 1.6 反推；变量缺失时 fallback 保持现状。 */
+  line-height: calc(var(--agent-chat-line-height, 1.6) * 0.97);
   font-family: var(--agent-chat-font);
   font-size: var(--agent-chat-font-size);
 }
@@ -222,7 +223,8 @@
   gap: 8px;
   font-family: var(--agent-chat-font);
   font-size: var(--agent-chat-font-size);
-  line-height: 1.6;
+  /* AI 回复正文是行高基准，直接取变量不乘系数。 */
+  line-height: var(--agent-chat-line-height, 1.6);
 }
 
 .md-paragraph {
@@ -321,7 +323,8 @@
   overflow: auto;
   font-family: var(--agent-chat-code-font, var(--agent-chat-font));
   font-size: calc(var(--agent-chat-font-size) * 0.94);
-  line-height: 1.5;
+  /* 代码块按系数 1.5 / 1.6 比正文略紧凑，避免等宽字体在大行高下过度松散。 */
+  line-height: calc(var(--agent-chat-line-height, 1.6) * 0.94);
 }
 
 .md-code-block code {
@@ -475,7 +478,8 @@
   background: none;
   resize: none;
   overflow-y: auto;
-  line-height: 1.5;
+  /* 输入框行高与代码块同系数，保持输入区域紧凑。 */
+  line-height: calc(var(--agent-chat-line-height, 1.6) * 0.94);
   font-family: var(--agent-chat-font);
   font-size: var(--agent-chat-font-size);
 }

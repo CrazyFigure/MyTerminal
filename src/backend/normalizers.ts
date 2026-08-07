@@ -32,6 +32,15 @@ const clampPort = (value: number, fallback = 22) =>
   clampInteger(value, 1, 65535, fallback);
 const clampFontSize = (value: number, fallback = 15) =>
   clampInteger(value, 8, 48, fallback);
+// 行高是小数倍数，不能复用取整的 clampInteger；xterm 对 lineHeight < 1 会直接抛错，下限锁死在 1。
+const clampLineHeight = (value: number | undefined, fallback: number) => {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return fallback;
+  }
+  // 保留两位小数，避免浮点误差写进配置文件。
+  return Math.round(Math.min(2.5, Math.max(1, numericValue)) * 100) / 100;
+};
 const clampRefreshInterval = (value: number, fallback = 1) =>
   clampInteger(value, 1, 60, fallback);
 // 大文件扫描比普通状态刷新更重，最小 5 秒，避免误操作造成连续扫盘。
@@ -165,9 +174,12 @@ export const normalizeSettings = (settings: AppSettings): AppSettings => ({
   ...settings,
   ...normalizeFontPair(settings),
   shellFontSize: clampFontSize(settings.shellFontSize),
+  shellLineHeight: clampLineHeight(settings.shellLineHeight, 1.18),
   // AI 对话字体为空表示跟随终端字体，字号 0 表示跟随终端字号；避免升级后对话区观感突变。
   agentChatLatinFontFamily: trimToUndefined(settings.agentChatLatinFontFamily),
   agentChatCjkFontFamily: trimToUndefined(settings.agentChatCjkFontFamily),
+  // 对话行高与终端行高相互独立，没有“0 表示跟随”的语义，缺省直接回落到正文默认值。
+  agentChatLineHeight: clampLineHeight(settings.agentChatLineHeight, 1.6),
   agentChatFontSize: (() => {
     const value = Math.round(Number(settings.agentChatFontSize));
     if (!Number.isFinite(value) || value <= 0) {

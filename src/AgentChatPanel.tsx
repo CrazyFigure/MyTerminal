@@ -42,6 +42,8 @@ interface AgentChatPanelProps {
   /** AI 对话正文字体族；跟随外观设置中的 AI 对话字体，空配置时回落到终端字体。 */
   fontFamily: string;
   fontSize: number;
+  /** AI 对话正文行高倍数；用户消息、代码块与输入框按固定系数从该基准派生。 */
+  lineHeight: number;
   /** 代码块与工具输出单独使用的终端等宽字体栈，避免比例字体破坏代码对齐。 */
   codeFontFamily: string;
   t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
@@ -58,6 +60,7 @@ export function AgentChatPanel({
   onRejectRequest,
   fontFamily,
   fontSize,
+  lineHeight,
   codeFontFamily,
   t,
 }: AgentChatPanelProps) {
@@ -491,6 +494,8 @@ export function AgentChatPanel({
         {
           '--agent-chat-font': fontFamily,
           '--agent-chat-font-size': `${fontSize}px`,
+          // 行高必须是无单位数值，样式表才能用 calc 按系数派生出合法的行高倍数。
+          '--agent-chat-line-height': `${lineHeight}`,
           '--agent-chat-code-font': codeFontFamily,
         } as CSSProperties
       }
