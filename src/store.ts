@@ -2,6 +2,7 @@ import { create } from 'zustand';
 
 import { backend } from './backend';
 import type { StoreState } from './application/store/contracts';
+import { resolveBoundConnectionId } from './application/store/sessionRuntime';
 import { statusText } from './application/store/status';
 import { createTunnelActions } from './application/store/tunnelActions';
 import {
@@ -14,7 +15,7 @@ import {
   emptyConnectionDraft,
   normalizeLoadedConnection,
 } from './domain/connections/model';
-import { isUsableRemoteSession } from './domain/sessions/model';
+import { createSplitLayout } from './features/terminal/splitLayout';
 import { defaultLocalTerminals, defaultSettings } from './domain/settings/defaults';
 import { emptyTunnelDraft, getTunnelDraftValidationKey } from './domain/tunnels/model';
 import type {
@@ -47,6 +48,9 @@ export const useAppStore = create<StoreState>((set, get) => ({
   editorDocument: undefined,
   activeConnectionId: undefined,
   activeSessionId: undefined,
+  // 分屏布局只存在于运行期：会话本身重启后是否还在无法保证，
+  // 恢复一个指向失效会话的布局反而困惑，因此每次启动都从单格开始。
+  splitLayout: createSplitLayout(),
   activePanel: 'files',
   showConnectionForm: false,
   connectionDraft: emptyConnectionDraft(),
@@ -71,6 +75,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
       tunnels: state.tunnels,
       activeConnectionId,
       activeSessionId,
+      // 启动恢复出的首个会话进入唯一那一格；侧栏与下栏跟随当前聚焦的标签。
+      splitLayout: createSplitLayout(activeSessionId),
       files: [],
       currentRemotePath: activeConnectionId ? '~' : '',
       runtimeOverview: undefined,
@@ -138,12 +144,10 @@ export const useAppStore = create<StoreState>((set, get) => ({
   },
 
   refreshRemoteHistory: async (connectionId) => {
-    const { activeSessionId, sessions } = get();
-    const activeSession = sessions.find((item) => item.id === activeSessionId);
-    const activeRemoteConnectionId = isUsableRemoteSession(activeSession) ? activeSession?.connectionId : undefined;
-    const targetConnectionId = connectionId ?? activeRemoteConnectionId;
-    // 历史刷新只允许针对已打开的当前会话，避免仅选中连接时主动访问远端。
-    if (!targetConnectionId || targetConnectionId !== activeRemoteConnectionId) {
+    const boundConnectionId = resolveBoundConnectionId(get());
+    const targetConnectionId = connectionId ?? boundConnectionId;
+    // 历史同样跟随绑定会话；切分屏焦点不触发重新拉取，也不会清掉已加载的记录。
+    if (!targetConnectionId || targetConnectionId !== boundConnectionId) {
       return;
     }
 
@@ -183,30 +187,28 @@ export const useAppStore = create<StoreState>((set, get) => ({
 
   ...createRemoteFileActions(set, get),
   refreshRuntimeOverview: async () => {
-    const { activeConnectionId, activeSessionId, sessions } = get();
-    const activeSession = sessions.find((item) => item.id === activeSessionId);
-    const activeRemoteConnectionId = isUsableRemoteSession(activeSession) ? activeSession?.connectionId : undefined;
-    // 运行状态只跟随已打开会话刷新；有旧数据时静默替换，无旧数据时用加载态显示刷新动画。
-    if (!activeConnectionId || activeConnectionId !== activeRemoteConnectionId) {
+    // 运行状态跟随绑定会话；点击其他分屏不再清空已加载的指标。
+    const boundConnectionId = resolveBoundConnectionId(get());
+    if (!boundConnectionId) {
       set({ runtimeOverview: undefined, runtimeLoading: false });
       return;
     }
 
-    const requestConnectionId = activeConnectionId;
+    const requestConnectionId = boundConnectionId;
     const requestSeq = ++runtimeOverviewRefreshSeq;
     // 首次加载（还没有任何运行状态数据）才显示动画，定时轮询有旧内容时不打扰。
     if (!get().runtimeOverview) {
       set({ runtimeLoading: true });
     }
     try {
-      const runtimeOverview = await backend.fetchRuntimeOverview(activeConnectionId);
-      if (requestSeq !== runtimeOverviewRefreshSeq || get().activeConnectionId !== requestConnectionId) {
+      const runtimeOverview = await backend.fetchRuntimeOverview(requestConnectionId);
+      if (requestSeq !== runtimeOverviewRefreshSeq || resolveBoundConnectionId(get()) !== requestConnectionId) {
         return;
       }
 
       set({ runtimeOverview, runtimeLoading: false });
     } catch {
-      if (requestSeq !== runtimeOverviewRefreshSeq || get().activeConnectionId !== requestConnectionId) {
+      if (requestSeq !== runtimeOverviewRefreshSeq || resolveBoundConnectionId(get()) !== requestConnectionId) {
         return;
       }
 

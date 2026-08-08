@@ -1,3 +1,4 @@
+import type { SplitDropTarget, SplitLayout } from '../../features/terminal/splitLayout';
 import type {
   AppSettings,
   ConnectionDraft,
@@ -44,6 +45,9 @@ export type StoreState = {
   editorDocument?: EditorDocument;
   activeConnectionId?: string;
   activeSessionId?: string;
+  // 终端区分屏布局；分屏后 activeSessionId 表示「当前获得焦点的那一格」。
+  // 与会话本身一样只存在于运行期，不写入 AppSettings、不参与持久化。
+  splitLayout: SplitLayout;
   activePanel: WorkspacePanel;
   showConnectionForm: boolean;
   connectionDraft: ConnectionDraft;
@@ -81,7 +85,13 @@ export type StoreState = {
   scheduleAutoReconnect: (sessionId: string) => void;
   runAutoReconnect: (sessionId: string) => Promise<void>;
   reorderSessions: (sessionIds: string[]) => void;
+  // 在某个分屏格子内重排它自己的标签顺序；不影响其他格子。
+  reorderPaneSessions: (paneId: string, sessionIds: string[]) => void;
   closeSession: (sessionId: string) => Promise<void>;
+  // 把拖拽中的标签按落点应用到分屏布局（新开格 / 移入某格 / 改变跨度）。
+  applySplitDrop: (target: SplitDropTarget, sessionId: string) => void;
+  // 关闭某一格；四格全满时保留空位，其余情况回收并重排。
+  closeSplitPane: (paneId: string) => void;
   setCommandBuffer: (sessionId: string, value: string) => void;
   acceptSuggestion: (sessionId: string, suggestion: string) => void;
   requestSuggestions: (sessionId: string, connectionId: string | undefined, prefix: string) => Promise<void>;

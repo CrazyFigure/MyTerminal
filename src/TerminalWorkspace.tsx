@@ -5,19 +5,22 @@ import { FitAddon } from '@xterm/addon-fit';
 import { backend } from './backend';
 import { readClipboardText, writeClipboardText } from './clipboard';
 import { translate } from './i18n';
-import { TerminalOutputCache, type TerminalReplayEntry } from './terminalCache';
+import { type TerminalReplayEntry } from './terminalCache';
 import { buildTerminalFontFamily } from './terminalFonts';
 import type { AppSettings, TerminalOutputChunk, TerminalSession } from './types';
 import { useTerminalGutterController } from './terminal/useTerminalGutterController';
 import { useTerminalHighlightController } from './terminal/useTerminalHighlightController';
 import { useTerminalLayoutController } from './terminal/useTerminalLayoutController';
 import { useTerminalVerticalScrollbarController } from './terminal/useTerminalVerticalScrollbarController';
+import {
+  replayTerminalEntries,
+  subscribeTerminalOutput,
+} from './terminal/terminalOutputHub';
 
 import {
   buildTerminalBackgroundImageStyle,
   buildTerminalTheme,
   canAcceptTerminalInput,
-  countTerminalXtVersionQueries,
   findTerminalInverseCursorColumn,
   isRemoteHttpImage,
   isTerminalAiAgentSession,
@@ -47,23 +50,18 @@ import {
   terminalHighlightSvgNamespace,
   terminalManagedCursorInputGraceMs,
   terminalManagedCursorOutputIdleMs,
-  terminalOutputEventName,
   terminalPromptBorderMinCharacters,
   terminalPromptBorderSearchDistanceRows,
   terminalPromptGlyphs,
   terminalPromptHighlightDarkColors,
   terminalPromptHighlightLightColors,
   terminalPromptSearchRows,
-  terminalXtVersionReplyBatchSize,
-  terminalXtVersionResponse,
   type TerminalGutterMarkerEntry,
-  type TerminalGutterSessionData,
   type TerminalPromptAnchor,
   type TerminalPromptRowCache,
   type TerminalReplayDeferredOutput,
   type TerminalReplayState,
   type TerminalRgbColor,
-  type TerminalXtVersionQueryParserState,
 } from './terminal/support';
 
 import '@xterm/xterm/css/xterm.css';
@@ -72,11 +70,10 @@ type Props = {
   session?: TerminalSession;
   settings: AppSettings;
   onTerminalData: (data: string) => void;
-  // 终端能力协商可能来自后台会话，必须携带原始会话 ID 回写，不能误发到当前活动标签。
-  onTerminalProtocolData: (sessionId: string, data: string) => void;
   // 行号栏右键菜单切换显示项后，需要把设置写回并持久化。
   onUpdateSettings: (partial: Partial<AppSettings>) => void;
-  // 当前仍存活的会话 ID 列表；用于关闭标签后显式回收对应的输出缓存与行号时间线。
+  // 当前仍存活的会话 ID 列表；用于回收本实例的按会话渲染状态。
+  // 全局的输出缓存与行号时间线由分屏容器统一回收，不在这里按实例重复执行。
   liveSessionIds: string[];
 };
 
@@ -84,7 +81,6 @@ export function TerminalWorkspace({
   session,
   settings,
   onTerminalData,
-  onTerminalProtocolData,
   onUpdateSettings,
   liveSessionIds,
 }: Props) {
@@ -97,9 +93,8 @@ export function TerminalWorkspace({
   const fitAddonRef = useRef<FitAddon | null>(null);
   // 行号控制器通过稳定引用延迟调用后方定义的尺寸同步函数，避免 Hook 初始化阶段访问未初始化闭包。
   const scheduleTerminalSizeSyncRef = useRef<() => void>(() => undefined);
-  // 终端原始输出改用有界分片缓存：按会话/全局字节封顶、LRU 淘汰，并绑定后端确认的 PTY 尺寸；
-  // 关闭会话时显式回收，既避免长期内存增长，也保证标签切换后动态覆盖行可按原几何重放。
-  const outputCacheRef = useRef(new TerminalOutputCache());
+  // 终端原始输出的分片缓存、协议回包状态机和行号时间线都由 terminalOutputHub 全局持有：
+  // 分屏后本组件会同时挂载多份，这些状态与渲染实例数量无关，绝不能每个实例各存一份。
   // 提示符命令行覆盖层基于 xterm 已解析缓冲区绘制，因此实时输出、标签切换和缓存重放共用同一条路径。
   const terminalContrastCursorRef = useRef<HTMLDivElement | null>(null);
   const terminalContrastCursorFrameRef = useRef<number | null>(null);
@@ -135,11 +130,7 @@ export function TerminalWorkspace({
   const terminalActiveReplayRef = useRef<TerminalReplayState | null>(null);
   const terminalReplayDeferredOutputRef = useRef<TerminalReplayDeferredOutput | null>(null);
   const terminalReplayInputBlockedRef = useRef(false);
-  const terminalXtVersionParserStateBySessionRef = useRef(new Map<string, TerminalXtVersionQueryParserState>());
-  // 按会话持久保存的逻辑行时间线；切换会话不清空，保证历史时间恒定。
-  const terminalGutterSessionDataRef = useRef<Record<string, TerminalGutterSessionData>>({});
   const onTerminalDataRef = useRef(onTerminalData);
-  const onTerminalProtocolDataRef = useRef(onTerminalProtocolData);
   const sessionRef = useRef<TerminalSession | undefined>(session);
   const resizeFrameRef = useRef<number | null>(null);
   // 追踪远端最近一次 DECTCEM 是否把光标设为隐藏,配合空闲看门狗做悬空隐藏光标的自愈。
@@ -316,10 +307,6 @@ export function TerminalWorkspace({
   useEffect(() => {
     onTerminalDataRef.current = onTerminalData;
   }, [onTerminalData]);
-
-  useEffect(() => {
-    onTerminalProtocolDataRef.current = onTerminalProtocolData;
-  }, [onTerminalProtocolData]);
 
   useEffect(() => {
     sessionRef.current = session;
@@ -767,7 +754,6 @@ export function TerminalWorkspace({
     terminalGutterRef,
     terminalGutterReplayActiveRef,
     terminalGutterReplayNextLogicalNumberRef,
-    terminalGutterSessionDataRef,
     terminalGutterWidthRef,
     terminalRef,
     terminalScrollbackRowsRef,
@@ -945,7 +931,7 @@ export function TerminalWorkspace({
         deferredBeforeSnapshot.entries = [];
       }
       const replayEntries = replaySessionId
-        ? outputCacheRef.current.replayEntries(replaySessionId)
+        ? replayTerminalEntries(replaySessionId)
         : [];
 
       // 同一尺寸的相邻分片作为一组送入 xterm；组间等待 write FIFO 落地后再 resize，严格复现输出生成时的 PTY 几何。
@@ -1674,111 +1660,69 @@ export function TerminalWorkspace({
     };
   }, []);
 
+  // 只订阅本实例当前承载的会话；分片的缓存、协议回包和尺寸元数据都已由 Hub 统一处理，
+  // 这里只负责把属于自己的输出写进 xterm。会话切换时重新订阅。
   useEffect(() => {
-    const handleTerminalOutput = (event: Event) => {
-      const chunk = (event as CustomEvent<TerminalOutputChunk>).detail;
-      if (!chunk?.sessionId) {
+    const subscribedSessionId = session?.id;
+    if (!subscribedSessionId) {
+      return undefined;
+    }
+
+    const handleTerminalOutput = (chunk: TerminalOutputChunk, replayEntry: TerminalReplayEntry | undefined) => {
+      // 订阅期间会话可能已被切走（退订前的最后一帧）；沿用原有的会话一致性校验。
+      if (sessionRef.current?.id !== chunk.sessionId) {
         return;
       }
 
-      // 尺寸元数据由后端在 PTY 初建/resize 真正生效后按输出时序发出；缓存后续分片必须先绑定该几何。
-      if (Number.isInteger(chunk.cols) && Number.isInteger(chunk.rows)) {
-        outputCacheRef.current.recordTerminalSize(chunk.sessionId, chunk.cols as number, chunk.rows as number);
-      }
-      if (!chunk.content) {
-        return;
-      }
-
-      // 只扫描后端实时分片并立刻按原会话回包；缓存重放只经过 xterm parser，因此不会重复响应。
-      const queryProgress = countTerminalXtVersionQueries(
-        chunk.content,
-        terminalXtVersionParserStateBySessionRef.current.get(chunk.sessionId) ?? 0,
+      const activeReplay = terminalActiveReplayRef.current;
+      const deferredOutput = terminalReplayDeferredOutputRef.current;
+      const shouldDeferDuringReplay = Boolean(
+        deferredOutput
+        && deferredOutput.sessionId === chunk.sessionId
+        && deferredOutput.generation === terminalReplayGenerationRef.current
+        && (
+          activeReplay?.generation === deferredOutput.generation
+          || terminalReplayInputBlockedRef.current
+        )
       );
-      if (queryProgress.state === 0) {
-        terminalXtVersionParserStateBySessionRef.current.delete(chunk.sessionId);
-      } else {
-        terminalXtVersionParserStateBySessionRef.current.set(chunk.sessionId, queryProgress.state);
-      }
-      let remainingXtVersionReplies = queryProgress.count;
-      while (remainingXtVersionReplies > 0) {
-        // 每批大小固定，异常远端即使连续查询也不能触发一次巨大的 repeat 分配。
-        const replyCount = Math.min(remainingXtVersionReplies, terminalXtVersionReplyBatchSize);
-        onTerminalProtocolDataRef.current(
-          chunk.sessionId,
-          terminalXtVersionResponse.repeat(replyCount),
-        );
-        remainingXtVersionReplies -= replyCount;
-      }
-
-      // 终端输出直接写入 xterm，避免每 80ms 把大字符串塞进 React 状态导致输入、滚动和选区明显卡顿。
-      // 原始输出进有界分片缓存：只累加分片、不整体拼接，超限时按会话/全局上限淘汰最旧分片。
-      const replayEntry = outputCacheRef.current.append(
-        chunk.sessionId,
-        chunk.content,
-        sessionRef.current?.id === chunk.sessionId,
-      );
-
-      if (sessionRef.current?.id === chunk.sessionId) {
-        const activeReplay = terminalActiveReplayRef.current;
-        const deferredOutput = terminalReplayDeferredOutputRef.current;
-        const shouldDeferDuringReplay = Boolean(
-          deferredOutput
-          && deferredOutput.sessionId === chunk.sessionId
-          && deferredOutput.generation === terminalReplayGenerationRef.current
-          && (
-            activeReplay?.generation === deferredOutput.generation
-            || terminalReplayInputBlockedRef.current
-          )
-        );
-        if (shouldDeferDuringReplay && deferredOutput) {
-          // 屏障/重放期间只缓存实时块；快照前的块由 replay 覆盖，快照后的块在 finishReplay 后按原顺序补写。
-          if (replayEntry) {
-            deferredOutput.entries.push(replayEntry);
-          }
-          return;
+      if (shouldDeferDuringReplay && deferredOutput) {
+        // 屏障/重放期间只缓存实时块；快照前的块由 replay 覆盖，快照后的块在 finishReplay 后按原顺序补写。
+        if (replayEntry) {
+          deferredOutput.entries.push(replayEntry);
         }
-        terminalRef.current?.write(chunk.content, () => {
-          // 只有 SSH 横向长行会因新内容扩列；wrap 模式的 Claude 流式帧不能每块都插入无意义的布局测量。
-          if (terminalLineWrapModeRef.current === 'horizontal') {
-            scheduleTerminalSizeSync();
-          }
-          updateTerminalManagedCursorForOutput();
-          syncLocalCursorVisibility();
-          scheduleTerminalCursorRecovery();
-          scheduleTerminalCursorFollow();
-          scheduleTerminalMatchHighlightRefresh();
-          scheduleTerminalPromptHighlightRefresh();
-          scheduleTerminalSelectionOverlaySync();
-          scheduleTerminalImeCompositionAnchorSync();
-          scheduleTerminalContrastCursorSync();
-          scheduleTerminalVerticalScrollbarSync();
-          scheduleTerminalGutterSync();
-        });
+        return;
       }
+      // 终端输出直接写入 xterm，避免每 80ms 把大字符串塞进 React 状态导致输入、滚动和选区明显卡顿。
+      terminalRef.current?.write(chunk.content, () => {
+        // 只有 SSH 横向长行会因新内容扩列；wrap 模式的 Claude 流式帧不能每块都插入无意义的布局测量。
+        if (terminalLineWrapModeRef.current === 'horizontal') {
+          scheduleTerminalSizeSync();
+        }
+        updateTerminalManagedCursorForOutput();
+        syncLocalCursorVisibility();
+        scheduleTerminalCursorRecovery();
+        scheduleTerminalCursorFollow();
+        scheduleTerminalMatchHighlightRefresh();
+        scheduleTerminalPromptHighlightRefresh();
+        scheduleTerminalSelectionOverlaySync();
+        scheduleTerminalImeCompositionAnchorSync();
+        scheduleTerminalContrastCursorSync();
+        scheduleTerminalVerticalScrollbarSync();
+        scheduleTerminalGutterSync();
+      });
     };
 
-    window.addEventListener(terminalOutputEventName, handleTerminalOutput);
-    return () => window.removeEventListener(terminalOutputEventName, handleTerminalOutput);
-  }, []);
+    return subscribeTerminalOutput(subscribedSessionId, handleTerminalOutput);
+  }, [session?.id]);
 
-  // 会话列表变化时（含关闭标签、批量关闭、重连换 ID），显式回收已不存在会话的输出缓存与行号时间线，
-  // 避免关闭过的会话历史一直保留到应用退出。
+  // 会话列表变化时回收本实例的按会话渲染状态。全局的输出缓存、行号时间线和协议状态机
+  // 由分屏容器统一回收：分屏后本组件有多个实例，全局回收只能执行一次。
   useEffect(() => {
     const live = new Set(liveSessionIds);
-    outputCacheRef.current.retain(live);
-    for (const sessionId of Object.keys(terminalGutterSessionDataRef.current)) {
-      if (!live.has(sessionId)) {
-        delete terminalGutterSessionDataRef.current[sessionId];
-      }
-    }
+    // 横向高水位是本实例的渲染状态（同一会话在不同格子里可以有不同宽度），随实例各自回收。
     for (const sessionId of Object.keys(terminalHorizontalContentColsBySessionRef.current)) {
       if (!live.has(sessionId)) {
         delete terminalHorizontalContentColsBySessionRef.current[sessionId];
-      }
-    }
-    for (const sessionId of terminalXtVersionParserStateBySessionRef.current.keys()) {
-      if (!live.has(sessionId)) {
-        terminalXtVersionParserStateBySessionRef.current.delete(sessionId);
       }
     }
   }, [liveSessionIds]);

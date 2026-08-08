@@ -2,6 +2,18 @@
 
 import { backend } from "../../backend";
 import { isUsableRemoteSession } from "../../domain/sessions/model";
+import {
+  activateSessionInPane,
+  applySplitDrop as applySplitDropToLayout,
+  assignSessionToPane,
+  closeSplitPane as closeSplitPaneInLayout,
+  findSplitPaneBySession,
+  removeSessionFromSplitLayout,
+  reorderSessionsInPane as reorderPaneTabs,
+  replaceSessionInSplitLayout,
+  resolveTopLeftPane,
+  type SplitLayout,
+} from "../../features/terminal/splitLayout";
 import type { LocalTerminalProfile, TerminalSession } from "../../types";
 import { clearQueuedTerminalInput } from "../terminal/inputQueue";
 import type { StoreGet, StoreSet, StoreState } from "./contracts";
@@ -26,9 +38,59 @@ type LifecycleActionKeys =
   | "scheduleAutoReconnect"
   | "runAutoReconnect"
   | "reorderSessions"
-  | "closeSession";
+  | "reorderPaneSessions"
+  | "closeSession"
+  | "applySplitDrop"
+  | "closeSplitPane";
 
 export type SessionLifecycleActions = Pick<StoreState, LifecycleActionKeys>;
+
+// 侧栏与下栏的数据字段（文件树、运行状态、当前路径）跟随当前聚焦的标签：点到哪一格，面板跟到哪一格。
+// 切到同一台机器的其它标签时保留旧内容，避免整块回退成空白再重拉；只有真正换了连接才清空。
+const panelFieldsForFocusedSession = (
+  state: StoreState,
+  nextSession: TerminalSession | undefined,
+) => {
+  const keepCurrentFiles = Boolean(
+    nextSession &&
+    nextSession.kind !== "local" &&
+    nextSession.connectionId === state.activeConnectionId,
+  );
+  // 只有换到别的连接且需要拉取远端时才进入加载态；保留旧内容时不显示动画。
+  const willRefreshRemote = isUsableRemoteSession(nextSession);
+  return {
+    runtimeOverview: keepCurrentFiles ? state.runtimeOverview : undefined,
+    runtimeLoading: willRefreshRemote && !keepCurrentFiles,
+    files: keepCurrentFiles ? state.files : [],
+    filesLoading: willRefreshRemote && !keepCurrentFiles,
+    currentRemotePath:
+      nextSession?.kind === "local" ? "" : (nextSession?.cwd ?? ""),
+  };
+};
+
+// 新开/切换到某个会话时，它要落进「当前聚焦的那一格」——即原本承载 activeSessionId 的格子；
+// 找不到（首次启动、上一个会话已关闭）时落进左上角。已经在某一格里的会话保持原位，不搬动。
+// 返回值只含布局相关字段，供各生命周期分支展开进 set()。
+const focusSessionInLayout = (
+  state: StoreState,
+  sessionId: string,
+): { splitLayout: SplitLayout } => {
+  const existingPane = findSplitPaneBySession(state.splitLayout, sessionId);
+  if (existingPane) {
+    // 会话已在某格里：只把它提为该格的激活 tab，不搬格子、不改其他格。
+    return { splitLayout: activateSessionInPane(state.splitLayout, existingPane.id, sessionId) };
+  }
+
+  const focusedPane = state.activeSessionId
+    ? findSplitPaneBySession(state.splitLayout, state.activeSessionId)
+    : undefined;
+  const targetPane = focusedPane ?? resolveTopLeftPane(state.splitLayout);
+  return {
+    splitLayout: targetPane
+      ? assignSessionToPane(state.splitLayout, targetPane.id, sessionId)
+      : state.splitLayout,
+  };
+};
 
 // 生命周期工厂封装会话状态机和有限自动重连，输入输出动作通过 Store 契约与其协作。
 export const createSessionLifecycleActions = (
@@ -42,22 +104,11 @@ export const createSessionLifecycleActions = (
             (item) => item.connectionId === activeConnectionId,
           )
         : undefined;
-      const keepCurrentFiles = Boolean(
-        matchedSession &&
-        matchedSession.connectionId === state.activeConnectionId,
-      );
-      // 切到同一连接的其它会话时保留运行状态/文件旧内容，避免整块回退成空白；只有真正换连接才清空。
-      const willRefreshRemote = isUsableRemoteSession(matchedSession);
 
       return {
         activeConnectionId,
         activeSessionId: matchedSession?.id,
-        runtimeOverview: keepCurrentFiles ? state.runtimeOverview : undefined,
-        // 只有换到别的连接且需要拉取远端时才进入加载态显示刷新动画；保留旧内容时不显示动画。
-        runtimeLoading: willRefreshRemote && !keepCurrentFiles,
-        files: keepCurrentFiles ? state.files : [],
-        filesLoading: willRefreshRemote && !keepCurrentFiles,
-        currentRemotePath: matchedSession?.cwd ?? "",
+        ...panelFieldsForFocusedSession(state, matchedSession),
       };
     }),
   selectSession: (activeSessionId) =>
@@ -65,25 +116,20 @@ export const createSessionLifecycleActions = (
       const matchedSession = activeSessionId
         ? state.sessions.find((item) => item.id === activeSessionId)
         : undefined;
-      const keepCurrentFiles = Boolean(
-        matchedSession &&
-        matchedSession.kind !== "local" &&
-        matchedSession.connectionId === state.activeConnectionId,
-      );
-      const willRefreshRemote = isUsableRemoteSession(matchedSession);
+      // 点击标签时，会话进入当前聚焦的那一格；若它已经在某一格里则只是切换焦点，不搬动位置。
+      const layout = activeSessionId
+        ? focusSessionInLayout(state, activeSessionId)
+        : undefined;
 
       return {
         activeSessionId,
+        ...layout,
         activeConnectionId:
           matchedSession?.kind === "local"
             ? undefined
             : matchedSession?.connectionId,
-        runtimeOverview: keepCurrentFiles ? state.runtimeOverview : undefined,
-        runtimeLoading: willRefreshRemote && !keepCurrentFiles,
-        files: keepCurrentFiles ? state.files : [],
-        filesLoading: willRefreshRemote && !keepCurrentFiles,
-        currentRemotePath:
-          matchedSession?.kind === "local" ? "" : (matchedSession?.cwd ?? ""),
+        // 侧栏与下栏跟随焦点：点到哪一格，面板就换到那台机器。
+        ...panelFieldsForFocusedSession(state, matchedSession),
       };
     }),
 
@@ -119,12 +165,15 @@ export const createSessionLifecycleActions = (
       }
       const session = await backend.openSession(connectionId);
       const nextSession = { ...session, title: connection.name };
-      set((state) => ({
-        loading: false,
-        sessions: [
+      set((state) => {
+        const nextSessions = [
           ...state.sessions.filter((item) => item.id !== nextSession.id),
           nextSession,
-        ],
+        ];
+        return {
+        loading: false,
+        sessions: nextSessions,
+        ...focusSessionInLayout(state, nextSession.id),
         activeSessionId: nextSession.id,
         activeConnectionId: connectionId,
         statusMessage: statusText(state.settings, "statusSessionReady", {
@@ -136,7 +185,8 @@ export const createSessionLifecycleActions = (
         // 新开会话即将拉取远端数据，先点亮加载动画，等状态事件触发的刷新完成后自动熄灭。
         filesLoading: true,
         runtimeLoading: true,
-      }));
+        };
+      });
       // SSH 握手在后端后台线程完成；连接状态事件回来后再刷新文件、运行状态和首屏输出。
       void get().pollTerminalOutputs(nextSession.id);
     } catch (error) {
@@ -199,13 +249,16 @@ export const createSessionLifecycleActions = (
       });
       const session = await backend.openLocalTerminal(profile);
       const localTerminals = await backend.loadLocalTerminals();
-      set((state) => ({
-        loading: false,
-        localTerminals,
-        sessions: [
+      set((state) => {
+        const nextSessions = [
           ...state.sessions.filter((item) => item.id !== session.id),
           session,
-        ],
+        ];
+        return {
+        loading: false,
+        localTerminals,
+        sessions: nextSessions,
+        ...focusSessionInLayout(state, session.id),
         activeSessionId: session.id,
         activeConnectionId: undefined,
         files: [],
@@ -218,7 +271,8 @@ export const createSessionLifecycleActions = (
         statusMessage: statusText(state.settings, "statusLocalTerminalOpened", {
           title: session.title,
         }),
-      }));
+        };
+      });
       void get().pollTerminalOutputs(session.id);
     } catch (error) {
       set({
@@ -291,10 +345,13 @@ export const createSessionLifecycleActions = (
         });
         const openedSession = await backend.openLocalTerminal(profile);
         const localTerminals = await backend.loadLocalTerminals();
-        set((current) => ({
+        set((current) => {
+          const nextSessions = placeNextToSource(current, openedSession);
+          return {
           loading: false,
           localTerminals,
-          sessions: placeNextToSource(current, openedSession),
+          sessions: nextSessions,
+          ...focusSessionInLayout(current, openedSession.id),
           activeSessionId: openedSession.id,
           activeConnectionId: undefined,
           files: [],
@@ -309,7 +366,8 @@ export const createSessionLifecycleActions = (
             "statusLocalTerminalOpened",
             { title: openedSession.title },
           ),
-        }));
+          };
+        });
         void get().pollTerminalOutputs(openedSession.id);
       } catch (error) {
         set({
@@ -336,9 +394,12 @@ export const createSessionLifecycleActions = (
       });
       const openedSession = await backend.openSession(connection.id);
       const nextSession = { ...openedSession, title: connection.name };
-      set((current) => ({
+      set((current) => {
+        const nextSessions = placeNextToSource(current, nextSession);
+        return {
         loading: false,
-        sessions: placeNextToSource(current, nextSession),
+        sessions: nextSessions,
+        ...focusSessionInLayout(current, nextSession.id),
         activeSessionId: nextSession.id,
         activeConnectionId: connection.id,
         files: [],
@@ -350,7 +411,8 @@ export const createSessionLifecycleActions = (
         statusMessage: statusText(current.settings, "statusSessionReady", {
           name: connection.name,
         }),
-      }));
+        };
+      });
       void get().pollTerminalOutputs(nextSession.id);
     } catch (error) {
       set((current) => ({
@@ -494,9 +556,17 @@ export const createSessionLifecycleActions = (
         delete nextCommandBuffers[sessionId];
         delete nextSuggestions[sessionId];
 
+        // 重连换了会话 ID，但用户看到的还是同一个终端：格子必须原地续上，
+        // 否则该格会被当成"会话消失"而回收，布局在重连后莫名变化。
+        const splitLayout = replaceSessionInSplitLayout(
+          current.splitLayout,
+          sessionId,
+          nextSession.id,
+        );
         return {
           loading: false,
           sessions: nextSessions,
+          splitLayout,
           activeSessionId: nextSession.id,
           activeConnectionId: connection.id,
           commandBuffers: nextCommandBuffers,
@@ -630,8 +700,15 @@ export const createSessionLifecycleActions = (
         const nextSuggestions = { ...current.suggestions };
         delete nextCommandBuffers[sessionId];
         delete nextSuggestions[sessionId];
+        // 自动重连同样只是换了 ID：无论它是否为当前活动标签，所在格子都必须原地续上。
+        const splitLayout = replaceSessionInSplitLayout(
+          current.splitLayout,
+          sessionId,
+          nextSession.id,
+        );
         return {
           sessions: nextSessions,
+          splitLayout,
           commandBuffers: nextCommandBuffers,
           suggestions: nextSuggestions,
           // 只有原本处于活动标签时才把焦点与远端面板切到新会话。
@@ -677,6 +754,12 @@ export const createSessionLifecycleActions = (
       return { sessions: [...orderedSessions, ...remainingSessions] };
     }),
 
+  // 格内标签排序只重排该格的 tab 列表，不影响其他格，也不触碰后端 PTY。
+  reorderPaneSessions: (paneId, sessionIds) =>
+    set((state) => ({
+      splitLayout: reorderPaneTabs(state.splitLayout, paneId, sessionIds),
+    })),
+
   closeSession: async (sessionId) => {
     // 用户主动关闭标签：取消自动重连，避免关闭瞬间迟到的 error 事件又拉起重连。
     cancelAutoReconnect(sessionId);
@@ -701,40 +784,43 @@ export const createSessionLifecycleActions = (
         nextActiveSession?.kind === "local"
           ? undefined
           : nextActiveSession?.connectionId;
-      const closedActiveSession = state.activeSessionId === sessionId;
       const nextCommandBuffers = { ...state.commandBuffers };
       const nextSuggestions = { ...state.suggestions };
       delete nextCommandBuffers[sessionId];
       delete nextSuggestions[sessionId];
-
-      // 关闭当前会话后切到了另一条远端连接时，紧接着会重新拉取远端数据，需要点亮加载动画；
-      // 切到本地/无会话则熄灭，避免遗留空转动画。
-      const switchedToOtherRemote =
-        closedActiveSession &&
-        Boolean(nextActiveConnectionId) &&
-        nextActiveConnectionId !== state.activeConnectionId;
+      // 关闭标签同时收拾分屏：该会话所在的格子按统一规则回收（四格全满时留空位）。
+      const nextSplitLayout = removeSessionFromSplitLayout(state.splitLayout, sessionId);
 
       return {
         sessions: nextSessions,
         activeSessionId: nextActiveSessionId,
         activeConnectionId: nextActiveConnectionId,
-        runtimeOverview: nextActiveConnectionId
-          ? state.runtimeOverview
-          : undefined,
-        files:
-          closedActiveSession && !nextActiveConnectionId ? [] : state.files,
-        currentRemotePath: closedActiveSession
-          ? nextActiveConnectionId
-            ? (nextActiveSession?.cwd ?? "")
-            : ""
-          : state.currentRemotePath,
-        filesLoading: switchedToOtherRemote,
-        runtimeLoading: switchedToOtherRemote,
         historyLoading: false,
         commandBuffers: nextCommandBuffers,
         suggestions: nextSuggestions,
+        splitLayout: nextSplitLayout,
+        // 焦点转到了别的标签，面板跟着换过去；同一台机器则保留已加载的文件树。
+        ...panelFieldsForFocusedSession(state, nextActiveSession),
         statusMessage: statusText(state.settings, "statusSessionClosed"),
       };
     });
   },
+
+  applySplitDrop: (target, sessionId) =>
+    set((state) => {
+      const droppedSession = state.sessions.find((item) => item.id === sessionId);
+      return {
+        splitLayout: applySplitDropToLayout(state.splitLayout, target, sessionId),
+        // 拖入分屏即视为聚焦该格，和点击标签的行为保持一致：焦点、连接、面板一起跟过去。
+        activeSessionId: sessionId,
+        activeConnectionId:
+          droppedSession?.kind === "local" ? undefined : droppedSession?.connectionId,
+        ...panelFieldsForFocusedSession(state, droppedSession),
+      };
+    }),
+
+  closeSplitPane: (paneId) =>
+    set((state) => ({
+      splitLayout: closeSplitPaneInLayout(state.splitLayout, paneId),
+    })),
 });

@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
 } from 'react';
 import { TerminalSquare, X } from 'lucide-react';
 
@@ -19,6 +20,11 @@ import {
   type InsertPlacement,
 } from '../../app/connectionGroups';
 import { translateStatus } from '../../i18n';
+import {
+  resolveSplitDropTarget,
+  type SplitDropTarget,
+  type SplitLayout,
+} from '../terminal/splitLayout';
 import type { AppSettings, ConnectionProfile, TerminalSession } from '../../types';
 import { sessionStatusClassName } from './presentation';
 
@@ -34,6 +40,8 @@ type SessionTabDragState = {
 type SessionTabDropTarget =
   | { sessionId: string; placement: InsertPlacement }
   | { type: 'end' }
+  // 指针已经离开标签栏、进入终端区：此时不再排序，改由分屏落点判定接管。
+  | { type: 'split'; target: SplitDropTarget | null }
   | null;
 
 type SessionTabScrollbarState = {
@@ -62,6 +70,14 @@ type Props = {
   onSelectSession: (sessionId: string) => void;
   sessions: TerminalSession[];
   uiLanguage: AppSettings['uiLanguage'];
+  // 分屏拖拽所需的上下文：终端区的 DOM 位置用来把指针换算成归一化坐标，
+  // 当前布局用来判定落点。拖拽结果通过 onSplitDrop 提交，过程状态通过 onSplitDropTargetChange 上报。
+  splitLayout: SplitLayout;
+  terminalAreaRef: RefObject<HTMLElement | null>;
+  onSplitDrop: (target: SplitDropTarget, sessionId: string) => void;
+  // active 表示"指针正悬在终端区"（指示器该显示），target 才是具体落点，
+  // 两者分开是为了让"悬在终端区但暂时无有效落点"也能显示骨架而不闪烁。
+  onSplitDragPreview: (preview: { active: boolean; target: SplitDropTarget | null }) => void;
 };
 
 // 会话标签栏拥有自己的拖拽状态机、FLIP 动画和自绘滚动条；App 只接收最终选择、关闭和排序用例。
@@ -77,6 +93,10 @@ export function SessionTabBar({
   onSelectSession,
   sessions,
   uiLanguage,
+  splitLayout,
+  terminalAreaRef,
+  onSplitDrop,
+  onSplitDragPreview,
 }: Props) {
   const [dragState, setDragState] = useState<SessionTabDragState>(null);
   const [dropTarget, setDropTarget] = useState<SessionTabDropTarget>(null);
@@ -206,6 +226,23 @@ export function SessionTabBar({
   }, [updateScrollbar]);
 
   const resolveDropTarget = useCallback((event: PointerEvent, currentDrag: NonNullable<SessionTabDragState>): SessionTabDropTarget => {
+    // 优先判定终端区：指针一旦向下离开标签栏落入终端，语义就从"排序"切换为"分屏"。
+    const terminalArea = terminalAreaRef.current;
+    if (terminalArea && isPointInsideElement(event, terminalArea)) {
+      const rect = terminalArea.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        return {
+          type: 'split',
+          target: resolveSplitDropTarget(
+            splitLayout,
+            (event.clientX - rect.left) / rect.width,
+            (event.clientY - rect.top) / rect.height,
+            currentDrag.id,
+          ),
+        };
+      }
+    }
+
     const target = document.elementFromPoint(event.clientX, event.clientY);
     const targetTab = target?.closest<HTMLElement>('[data-session-id]');
     const targetSessionId = targetTab?.dataset.sessionId;
@@ -219,7 +256,7 @@ export function SessionTabBar({
       };
     }
     return isPointInsideElement(event, listRef.current) ? { type: 'end' } : null;
-  }, []);
+  }, [splitLayout, terminalAreaRef]);
 
   const startTabDrag = useCallback((
     event: ReactPointerEvent<HTMLDivElement>,
@@ -249,6 +286,20 @@ export function SessionTabBar({
   useEffect(() => {
     dropTargetRef.current = dropTarget;
   }, [dropTarget]);
+
+  // 指示器由 App 渲染在终端区上方，这里只负责把"当前会落在哪"同步出去；
+  // 拖拽结束或指针移回标签栏时 active 转为 false，指示器随即隐藏。
+  useEffect(() => {
+    const splitDrag = dropTarget && 'type' in dropTarget && dropTarget.type === 'split'
+      ? dropTarget
+      : null;
+    onSplitDragPreview({ active: Boolean(splitDrag), target: splitDrag?.target ?? null });
+  }, [dropTarget, onSplitDragPreview]);
+
+  useEffect(() => {
+    // 标签栏卸载（切换布局导致重挂载）时兜底关掉落点指示器，避免遗留一层高亮盖在终端上。
+    return () => onSplitDragPreview({ active: false, target: null });
+  }, [onSplitDragPreview]);
 
   useEffect(() => {
     if (!dragState) {
@@ -291,7 +342,12 @@ export function SessionTabBar({
       }
 
       const currentSessionIds = sessions.map((session) => session.id);
-      if ('type' in finalDropTarget) {
+      if ('type' in finalDropTarget && finalDropTarget.type === 'split') {
+        // 落在终端区但没命中任何有效落点（例如四格已满又停在缝隙上）时按取消处理，不改布局。
+        if (finalDropTarget.target) {
+          onSplitDrop(finalDropTarget.target, currentDrag.id);
+        }
+      } else if ('type' in finalDropTarget) {
         onReorderSessions(moveItemToEnd(currentSessionIds, currentDrag.id));
       } else {
         onReorderSessions(moveItemToInsert(
@@ -303,11 +359,25 @@ export function SessionTabBar({
       }
     };
 
+    // pointerup 不用 { once: true }：本 effect 的依赖（sessions/splitLayout 等）会在拖拽过程中变化，
+    // 一旦重订阅，已被 once 摘掉的旧监听不会补回来，拖拽就再也收不到结束事件——
+    // 表现为预览高亮卡住不消失，必须再拖一次才恢复。这里改为显式移除，并补上取消类事件。
+    // 拖拽的任何一种结束路径都必须走到这里，保证预览高亮和拖拽状态一起清干净。
+    const cancelDrag = () => {
+      setDragState(null);
+      setDropTarget(null);
+    };
+
     window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', handlePointerUp, { once: true });
+    window.addEventListener('pointerup', handlePointerUp);
+    // 指针被系统取消（触控中断、窗口失焦、右键菜单弹出）时同样要收尾，否则状态同样悬空。
+    window.addEventListener('pointercancel', cancelDrag);
+    window.addEventListener('blur', cancelDrag);
     return () => {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', cancelDrag);
+      window.removeEventListener('blur', cancelDrag);
     };
   }, [Boolean(dragState), onReorderSessions, onSelectSession, resolveDropTarget, sessions]);
 
@@ -315,7 +385,9 @@ export function SessionTabBar({
     <>
       <div className="session-tab-scroll-shell">
         <div
-          className={`tab-list session-tab-list ${dropTarget && 'type' in dropTarget ? 'is-drop-end' : ''}`}
+          className={`tab-list session-tab-list ${
+            dropTarget && 'type' in dropTarget && dropTarget.type === 'end' ? 'is-drop-end' : ''
+          }`}
           onScroll={updateScrollbar}
           ref={listRef}
         >

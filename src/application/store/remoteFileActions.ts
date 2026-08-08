@@ -1,6 +1,6 @@
 import { backend } from '../../backend';
-import { isUsableRemoteSession } from '../../domain/sessions/model';
 import { parentRemotePath } from '../../domain/terminal/navigation';
+import { resolveBoundConnectionId } from './sessionRuntime';
 import { toBase64, uploadRemoteName } from '../../infrastructure/fileTransfer';
 import type { StoreGet, StoreSet, StoreState } from './contracts';
 import { statusText } from './status';
@@ -58,21 +58,20 @@ export const remoteFilesRequestCoordinator = {
 // 远端文件 action factory 把串行刷新、传输与编辑器缓存归为同一应用服务切片。
 export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFileActions => ({
   refreshFiles: async (path) => {
-    const { activeConnectionId, activeSessionId, currentRemotePath, sessions } = get();
-    const activeSession = sessions.find((item) => item.id === activeSessionId);
-    const activeRemoteConnectionId = isUsableRemoteSession(activeSession) ? activeSession?.connectionId : undefined;
-    // 文件管理必须绑定已打开的终端会话；只选中连接时不展示也不刷新远端文件。
-    if (!activeConnectionId || activeConnectionId !== activeRemoteConnectionId) {
+    const { currentRemotePath } = get();
+    // 文件管理跟随绑定会话，与当前聚焦的分屏无关：点别的格子不该让文件树重拉或清空。
+    const boundConnectionId = resolveBoundConnectionId(get());
+    if (!boundConnectionId) {
       return;
     }
 
     const requestedPath = normalizeRemoteFilesPath(path ?? currentRemotePath);
     if (remoteFilesRefreshInFlight) {
-      if (isSameRemoteFilesTarget(remoteFilesQueuedRequest, activeConnectionId, requestedPath)) {
+      if (isSameRemoteFilesTarget(remoteFilesQueuedRequest, boundConnectionId, requestedPath)) {
         // 最新排队项已经覆盖同一路径，无需再次增加序号或重复列举。
         return;
       }
-      if (isSameRemoteFilesTarget(remoteFilesActiveRequest, activeConnectionId, requestedPath)) {
+      if (isSameRemoteFilesTarget(remoteFilesActiveRequest, boundConnectionId, requestedPath)) {
         if (remoteFilesQueuedRequest && remoteFilesActiveRequest) {
           // 真实 cwd 回到当前执行路径时，撤销冲突的排队项，并把执行项提升为最新请求以允许其结果落地。
           remoteFilesQueuedRequest = undefined;
@@ -83,7 +82,7 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
 
       // SFTP 刷新串行执行，正在刷新时只保留最后一次目标路径，避免快速 cd/双击目录堆出多条 SSH 请求。
       remoteFilesQueuedRequest = {
-        connectionId: activeConnectionId,
+        connectionId: boundConnectionId,
         path: requestedPath,
         seq: ++remoteFilesRefreshSeq,
       };
@@ -91,7 +90,7 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
     }
 
     const firstRequest: RemoteFilesRefreshRequest = {
-      connectionId: activeConnectionId,
+      connectionId: boundConnectionId,
       path: requestedPath,
       seq: ++remoteFilesRefreshSeq,
     };
@@ -108,14 +107,14 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
         remoteFilesQueuedRequest = undefined;
         try {
           const files = await backend.listRemoteFiles(currentRequest.connectionId, currentRequest.path);
-          if (currentRequest.seq !== remoteFilesRefreshSeq || get().activeConnectionId !== currentRequest.connectionId) {
+          if (currentRequest.seq !== remoteFilesRefreshSeq || resolveBoundConnectionId(get()) !== currentRequest.connectionId) {
             request = remoteFilesQueuedRequest;
             continue;
           }
 
           set({ files, currentRemotePath: currentRequest.path, filesLoading: false, statusMessage: statusText(get().settings, 'statusLoadedPath', { path: currentRequest.path }) });
         } catch (error) {
-          if (currentRequest.seq !== remoteFilesRefreshSeq || get().activeConnectionId !== currentRequest.connectionId) {
+          if (currentRequest.seq !== remoteFilesRefreshSeq || resolveBoundConnectionId(get()) !== currentRequest.connectionId) {
             request = remoteFilesQueuedRequest;
             continue;
           }
@@ -142,7 +141,8 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
   },
 
   uploadLocalFile: async (file) => {
-    const { activeConnectionId, currentRemotePath } = get();
+    const { currentRemotePath } = get();
+    const activeConnectionId = resolveBoundConnectionId(get());
     if (!activeConnectionId) {
       return;
     }
@@ -163,7 +163,8 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
   },
 
   uploadLocalFiles: async (files) => {
-    const { activeConnectionId, currentRemotePath } = get();
+    const { currentRemotePath } = get();
+    const activeConnectionId = resolveBoundConnectionId(get());
     const uploadFiles = files.filter((file) => file.name);
     if (!activeConnectionId || !uploadFiles.length) {
       return;
@@ -192,7 +193,8 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
   },
 
   uploadLocalPaths: async (localPaths) => {
-    const { activeConnectionId, currentRemotePath } = get();
+    const { currentRemotePath } = get();
+    const activeConnectionId = resolveBoundConnectionId(get());
     const uploadPaths = Array.from(new Set(localPaths.map((path) => path.trim()).filter(Boolean)));
     if (!activeConnectionId || !uploadPaths.length) {
       return;
@@ -218,7 +220,7 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
   },
 
   downloadRemoteFile: async (path) => {
-    const { activeConnectionId } = get();
+    const activeConnectionId = resolveBoundConnectionId(get());
     if (!activeConnectionId) {
       return;
     }
@@ -237,7 +239,7 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
   },
 
   downloadRemotePaths: async (paths, localDir) => {
-    const { activeConnectionId } = get();
+    const activeConnectionId = resolveBoundConnectionId(get());
     const normalizedPaths = Array.from(new Set(paths.filter(Boolean)));
     if (!activeConnectionId || !normalizedPaths.length) {
       return;
@@ -264,7 +266,8 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
   },
 
   deleteRemotePath: async (path) => {
-    const { activeConnectionId, currentRemotePath } = get();
+    const { currentRemotePath } = get();
+    const activeConnectionId = resolveBoundConnectionId(get());
     if (!activeConnectionId) {
       return;
     }
@@ -284,7 +287,8 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
   },
 
   deleteRemotePaths: async (paths) => {
-    const { activeConnectionId, currentRemotePath } = get();
+    const { currentRemotePath } = get();
+    const activeConnectionId = resolveBoundConnectionId(get());
     const normalizedPaths = Array.from(new Set(paths.filter(Boolean)));
     if (!activeConnectionId || !normalizedPaths.length) {
       return;
@@ -310,7 +314,8 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
   },
 
   renameRemotePath: async (path, newName) => {
-    const { activeConnectionId, currentRemotePath } = get();
+    const { currentRemotePath } = get();
+    const activeConnectionId = resolveBoundConnectionId(get());
     if (!activeConnectionId || !newName.trim()) {
       return;
     }
@@ -331,7 +336,8 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
   },
 
   copyRemotePaths: async (sources, targetDir) => {
-    const { activeConnectionId, currentRemotePath } = get();
+    const { currentRemotePath } = get();
+    const activeConnectionId = resolveBoundConnectionId(get());
     const normalizedSources = Array.from(new Set(sources.filter(Boolean)));
     const destination = targetDir || currentRemotePath;
     if (!activeConnectionId || !normalizedSources.length) {
@@ -355,7 +361,7 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
 
 
   openRemoteFile: async (path) => {
-    const { activeConnectionId } = get();
+    const activeConnectionId = resolveBoundConnectionId(get());
     if (!activeConnectionId) {
       return;
     }
