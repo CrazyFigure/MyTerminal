@@ -7,16 +7,18 @@ import {
   terminalGutterCharWidthRatio,
   terminalGutterFontScale,
   terminalGutterHorizontalPaddingPx,
-  terminalGutterMaxTrackedLines,
-  terminalGutterMinDigits,
-  terminalGutterMinFontSizePx,
+  terminalGutterMinDigits,  terminalGutterMinFontSizePx,
   terminalGutterMinWidthPx,
   terminalGutterTimestampCharCount,
   terminalGutterWrappedLineSymbol,
   type TerminalGutterMarkerEntry,
-  type TerminalGutterSessionData,
   type TerminalReplayState,
 } from './support';
+import {
+  appendTerminalGutterLogicalLine,
+  ensureTerminalGutterSessionData,
+  getTerminalGutterSessionData,
+} from './terminalOutputHub';
 
 type TerminalGutterControllerOptions = {
   containerRef: RefObject<HTMLDivElement | null>;
@@ -31,7 +33,6 @@ type TerminalGutterControllerOptions = {
   terminalGutterRef: RefObject<HTMLDivElement | null>;
   terminalGutterReplayActiveRef: RefObject<boolean>;
   terminalGutterReplayNextLogicalNumberRef: RefObject<number>;
-  terminalGutterSessionDataRef: RefObject<Record<string, TerminalGutterSessionData>>;
   terminalGutterWidthRef: RefObject<number>;
   terminalRef: RefObject<Terminal | null>;
   terminalScrollbackRowsRef: RefObject<number>;
@@ -52,7 +53,6 @@ export function useTerminalGutterController(options: TerminalGutterControllerOpt
     terminalGutterRef,
     terminalGutterReplayActiveRef,
     terminalGutterReplayNextLogicalNumberRef,
-    terminalGutterSessionDataRef,
     terminalGutterWidthRef,
     terminalRef,
     terminalScrollbackRowsRef,
@@ -63,28 +63,6 @@ const resetTerminalGutterMarkers = () => {
     entry.marker.dispose();
   }
   terminalGutterMarkersRef.current = [];
-};
-
-// 取（必要时初始化）某会话的稳定逻辑行时间线；只有首次占用新 buffer 行时才追加时间。
-const ensureTerminalGutterSessionData = (sessionId: string) => {
-  let data = terminalGutterSessionDataRef.current[sessionId];
-  if (!data) {
-    data = { times: [], base: 0 };
-    terminalGutterSessionDataRef.current[sessionId] = data;
-  }
-  return data;
-};
-
-// 新逻辑行首次落到屏幕或 scrollback 时追加时间；回车覆盖、光标上移后重画同一行都不能推进编号。
-const appendTerminalGutterLogicalLine = (sessionId: string, nowMs: number) => {
-  const data = ensureTerminalGutterSessionData(sessionId);
-  data.times.push(nowMs);
-  // 超出上限时从最旧端回收，并累加 base，保证累计序号不回退。
-  if (data.times.length > terminalGutterMaxTrackedLines) {
-    const drop = data.times.length - terminalGutterMaxTrackedLines;
-    data.times.splice(0, drop);
-    data.base += drop;
-  }
 };
 
 // 硬换行后光标已落到新的一行，为该行注册一个 marker 作为逻辑行位置锚点。
@@ -174,7 +152,7 @@ const finishTerminalGutterReplay = (nowMs: number, completedReplay: TerminalRepl
 // 当前会话累计逻辑行数（= 最新一行的编号）。
 const resolveTerminalGutterCounter = () => {
   const sessionId = sessionRef.current?.id;
-  const data = sessionId ? terminalGutterSessionDataRef.current[sessionId] : undefined;
+  const data = sessionId ? getTerminalGutterSessionData()[sessionId] : undefined;
   return data ? data.base + data.times.length : 0;
 };
 
@@ -262,7 +240,7 @@ const syncTerminalGutter = (nowMs: number) => {
   const liveMarkers = terminalGutterMarkersRef.current.filter((entry) => entry.marker.line >= 0);
   // 时间线尚未建立（会话刚打开）时用存活 marker 数兜底，避免最旧行推出非正编号。
   const totalLogical = Math.max(resolveTerminalGutterCounter(), liveMarkers.length);
-  const sessionData = sessionRef.current?.id ? terminalGutterSessionDataRef.current[sessionRef.current.id] : undefined;
+  const sessionData = sessionRef.current?.id ? getTerminalGutterSessionData()[sessionRef.current.id] : undefined;
   // buffer 行 -> 逻辑行编号；同一 buffer 行可能有多个历史 marker（reflow 后），取最新（末端）的编号。
   const logicalNumberByBufferRow = new Map<number, number>();
   for (let index = 0; index < liveMarkers.length; index += 1) {

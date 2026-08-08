@@ -1,6 +1,4 @@
 import {
-  Suspense,
-  lazy,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -66,7 +64,7 @@ import {
   type RemoteFileClipboard,
 } from './features/files';
 import { parseMetricPercent, RuntimePanel, useRuntimeMonitor } from './features/runtime';
-import { SessionContextMenu, SessionTabBar, type SessionContextMenuTarget } from './features/sessions';
+import { SessionContextMenu, type SessionContextMenuTarget } from './features/sessions';
 import {
   AppTitlebar,
   BottomDock,
@@ -80,12 +78,20 @@ import {
   TransferProgressStack,
   useTransferProgress,
 } from './features/workspace';
-// 终端内核和 AI 对话都不是绘制应用骨架的前置条件；动态加载可让标题栏、侧栏和操作区先进入可用状态。
-const TerminalWorkspace = lazy(() => import('./TerminalWorkspace').then((module) => ({ default: module.TerminalWorkspace })));
+import { setTerminalProtocolReplySender } from './terminal/terminalOutputHub';
+// 终端内核不是绘制应用骨架的前置条件；懒加载边界下沉到分屏容器内部，
+// 让标题栏、侧栏和操作区先进入可用状态。
+import { TerminalSplitGrid, type SplitDropTarget } from './features/terminal';
 
 export default function App() {
   // 所有业务弹窗复用标题栏拖动能力；偏移仅存在于本次打开的 DOM 节点，关闭后自动复位。
   useDraggableModals();
+  // 标签拖到终端区时的落点：由标签栏在拖动过程中上报，分屏容器和四方格指示器共用同一份判定结果。
+  const [splitDropTarget, setSplitDropTarget] = useState<SplitDropTarget | null>(null);
+  // 指针是否正悬在终端区上方（决定指示器是否显示）；与具体落点分开，避免无有效落点时骨架闪烁。
+  const [splitDragActive, setSplitDragActive] = useState(false);
+  // 标签栏判定落点与指示器渲染共用同一个网格矩形，必须指向同一个 DOM 节点。
+  const splitGridRef = useRef<HTMLDivElement | null>(null);
   // 右侧 AI 栏分为对话与审批两个页签；默认停在对话，审批有新请求时会自动切过去。
   const [agentSidebarTab, setAgentSidebarTab] = useState<'chat' | 'requests'>('chat');
   // AI 端点列表（含明文密钥）缓存在前端，供侧边栏对话与设置页共用。
@@ -198,6 +204,7 @@ export default function App() {
     reconnectSession: reconnectSessionById,
     renameRemotePath,
     reorderSessions,
+    reorderPaneSessions,
     runtimeOverview,
     runtimeLoading,
     selectSession,
@@ -207,6 +214,9 @@ export default function App() {
     setCommandBuffer,
     setStatusMessage,
     settings,
+    splitLayout,
+    applySplitDrop,
+    closeSplitPane,
     startAllTunnels,
     startTunnel,
     stopAllTunnels,
@@ -249,6 +259,7 @@ export default function App() {
       reconnectSession: state.reconnectSession,
       renameRemotePath: state.renameRemotePath,
       reorderSessions: state.reorderSessions,
+      reorderPaneSessions: state.reorderPaneSessions,
       runtimeOverview: state.runtimeOverview,
       runtimeLoading: state.runtimeLoading,
       selectSession: state.selectSession,
@@ -258,6 +269,9 @@ export default function App() {
       setCommandBuffer: state.setCommandBuffer,
       setStatusMessage: state.setStatusMessage,
       settings: state.settings,
+      splitLayout: state.splitLayout,
+      applySplitDrop: state.applySplitDrop,
+      closeSplitPane: state.closeSplitPane,
       startAllTunnels: state.startAllTunnels,
       startTunnel: state.startTunnel,
       stopAllTunnels: state.stopAllTunnels,
@@ -346,14 +360,37 @@ export default function App() {
     void persistSettings({ ...settings, themeMode: nextMode }).catch(() => undefined);
   }, [persistSettings, settings]);
 
-  const activeSession = useMemo(() => sessions.find((item) => item.id === activeSessionId), [activeSessionId, sessions]);
-  // 存活会话 ID 列表传给 TerminalWorkspace 做缓存回收；用 join 作为 memo key，会话状态/cwd 更新不改变
-  // ID 集合时保持数组引用稳定，避免每次 store 更新都触发缓存清理副作用。
-  const sessionIdsKey = sessions.map((item) => item.id).join('\n');
-  const sessionIds = useMemo(() => sessions.map((item) => item.id), [sessionIdsKey]);
+  // 标签栏在拖拽过程中持续上报预览；回调必须稳定，否则会让标签栏的上报 effect 反复重跑。
+  const handleSplitDragPreview = useCallback((preview: { active: boolean; target: SplitDropTarget | null }) => {
+    setSplitDragActive(preview.active);
+    setSplitDropTarget(preview.target);
+  }, []);
+
+  // 提示语跟随落点语义变化：新开分屏 / 移入某格 / 改变跨度，让用户松手前就知道结果。
+  const splitDropHint = splitDropTarget?.kind === 'split'
+    ? t('splitDropHintSplit')
+    : splitDropTarget?.kind === 'move'
+      ? t('splitDropHintMove')
+      : splitDropTarget?.kind === 'reshape'
+        ? t('splitDropHintReshape')
+        : '';
+
+  // 侧栏与下栏跟随当前聚焦的标签：点到哪一格，文件树、运行状态和命令都指向那台机器。
+  const focusedSession = useMemo(
+    () => sessions.find((item) => item.id === activeSessionId),
+    [activeSessionId, sessions],
+  );
+  // 终端能力协商（XTVERSION）由 terminalOutputHub 全局判定并按原会话 ID 回包：分屏后终端区会挂载多个
+  // 实例，若由实例各自回包，同一条查询会被重复响应写进同一条 PTY。这里只注入写入通道。
+  useEffect(() => {
+    setTerminalProtocolReplySender((sessionId, data) => {
+      void sendTerminalData(sessionId, data);
+    });
+    return () => setTerminalProtocolReplySender(undefined);
+  }, [sendTerminalData]);
   // 远端文件、运行状态和历史都必须绑定到已经打开的终端会话，避免仅选中连接时提前拉取远端数据。
-  const hasActiveRemoteSession = isUsableRemoteSession(activeSession);
-  const activeRemoteConnectionId = hasActiveRemoteSession ? activeSession?.connectionId : undefined;
+  const hasActiveRemoteSession = isUsableRemoteSession(focusedSession);
+  const activeRemoteConnectionId = hasActiveRemoteSession ? focusedSession?.connectionId : undefined;
   const activeRemoteConnection = useMemo(
     () => connections.find((item) => item.id === activeRemoteConnectionId),
     [activeRemoteConnectionId, connections],
@@ -910,6 +947,7 @@ export default function App() {
 
   // 左上运行状态直接以主机 IP 作为标题，减少说明性文字占位，把空间留给终端和文件表格。
   const runtimeHostLabel = runtimeOverview?.host ?? activeRemoteConnection?.host ?? '--';
+  // 命令输入框按会话分别暂存，切换标签时各自的半句命令都还在。
   const activeCommand = activeSessionId ? commandBuffers[activeSessionId] ?? '' : '';
   const activeBottomTab = activeRemoteConnectionId ? bottomTabByConnection[activeRemoteConnectionId] ?? globalBottomTab : globalBottomTab;
   const sessionContextSession = useMemo(
@@ -1102,11 +1140,11 @@ export default function App() {
       return;
     }
 
-    // 只在切换连接或会话时恢复文件路径；终端内 cd 的目录变化由 cwd 元数据单独刷新，避免旧记忆路径覆盖真实 PWD。
+    // 只在切换连接或聚焦会话时恢复文件路径；终端内 cd 的目录变化由 cwd 元数据单独刷新，避免旧记忆路径覆盖真实 PWD。
     const rememberedPath = pathByConnectionRef.current[activeRemoteConnectionId];
-    void refreshFiles(rememberedPath ?? activeSession?.cwd ?? '~');
+    void refreshFiles(rememberedPath ?? focusedSession?.cwd ?? '~');
     refreshRuntimeOverviewOnce();
-  }, [activeRemoteConnectionId, activeSessionId, activeSession?.status, refreshFiles, refreshRuntimeOverviewOnce]);
+  }, [activeRemoteConnectionId, activeSessionId, focusedSession?.status, refreshFiles, refreshRuntimeOverviewOnce]);
 
   useEffect(() => {
     if (!activeRemoteConnectionId) {
@@ -1575,6 +1613,7 @@ export default function App() {
     <div className={shellClassName} style={appShellStyle}>
       {/* 自定义标题栏：关闭原生装饰后承载操作入口和窗口控制，中间空白区作为拖动手柄。 */}
       <AppTitlebar
+        agentSidebarCollapsed={agentSidebarCollapsed}
         checkingUpdate={appUpdateChecking}
         onCheckUpdate={handleTitlebarCheckUpdate}
         onCreateConnection={() => openConnectionForm()}
@@ -1584,7 +1623,10 @@ export default function App() {
           setSettingsTab('appearance');
           setSettingsOpen(true);
         }}
+        onToggleAgentSidebar={() => setAgentSidebarCollapsed((current) => !current)}
+        onToggleSidebar={() => setSidebarCollapsed((current) => !current)}
         onToggleTheme={handleToggleTheme}
+        sidebarCollapsed={sidebarCollapsed}
         t={t}
         themeMode={settings.themeMode}
         updateAvailable={Boolean(updateCheckResult?.updateAvailable)}
@@ -1723,69 +1765,40 @@ export default function App() {
       ) : null}
 
       <main className="workspace">
-        <section className="workspace-toolbar card">
-          {/* 侧栏入口固定在终端工具栏首位，收起时不再保留残缺侧栏，给终端让出完整横向空间。 */}
-          <button
-            className="toolbar-sidebar-toggle icon-button"
-            onClick={() => setSidebarCollapsed((current) => !current)}
-            title={sidebarCollapsed ? t('expandSidebar') : t('collapseSidebar')}
-            type="button"
-          >
-            {sidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
-          </button>
-          <div className="session-strip">
-            <SessionTabBar
-              activeSessionId={activeSessionId}
-              closeLabel={t('closeSessionAction')}
-              connections={connections}
-              layoutKey={`${sidebarCollapsed}:${agentSidebarCollapsed}:${sidebarWidth}:${agentSidebarWidth}`}
-              localTerminalTitle={t('localTerminalTitle')}
-              onCloseSession={closeSession}
-              onOpenContextMenu={(sessionId, x, y) => {
-                setSessionContextMenu({ sessionId, x, y });
-              }}
-              onReorderSessions={reorderSessions}
-              onSelectSession={selectSession}
-              sessions={sessions}
-              uiLanguage={settings.uiLanguage}
-            />
-          </div>
-
-          <div className="workspace-toolbar-actions">
-            <button
-              aria-label={agentSidebarCollapsed ? t('expandAgentSidebar') : t('collapseAgentSidebar')}
-              className="toolbar-sidebar-toggle icon-button"
-              onClick={() => setAgentSidebarCollapsed((current) => !current)}
-              title={agentSidebarCollapsed ? t('expandAgentSidebar') : t('collapseAgentSidebar')}
-              type="button"
-            >
-              {agentSidebarCollapsed ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
-            </button>
-          </div>
-        </section>
-
         <div className={`terminal-area ${bottomDockCollapsed ? 'is-bottom-collapsed' : ''}`}>
-          <Suspense fallback={<div className="terminal-startup-placeholder">{t('working')}</div>}>
-            <TerminalWorkspace
-              session={activeSession}
-              settings={settings}
-              liveSessionIds={sessionIds}
-              onTerminalData={(data) => {
-                if (!activeSessionId) {
-                  return;
-                }
-                void sendTerminalData(activeSessionId, data);
-              }}
-              onTerminalProtocolData={(sessionId, data) => {
-                // 能力查询可能来自后台标签；使用事件自带会话 ID，避免切换标签时把回包写入另一条 PTY。
-                void sendTerminalData(sessionId, data);
-              }}
-              onUpdateSettings={(partial) => {
-                // 行号栏右键切换的显示项直接落盘持久化，保证重启和多端同步后仍生效。
-                void persistSettings({ ...settings, ...partial }).catch(() => undefined);
-              }}
-            />
-          </Suspense>
+          {/* 标签栏已下沉到每个分屏格子内部（见 SplitPaneTabBar），窗口级不再保留统一工具栏，
+              省下的高度全部还给终端。侧栏开关在标题栏。 */}
+          <TerminalSplitGrid
+            activeSessionId={activeSessionId}
+            connections={connections}
+            containerRef={splitGridRef}
+            dragActive={splitDragActive}
+            dropHint={splitDropHint}
+            dropTarget={splitDropTarget}
+            layout={splitLayout}
+            onCloseSession={closeSession}
+            onOpenContextMenu={(sessionId, x, y) => {
+              setSessionContextMenu({ sessionId, x, y });
+            }}
+            onReorderPaneSessions={reorderPaneSessions}
+            onSelectSession={selectSession}
+            onSendTerminalData={(sessionId, data) => {
+              void sendTerminalData(sessionId, data);
+            }}
+            onSplitDragPreview={handleSplitDragPreview}
+            onSplitDrop={(target, sessionId) => {
+              setSplitDragActive(false);
+              setSplitDropTarget(null);
+              applySplitDrop(target, sessionId);
+            }}
+            onUpdateSettings={(partial) => {
+              // 行号栏右键切换的显示项直接落盘持久化，保证重启和多端同步后仍生效。
+              void persistSettings({ ...settings, ...partial }).catch(() => undefined);
+            }}
+            sessions={sessions}
+            settings={settings}
+            t={t}
+          />
 
           <div
             className="resize-handle resize-handle-horizontal"

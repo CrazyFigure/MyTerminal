@@ -885,7 +885,10 @@ select:disabled {
 
 .workspace {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  /* 标签栏下沉到各分屏格子后，工作区只剩终端区这一个子元素，整行铺满即可。
+     若保留原来的 `auto minmax(0,1fr)` 两行，终端区会落进 auto 行按内容撑高，
+     底下空出一整行——这正是分屏后底部出现大片空白的原因。 */
+  grid-template-rows: minmax(0, 1fr);
   gap: 0;
   min-width: min(100%, var(--main-workspace-min-width, 0px));
   padding-left: 0;
@@ -1042,9 +1045,171 @@ select:disabled {
   position: relative;
   padding: 4px;
   overflow: hidden;
-  /* 顶部与会话标签栏拼接，去掉上圆角，让两块卡片合成一个连续面板。 */
-  border-top-left-radius: 0;
-  border-top-right-radius: 0;
+  /* 终端本体不自带边框圆角：外圈由 .terminal-split-grid 统一裁切，
+     每格上方还有自己的标签栏，这里再画圆角会在标签栏与终端之间露出缺口。 */
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* 分屏网格：固定 2×2 槽位，格子按掩码跨列/跨行。分隔只靠 1px 边框，不留间距。
+   分屏与否统一用 data-pane-count 判定，避免再维护一个只在 CSS 里出现的类名。 */
+.terminal-split-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  min-height: 0;
+  min-width: 0;
+  /* 外圈的边框、圆角、阴影集中在这一层：内部格子只画共用分隔线，
+     由容器统一裁切，四个角就不会出现各画一次的双线。 */
+  border: 1px solid var(--app-card-border);
+  border-radius: 10px;
+  background: var(--app-card-bg);
+  box-shadow: var(--app-shadow);
+  overflow: hidden;
+}
+
+/* 格子分两行：上面是自己的标签栏（按内容高），下面是终端本体（吃掉剩余高度）。
+   缺了这条，标签栏和终端会叠在同一行里，表现为标签浮在终端内容上方。 */
+.terminal-split-pane {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.terminal-split-pane-body {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* 未分屏时格子铺满整个 2×2，外观与分屏前完全一致。 */
+.terminal-split-grid[data-pane-count='1'] .terminal-split-pane {
+  grid-column: 1 / 3;
+  grid-row: 1 / 3;
+}
+
+.terminal-split-grid:not([data-pane-count='1']) .terminal-split-pane {
+  /* 相邻格共用一条线：统一画右侧和底部，最外圈由容器自身裁掉。 */
+  border-right: 1px solid var(--app-card-border);
+  border-bottom: 1px solid var(--app-card-border);
+}
+
+/* 贴着网格右边缘/下边缘的格子不再画线，避免和外层卡片边框叠成双线。 */
+.terminal-split-grid:not([data-pane-count='1']) .terminal-split-pane[data-at-right-edge='true'] {
+  border-right: 0;
+}
+
+.terminal-split-grid:not([data-pane-count='1']) .terminal-split-pane[data-at-bottom-edge='true'] {
+  border-bottom: 0;
+}
+
+.terminal-split-pane.is-focused {
+  /* 焦点格只用一道细内描边标识；终端内容密集，发光和阴影会干扰阅读。 */
+  box-shadow: inset 0 0 0 1px var(--app-active-border);
+}
+
+.terminal-split-pane.is-drop-target {
+  box-shadow: inset 0 0 0 2px var(--app-active-border);
+}
+
+/* 每格自己的标签栏：标签列表占满可用宽度。
+   标签栏本身承载拖拽，因此不能有 overflow: hidden，否则拖出格外的预览会被裁掉。 */
+.split-pane-tab-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+  min-height: 26px;
+  padding: 0 2px;
+  border-bottom: 1px solid var(--app-card-border);
+  background: var(--app-panel-bg);
+}
+
+.split-pane-tab-bar > .session-tab-scroll-shell {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.terminal-split-pane-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 12px;
+  color: var(--app-muted);
+  font-size: 0.76rem;
+  text-align: center;
+}
+
+/* 落点指示层：铺满整个终端区，八个吸附点长在它们各自代表的位置上。
+   只做指路，不做花哨动效——终端本身信息密度高，装饰会干扰阅读。 */
+.split-drop-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  pointer-events: none;
+}
+
+/* 吸附点平时很淡，只提示"这里可以放"；被命中时才提亮并放大。 */
+.split-drop-anchor {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  border: 1px solid var(--app-active-border);
+  border-radius: 8px;
+  background: var(--app-overlay-bg);
+  opacity: 0.34;
+  transition: opacity 120ms ease, transform 120ms ease, background-color 120ms ease;
+}
+
+.split-drop-anchor.is-active {
+  opacity: 1;
+  background: var(--app-active-bg);
+  transform: scale(1.12);
+}
+
+/* 预览块占据目标区域本身，让用户直接看到"松手后终端会变成的样子"。
+   与吸附点共用一个网格，因此位置变化由浏览器补间，分割线会滑到目标位置。 */
+.split-drop-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 3px;
+  border: 2px solid var(--app-active-border);
+  border-radius: 8px;
+  background: var(--app-active-bg);
+  opacity: 0.82;
+}
+
+.split-drop-preview.is-swap {
+  border-style: dashed;
+}
+
+.split-drop-preview-hint {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--app-overlay-bg);
+  color: var(--app-text);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .split-drop-anchor {
+    transition: none;
+  }
 }
 
 .terminal-background-image {
@@ -1754,11 +1919,13 @@ select:disabled {
   border-color: rgba(255, 255, 255, 0.30) !important;
 }
 
-/* 激活态会话标签、面板标签与设置导航项 hover 状态：降低亮度以加深背景 */
+/* 激活态会话标签、面板标签与设置导航项 hover 状态：降低亮度以加深背景。
+   注意不能用 filter：filter 会让元素成为固定定位的包含块，激活标签一旦被 hover
+   就会把拖拽预览层（position: fixed）拽进自己的坐标系，表现为「当前标签拖不动」。 */
 .session-tab.is-active:hover,
 .panel-tab.is-active:hover,
 .settings-nav-item.is-active:hover {
-  filter: brightness(0.9) !important;
+  background: color-mix(in srgb, var(--app-active-bg) 88%, #000) !important;
 }
 
 .icon-button.tiny {

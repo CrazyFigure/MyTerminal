@@ -1,5 +1,7 @@
 import { translate } from "../../i18n";
+import { isUsableRemoteSession } from "../../domain/sessions/model";
 import type { AppSettings, TerminalOutputChunk } from "../../types";
+import type { StoreState } from "./contracts";
 
 // 本地终端命令为空时回退可读标题，状态栏不能展示空白动作。
 export const localTerminalCommandLabel = (
@@ -8,6 +10,19 @@ export const localTerminalCommandLabel = (
 ) => command.trim() || translate(settings.uiLanguage, "localTerminalTitle");
 
 const terminalOutputEventName = "myterminal-terminal-output";
+
+// 侧栏与下栏的数据源就是当前聚焦的那个标签对应的连接：点到哪一格，面板跟到哪一格。
+// 分屏与否走同一条规则，因此不需要区分单格和多格。
+export const resolveBoundConnectionId = (
+  state: Pick<StoreState, "activeSessionId" | "sessions">,
+) => {
+  const activeSession = state.sessions.find(
+    (item) => item.id === state.activeSessionId,
+  );
+  return isUsableRemoteSession(activeSession)
+    ? activeSession?.connectionId
+    : undefined;
+};
 
 // 高频终端输出通过浏览器事件直达 xterm，避免写入 React 状态导致整页重渲染。
 export const emitTerminalOutput = (chunk: TerminalOutputChunk) => {

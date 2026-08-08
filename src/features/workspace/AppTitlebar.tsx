@@ -1,17 +1,31 @@
-import { CloudDownload, FolderTree, Laptop, Moon, Plus, Settings, Sun } from 'lucide-react';
+import {
+  CloudDownload,
+  FolderTree,
+  Laptop,
+  Moon,
+  PanelLeft,
+  PanelRight,
+  Plus,
+  Settings,
+  Sun,
+} from 'lucide-react';
 
 import { TitlebarWindowControls } from '../../components/TitlebarWindowControls';
 import type { TranslationKey } from '../../i18n';
 import type { AppSettings } from '../../types';
 
 type Props = {
+  agentSidebarCollapsed: boolean;
   checkingUpdate: boolean;
   onCheckUpdate: () => void | Promise<unknown>;
   onCreateConnection: () => void;
   onManageConnections: () => void;
   onManageLocalTerminals: () => void;
   onOpenSettings: () => void;
+  onToggleAgentSidebar: () => void;
+  onToggleSidebar: () => void;
   onToggleTheme: () => void;
+  sidebarCollapsed: boolean;
   t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
   themeMode: AppSettings['themeMode'];
   updateAvailable: boolean;
@@ -19,20 +33,51 @@ type Props = {
 
 // 自定义标题栏只承载窗口级入口与系统控制；业务弹窗状态和更新用例由 App 编排。
 export function AppTitlebar({
+  agentSidebarCollapsed,
   checkingUpdate,
   onCheckUpdate,
   onCreateConnection,
   onManageConnections,
   onManageLocalTerminals,
   onOpenSettings,
+  onToggleAgentSidebar,
+  onToggleSidebar,
   onToggleTheme,
+  sidebarCollapsed,
   t,
   themeMode,
   updateAvailable,
 }: Props) {
   const darkMode = themeMode === 'dark';
+  const sidebarLabel = sidebarCollapsed ? t('expandSidebar') : t('collapseSidebar');
+  const agentSidebarLabel = agentSidebarCollapsed ? t('expandAgentSidebar') : t('collapseAgentSidebar');
   return (
     <header className="app-titlebar">
+      {/* 两个侧栏开关上移到标题栏：分屏后每个格子都有自己的标签栏，
+          工具栏不复存在，窗口级的显隐开关归到窗口级的标题栏才说得通。
+          用 PanelLeft/PanelRight 而非箭头——图标本身就画出了它控制的那块面板。 */}
+      <div className="app-titlebar-panels">
+        <button
+          aria-label={sidebarLabel}
+          aria-pressed={!sidebarCollapsed}
+          className={`titlebar-icon-button ${sidebarCollapsed ? '' : 'is-active'}`}
+          onClick={onToggleSidebar}
+          title={sidebarLabel}
+          type="button"
+        >
+          <PanelLeft size={16} />
+        </button>
+        <button
+          aria-label={agentSidebarLabel}
+          aria-pressed={!agentSidebarCollapsed}
+          className={`titlebar-icon-button ${agentSidebarCollapsed ? '' : 'is-active'}`}
+          onClick={onToggleAgentSidebar}
+          title={agentSidebarLabel}
+          type="button"
+        >
+          <PanelRight size={16} />
+        </button>
+      </div>
       <div className="app-titlebar-actions">
         <button aria-label={t('newConnection')} className="titlebar-action-button" onClick={onCreateConnection} title={t('newConnection')} type="button">
           <Plus size={16} /> <span className="button-label">{t('newConnection')}</span>
