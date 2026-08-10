@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
 
 import { backend } from './backend';
 import { readClipboardText, writeClipboardText } from './clipboard';
@@ -1279,6 +1280,8 @@ export function TerminalWorkspace({
     // 终端实例只初始化一次；主题、字体和背景图后续通过 options 更新，避免设置视觉项时清空当前会话画面。
     const terminal = new Terminal({
       allowTransparency: true,
+      // Unicode 11 宽度表属于 xterm 的 proposed API，必须显式开启才能注册字符宽度提供者。
+      allowProposedApi: true,
       // 交互 SSH PTY 必须保留远端原始 CR/LF 与 ANSI 行编辑序列；convertEol 会破坏长行历史重绘。
       convertEol: false,
       cursorBlink: !useManagedCursorForSessionRef.current,
@@ -1295,6 +1298,11 @@ export function TerminalWorkspace({
 
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
+    // xterm 内置只有 Unicode 6 宽度表，会把 emoji（🤖 📁 ⚡ 等）判定为 1 列，而 Windows 终端与
+    // Claude Code 等 TUI 按 Unicode 11 的 2 列宽度排版；两侧列宽不一致会让状态行右侧内容被截断，
+    // 且 CR 原地重绘时残留旧字符（如 tokens 数字与字母粘连）。注册 V11 宽度表使双方对齐。
+    terminal.loadAddon(new Unicode11Addon());
+    terminal.unicode.activeVersion = '11';
     terminal.open(containerRef.current);
     // 首帧输出前就隐藏 Codex 原生光标，加载画面不能先漏出一次 xterm 默认闪烁光标。
     terminal.element?.classList.toggle('is-managed-tui-cursor-active', useManagedCursorForSessionRef.current);
