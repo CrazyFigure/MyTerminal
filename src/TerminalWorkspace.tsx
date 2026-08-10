@@ -21,11 +21,14 @@ import {
   buildTerminalBackgroundImageStyle,
   buildTerminalTheme,
   canAcceptTerminalInput,
+  detectTerminalClaudeInputFrame,
   findTerminalInverseCursorColumn,
   isRemoteHttpImage,
   isTerminalAiAgentSession,
+  isTerminalNonPromptRowText,
   isWindowsTerminalHost,
   measureTerminalBufferLineContentColumns,
+  measureTerminalPromptGlyphEndColumn,
   parseTerminalOscRgbColor,
   parseTerminalRgbColor,
   resolveTerminalBackgroundImage,
@@ -56,6 +59,7 @@ import {
   terminalPromptHighlightDarkColors,
   terminalPromptHighlightLightColors,
   terminalPromptSearchRows,
+  terminalPromptUpperBorderSearchDistanceRows,
   type TerminalGutterMarkerEntry,
   type TerminalPromptAnchor,
   type TerminalPromptRowCache,
@@ -168,6 +172,8 @@ export function TerminalWorkspace({
     () => shouldAnchorTerminalImeToPrompt(session),
     [session?.kind, session?.localCommand, session?.title],
   );
+  // 启动命令识别不出 Claude 时（Shell 内手敲、npx/pwsh 包裹、SSH 到远端再运行）的运行时兜底开关。
+  const terminalClaudeInputFrameDetectedRef = useRef(false);
   // 本地终端（包含纯 Shell 与 AI TUI）必须始终按可视宽度自动换行；长行展示设置只影响 SSH 会话。
   const effectiveTerminalLineWrapMode: AppSettings['terminalLineWrapMode'] = session?.kind === 'local' ? 'wrap' : terminalLineWrapMode;
   const terminalScrollbackRows = isAiAgentTerminalSession ? terminalAiAgentScrollbackRows : terminalDefaultScrollbackRows;
@@ -377,12 +383,15 @@ export function TerminalWorkspace({
     const buffer = terminal.buffer.active;
     const firstVisibleRow = buffer.viewportY;
     const lastVisibleRow = Math.min(buffer.length - 1, firstVisibleRow + terminal.rows - 1);
+    // 启动命令能识别出 Claude 时直接启用；否则复用 IME 入口按画面结构探测出的运行时结果，
+    // 覆盖在已打开 Shell 内手敲、经 npx/pwsh 包裹、以及 SSH 到远端再运行 Claude 的情况。
+    const anchorImeToPrompt = anchorImeToPromptForSessionRef.current
+      || terminalClaudeInputFrameDetectedRef.current;
     // Claude 在侧栏展开、窗口 resize 或启动期重排后，输入框可能停在视口上半部；专用会话扫描整个可见区。
     // 默认分支仍限制在底部，避免未来复用此解析器时把历史回答里的提示符误判为输入行。
-    const promptSearchStartRow = anchorImeToPromptForSessionRef.current
+    const promptSearchStartRow = anchorImeToPrompt
       ? firstVisibleRow
       : Math.max(firstVisibleRow, lastVisibleRow - terminalPromptSearchRows + 1);
-    let promptStartRow = -1;
 
     // Claude 新版在首词提交后可能连提示符也一起擦掉；上下输入框边线可为无提示符行提供可信结构锚点。
     const promptBorderRowCache = new Map<number, boolean>();
@@ -400,9 +409,10 @@ export function TerminalWorkspace({
     const isFramedFallbackPrompt = (row: number) => {
       let hasUpperBorder = false;
       let hasLowerBorder = false;
+      // 上边框必须紧贴：Claude 的 spinner 行与输入框之间只隔一条边线，放宽搜索距离会让 spinner 行也算被框住。
       for (
         let candidate = row - 1;
-        candidate >= Math.max(promptSearchStartRow, row - terminalPromptBorderSearchDistanceRows);
+        candidate >= Math.max(promptSearchStartRow, row - terminalPromptUpperBorderSearchDistanceRows);
         candidate -= 1
       ) {
         if (isPromptBorderRow(candidate)) {
@@ -423,45 +433,89 @@ export function TerminalWorkspace({
       return hasUpperBorder && hasLowerBorder;
     };
 
-    for (let row = lastVisibleRow; row >= promptSearchStartRow; row -= 1) {
-      const line = buffer.getLine(row);
-      const text = line?.translateToString(true) ?? '';
-      // 边线本身不能充当输入行；多段分隔线相邻时否则可能把中间边线误判成被框住的内容。
-      if (!line || line.isWrapped || isPromptBorderRow(row)) {
-        continue;
-      }
-      const trimmedText = text.trimStart();
-      const hasKnownPromptGlyph = terminalPromptGlyphs.some((glyph) => trimmedText.startsWith(glyph));
-      const hasFramedClaudeInputRow = anchorImeToPromptForSessionRef.current && isFramedFallbackPrompt(row);
-      if (!hasKnownPromptGlyph && !hasFramedClaudeInputRow) {
-        continue;
-      }
-
-      promptStartRow = row;
-      if (anchorImeToPromptForSessionRef.current && sessionRef.current?.id) {
-        terminalPromptRowCacheRef.current = { sessionId: sessionRef.current.id, row };
-      }
-      break;
-    }
-
-    // 首个中文词提交后 Claude 可能擦掉提示符；输入尚未提交时复用上一条可信输入行并重新测量当前列。
-    if (promptStartRow < 0 && anchorImeToPromptForSessionRef.current) {
+    // 缓存行必须重新校验后才能复用：Claude 追加输出会把输入框整体下移，旧的绝对行号可能已指向别的内容。
+    const resolveUsableCachedPromptRow = () => {
       const cachedPrompt = terminalPromptRowCacheRef.current;
-      const cachedLine = cachedPrompt && cachedPrompt.sessionId === sessionRef.current?.id
-        ? buffer.getLine(cachedPrompt.row)
-        : undefined;
+      if (!cachedPrompt || cachedPrompt.sessionId !== sessionRef.current?.id) {
+        return -1;
+      }
+      const cachedLine = buffer.getLine(cachedPrompt.row);
       if (
-        cachedPrompt &&
-        cachedLine &&
-        !cachedLine.isWrapped &&
-        cachedPrompt.row >= firstVisibleRow &&
-        cachedPrompt.row <= lastVisibleRow
+        !cachedLine
+        || cachedLine.isWrapped
+        || cachedPrompt.row < firstVisibleRow
+        || cachedPrompt.row > lastVisibleRow
+        || isPromptBorderRow(cachedPrompt.row)
+        || isTerminalNonPromptRowText(cachedLine.translateToString(true) ?? '')
       ) {
-        promptStartRow = cachedPrompt.row;
-      } else {
+        return -1;
+      }
+      return cachedPrompt.row;
+    };
+
+    // 带提示符的行永远优先于无提示符兜底；两者在同一轮循环里并列时，自底向上会让更靠下的兜底行先胜出。
+    const findPromptStartRow = () => {
+      for (let row = lastVisibleRow; row >= promptSearchStartRow; row -= 1) {
+        const line = buffer.getLine(row);
+        // 边线本身不能充当输入行；多段分隔线相邻时否则可能把中间边线误判成被框住的内容。
+        if (!line || line.isWrapped || isPromptBorderRow(row)) {
+          continue;
+        }
+        const trimmedText = (line.translateToString(true) ?? '').trimStart();
+        if (terminalPromptGlyphs.some((glyph) => trimmedText.startsWith(glyph))) {
+          // 只有真提示符行可信到能写进缓存；兜底命中的行不写，避免错误行污染后续帧。
+          if (anchorImeToPrompt && sessionRef.current?.id) {
+            terminalPromptRowCacheRef.current = { sessionId: sessionRef.current.id, row };
+          }
+          return row;
+        }
+      }
+
+      if (!anchorImeToPrompt) {
+        return -1;
+      }
+
+      // 组合输入期间提示符已消失时，优先沿用上一条可信输入行：agent 的流式输出不应把候选框挪到别处。
+      // 放在提示符扫描之后，是因为提示符行始终比缓存更可信（输入框可能已被新输出整体下移）。
+      if (terminalImeComposingRef.current) {
+        const frozenRow = resolveUsableCachedPromptRow();
+        if (frozenRow >= 0) {
+          return frozenRow;
+        }
+      }
+
+      // Claude 新版在首词提交后可能连提示符也一起擦掉；此时才退回“被上下边线框住”的结构锚点。
+      for (let row = lastVisibleRow; row >= promptSearchStartRow; row -= 1) {
+        const line = buffer.getLine(row);
+        if (!line || line.isWrapped || isPromptBorderRow(row)) {
+          continue;
+        }
+        // spinner、token 计数和快捷键状态栏同样被边线夹住，必须显式排除后才能作为锚点。
+        if (isTerminalNonPromptRowText(line.translateToString(true) ?? '')) {
+          continue;
+        }
+        if (isFramedFallbackPrompt(row)) {
+          return row;
+        }
+      }
+      return -1;
+    };
+
+    // 首个中文词提交后 Claude 可能擦掉提示符；两轮扫描都落空时复用上一条可信输入行并重新测量当前列。
+    const resolvePromptStartRow = () => {
+      const scannedRow = findPromptStartRow();
+      if (scannedRow >= 0 || !anchorImeToPrompt) {
+        return scannedRow;
+      }
+
+      const cachedRow = resolveUsableCachedPromptRow();
+      if (cachedRow < 0) {
         terminalPromptRowCacheRef.current = null;
       }
-    }
+      return cachedRow;
+    };
+
+    const promptStartRow = resolvePromptStartRow();
     if (promptStartRow < firstVisibleRow) {
       return undefined;
     }
@@ -478,7 +532,14 @@ export function TerminalWorkspace({
     let promptColumn = -1;
     for (let row = promptStartRow; row <= promptEndRow; row += 1) {
       const line = buffer.getLine(row);
-      const inverseCursorColumn = line ? findTerminalInverseCursorColumn(line, terminal.cols) : -1;
+      if (!line) {
+        continue;
+      }
+      // `›` 提示符及其后空格有时自带反色；从提示符之后起扫，避免候选框被吸到行首而非真实光标处。
+      const promptGlyphEndColumn = row === promptStartRow
+        ? measureTerminalPromptGlyphEndColumn(line, terminal.cols)
+        : 0;
+      const inverseCursorColumn = findTerminalInverseCursorColumn(line, terminal.cols, promptGlyphEndColumn);
       if (inverseCursorColumn >= 0) {
         promptRow = row;
         promptColumn = inverseCursorColumn;
@@ -535,12 +596,33 @@ export function TerminalWorkspace({
 
   // 输入法候选框跟随隐藏 textarea；CSS 变量配合 !important 锁住坐标，阻止 xterm 的真实状态栏 cursor 抢回位置。
   const syncTerminalImeCompositionAnchor = () => {
+    const terminal = terminalRef.current;
+    // 启动命令识别不出 Claude 时（Shell 内手敲、npx/pwsh 包裹、SSH 远端运行）按画面结构探测。
+    // 每帧重新判定，这样用户退出 Claude 回到 Shell 后锚定会自动失效，不会继续接管普通提示符；
+    // 但组词进行中不重新探测：Claude 重绘中途可能短暂缺少完整边框，否则候选框会中途弹回原生位置。
     if (!anchorImeToPromptForSessionRef.current) {
+      const canDetect = Boolean(terminal)
+        && (terminal?.rows ?? 0) > 0
+        && canAcceptTerminalInput(sessionRef.current);
+      if (!canDetect) {
+        terminalClaudeInputFrameDetectedRef.current = false;
+      } else if (!terminalImeComposingRef.current && terminal) {
+        const buffer = terminal.buffer.active;
+        const firstVisibleRow = buffer.viewportY;
+        terminalClaudeInputFrameDetectedRef.current = detectTerminalClaudeInputFrame(
+          (row) => buffer.getLine(row)?.translateToString(true),
+          firstVisibleRow,
+          Math.min(buffer.length - 1, firstVisibleRow + terminal.rows - 1),
+        );
+      }
+    }
+
+    // 普通 Shell 的 `❯` 提示符不能被锚定接管，否则会把候选框钉在命令行行首而不是跟随光标。
+    if (!anchorImeToPromptForSessionRef.current && !terminalClaudeInputFrameDetectedRef.current) {
       clearTerminalImePromptAnchor();
       return;
     }
 
-    const terminal = terminalRef.current;
     const textarea = terminal?.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
     const compositionView = terminal?.element?.querySelector<HTMLElement>('.composition-view');
     const anchor = resolveTerminalPromptAnchor();
@@ -872,6 +954,8 @@ export function TerminalWorkspace({
     setTerminalReplayInputBlocked(false);
     terminal.blur();
     terminalImeComposingRef.current = false;
+    // 画面结构探测的是「当前会话正在跑 Claude」；切换会话后必须重新探测，不能让上一个会话的结论生效。
+    terminalClaudeInputFrameDetectedRef.current = false;
     clearTerminalImePromptAnchor();
     if (terminalImeCompositionFrameRef.current !== null) {
       // blur 的 compositionend 可能排过一次旧锚点刷新；切换会话后必须取消，避免它用旧画面重新定位新 textarea。
