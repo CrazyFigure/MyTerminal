@@ -125,7 +125,74 @@ export const terminalPromptSearchRows = 12;
 // 无提示符兜底只接受邻近的足够长边线：距离覆盖单行/短多行输入，最小长度排除回答里的普通短横线。
 export const terminalPromptBorderSearchDistanceRows = 4;
 
+// 上边框必须紧贴候选行：spinner 行与输入框之间只隔一条边线，放宽到 4 行会把 spinner 行也算成被框住。
+export const terminalPromptUpperBorderSearchDistanceRows = 2;
+
 export const terminalPromptBorderMinCharacters = 8;
+
+// 运行中的 Claude 会在输入框上方绘制 spinner、token 计数和快捷键提示；这些行同样被边线夹住，
+// 必须显式排除，否则无提示符兜底会把中文候选框锚到随内容横移的 spinner 行上。
+export const terminalNonPromptRowPatterns: readonly RegExp[] = [
+  // "(56m 33s · ↓ 83.2k tokens)" 这类计时/用量尾巴
+  /tokens\s*\)/i,
+  // "(esc to interrupt)" / "(ctrl+o to expand)" 等运行态操作提示
+  /\(\s*(?:esc|ctrl\+\w+)\b[^)]*\)/i,
+  // "⏵⏵ accept edits on · 1 shell" 状态栏，以及百分比进度尾巴
+  /^\s*(?:⏵⏵|▶▶)/,
+  /\d+(?:\.\d+)?%/,
+];
+
+// 命中任一特征即判定为 Claude 的状态/进度行，不能作为中文输入法的锚点。
+export const isTerminalNonPromptRowText = (text: string) =>
+  terminalNonPromptRowPatterns.some((pattern) => pattern.test(text));
+
+// 会话可能不是用 `claude` 直接启动的（在已打开的 Shell 里手敲、经 npx/pwsh 包裹、或 SSH 到远端再运行），
+// 此时启动命令解析不出可执行名，IME 锚定开关不会打开。改用画面结构在运行时识别：
+// Claude 的输入框是「上边线 + `›` 提示行 + 下边线」的固定组合，普通 Shell 与其它 TUI 不会呈现这种结构。
+export const detectTerminalClaudeInputFrame = (
+  readRowText: (row: number) => string | undefined,
+  firstVisibleRow: number,
+  lastVisibleRow: number,
+): boolean => {
+  const isBorder = (row: number) => {
+    const text = (readRowText(row) ?? "").replace(/\s/g, "");
+    return (
+      text.length >= terminalPromptBorderMinCharacters &&
+      /^[─━═-]+$/.test(text)
+    );
+  };
+
+  // 自底向上找带提示符的行，并要求它被上下边线紧紧夹住；只认最靠下的一处，避免历史回答里的引用块误判。
+  for (let row = lastVisibleRow; row >= firstVisibleRow; row -= 1) {
+    const text = readRowText(row);
+    if (text === undefined) {
+      continue;
+    }
+    const trimmed = text.trimStart();
+    if (!terminalPromptGlyphs.some((glyph) => trimmed.startsWith(glyph))) {
+      continue;
+    }
+    const hasUpperBorder =
+      row - 1 >= firstVisibleRow && isBorder(row - 1);
+    // 输入内容可能软换行成多行，下边线允许隔几行。
+    let hasLowerBorder = false;
+    for (
+      let candidate = row + 1;
+      candidate <=
+      Math.min(lastVisibleRow, row + terminalPromptBorderSearchDistanceRows);
+      candidate += 1
+    ) {
+      if (isBorder(candidate)) {
+        hasLowerBorder = true;
+        break;
+      }
+    }
+    if (hasUpperBorder && hasLowerBorder) {
+      return true;
+    }
+  }
+  return false;
+};
 
 // 光标与所在单元格低于非文本 UI 的最低可辨识对比度时，叠加同位置反色细线作为通用兜底。
 export const terminalCursorMinimumContrastRatio = 3;
@@ -444,13 +511,46 @@ export const measureTerminalBufferLineContentColumns = (
   return lastContentColumn;
 };
 
-// 在指定行内查找 Claude 自绘的反色光标块，返回其起始列号；未找到时返回 -1。
-export const findTerminalInverseCursorColumn = (
+// 返回行首提示符（`›`/`❯`）及其后连续空格之后的第一个内容列；无提示符时返回 0。
+// 用于把反色光标扫描限制在真正的输入内容区内。
+export const measureTerminalPromptGlyphEndColumn = (
   line: IBufferLine,
   maxColumns: number,
 ): number => {
   const lineColumns = Math.min(line.length, Math.max(0, maxColumns));
-  for (let column = 0; column < lineColumns; column += 1) {
+  let column = 0;
+  // 跳过提示符之前的缩进空格。
+  while (column < lineColumns && line.getCell(column)?.getChars() === " ") {
+    column += 1;
+  }
+
+  const glyphCell = column < lineColumns ? line.getCell(column) : undefined;
+  const glyphText = glyphCell?.getChars() ?? "";
+  if (!terminalPromptGlyphs.some((glyph) => glyphText === glyph)) {
+    return 0;
+  }
+
+  column += Math.max(1, glyphCell?.getWidth() ?? 1);
+  // 提示符与输入内容之间的空格同样可能带反色，一并跳过。
+  while (column < lineColumns && line.getCell(column)?.getChars() === " ") {
+    column += 1;
+  }
+  return column;
+};
+
+// 在指定行内查找 Claude 自绘的反色光标块，返回其起始列号；未找到时返回 -1。
+// startColumn 用于跳过行首提示符：`›` 及其后空格有时自带反色，会把候选框吸到行首而非真实光标处。
+export const findTerminalInverseCursorColumn = (
+  line: IBufferLine,
+  maxColumns: number,
+  startColumn = 0,
+): number => {
+  const lineColumns = Math.min(line.length, Math.max(0, maxColumns));
+  for (
+    let column = Math.max(0, startColumn);
+    column < lineColumns;
+    column += 1
+  ) {
     const cell = line.getCell(column);
     if (!cell) break;
     if (cell.isInverse() && cell.getWidth() > 0) {
