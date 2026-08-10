@@ -58,6 +58,26 @@ type SessionTabScrollbarDragState = {
   maxThumbTravel: number;
 };
 
+// 标签栏上下各留出的容错高度（像素）：横向甩动标签时手几乎走不出一条水平线，
+// 若指针擦出栏外一两像素就切成分屏落点，排序会被落点提示反复打断。
+const TAB_STRIP_VERTICAL_TOLERANCE = 12;
+
+// 指针是否仍在"本格自己这条标签栏"的排序带内。
+// 横向必须在栏内（越到隔壁格的标签栏就不再属于本格排序），纵向允许上下溢出一点容错。
+// 分屏后标签栏本身就长在终端网格里，只判"是否落在终端区"无法区分排序与分屏，
+// 必须先用这条带子把"在自己栏里左右拖"择出来。
+const isPointInTabStrip = (event: PointerEvent, element: HTMLElement | null) => {
+  if (!element) {
+    return false;
+  }
+
+  const rect = element.getBoundingClientRect();
+  return event.clientX >= rect.left
+    && event.clientX <= rect.right
+    && event.clientY >= rect.top - TAB_STRIP_VERTICAL_TOLERANCE
+    && event.clientY <= rect.bottom + TAB_STRIP_VERTICAL_TOLERANCE;
+};
+
 type Props = {
   activeSessionId: string | undefined;
   closeLabel: string;
@@ -226,9 +246,16 @@ export function SessionTabBar({
   }, [updateScrollbar]);
 
   const resolveDropTarget = useCallback((event: PointerEvent, currentDrag: NonNullable<SessionTabDragState>): SessionTabDropTarget => {
-    // 优先判定终端区：指针一旦向下离开标签栏落入终端，语义就从"排序"切换为"分屏"。
+    // 先判"还在自己这条标签栏里吗"。分屏后标签栏本身就长在终端网格内部，
+    // 若先判终端区，指针从按下起就已在网格矩形里，排序分支永远轮不到。
+    // 只在栏内左右拖 = 纯排序，不弹分屏落点提示；上下明显拖出去才交给分屏判定。
+    const listElement = listRef.current;
+    const tabStrip = listElement?.closest<HTMLElement>('.split-pane-tab-bar') ?? listElement;
+    const insideTabStrip = isPointInTabStrip(event, tabStrip);
+
+    // 指针已经离开本格标签栏的容错带：语义切换为分屏，按落在终端区的位置判定目标。
     const terminalArea = terminalAreaRef.current;
-    if (terminalArea && isPointInsideElement(event, terminalArea)) {
+    if (!insideTabStrip && terminalArea && isPointInsideElement(event, terminalArea)) {
       const rect = terminalArea.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
         return {
@@ -249,14 +276,17 @@ export function SessionTabBar({
     if (targetSessionId === currentDrag.id) {
       return null;
     }
-    if (targetSessionId) {
+    // 容错带内命中的标签必须属于本格：邻格标签栏与本格同高，横向判定已排除，
+    // 这里再兜一层，避免 elementFromPoint 取到别的格子的标签导致跨格"排序"。
+    if (targetSessionId && sessions.some((session) => session.id === targetSessionId)) {
       return {
         sessionId: targetSessionId,
         placement: resolveInlineInsertPlacement(event, targetTab),
       };
     }
-    return isPointInsideElement(event, listRef.current) ? { type: 'end' } : null;
-  }, [splitLayout, terminalAreaRef]);
+    // 落在栏内空白处（标签右侧留白、标签间隙）视为移到末尾。
+    return insideTabStrip || isPointInsideElement(event, listElement) ? { type: 'end' } : null;
+  }, [sessions, splitLayout, terminalAreaRef]);
 
   const startTabDrag = useCallback((
     event: ReactPointerEvent<HTMLDivElement>,
