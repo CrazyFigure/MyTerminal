@@ -997,6 +997,11 @@ export function TerminalWorkspace({
       // reset 会恢复 xterm 内部的主题光标色和显示状态；Codex 托管模式必须在重放缓存前立刻重新隐藏，避免 reset 与首个输出块之间漏出原生块光标。
       if (useManagedCursorForSessionRef.current) {
         terminal.write(terminalCursorHideSequence);
+      } else if (!hideLocalCursorForSessionRef.current) {
+        // xterm 的 isCursorHidden 由 CoreService 持有，terminal.reset() 不会清除它。终端实例跨会话复用，
+        // 上一个自绘光标会话（Codex/Claude 等）写入的 ?25l 会残留到本会话；若远端不主动发 ?25h，
+        // 光标将永久不可见。非托管且非自绘的会话在重放前显式恢复，让 xterm 内部状态与宿主认知对齐。
+        terminal.write(terminalCursorShowSequence);
       }
       // 同步观测值后，缓存里的 OSC/DECTCEM 会按原顺序重新覆盖；托管模式的自绘光标不依赖该远端显隐值。
       terminalCursorColorRef.current = parseTerminalRgbColor(terminalThemeRef.current.cursor);
