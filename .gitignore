@@ -37,3 +37,19 @@ Thumbs.db
 *.log
 *.tmp
 *.temp
+
+# AI 工具配置目录（不提交到仓库）
+.codebuddy/
+.workbuddy/
+.claude/
+.codex/
+.agents/
+.cursor/
+.qoder/
+
+# AI 工具说明文档（不提交到仓库）
+CLAUDE.md
+AGENTS.md
+CODEBUDDY.md
+CURSOR.md
+PROJECT_PLAN.md

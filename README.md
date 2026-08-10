@@ -10,7 +10,7 @@
 
 A modern desktop SSH terminal manager built with Rust, Tauri 2, and React.
 
-MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP file management, remote file editing, local port forwarding, and WebDAV backup into one clean desktop app. It is designed for developers and operators who want a lightweight, open, and hackable alternative to heavyweight remote terminal suites.
+MyTerminal brings terminal tabs with drag-to-split layouts, SSH profiles with jump hosts and proxies, Windows Remote Desktop, SFTP file management, remote file editing, local port forwarding, a built-in AI assistant, and WebDAV backup into one clean desktop app. It is designed for developers and operators who want a lightweight, open, and hackable alternative to heavyweight remote terminal suites.
 
 ![MyTerminal preview](img.png)
 
@@ -19,6 +19,8 @@ MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP 
 ### SSH Profiles and Routing
 
 - **SSH profile manager** - Create, edit, group, duplicate, move, sort, and test SSH connections before opening a session.
+- **Windows Remote Desktop (RDP)** - Save RDP entries alongside SSH profiles and open them with the system Remote Desktop client. Passwords are written as session-scoped Windows credentials instead of being passed on the command line. Windows only, and without jump-host or proxy support.
+- **Connection type icons** - The connection list and editor use consistent icons to distinguish SSH terminals from Windows Remote Desktop entries; both types share the same group tree and ordering.
 - **Password and private-key authentication** - Connect with passwords, key files, or pasted private-key content, including passphrase and secret visibility toggles where needed.
 - **Jump hosts** - Configure ordered SSH jump-host chains and reuse the same routing model for terminals, file operations, tunnels, and MCP Bridge sessions.
 - **First-hop proxies** - Route the first SSH hop through SOCKS5 or HTTP CONNECT proxies with optional proxy authentication.
@@ -27,18 +29,25 @@ MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP 
 ### Terminal Workspace
 
 - **Tabbed SSH terminals** - Open multiple PTY sessions, reorder tabs, reconnect in place, close sessions, and keep the session title tied to the active SSH profile.
+- **Drag-to-split layouts** - Drag a tab from the tab bar into the terminal area to split it. Eight snap points (four corners and four edge midpoints) appear with a live preview of the target region, and dropping either opens a new pane, moves the tab into a cell, or reshapes that cell. Layouts are built on a 2×2 grid with up to four panes, covering full screen, left/right, top/bottom, three-pane, and four-pane arrangements.
+- **Per-pane tab bars** - Each pane has its own tab bar and can hold several tabs with independent ordering. SSH and local terminals can be mixed freely, the focused pane is outlined, and the sidebar file, runtime, and command panels follow the focused tab. Split layouts live only for the current run and start from a single pane on restart.
 - **Non-blocking connection startup** - New SSH tabs enter a connecting state immediately while SSH handshake and authentication run in the background.
 - **Interactive input handling** - Printable input is lightly batched to reduce WebView-to-Rust IPC load, while Enter, Tab, control sequences, and editing keys are flushed immediately.
 - **Right-click workflows** - Use right-click menu actions for copy and paste, or configure right-click to paste directly; terminal focus is restored after menu actions.
+- **Line number and timestamp gutter** - A dedicated gutter on the left can show logical line numbers and the arrival time of each line. Right-click the gutter to toggle either one, and the choice is persisted immediately.
+- **Selection match highlighting** - Selecting terminal text highlights identical content elsewhere in the scrollback; this can be turned off in appearance settings.
+- **Prompt syntax highlighting** - User, host, path, and symbol segments of the shell prompt are colored separately, with distinct palettes for light and dark themes.
 - **Cursor recovery** - Remote programs that hide the terminal cursor and fail to restore it are handled at prompt boundaries so the input cursor comes back.
 - **Local cursor fallback** - The frontend restores xterm cursor visibility when switching sessions or replaying cached output, without sending control characters back to SSH.
-- **Search and fit behavior** - xterm.js powers terminal rendering, sizing, and terminal search support.
+- **Custom scrollbars** - The terminal scrollbar appears as the pointer approaches the right edge and supports dragging; the tab bar gains a click-to-jump, draggable horizontal scrollbar when tabs overflow.
+- **Adaptive sizing** - xterm.js powers terminal rendering, and rows and columns are recalculated and pushed to the remote PTY whenever the window or split layout changes.
 - **Focus-aware session switching** - Switching sessions, reconnecting, and delayed SSH startup restore input focus when the target terminal is ready.
 - **SSH long-line display modes** - SSH sessions can wrap automatically or keep long output on one horizontally scrolling line; local terminals and TUIs always wrap.
 - **Path-aware terminal output** - The shell injects a cwd sync hook so the app can follow remote directory changes made with `cd`, `pushd`, or `popd`.
 - **Direct-input cwd refresh** - Typed or pasted `cd` commands refresh the file panel early, then backend cwd markers correct the path if needed.
 - **Child-shell cwd sync** - Bash child shells inherit the cwd sync hook, while non-interactive scripts avoid emitting MyTerminal sync markers.
 - **Remote shell history** - Read remote shell history files for command history features without exposing MyTerminal's internal setup command.
+- **System clipboard bridge** - Copy and cut anywhere in the app also write to the Windows system clipboard, and terminal paste reads through the native channel so the WebView never prompts for clipboard permission.
 
 ### Local Terminals and AI CLIs
 
@@ -63,10 +72,24 @@ MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP 
 
 ### Runtime and Tunnels
 
-- **Runtime overview** - Fetch remote OS, CPU, memory, disk, host IP, and uptime information for the active SSH profile.
+- **Runtime overview** - Fetch remote CPU, memory, root filesystem usage, connection counts, uptime, and OS information for the active SSH profile, with each row color-coded by utilization.
+- **Per-core CPU detail** - Expand the CPU row to see utilization for every individual core.
+- **Top resource consumers** - Expand the memory row to see the heaviest entries, sortable by memory or CPU and grouped by process or thread.
+- **Multiple resource sources** - Switch the resource statistics source between system processes, Docker, Podman, and Kubernetes in settings; the Kubernetes source reports pod-level CPU and memory across all namespaces.
+- **Largest file lookup** - Expand the storage row to find the largest files on the remote host with full paths, using a time-bounded scan.
 - **Connection details** - Expand the connections metric to inspect local/peer addresses and ports of established remote connections, with SSH management connections pinned and tagged.
 - **Local port forwarding** - Create, edit, start, and stop SSH local forwarding rules with custom bind addresses and target hosts.
 - **Tunnel lifecycle management** - Running tunnel records are tracked separately from terminal sessions so they can be stopped cleanly.
+
+### Built-in AI Assistant
+
+- **AI chat panel** - A collapsible right sidebar hosts an AI conversation with streaming output, a stop control, new-conversation support, and locally stored chat history you can reopen or delete.
+- **Multiple endpoints and models** - Configure several AI endpoints, each with its own models, context window, and output limit. API keys are encrypted at rest.
+- **Three API protocols** - Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses are supported. The settings page previews the resolved request URL and maps common HTTP errors to actionable hints.
+- **Thinking effort and auto-compaction** - Pick a thinking effort level per turn and optionally auto-compact the conversation: once estimated tokens pass your threshold, older messages are folded into a summary and the panel says so.
+- **AI operations on remote hosts** - The assistant can list connections, run commands, and use the full remote file toolset, governed by the same approval policy as external MCP clients.
+- **Commands run in real terminals** - AI commands are typed into a visible terminal tab and echoed with a highlighted `[AI]` prefix. When the shell lacks command-boundary support, a full-screen TUI is in the foreground, or the terminal is busy, execution falls back to a background channel and the reason is reported honestly.
+- **Inline approvals** - Approval cards from the built-in assistant appear directly under the tool call that raised them, and the sidebar auto-expands to the chat tab when collapsed.
 
 ### MCP Bridge and AI Approval
 
@@ -76,6 +99,7 @@ MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP 
 - **GUI-approved execution** - Remote commands, uploads, downloads, writes, deletes, renames, and directory creation requests are shown in MyTerminal for approval by default.
 - **Right-side AI execution panel** - Pending and completed AI requests live in a resizable right sidebar so command, file, and history panels remain available.
 - **Serialized session commands** - Commands submitted to the same AI bridge session run in order, while different sessions can still run concurrently.
+- **Dedicated execution settings** - Auto-execution, run-in-terminal, default timeout, and maximum output size live on a separate Execution settings page shared by the built-in assistant and external MCP clients.
 - **Auto-execution controls** - Enable automatic bridge execution globally or allow it only for selected SSH connections.
 - **AI approval notifications** - Pending AI execution requests can expand automatically, show compact SSH/command/target summaries, and raise desktop notifications with approval shortcuts where supported.
 - **Agent usage guidance** - MCP clients receive tool instructions that clarify list/open/use/close flow, session ID rules, and file-write best practices.
@@ -92,7 +116,10 @@ MyTerminal brings terminal tabs, SSH profiles with jump hosts and proxies, SFTP 
 ### Desktop Experience
 
 - **Bilingual UI** - Switch between English and Simplified Chinese.
-- **Theme and layout preferences** - Use light or dark mode, compact sidebar, customizable terminal fonts, terminal background images, right-click behavior, and long-line display mode.
+- **Custom title bar** - A borderless window with a custom title bar hosting sidebar toggles, new connection, connection manager, local terminal, update check, theme switch, settings, and window controls. In-app modals are draggable.
+- **Appearance settings** - Set Latin font, CJK font, font size, and line height separately for terminals and the AI chat area, with one-click reset for size and line height. Terminal background images support opacity plus cover, contain, stretch, tile, and center fitting. Right-click behavior, long-line mode, selection match highlighting, and hardware acceleration are all toggleable.
+- **Unified floating toasts** - Results from saving settings, testing connections, and copying configuration appear as a short-lived floating toast instead of inline blocks that shift the form layout.
+- **Progressive startup** - The terminal core and AI chat panel load on demand so the title bar and sidebars are usable first. The AI sidebar is not loaded until first expanded, and collapsing it afterwards never interrupts an in-flight streaming response.
 - **System tray support** - Keep MyTerminal accessible from the desktop shell with a tray icon.
 - **Local-first storage** - Settings and SSH profiles are stored locally, with encrypted secret handling inside the app and plain JSON only when you explicitly export.
 
@@ -211,6 +238,7 @@ npm run check        # Run frontend build and Rust backend checks
 - **Backend:** Rust, ssh2, reqwest, AES-GCM, local JSON persistence
 - **Frontend:** React, TypeScript, Vite, Zustand
 - **Terminal and editor:** xterm.js, portable-pty, Monaco Editor
+- **AI integration:** Anthropic Messages, OpenAI Chat Completions and Responses, MCP
 - **Sync and files:** SFTP, WebDAV, local import/export
 
 ## Acknowledgements
