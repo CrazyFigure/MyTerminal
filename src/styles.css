@@ -1052,13 +1052,22 @@ select:disabled {
   box-shadow: none;
 }
 
-/* 分屏网格：固定 2×2 槽位，格子按掩码跨列/跨行。分隔只靠 1px 边框，不留间距。
+/* 分屏网格：2×2 槽位，格子按掩码跨列/跨行。两条轨道尺寸由 --split-*-ratio 驱动，
+   拖动分隔条时手柄就地改写这两个变量，浏览器重排即完成尺寸变化（不经过 React）。
    分屏与否统一用 data-pane-count 判定，避免再维护一个只在 CSS 里出现的类名。 */
 .terminal-split-grid {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-template-rows: repeat(2, minmax(0, 1fr));
+  /* 未拖动时为 0.5/0.5，即与此前完全一致的均分。minmax(0, …) 必须保留：
+     否则终端内容的最小内容宽度会把轨道顶开，比例失效。 */
+  --split-column-ratio: 0.5;
+  --split-row-ratio: 0.5;
+  grid-template-columns:
+    minmax(0, calc(var(--split-column-ratio) * 100%))
+    minmax(0, 1fr);
+  grid-template-rows:
+    minmax(0, calc(var(--split-row-ratio) * 100%))
+    minmax(0, 1fr);
   gap: 0;
   min-height: 0;
   min-width: 0;
@@ -1149,15 +1158,133 @@ select:disabled {
   text-align: center;
 }
 
+/* 分屏分隔条：平时完全透明，只是一条 7px 宽的可悬停热区；指针移近才浮现出握柄。
+   终端信息密度高，常驻的粗线会一直占着画面，所以默认藏起来。
+   位置由 --split-*-ratio 直接算出，和网格轨道用的是同一组变量，永远对齐。 */
+.split-divider {
+  position: absolute;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 触摸拖动时不要让浏览器把手势判定成滚动。 */
+  touch-action: none;
+}
+
+/* 拖标签选分屏落点时，指示层接管整个终端区；此时手柄必须让开，
+   否则指针滑过分隔线会被它吃掉，落点提示随之闪断。 */
+.terminal-split-grid.is-tab-dragging .split-divider {
+  pointer-events: none;
+}
+
+.terminal-split-grid.is-tab-dragging .split-divider-grip {
+  opacity: 0;
+}
+
+/* 竖线：横向定位在比例处，宽度是热区，自身居中盖住那条 1px 边框。 */
+.split-divider-column {
+  top: 0;
+  bottom: 0;
+  width: 11px;
+  left: calc(var(--split-column-ratio, 0.5) * 100%);
+  transform: translateX(-50%);
+  cursor: col-resize;
+}
+
+/* 横线同理，只是换个轴。 */
+.split-divider-row {
+  left: 0;
+  right: 0;
+  height: 11px;
+  top: calc(var(--split-row-ratio, 0.5) * 100%);
+  transform: translateY(-50%);
+  cursor: row-resize;
+}
+
+/* 三分格里的线只有半长：例如「左上/右上/下半」那条竖线只存在于上半行，
+   下半是一整块，没有可拖之处。span 由 resolveSplitDividers 从掩码几何推导。 */
+.split-divider-column[data-span='first'] {
+  bottom: calc((1 - var(--split-row-ratio, 0.5)) * 100%);
+}
+
+.split-divider-column[data-span='second'] {
+  top: calc(var(--split-row-ratio, 0.5) * 100%);
+}
+
+.split-divider-row[data-span='first'] {
+  right: calc((1 - var(--split-column-ratio, 0.5)) * 100%);
+}
+
+.split-divider-row[data-span='second'] {
+  left: calc(var(--split-column-ratio, 0.5) * 100%);
+}
+
+/* 四分格中心：两条线交汇处给一个能同时改两个方向的手柄，省去分别拖两次。
+   它盖在两条线之上，因此 z-index 更高。 */
+.split-divider-center {
+  z-index: 16;
+  width: 18px;
+  height: 18px;
+  left: calc(var(--split-column-ratio, 0.5) * 100%);
+  top: calc(var(--split-row-ratio, 0.5) * 100%);
+  transform: translate(-50%, -50%);
+  cursor: move;
+}
+
+/* 握柄本体：默认透明，悬停或拖拽时才显形。 */
+.split-divider-grip {
+  border-radius: 999px;
+  background: var(--app-active-border);
+  opacity: 0;
+  transition: opacity 120ms ease, transform 120ms ease;
+  pointer-events: none;
+}
+
+.split-divider-column .split-divider-grip {
+  width: 3px;
+  height: 36px;
+}
+
+.split-divider-row .split-divider-grip {
+  width: 36px;
+  height: 3px;
+}
+
+.split-divider-center .split-divider-grip {
+  width: 10px;
+  height: 10px;
+}
+
+.split-divider.is-visible .split-divider-grip {
+  opacity: 0.75;
+}
+
+/* 拖拽中整条线提亮并加长，明确"正在改的是这一条"。 */
+.split-divider.is-dragging .split-divider-grip {
+  opacity: 1;
+  transform: scale(1.15);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .split-divider-grip {
+    transition: none;
+  }
+}
+
 /* 落点指示层：铺满整个终端区，八个吸附点长在它们各自代表的位置上。
-   只做指路，不做花哨动效——终端本身信息密度高，装饰会干扰阅读。 */
+   只做指路，不做花哨动效——终端本身信息密度高，装饰会干扰阅读。
+   轨道沿用容器上的比例变量，预览块的边界才会和真实分割线重合（拖宽过的分屏尤其明显）。 */
 .split-drop-layer {
   position: absolute;
   inset: 0;
   z-index: 20;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-template-rows: repeat(2, minmax(0, 1fr));
+  grid-template-columns:
+    minmax(0, calc(var(--split-column-ratio, 0.5) * 100%))
+    minmax(0, 1fr);
+  grid-template-rows:
+    minmax(0, calc(var(--split-row-ratio, 0.5) * 100%))
+    minmax(0, 1fr);
   pointer-events: none;
 }
 

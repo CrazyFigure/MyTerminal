@@ -23,3 +23,11 @@ export {
   type SplitLayout,
   type SplitPane,
 } from './splitLayout';
+export {
+  clampSplitRatio,
+  DEFAULT_SPLIT_RATIOS,
+  resolveMinPaneRatio,
+  resolveSplitDividers,
+  type SplitDivider,
+  type SplitRatios,
+} from './splitRatios';

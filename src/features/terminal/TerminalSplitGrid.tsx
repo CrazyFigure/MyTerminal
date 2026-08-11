@@ -1,8 +1,9 @@
-import { Suspense, lazy, useEffect, useMemo, type RefObject } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 
 import { retainTerminalSessions } from '../../terminal/terminalOutputHub';
 import type { AppSettings, ConnectionProfile, TerminalSession } from '../../types';
 import type { TranslationKey } from '../../i18n';
+import { SplitDividerHandle } from './SplitDividerHandle';
 import { SplitDropIndicator } from './SplitDropIndicator';
 import { SplitPaneTabBar } from './SplitPaneTabBar';
 import {
@@ -11,6 +12,12 @@ import {
   type SplitDropTarget,
   type SplitLayout,
 } from './splitLayout';
+import {
+  applySplitRatiosToElement,
+  DEFAULT_SPLIT_RATIOS,
+  resolveSplitDividers,
+  type SplitRatios,
+} from './splitRatios';
 
 // 终端内核较重，沿用 App 原有的懒加载边界；分屏后多个格子共享同一份已加载的模块。
 const TerminalWorkspace = lazy(() => import('../../TerminalWorkspace').then((module) => ({
@@ -64,6 +71,43 @@ export function TerminalSplitGrid({
   const sessionIdsKey = sessions.map((item) => item.id).join('\n');
   const liveSessionIds = useMemo(() => sessions.map((item) => item.id), [sessionIdsKey]);
 
+  // 分屏比例只有两个数字：竖线的横向位置与横线的纵向位置（见 splitRatios.ts）。
+  // 它属于「当前这套分屏长什么样」的视图状态，和会话本身一样只活在运行期，因此留在组件里。
+  const [ratios, setRatios] = useState<SplitRatios>(DEFAULT_SPLIT_RATIOS);
+  // 拖拽期间不重渲染，手柄通过 ref 读取起始比例，避免闭包拿到过期值。
+  const ratiosRef = useRef(ratios);
+  ratiosRef.current = ratios;
+
+  // 该画哪几条线、每条多长，全部从掩码几何推导：二分屏一条贯穿线，三分格里那条短线只占半边，
+  // 四分格两条贯穿线外加一个中心手柄。因此 2/3/4 分屏不需要各写一套分支。
+  const dividers = useMemo(() => resolveSplitDividers(layout), [layout]);
+
+  // 松手时才提交：拖拽过程中的跟手效果由手柄直接改 CSS 变量完成，一次拖动只产生一次渲染。
+  const commitRatios = useCallback((next: SplitRatios) => {
+    setRatios(next);
+  }, []);
+
+  // 比例写进 DOM 走 effect，而不是 JSX 的 style：拖拽中手柄会直接改写这两个变量，
+  // 若 style 里也声明它们，任何一次不相干的重渲染（新输出、标签切换）都会把变量刷回
+  // 上一次提交的值，表现为拖到一半突然弹回去。effect 只在提交后的比例真正变化时才写。
+  useEffect(() => {
+    const element = containerRef.current;
+    if (element) {
+      applySplitRatiosToElement(element, ratios);
+    }
+  }, [containerRef, ratios]);
+
+  // 分屏拆回单格时复位。比例这两个数字在任何布局下含义都一样（竖线在哪、横线在哪），
+  // 不存在"对旧结构才有效"的问题，所以布局改变**不**重置——左右二分拖成 70/30 后
+  // 再把右侧切成上下两块，那条竖线理应留在用户放的位置。只有整个分屏被拆干净了，
+  // 下次重新分屏才从均分开始，免得用户莫名其妙继承到很久以前的比例。
+  const hasDividers = dividers.length > 0;
+  useEffect(() => {
+    if (!hasDividers) {
+      setRatios(DEFAULT_SPLIT_RATIOS);
+    }
+  }, [hasDividers]);
+
   // 全局输出缓存/行号时间线的回收放在容器里执行一次；若下沉到每个终端实例，
   // 分屏后同一份回收会按实例数重复触发。
   useEffect(() => {
@@ -71,7 +115,11 @@ export function TerminalSplitGrid({
   }, [liveSessionIds]);
 
   return (
-    <div className="terminal-split-grid" data-pane-count={layout.panes.length} ref={containerRef}>
+    <div
+      className={`terminal-split-grid ${dragActive ? 'is-tab-dragging' : ''}`}
+      data-pane-count={layout.panes.length}
+      ref={containerRef}
+    >
       {layout.panes.map((pane) => {
         // 每格只渲染自己那一条标签栏对应的会话；未激活的标签不挂终端实例。
         const paneSessions = pane.sessionIds
@@ -144,6 +192,17 @@ export function TerminalSplitGrid({
           </section>
         );
       })}
+      {/* 分隔条浮在格子之上、指示层之下：拖标签时指示层接管整个区域，
+          此时手柄被 CSS 屏蔽（.terminal-split-grid.is-tab-dragging），不会抢走落点判定。 */}
+      {dividers.map((divider) => (
+        <SplitDividerHandle
+          containerRef={containerRef}
+          divider={divider}
+          key={divider.id}
+          onCommitRatios={commitRatios}
+          ratiosRef={ratiosRef}
+        />
+      ))}
       {/* 指示层铺满网格，与格子共享同一坐标系，缩放窗口时不需要额外同步矩形。 */}
       <SplitDropIndicator hint={dropHint} layout={layout} target={dropTarget} visible={dragActive} />
     </div>
