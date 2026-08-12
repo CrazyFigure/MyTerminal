@@ -222,6 +222,8 @@ const syncTerminalGutter = (nowMs: number) => {
   const width = resolveTerminalGutterWidth();
   applyTerminalGutterWidth(width);
   gutter.style.display = 'block';
+  // 两项都关时只剩右键命中区，活动行游标刻度失去参照物，交给样式隐藏。
+  gutter.classList.toggle('is-collapsed', !showNumber && !showTime);
 
   if (terminal.cols <= 0 || terminal.rows <= 0) {
     return;
@@ -302,7 +304,7 @@ const syncTerminalGutter = (nowMs: number) => {
       } else if (logicalNumber !== undefined) {
         arrival = resolveLineTime(logicalNumber);
       }
-      timeSpan.textContent = arrival !== undefined ? `[${formatTerminalGutterClock(arrival)}]` : '';
+      timeSpan.textContent = arrival !== undefined ? formatTerminalGutterClock(arrival) : '';
       rowElement.appendChild(timeSpan);
     }
 
