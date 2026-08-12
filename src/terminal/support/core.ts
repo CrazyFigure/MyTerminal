@@ -278,8 +278,9 @@ export const terminalGutterMinWidthPx = 16;
 // 行号栏左右内边距，保证时间戳/行号不贴住边缘；左侧取较小值避免时间戳与 gutter 左缘之间出现空隙。
 export const terminalGutterHorizontalPaddingPx = 6;
 
-// 时间戳固定按 [HH:MM:SS] 展示；行号右对齐，位宽随当前最大逻辑行号动态增长。
-export const terminalGutterTimestampCharCount = 10;
+// 时间戳固定按 HH:MM:SS 展示；行号右对齐，位宽随当前最大逻辑行号动态增长。
+// 不再加方括号：时间戳独占一列且右侧有分隔线，括号只是噪声，去掉还能省回两个字符的正文宽度。
+export const terminalGutterTimestampCharCount = 8;
 
 export const terminalGutterMinDigits = 2;
 
@@ -291,8 +292,9 @@ export const terminalGutterMinFontSizePx = 11;
 // 等宽字体单字符宽度估算系数，用于按字符数换算行号栏像素宽度。
 export const terminalGutterCharWidthRatio = 0.62;
 
-// 软换行续行在行号列以该符号占位，表示它属于上一条逻辑行。
-export const terminalGutterWrappedLineSymbol = "-";
+// 软换行续行在行号列以该符号占位，表示它属于上一条逻辑行；
+// 用中点而不是减号，避免右对齐的数字列里被误读成负号。
+export const terminalGutterWrappedLineSymbol = "·";
 
 // 每个会话最多缓存这么多条逻辑行的到达时刻，超出后从最旧端回收并用 base 记录已丢弃数量。
 export const terminalGutterMaxTrackedLines = 5000;

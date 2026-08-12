@@ -61,7 +61,14 @@
 
 /* ── 终端左侧行号栏（时间戳 + 行号）────────────────────────────────── */
 
+/* 行号栏叠在用户自选的终端底色/背景图之上，所以不铺任何底色：分隔只交给右侧一条发丝线，
+   终端背景因此保持连续。五个颜色抽成局部变量，深色模式只需整体覆盖这一组。 */
 .terminal-gutter {
+  --terminal-gutter-rule: rgba(100, 116, 139, 0.28);
+  --terminal-gutter-number: #5c6b7f;
+  --terminal-gutter-time: #6b7280;
+  --terminal-gutter-active: #4338ca;
+  --terminal-gutter-caret: #4f46e5;
   position: absolute;
   z-index: 5;
   display: none;
@@ -70,9 +77,10 @@
   user-select: none;
   font-family: 'Cascadia Mono', Consolas, 'Courier New', monospace;
   line-height: 1;
-  /* 浅色模式：淡灰底、深灰字，和终端正文分隔但不喧宾夺主。 */
-  color: #9aa0a6;
-  background: rgba(0, 0, 0, 0.03);
+  color: var(--terminal-gutter-number);
+  background: transparent;
+  /* 全局 box-sizing 为 border-box，这条线从 gutter 自身宽度里占位，不会挤占正文列宽。 */
+  border-right: 1px solid var(--terminal-gutter-rule);
 }
 
 .terminal-gutter-line {
@@ -92,43 +100,47 @@
 .terminal-gutter-time {
   flex: 0 0 auto;
   margin-right: auto;
-  color: #b0b6bd;
+  color: var(--terminal-gutter-time);
   font-variant-numeric: tabular-nums;
 }
 
 .terminal-gutter-number {
   flex: 0 0 auto;
   text-align: right;
+  /* 行号与时间戳对比度接近，主次靠字重区分，不靠压暗其中一个——压暗就会回到看不清的老问题。 */
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
-/* 当前（光标所在）行高亮，时间戳走实时时钟，颜色略深以示活动状态。 */
-.terminal-gutter-line.is-active {
-  color: #6b7075;
-  background: rgba(99, 102, 241, 0.08);
-}
-
+/* 当前（光标所在）行：文字换强调色，并在分隔线上叠一段 2px 游标刻度，
+   让这条线同时充当时间轴。比整行铺一块底色更精确，也不会盖住终端背景图。 */
+.terminal-gutter-line.is-active,
 .terminal-gutter-line.is-active .terminal-gutter-time {
-  color: #6b7075;
+  color: var(--terminal-gutter-active);
 }
 
-/* 深色模式：暗底亮字，与深色终端背景协调。 */
+.terminal-gutter-line.is-active::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--terminal-gutter-caret);
+}
+
+/* 行号和时间戳都关闭时只剩右键命中区，游标刻度没有参照物，只保留边线。 */
+.terminal-gutter.is-collapsed .terminal-gutter-line.is-active::after {
+  display: none;
+}
+
+/* 深色模式：结构完全一致，只整体换掉这组变量。 */
 .app-shell.theme-dark .terminal-gutter {
-  color: #6b7280;
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.app-shell.theme-dark .terminal-gutter-time {
-  color: #5f6672;
-}
-
-.app-shell.theme-dark .terminal-gutter-line.is-active {
-  color: #aab2c0;
-  background: rgba(129, 140, 248, 0.12);
-}
-
-.app-shell.theme-dark .terminal-gutter-line.is-active .terminal-gutter-time {
-  color: #aab2c0;
+  --terminal-gutter-rule: rgba(148, 163, 184, 0.22);
+  --terminal-gutter-number: #8b96a6;
+  --terminal-gutter-time: #828d9c;
+  --terminal-gutter-active: #a5b4fc;
+  --terminal-gutter-caret: #818cf8;
 }
 
 /* 行号栏右键菜单：显示项开关，前置勾选标记。 */
