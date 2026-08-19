@@ -1421,10 +1421,33 @@ export function TerminalWorkspace({
       scheduleTerminalContrastCursorSync();
       return true;
     });
-    // 精确放行 Windows 本地 Claude 的 Ctrl+V 浏览器默认行为：xterm 随后接收可信 paste 事件并负责
-    // bracketed-paste/换行规范化；返回 false 只阻止它把该按键编码成 \x16，不能手动再读一次剪贴板。
+    // 终端专用 Ctrl+Shift+C/V 复用右键菜单的系统剪贴板通道；普通 Ctrl+C/V 仍保留给 Shell/TUI，
+    // 其中 Windows 本地 Claude 的 Ctrl+V 继续交由 WebView 原生 paste，以维持 bracketed-paste/换行规范化。
     terminal.attachCustomKeyEventHandler((event) => {
       if (terminalActiveReplayRef.current || terminalReplayInputBlockedRef.current) {
+        return false;
+      }
+      const terminalClipboardShortcutCode =
+        event.type === 'keydown'
+        && event.ctrlKey
+        && event.shiftKey
+        && !event.altKey
+        && !event.metaKey
+        && (event.code === 'KeyC' || event.code === 'KeyV')
+          ? event.code
+          : null;
+      if (terminalClipboardShortcutCode) {
+        // 必须消费按键，避免 Ctrl+Shift+C 退化成 SIGINT、Ctrl+Shift+V 被编码成控制字符送入 PTY。
+        event.preventDefault();
+        event.stopPropagation();
+        if (terminalClipboardShortcutCode === 'KeyC') {
+          const selectedText = terminal.getSelection() || resolveTerminalSelectionSnapshot()?.text || '';
+          if (selectedText) {
+            void writeClipboardText(selectedText).catch(() => undefined);
+          }
+        } else {
+          void pasteClipboardToTerminal();
+        }
         return false;
       }
       const useNativeClipboardPaste =

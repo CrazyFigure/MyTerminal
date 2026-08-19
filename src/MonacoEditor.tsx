@@ -60,6 +60,14 @@ export default function MonacoEditor({
   }, [onSave]);
 
   const handleEditorMount = useCallback((editor: monaco.editor.IStandaloneCodeEditor) => {
+    // 为终端用户补充 Ctrl/Cmd+Shift+C/V 别名，并转交 Monaco 原生命令，确保选区、多光标、撤销栈与常规复制粘贴完全一致。
+    const clipboardShortcutModifier = monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift;
+    editor.addCommand(clipboardShortcutModifier | monaco.KeyCode.KeyC, () => {
+      editor.trigger('keyboard', 'editor.action.clipboardCopyAction', null);
+    });
+    editor.addCommand(clipboardShortcutModifier | monaco.KeyCode.KeyV, () => {
+      editor.trigger('keyboard', 'editor.action.clipboardPasteAction', null);
+    });
     // Ctrl/Cmd+S 与编辑器右上角保存按钮共用同一保存入口，避免快捷键和按钮行为分叉。
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       onSaveRef.current?.();
