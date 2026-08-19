@@ -17,16 +17,19 @@ pub(super) fn default_ui_language() -> String {
     "zh-CN".into()
 }
 
+// 默认终端字体族名：内置 JetBrains Mono Light（细体）
 pub(super) fn default_shell_font_family() -> String {
-    "JetBrains Mono".into()
+    "JetBrains Mono Light".into()
 }
 
+// 默认终端西文字体：内置 JetBrains Mono Light（细体）
 pub(super) fn default_shell_latin_font_family() -> String {
-    "JetBrains Mono".into()
+    "JetBrains Mono Light".into()
 }
 
+// 默认终端中文字体：内置 Maple Mono Normal NF CN Light（细体）
 pub(super) fn default_shell_cjk_font_family() -> String {
-    "Microsoft YaHei UI".into()
+    "Maple Mono Normal NF CN Light".into()
 }
 
 pub(super) fn default_shell_font_size() -> u16 {
@@ -561,7 +564,7 @@ impl Default for AppSettings {
             ssh_keepalive_interval_sec: default_ssh_keepalive_interval_sec(),
             shell_latin_font_family: default_shell_latin_font_family(),
             shell_cjk_font_family: default_shell_cjk_font_family(),
-            shell_font_family: "JetBrains Mono".into(),
+            shell_font_family: default_shell_font_family(),
             shell_font_size: 15,
             shell_line_height: default_shell_line_height(),
             agent_chat_latin_font_family: None,

@@ -1,9 +1,11 @@
 // 终端英文字体只允许等宽字体参与首选匹配；比例字体会让 xterm 依据宽字形放大整张字符网格。
+// 优先推荐内置的 JetBrains Mono Light（细体）与标准体、以及 Maple Mono
 export const terminalLatinFontOptions = [
+  'JetBrains Mono Light',
   'JetBrains Mono',
+  'Maple Mono Normal NF CN Light',
   'Maple Mono Normal NF CN',
   'Maple Mono Normal NF CN Regular',
-  'Maple Mono Normal NF CN Light',
   'Cascadia Mono',
   'Consolas',
   'Fira Code',
@@ -14,12 +16,13 @@ export const terminalLatinFontOptions = [
 ];
 
 // 中文字体仍允许选择系统中的任意字体族；真正的 ASCII 单元格宽度始终由已验证的等宽英文字体决定。
+// 优先推荐内置的 Maple Mono Normal NF CN Light 与标准体
 export const terminalCjkFontOptions = [
-  'Microsoft YaHei UI',
-  'Microsoft YaHei',
+  'Maple Mono Normal NF CN Light',
   'Maple Mono Normal NF CN',
   'Maple Mono Normal NF CN Regular',
-  'Maple Mono Normal NF CN Light',
+  'Microsoft YaHei UI',
+  'Microsoft YaHei',
   'SimSun',
   'SimHei',
   'Microsoft JhengHei UI',
@@ -30,6 +33,10 @@ export const terminalCjkFontOptions = [
 
 // 跨平台等宽兜底按常见可用性排序；只有首选字体缺失或不是等宽字体时才会接管 ASCII。
 const terminalMonospaceFallbacks = [
+  'JetBrains Mono Light',
+  'JetBrains Mono',
+  'Maple Mono Normal NF CN Light',
+  'Maple Mono Normal NF CN',
   'Cascadia Mono',
   'Consolas',
   'SFMono-Regular',
@@ -42,11 +49,19 @@ const terminalMonospaceFallbacks = [
   'Roboto Mono',
   'Source Code Pro',
   'Fira Code',
-  'JetBrains Mono',
   'Hack',
   'IBM Plex Mono',
   'Courier New',
 ] as const;
+
+// 软件内置字体集合（随安装包打包，开箱即用，始终可用且优先于系统缺失探测）
+export const builtinTerminalFontFamilies = new Set([
+  'jetbrains mono',
+  'jetbrains mono light',
+  'maple mono normal nf cn',
+  'maple mono normal nf cn light',
+  'maple mono normal nf cn regular',
+]);
 
 const genericFontFamilies = new Set(['monospace', 'sans-serif', 'serif', 'cursive', 'fantasy', 'system-ui', 'ui-monospace']);
 const fontDetectionFallbacks = ['monospace', 'sans-serif', 'serif'] as const;
@@ -99,7 +114,8 @@ export const isTerminalFontFamilyAvailable = (fontFamily: string) => {
   if (!cleaned) {
     return false;
   }
-  if (genericFontFamilies.has(normalized)) {
+  // 通用族名与内置打包字体始终可用
+  if (genericFontFamilies.has(normalized) || builtinTerminalFontFamilies.has(normalized)) {
     return true;
   }
   const cached = fontAvailabilityCache.get(normalized);
@@ -129,7 +145,8 @@ export const isTerminalMonospaceFontFamily = (fontFamily: string) => {
   if (!cleaned) {
     return false;
   }
-  if (normalized === 'monospace' || normalized === 'ui-monospace') {
+  // 通用等宽与内置等宽字体始终判定为等宽可用
+  if (normalized === 'monospace' || normalized === 'ui-monospace' || builtinTerminalFontFamilies.has(normalized)) {
     return true;
   }
   const cached = fontMonospaceCache.get(normalized);
@@ -182,7 +199,10 @@ export const resolveTerminalLatinFontFamily = (
       continue;
     }
     seen.add(normalized);
-    const installedName = installedFonts ? installedFonts.get(normalized) : candidate;
+    // 优先命中系统字体；若系统未安装但属于软件内置字体，仍判定命中
+    const installedName = installedFonts
+      ? (installedFonts.get(normalized) ?? (builtinTerminalFontFamilies.has(normalized) ? candidate : undefined))
+      : candidate;
     if (!installedName || !isTerminalMonospaceFontFamily(installedName)) {
       continue;
     }
@@ -200,6 +220,7 @@ export const agentChatLatinFontOptions = [
   'Helvetica Neue',
   'Georgia',
   'Times New Roman',
+  'JetBrains Mono Light',
   'JetBrains Mono',
   'Cascadia Mono',
   'Consolas',
@@ -209,6 +230,8 @@ export const agentChatLatinFontOptions = [
 
 // AI 对话中文字体允许任意字体族；代码块单独使用终端等宽字体栈，不受这里影响。
 export const agentChatCjkFontOptions = [
+  'Maple Mono Normal NF CN Light',
+  'Maple Mono Normal NF CN',
   'Microsoft YaHei UI',
   'Microsoft YaHei',
   'PingFang SC',
@@ -249,7 +272,10 @@ export const buildAgentChatFontFamily = (
       continue;
     }
     seen.add(normalized);
-    const installedName = installedFonts ? installedFonts.get(normalized) : candidate;
+    // 优先命中系统字体；若系统未安装但属于软件内置字体，仍判定命中
+    const installedName = installedFonts
+      ? (installedFonts.get(normalized) ?? (builtinTerminalFontFamilies.has(normalized) ? candidate : undefined))
+      : candidate;
     if (installedName && isTerminalFontFamilyAvailable(installedName)) {
       primaryFont = quoteTerminalFontFamily(installedName) ?? 'sans-serif';
       break;
