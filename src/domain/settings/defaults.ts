@@ -11,9 +11,11 @@ export const defaultSettings: AppSettings = {
   runtimeResourceRefreshIntervalSec: 3,
   runtimeResourceSource: 'system',
   sshKeepaliveIntervalSec: 30,
-  shellLatinFontFamily: 'JetBrains Mono',
-  shellCjkFontFamily: 'Microsoft YaHei UI',
-  shellFontFamily: 'JetBrains Mono',
+  // 默认终端西文字体：内置 JetBrains Mono Light
+  shellLatinFontFamily: 'JetBrains Mono Light',
+  // 默认终端中文字体：内置 Maple Mono Normal NF CN Light
+  shellCjkFontFamily: 'Maple Mono Normal NF CN Light',
+  shellFontFamily: 'JetBrains Mono Light',
   shellFontSize: 15,
   // 终端行高沿用历史硬编码值，升级后画面密度保持不变。
   shellLineHeight: 1.18,

@@ -1,0 +1,158 @@
+/* MyTerminal 内置字体声明
+ * JetBrains Mono (西文) + Maple Mono Normal NF CN (中文及 Nerd Font 图标)
+ * 深度支持 Light 细体字重，并提供 local() 优先匹配策略
+ */
+
+/* ═════════════════════════════════════════════════════════
+ * 1. JetBrains Mono
+ * ═════════════════════════════════════════════════════════ */
+
+/* JetBrains Mono Light (独立族名) */
+@font-face {
+  font-family: 'JetBrains Mono Light';
+  src: local('JetBrains Mono Light'),
+       local('JetBrainsMono-Light'),
+       url('../assets/fonts/JetBrainsMono-Light.woff2') format('woff2');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono Light';
+  src: local('JetBrains Mono Light Italic'),
+       local('JetBrainsMono-LightItalic'),
+       url('../assets/fonts/JetBrainsMono-LightItalic.woff2') format('woff2');
+  font-weight: 300;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* JetBrains Mono (多字重标准族名) */
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: local('JetBrains Mono Light'),
+       local('JetBrainsMono-Light'),
+       url('../assets/fonts/JetBrainsMono-Light.woff2') format('woff2');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: local('JetBrains Mono Light Italic'),
+       local('JetBrainsMono-LightItalic'),
+       url('../assets/fonts/JetBrainsMono-LightItalic.woff2') format('woff2');
+  font-weight: 300;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: local('JetBrains Mono Regular'),
+       local('JetBrains Mono'),
+       local('JetBrainsMono-Regular'),
+       url('../assets/fonts/JetBrainsMono-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: local('JetBrains Mono Italic'),
+       local('JetBrainsMono-Italic'),
+       url('../assets/fonts/JetBrainsMono-Italic.woff2') format('woff2');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: local('JetBrains Mono Bold'),
+       local('JetBrainsMono-Bold'),
+       url('../assets/fonts/JetBrainsMono-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: local('JetBrains Mono Bold Italic'),
+       local('JetBrainsMono-BoldItalic'),
+       url('../assets/fonts/JetBrainsMono-BoldItalic.woff2') format('woff2');
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* ═════════════════════════════════════════════════════════
+ * 2. Maple Mono Normal NF CN
+ * ═════════════════════════════════════════════════════════ */
+
+/* Maple Mono Normal NF CN Light (独立族名) */
+@font-face {
+  font-family: 'Maple Mono Normal NF CN Light';
+  src: local('Maple Mono Normal NF CN Light'),
+       local('MapleMonoNormal-NF-CN-Light'),
+       url('../assets/fonts/MapleMonoNormal-NF-CN-Light.ttf') format('truetype');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Maple Mono Normal NF CN Light';
+  src: local('Maple Mono Normal NF CN Light Italic'),
+       local('MapleMonoNormal-NF-CN-LightItalic'),
+       url('../assets/fonts/MapleMonoNormal-NF-CN-LightItalic.ttf') format('truetype');
+  font-weight: 300;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* Maple Mono Normal NF CN (多字重标准族名) */
+@font-face {
+  font-family: 'Maple Mono Normal NF CN';
+  src: local('Maple Mono Normal NF CN Light'),
+       local('MapleMonoNormal-NF-CN-Light'),
+       url('../assets/fonts/MapleMonoNormal-NF-CN-Light.ttf') format('truetype');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Maple Mono Normal NF CN';
+  src: local('Maple Mono Normal NF CN Light Italic'),
+       local('MapleMonoNormal-NF-CN-LightItalic'),
+       url('../assets/fonts/MapleMonoNormal-NF-CN-LightItalic.ttf') format('truetype');
+  font-weight: 300;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Maple Mono Normal NF CN';
+  src: local('Maple Mono Normal NF CN Regular'),
+       local('Maple Mono Normal NF CN'),
+       local('MapleMonoNormal-NF-CN-Regular'),
+       url('../assets/fonts/MapleMonoNormal-NF-CN-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Maple Mono Normal NF CN';
+  src: local('Maple Mono Normal NF CN Bold'),
+       local('MapleMonoNormal-NF-CN-Bold'),
+       url('../assets/fonts/MapleMonoNormal-NF-CN-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
