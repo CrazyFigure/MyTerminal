@@ -99,13 +99,13 @@ export const useAppStore = create<StoreState>((set, get) => ({
     })),
 
   saveTunnelDraft: async () => {
-    const { activeConnectionId, tunnelDraft } = get();
+    const { activeConnectionId, tunnelDraft, tunnels } = get();
     const connectionId = tunnelDraft.connectionId || activeConnectionId;
     if (!connectionId) {
       return;
     }
 
-    const validationKey = getTunnelDraftValidationKey(tunnelDraft);
+    const validationKey = getTunnelDraftValidationKey(tunnelDraft, tunnels);
     if (validationKey) {
       set((state) => ({
         statusMessage: statusText(state.settings, validationKey),
@@ -118,9 +118,9 @@ export const useAppStore = create<StoreState>((set, get) => ({
       connectionId,
       name: tunnelDraft.name.trim(),
       bindAddress: tunnelDraft.bindAddress.trim(),
-      localPort: tunnelDraft.localPort,
+      localPort: Number(tunnelDraft.localPort),
       remoteHost: tunnelDraft.remoteHost.trim(),
-      remotePort: tunnelDraft.remotePort,
+      remotePort: Number(tunnelDraft.remotePort),
     };
 
     try {

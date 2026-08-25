@@ -792,6 +792,10 @@ pub fn open_tunnel(
     validate_tunnel_fields(&tunnel)?;
 
     let mut tunnels = state.storage.load_tunnels()?;
+    // 保存前校验本地端口是否冲突，避免多个隧道配置相同本地监听端口
+    if tunnels.iter().any(|item| item.id != tunnel.id && item.local_port == tunnel.local_port) {
+        return Err(AppError::Validation(format!("local port {} is already in use by another tunnel", tunnel.local_port)).into());
+    }
     tunnels.retain(|item| item.id != tunnel.id);
     tunnels.insert(0, tunnel.clone());
     state.storage.save_tunnels(&tunnels)?;
@@ -831,6 +835,11 @@ pub fn update_tunnel(
     let Some(index) = tunnels.iter().position(|item| item.id == tunnel.id) else {
         return Err(AppError::NotFound(format!("tunnel {} not found", tunnel.id)).into());
     };
+
+    // 保存前校验本地端口是否冲突（排除自身）
+    if tunnels.iter().any(|item| item.id != tunnel.id && item.local_port == tunnel.local_port) {
+        return Err(AppError::Validation(format!("local port {} is already in use by another tunnel", tunnel.local_port)).into());
+    }
 
     // 必须先把 MutexGuard 落到独立 let 上，让锁在分号处立即释放；
     // 否则 edition 2021 里 if let 判据中的临时 guard 会持有到块体结束，
@@ -919,6 +928,21 @@ pub fn close_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<boo
             tunnel.status = "stopped".into();
         }
     }
+    state.storage.save_tunnels(&tunnels)?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn delete_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<bool, String> {
+    // 运行中的隧道先终止后台监听并回收连接池
+    let removed_runtime = lock_tunnels(&state)?.remove(&tunnel_id);
+    if let Some(runtime) = removed_runtime {
+        runtime.stop_flag.store(true, Ordering::Relaxed);
+        cleanup_unused_tunnel_ssh_pool(&state, &runtime.connection_id)?;
+    }
+
+    let mut tunnels = state.storage.load_tunnels()?;
+    tunnels.retain(|item| item.id != tunnel_id);
     state.storage.save_tunnels(&tunnels)?;
     Ok(true)
 }

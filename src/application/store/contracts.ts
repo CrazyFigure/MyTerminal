@@ -126,11 +126,13 @@ export type StoreState = {
   checkForUpdates: () => Promise<UpdateCheckResult>;
   installUpdate: (result: UpdateCheckResult) => Promise<string>;
   openTunnel: () => Promise<void>;
+  duplicateTunnel: (tunnel: TunnelRecord) => void;
   editTunnel: (tunnel: TunnelRecord) => void;
   startTunnel: (tunnelId: string) => Promise<void>;
   startAllTunnels: () => Promise<void>;
   stopAllTunnels: () => Promise<void>;
   closeTunnel: (tunnelId: string) => Promise<void>;
+  deleteTunnel: (tunnelId: string) => Promise<void>;
   applyTunnelStatusChange: (tunnel: TunnelRecord) => void;
 };
 

@@ -178,6 +178,7 @@ export default function App() {
     checkForUpdates,
     closeSession,
     closeTunnel,
+    deleteTunnel,
     applyTunnelStatusChange,
     commandBuffers,
     connections,
@@ -186,6 +187,7 @@ export default function App() {
     copyRemotePaths,
     downloadRemotePaths,
     duplicateSession: duplicateSessionById,
+    duplicateTunnel,
     editTunnel,
     files,
     filesLoading,
@@ -233,6 +235,7 @@ export default function App() {
       checkForUpdates: state.checkForUpdates,
       closeSession: state.closeSession,
       closeTunnel: state.closeTunnel,
+      deleteTunnel: state.deleteTunnel,
       applyTunnelStatusChange: state.applyTunnelStatusChange,
       commandBuffers: state.commandBuffers,
       connections: state.connections,
@@ -241,6 +244,7 @@ export default function App() {
       copyRemotePaths: state.copyRemotePaths,
       downloadRemotePaths: state.downloadRemotePaths,
       duplicateSession: state.duplicateSession,
+      duplicateTunnel: state.duplicateTunnel,
       editTunnel: state.editTunnel,
       files: state.files,
       filesLoading: state.filesLoading,
@@ -1842,6 +1846,8 @@ export default function App() {
               }
             }}
             onCloseTunnel={closeTunnel}
+            onDeleteTunnel={deleteTunnel}
+            onDuplicateTunnel={duplicateTunnel}
             onEditTunnel={editTunnel}
             onOpenTunnel={openTunnel}
             onRefreshHistory={() => activeRemoteConnectionId ? refreshRemoteHistory(activeRemoteConnectionId) : undefined}
