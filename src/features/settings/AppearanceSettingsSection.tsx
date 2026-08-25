@@ -171,7 +171,8 @@ export function AppearanceSettingsSection({
             <Upload size={15} /> {t("fontPackImport")}
           </button>
           {fontPackReady ? (
-            <button className="danger-button font-pack-action-button" disabled={fontPackBusy} onClick={onRemoveFontPack} type="button">
+            /* 删除字体包作为危险操作，保留次要按钮圆角与尺寸基类，并叠加危险色状态 */
+            <button className="secondary-button danger-button font-pack-action-button" disabled={fontPackBusy} onClick={onRemoveFontPack} type="button">
               <Trash2 size={15} /> {t("fontPackRemove")}
             </button>
           ) : (
