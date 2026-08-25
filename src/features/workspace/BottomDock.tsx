@@ -1,7 +1,8 @@
-import type { RefObject } from 'react';
-import { ChevronDown, ChevronUp, Pencil, Play, Plus, RefreshCw, Square } from 'lucide-react';
+import { useMemo, useState, type RefObject } from 'react';
+import { ChevronDown, ChevronUp, Pencil, Play, Plus, RefreshCw, Search, Square, X } from 'lucide-react';
 
 import { translateStatus, type TranslationKey } from '../../i18n';
+import { scoreCommandMatch } from '../../shared/fuzzy';
 import type { AppSettings, HistoryEntry, TunnelRecord } from '../../types';
 import {
   bottomTabs,
@@ -70,9 +71,28 @@ export function BottomDock({
   t,
   uiLanguage,
 }: Props) {
+  // 历史命令模糊搜索关键词
+  const [historySearchQuery, setHistorySearchQuery] = useState('');
+
+  // 历史命令关键词过滤，匹配优先级：完全匹配 > 前缀匹配 > 后缀匹配 > 连续子串包含
+  const filteredHistory = useMemo(() => {
+    const query = historySearchQuery.trim();
+    if (!query) {
+      return connectionHistory;
+    }
+    return connectionHistory
+      .map((item, index) => {
+        const score = scoreCommandMatch(item.command, query);
+        return score === undefined ? undefined : { item, score, index };
+      })
+      .filter((entry): entry is { item: HistoryEntry; score: number; index: number } => Boolean(entry))
+      .sort((first, second) => first.score - second.score || first.index - second.index)
+      .map((entry) => entry.item);
+  }, [connectionHistory, historySearchQuery]);
+
   return (
     <section className={`bottom-dock card ${collapsed ? 'is-collapsed' : ''}`} style={collapsed ? undefined : { height }}>
-      <header className="panel-tab-row">
+      <header ref={actionsRef} className="panel-tab-row">
         <div className="tab-list">
           {bottomTabs.map((tab) => {
             const Icon = tab.icon;
@@ -89,7 +109,44 @@ export function BottomDock({
             );
           })}
         </div>
-        <div ref={actionsRef} className={`panel-tab-actions ${compactActions ? 'is-compact-actions' : ''}`}>
+        {activeBottomTab === 'history' ? (
+          <div className="history-search-container">
+            <Search className="history-search-icon" size={14} />
+            <input
+              aria-label={t('historySearchPlaceholder')}
+              className="history-search-input"
+              onChange={(event) => setHistorySearchQuery(event.target.value)}
+              onFocus={() => {
+                // 折叠状态下点击/聚焦搜索框自动展开功能栏，便于即时浏览搜索结果
+                if (collapsed) {
+                  onToggleCollapsed();
+                }
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape' && historySearchQuery) {
+                  event.stopPropagation();
+                  setHistorySearchQuery('');
+                }
+              }}
+              placeholder={t('historySearchPlaceholder')}
+              spellCheck={false}
+              type="text"
+              value={historySearchQuery}
+            />
+            {historySearchQuery ? (
+              <button
+                aria-label={t('clear')}
+                className="history-search-clear-button"
+                onClick={() => setHistorySearchQuery('')}
+                title={t('clear')}
+                type="button"
+              >
+                <X size={12} />
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        <div className={`panel-tab-actions ${compactActions ? 'is-compact-actions' : ''}`}>
           <button
             className="secondary-button slim"
             onClick={onToggleCollapsed}
@@ -205,7 +262,7 @@ export function BottomDock({
         {activeBottomTab === 'history' ? (
           <div className="stack panel-stack">
             <div className="history-list">
-              {connectionHistory.length ? connectionHistory.map((item) => (
+              {filteredHistory.length ? filteredHistory.map((item) => (
                 <button
                   key={item.id}
                   className="history-row"
@@ -221,7 +278,11 @@ export function BottomDock({
                   <RefreshCw className="is-spinning" size={18} />
                   <span>{t('panelRefreshing')}</span>
                 </div>
-              ) : <div className="empty-state">{t('noHistory')}</div>}
+              ) : (
+                <div className="empty-state">
+                  {historySearchQuery.trim() ? t('historySearchNoResults') : t('noHistory')}
+                </div>
+              )}
             </div>
           </div>
         ) : null}

@@ -56,6 +56,10 @@ export const splitActionButtonLabel = (label: string) => {
     ];
   }
 
+
+
+
+
   const firstLineLength = Math.ceil(characters.length / 2);
   return [characters.slice(0, firstLineLength).join(''), characters.slice(firstLineLength).join('')];
 };
@@ -81,12 +85,12 @@ export const renderActionButtonLabel = (label: string, compact = false) => {
 
 
 
-// 底部动作区只在自然横排放不下时进入紧凑模式；估算值偏保守，避免空间充足时仍然强制换行。
+// 底部动作区只在自然横排放不下时进入紧凑模式；精确估算避免空间充足时仍然误进入紧凑换行。
 export const estimateInlineButtonWidth = (label: string) => {
   const trimmed = label.trim();
   const asciiOnly = /^[\x00-\x7F]+$/.test(trimmed);
-  const textWidth = asciiOnly ? trimmed.length * 8.5 : Array.from(trimmed).length * 15;
-  return Math.max(64, Math.ceil(textWidth + 48));
+  const textWidth = asciiOnly ? trimmed.length * 8 : Array.from(trimmed).length * 13;
+  return Math.max(54, Math.ceil(textWidth + 34));
 };
 
 

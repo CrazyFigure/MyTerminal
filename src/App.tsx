@@ -1551,12 +1551,15 @@ export default function App() {
     if (!bottomPanelActionsWidth) {
       return false;
     }
-    // 动作区宽度判断包含按钮 gap 和左侧分隔留白，只有自然横排明显放不下时才改为两行文字。
-    const requiredWidth = bottomActionLabels.reduce((total, label) => total + estimateInlineButtonWidth(label), 0)
+    // 动作区宽度判断基于底部工具栏容器整体宽度，包含 Tab 列表占用（约 175px）、历史 Tab 搜索框保底（约 80px）与动作按钮自然展开宽度
+    const tabListWidth = 175;
+    const searchWidth = activeBottomTab === 'history' ? 80 : 0;
+    const actionsRequiredWidth = bottomActionLabels.reduce((total, label) => total + estimateInlineButtonWidth(label), 0)
       + Math.max(0, bottomActionLabels.length - 1) * 6
       + 8;
-    return requiredWidth > bottomPanelActionsWidth;
-  }, [bottomActionLabels, bottomPanelActionsWidth]);
+    const totalRequiredWidth = tabListWidth + searchWidth + actionsRequiredWidth + 12;
+    return totalRequiredWidth > bottomPanelActionsWidth;
+  }, [activeBottomTab, bottomActionLabels, bottomPanelActionsWidth]);
 
   useLayoutEffect(() => {
     if (agentSidebarCollapsed || !newestAgentRequestId) {
