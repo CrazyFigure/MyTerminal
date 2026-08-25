@@ -266,6 +266,7 @@ export const backend = {
       status: 'running',
     } as TunnelRecord),
   closeTunnel: (tunnelId: string) => call<boolean>('close_tunnel', { tunnelId }, true),
+  deleteTunnel: (tunnelId: string) => call<boolean>('delete_tunnel', { tunnelId }, true),
   // 历史列表以远端 Shell 历史文件为准，避免只记录命令面板输入而漏掉终端直接输入。
   readRemoteHistory: (connectionId: string, limit = 100) =>
     call<HistoryEntry[]>('read_remote_shell_history', { connectionId, limit }, mockHistory

@@ -387,9 +387,9 @@ export interface TunnelDraft {
   connectionId: string;
   name: string;
   bindAddress: string;
-  localPort: number;
+  localPort: number | '';
   remoteHost: string;
-  remotePort: number;
+  remotePort: number | '';
 }
 
 export interface HistoryEntry {

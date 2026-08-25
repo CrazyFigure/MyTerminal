@@ -217,6 +217,7 @@ fn main() {
             commands::update_tunnel,
             commands::start_tunnel,
             commands::close_tunnel,
+            commands::delete_tunnel,
             commands::read_remote_shell_history,
             commands::append_command_history,
             commands::get_command_suggestions,

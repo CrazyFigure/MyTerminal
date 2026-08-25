@@ -1,5 +1,5 @@
 import { useMemo, useState, type RefObject } from 'react';
-import { ChevronDown, ChevronUp, Pencil, Play, Plus, RefreshCw, Search, Square, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, Copy, Pencil, Play, Plus, RefreshCw, Search, Square, Trash2, X } from 'lucide-react';
 
 import { translateStatus, type TranslationKey } from '../../i18n';
 import { scoreCommandMatch } from '../../shared/fuzzy';
@@ -28,6 +28,8 @@ type Props = {
   onChangeCommand: (command: string) => void;
   onChangeTab: (tab: BottomPanelTab) => void;
   onCloseTunnel: (tunnelId: string) => void | Promise<unknown>;
+  onDeleteTunnel: (tunnelId: string) => void | Promise<unknown>;
+  onDuplicateTunnel: (tunnel: TunnelRecord) => void;
   onEditTunnel: (tunnel: TunnelRecord) => void;
   onOpenTunnel: () => void | Promise<unknown>;
   onRefreshHistory: () => void | Promise<unknown>;
@@ -59,6 +61,8 @@ export function BottomDock({
   onChangeCommand,
   onChangeTab,
   onCloseTunnel,
+  onDeleteTunnel,
+  onDuplicateTunnel,
   onEditTunnel,
   onOpenTunnel,
   onRefreshHistory,
@@ -243,6 +247,9 @@ export function BottomDock({
                     <button className="ghost-button slim" onClick={() => onEditTunnel(tunnel)} type="button">
                       <Pencil size={14} /> {t('edit')}
                     </button>
+                    <button className="ghost-button slim" onClick={() => onDuplicateTunnel(tunnel)} type="button">
+                      <Copy size={14} /> {t('copy')}
+                    </button>
                     {tunnel.status === 'running' ? (
                       <button className="ghost-button slim" onClick={() => void onCloseTunnel(tunnel.id)} type="button">
                         <Square size={14} /> {t('stop')}
@@ -252,6 +259,9 @@ export function BottomDock({
                         <Play size={14} /> {t('start')}
                       </button>
                     )}
+                    <button className="ghost-button slim danger-button" onClick={() => void onDeleteTunnel(tunnel.id)} type="button">
+                      <Trash2 size={14} /> {t('delete')}
+                    </button>
                   </div>
                 </div>
               )) : <div className="empty-state">{t('noTunnels')}</div>}

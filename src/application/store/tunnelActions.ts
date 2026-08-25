@@ -4,11 +4,13 @@ import { statusText } from './status';
 
 type TunnelActionKeys =
   | 'openTunnel'
+  | 'duplicateTunnel'
   | 'editTunnel'
   | 'startTunnel'
   | 'startAllTunnels'
   | 'stopAllTunnels'
   | 'closeTunnel'
+  | 'deleteTunnel'
   | 'applyTunnelStatusChange';
 
 export type TunnelActions = Pick<StoreState, TunnelActionKeys>;
@@ -36,6 +38,23 @@ export const createTunnelActions = (set: StoreSet, get: StoreGet): TunnelActions
         localPort: 15432,
         remoteHost: '127.0.0.1',
         remotePort: 5432,
+      },
+      activePanel: 'tunnels',
+    });
+  },
+
+  // 复制已有隧道配置并打开新建弹窗，将名称与端口置空，仅保留监听与远端主机（id 置空以走新建分支）。
+  duplicateTunnel: (tunnel) => {
+    set({
+      showTunnelForm: true,
+      tunnelDraft: {
+        id: '',
+        connectionId: tunnel.connectionId,
+        name: '',
+        bindAddress: tunnel.bindAddress,
+        localPort: '',
+        remoteHost: tunnel.remoteHost,
+        remotePort: '',
       },
       activePanel: 'tunnels',
     });
@@ -133,6 +152,23 @@ export const createTunnelActions = (set: StoreSet, get: StoreGet): TunnelActions
       )),
       statusMessage: statusText(state.settings, 'statusTunnelStopped'),
     }));
+  },
+
+  // 删除隧道记录；若正在运行后端会自动停止监听并释放通道。
+  deleteTunnel: async (tunnelId) => {
+    try {
+      await backend.deleteTunnel(tunnelId);
+      set((state) => ({
+        tunnels: state.tunnels.filter((item) => item.id !== tunnelId),
+        statusMessage: statusText(state.settings, 'statusTunnelDeleted'),
+      }));
+    } catch (error) {
+      set((state) => ({
+        statusMessage: statusText(state.settings, 'statusTunnelDeleteFailed', {
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      }));
+    }
   },
 
   applyTunnelStatusChange: (tunnel) => {
