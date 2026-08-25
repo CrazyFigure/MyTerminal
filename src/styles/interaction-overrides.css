@@ -644,10 +644,22 @@
 }
 
 .panel-tab-row .tab-list {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
+  flex-shrink: 0;
   flex-wrap: nowrap;
   overflow: visible;
   scrollbar-width: none;
+}
+
+.panel-tab-row .panel-tab {
+  flex: 0 0 auto;
+  flex-shrink: 0;
+  white-space: nowrap !important;
+  word-break: keep-all;
+}
+
+.panel-tab-row .panel-tab span {
+  white-space: nowrap !important;
 }
 
 .panel-tab-row .tab-list::-webkit-scrollbar {
@@ -655,7 +667,8 @@
 }
 
 .panel-tab-actions {
-  flex: 1 1 360px;
+  flex: 0 0 auto;
+  margin-left: auto;
   flex-wrap: nowrap;
   max-width: none;
   overflow: hidden;

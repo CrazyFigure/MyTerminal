@@ -24,48 +24,7 @@ export interface CustomSelectProps {
   onOpen?: () => void;
 }
 
-// 模糊匹配优先级依次为完全匹配、前缀、连续包含和字符子序列；分词后每一项都必须命中。
-const scoreFuzzyText = (source: string, query: string) => {
-  const normalizedSource = source.normalize('NFKC').toLocaleLowerCase();
-  const terms = query
-    .normalize('NFKC')
-    .toLocaleLowerCase()
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (!terms.length) {
-    return 0;
-  }
-
-  let totalScore = 0;
-  for (const term of terms) {
-    if (normalizedSource === term) {
-      continue;
-    }
-    if (normalizedSource.startsWith(term)) {
-      totalScore += 10 + normalizedSource.length - term.length;
-      continue;
-    }
-    const containedAt = normalizedSource.indexOf(term);
-    if (containedAt >= 0) {
-      totalScore += 30 + containedAt;
-      continue;
-    }
-
-    let sourceIndex = 0;
-    let gapScore = 0;
-    for (const character of term) {
-      const matchedAt = normalizedSource.indexOf(character, sourceIndex);
-      if (matchedAt < 0) {
-        return undefined;
-      }
-      gapScore += matchedAt - sourceIndex;
-      sourceIndex = matchedAt + 1;
-    }
-    totalScore += 100 + gapScore;
-  }
-  return totalScore;
-};
+import { scoreFuzzyText } from './shared/fuzzy';
 
 export const CustomSelect: React.FC<CustomSelectProps> = ({
   value,
