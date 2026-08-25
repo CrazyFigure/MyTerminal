@@ -3606,8 +3606,43 @@ select:disabled {
   cursor: pointer;
 }
 
+/* 危险动作按钮：使用柔和危险色与统一圆角边框，提供明确的 hover 与 active 交互反馈 */
 .danger-button {
-  color: #b91c1c;
+  color: #dc2626;
+  border-color: rgba(239, 68, 68, 0.28);
+}
+
+.danger-button:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.09) !important;
+  border-color: rgba(239, 68, 68, 0.45) !important;
+  color: #b91c1c !important;
+}
+
+.danger-button:active:not(:disabled) {
+  background: rgba(239, 68, 68, 0.16) !important;
+  border-color: rgba(220, 38, 38, 0.6) !important;
+  transform: translateY(1px);
+}
+
+.app-shell.theme-dark .danger-button {
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.32);
+}
+
+.app-shell.theme-dark .danger-button:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.18) !important;
+  border-color: rgba(248, 113, 113, 0.55) !important;
+  color: #fca5a5 !important;
+}
+
+.app-shell.theme-dark .danger-button:active:not(:disabled) {
+  background: rgba(239, 68, 68, 0.28) !important;
+  border-color: rgba(248, 113, 113, 0.72) !important;
+  transform: translateY(1px);
+}
+
+.app-shell.theme-dark .context-menu-item.danger {
+  color: #f87171;
 }
 
 .resize-handle {
