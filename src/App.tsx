@@ -30,18 +30,24 @@ import { useAppStore } from './store';
 // 等高频更新触发无关组件（尤其是未打开的弹窗）重渲染。
 import { useShallow } from 'zustand/react/shallow';
 import { UpdateModal, type UpdateDownloadProgress } from './UpdateModal';
-import type { AgentBridgeRequest, AgentProvider, RemoteFileEntry, RuntimeResourceSource, TerminalSession, TunnelRecord } from './types';
+import type { AgentBridgeRequest, AgentProvider, DownloadProgress, RemoteFileEntry, RuntimeResourceSource, TerminalSession, TunnelRecord } from './types';
 import { useDraggableModals } from './useDraggableModals';
 import { ConnectionFormModal } from './components/ConnectionFormModal';
 import { ConnectionManagerModal } from './components/ConnectionManagerModal';
 import { EditorModal } from './components/EditorModal';
 import { LocalTerminalManagerModal } from './components/LocalTerminalManagerModal';
 import { SettingsModal } from './components/SettingsModal';
+import { FontPackPromptModal } from './components/FontPackPromptModal';
 import type { SettingsTab } from './features/settings';
 import { TunnelFormModal } from './components/TunnelFormModal';
 import { beginResize, clamp } from './app/layout';
 import { isTauriRuntime } from './app/runtime';
 import { translateUpdateCheckError } from './app/updates';
+import {
+  resolveSystemFontFallback,
+  shouldPromptForFontPack,
+  translateFontPackError,
+} from './app/fontPack';
 import { isUsableRemoteSession } from './domain/sessions/model';
 import {
   AgentRequestPanel,
@@ -169,6 +175,13 @@ export default function App() {
   const [appUpdateChecking, setAppUpdateChecking] = useState(false);
   // 标题栏手动检测失败时的错误文案，传给弹窗展示。
   const [appUpdateCheckError, setAppUpdateCheckError] = useState<string | null>(null);
+  // 字体包提示在启动检测完成后只出现一次；下载失败保留弹窗供重试，拒绝后立即保存系统字体。
+  const [fontPackPromptOpen, setFontPackPromptOpen] = useState(false);
+  const [fontPackDownloading, setFontPackDownloading] = useState(false);
+  const [fontPackProgress, setFontPackProgress] = useState<DownloadProgress | null>(null);
+  const [fontPackPromptError, setFontPackPromptError] = useState<string | null>(null);
+  const [fontPackPromptSystemFonts, setFontPackPromptSystemFonts] = useState<string[]>([]);
+  const fontPackPromptEvaluatedRef = useRef(false);
 
   const {
     activeConnectionId,
@@ -186,11 +199,13 @@ export default function App() {
     deleteRemotePaths,
     copyRemotePaths,
     downloadRemotePaths,
+    downloadFontPack,
     duplicateSession: duplicateSessionById,
     duplicateTunnel,
     editTunnel,
     files,
     filesLoading,
+    fontPackStatus,
     adoptSession,
     history,
     historyLoading,
@@ -243,11 +258,13 @@ export default function App() {
       deleteRemotePaths: state.deleteRemotePaths,
       copyRemotePaths: state.copyRemotePaths,
       downloadRemotePaths: state.downloadRemotePaths,
+      downloadFontPack: state.downloadFontPack,
       duplicateSession: state.duplicateSession,
       duplicateTunnel: state.duplicateTunnel,
       editTunnel: state.editTunnel,
       files: state.files,
       filesLoading: state.filesLoading,
+      fontPackStatus: state.fontPackStatus,
       history: state.history,
       historyLoading: state.historyLoading,
       adoptSession: state.adoptSession,
@@ -336,6 +353,48 @@ export default function App() {
       setAppUpdateProgress(null);
     }
   }, [installUpdate, t, updateCheckResult]);
+
+  // 推荐动作由应用自身下载并即时注册；安装器不参与网络请求，失败时主界面仍可继续使用系统字体。
+  const handleFontPackDownload = useCallback(async () => {
+    if (fontPackDownloading) {
+      return;
+    }
+    setFontPackDownloading(true);
+    setFontPackPromptError(null);
+    setFontPackProgress(null);
+    try {
+      await downloadFontPack();
+      setFontPackPromptOpen(false);
+      setStatusMessage(t('fontPackActionInstalled'));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      setFontPackPromptError(translateFontPackError(reason, settings.uiLanguage));
+    } finally {
+      setFontPackDownloading(false);
+      setFontPackProgress(null);
+    }
+  }, [downloadFontPack, fontPackDownloading, setStatusMessage, settings.uiLanguage, t]);
+
+  // 拒绝下载是一个持久选择：保存真实可用的系统字体，避免下次启动继续提示或设置页显示与渲染不一致。
+  const handleUseSystemFonts = useCallback(async () => {
+    try {
+      const installedFonts = fontPackPromptSystemFonts.length
+        ? fontPackPromptSystemFonts
+        : await backend.listSystemFonts();
+      const fallback = resolveSystemFontFallback(installedFonts);
+      await persistSettings({
+        ...settings,
+        shellLatinFontFamily: fallback.latin,
+        shellCjkFontFamily: fallback.cjk,
+        shellFontFamily: `${fallback.latin}, ${fallback.cjk}`,
+      });
+      setFontPackPromptOpen(false);
+      setStatusMessage(t('fontPackActionSystemFonts'));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      setFontPackPromptError(t('fontPackErrorGeneric', { reason }));
+    }
+  }, [fontPackPromptSystemFonts, persistSettings, setStatusMessage, settings, t]);
 
   // 标题栏更新按钮：用户主动点击时立即检测一次；无论结果如何都弹窗展示，否则由 store 写入”已是最新”状态提示。
   const handleTitlebarCheckUpdate = useCallback(async () => {
@@ -668,6 +727,28 @@ export default function App() {
   }, [bootstrap, bootstrapped]);
 
   useEffect(() => {
+    if (
+      fontPackPromptEvaluatedRef.current
+      || !bootstrapped
+      || !fontPackStatus
+      || fontPackStatus.state === 'ready'
+      || !isTauriRuntime()
+    ) {
+      return;
+    }
+    fontPackPromptEvaluatedRef.current = true;
+    // 系统已安装同名字体或用户使用自定义字体时无需下载；枚举失败则按“字体缺失”保守提示一次。
+    void backend.listSystemFonts()
+      .catch(() => [] as string[])
+      .then((installedFonts) => {
+        setFontPackPromptSystemFonts(installedFonts);
+        if (shouldPromptForFontPack(settings, installedFonts)) {
+          setFontPackPromptOpen(true);
+        }
+      });
+  }, [bootstrapped, fontPackStatus, settings]);
+
+  useEffect(() => {
     if (!agentSidebarCollapsed) {
       setAgentSidebarMounted(true);
     }
@@ -707,6 +788,31 @@ export default function App() {
         unlisten();
       }
     }).catch(() => undefined);
+    return () => {
+      isMounted = false;
+      unlistenFn?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return undefined;
+    }
+    let unlistenFn: (() => void) | undefined;
+    let isMounted = true;
+    void import('@tauri-apps/api/event').then(({ listen }) =>
+      listen<DownloadProgress>('myterminal-font-pack-download-progress', (event) => {
+        setFontPackProgress(event.payload);
+      }),
+    ).then((unlisten) => {
+      if (isMounted) {
+        unlistenFn = unlisten;
+      } else {
+        unlisten();
+      }
+    }).catch(() => {
+      // 监听失败只影响进度展示，不影响后端下载、哈希校验与最终启用。
+    });
     return () => {
       isMounted = false;
       unlistenFn?.();
@@ -1909,6 +2015,16 @@ export default function App() {
 
       <ConnectionManagerModal open={connectionsOpen} onClose={() => setConnectionsOpen(false)} />
       <LocalTerminalManagerModal open={localTerminalsOpen} onClose={() => setLocalTerminalsOpen(false)} />
+      <FontPackPromptModal
+        downloading={fontPackDownloading}
+        error={fontPackPromptError}
+        onDownload={() => void handleFontPackDownload()}
+        onUseSystem={() => void handleUseSystemFonts()}
+        open={fontPackPromptOpen}
+        progress={fontPackProgress}
+        status={fontPackStatus}
+        t={t}
+      />
       <SettingsModal
         activeTab={settingsTab}
         onAgentProvidersSaved={setAgentProviders}

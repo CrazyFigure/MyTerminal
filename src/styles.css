@@ -3860,6 +3860,177 @@ select:disabled {
   letter-spacing: 0;
 }
 
+/* 字体资源包卡片同时承担状态、进度和维护入口；信息密度保持与其它外观设置块一致。 */
+.font-pack-settings-card {
+  display: grid;
+  gap: 12px;
+}
+
+.font-pack-settings-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.font-pack-settings-heading h3,
+.font-pack-settings-heading p {
+  margin: 0;
+}
+
+.font-pack-status-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: 1px solid rgba(100, 116, 139, 0.24);
+  border-radius: 999px;
+  background: rgba(100, 116, 139, 0.08);
+  color: var(--app-subtle-text);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.font-pack-status-badge.is-ready {
+  border-color: rgba(22, 163, 74, 0.3);
+  background: rgba(22, 163, 74, 0.1);
+  color: #15803d;
+}
+
+.font-pack-status-badge.is-invalid {
+  border-color: rgba(217, 119, 6, 0.34);
+  background: rgba(245, 158, 11, 0.11);
+  color: #b45309;
+}
+
+.font-pack-settings-meta {
+  display: grid;
+  gap: 4px;
+  color: var(--app-subtle-text);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.font-pack-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.font-pack-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  transition: background 0.15s ease, border-color 0.15s ease, filter 0.15s ease, transform 0.08s ease;
+}
+
+.font-pack-action-button:active:not(:disabled) {
+  filter: brightness(0.88);
+  transform: translateY(1px);
+}
+
+.font-pack-progress {
+  display: grid;
+  gap: 6px;
+}
+
+.font-pack-progress-copy {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--app-text);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.font-pack-progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(100, 116, 139, 0.18);
+}
+
+.font-pack-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #4f46e5, #2563eb);
+  transition: width 0.16s ease;
+}
+
+.font-pack-error {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(220, 38, 38, 0.22);
+  border-radius: 7px;
+  background: rgba(220, 38, 38, 0.08);
+  color: #b91c1c;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+/* 首次启动提示由应用负责下载，默认主按钮获得焦点；安装器本身不承担网络状态和失败恢复。 */
+.font-pack-prompt-backdrop {
+  z-index: 70;
+  background: rgba(15, 23, 42, 0.2);
+}
+
+.font-pack-prompt-modal {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px 16px;
+  width: min(560px, 100%);
+  height: auto;
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+}
+
+.font-pack-prompt-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 12px;
+  background: rgba(79, 70, 229, 0.12);
+  color: var(--app-accent);
+}
+
+.font-pack-prompt-copy {
+  display: grid;
+  gap: 8px;
+}
+
+.font-pack-prompt-copy h3,
+.font-pack-prompt-copy p {
+  margin: 0;
+}
+
+.font-pack-prompt-copy p {
+  line-height: 1.55;
+}
+
+.font-pack-prompt-modal > :is(.font-pack-error, .font-pack-progress, .font-pack-prompt-actions) {
+  grid-column: 1 / -1;
+}
+
+.font-pack-prompt-actions {
+  margin-top: 4px;
+}
+
+.app-shell.theme-dark .font-pack-status-badge.is-ready {
+  color: #86efac;
+}
+
+.app-shell.theme-dark .font-pack-status-badge.is-invalid {
+  color: #fcd34d;
+}
+
+.app-shell.theme-dark .font-pack-error {
+  color: #fca5a5;
+}
+
 .opacity-control {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 72px;

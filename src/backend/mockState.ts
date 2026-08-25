@@ -5,6 +5,7 @@ import type {
   AppSettings,
   BootstrapState,
   ConnectionProfile,
+  FontPackStatus,
   HistoryEntry,
   LocalTerminalSettings,
   RemoteFileEntry,
@@ -307,4 +308,15 @@ export const mockUpdateCheckResult: UpdateCheckResult = {
   releaseUrl: "https://github.com/CrazyFigure/MyTerminal/releases/latest",
   updateAvailable: false,
   releaseBody: "本地预览环境没有可用的更新内容。",
+};
+
+// 浏览器预览不读取本机字体资源目录，固定走系统字体回退并展示可下载状态。
+export const mockFontPackStatus: FontPackStatus = {
+  id: 'core',
+  version: '1.0.0',
+  state: 'missing',
+  installedSizeBytes: 73_469_156,
+  downloadSizeBytes: 37 * 1024 * 1024,
+  downloadUrl: 'https://github.com/CrazyFigure/MyTerminal/releases/download/fonts-v1.0.0/MyTerminal-fontpack-core-v1.0.0.zip',
+  faces: [],
 };

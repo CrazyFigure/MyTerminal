@@ -4,6 +4,7 @@ import type {
   ConnectionDraft,
   ConnectionProfile,
   EditorDocument,
+  FontPackStatus,
   HistoryEntry,
   LocalTerminalProfile,
   LocalTerminalSettings,
@@ -54,6 +55,8 @@ export type StoreState = {
   showTunnelForm: boolean;
   tunnelDraft: TunnelDraft;
   updateCheckResult: UpdateCheckResult | null;
+  // 字体包状态只描述应用数据目录中的可选资源，不写入 AppSettings 或配置同步包。
+  fontPackStatus: FontPackStatus | null;
   bootstrap: () => Promise<void>;
   setStatusMessage: (message: string) => void;
   clearConnectionTestResult: () => void;
@@ -125,6 +128,10 @@ export type StoreState = {
   importLocalConfig: (file: File) => Promise<void>;
   checkForUpdates: () => Promise<UpdateCheckResult>;
   installUpdate: (result: UpdateCheckResult) => Promise<string>;
+  refreshFontPack: () => Promise<FontPackStatus>;
+  downloadFontPack: () => Promise<FontPackStatus>;
+  importFontPack: (sourcePath: string) => Promise<FontPackStatus>;
+  removeFontPack: () => Promise<FontPackStatus>;
   openTunnel: () => Promise<void>;
   duplicateTunnel: (tunnel: TunnelRecord) => void;
   editTunnel: (tunnel: TunnelRecord) => void;

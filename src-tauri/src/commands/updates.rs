@@ -148,7 +148,7 @@ fn is_valid_update_download_url(url: &str) -> bool {
         && !normalized.chars().any(|character| character.is_control())
 }
 
-fn build_update_http_client(total_timeout: Duration) -> Result<reqwest::Client, AppError> {
+pub(super) fn build_update_http_client(total_timeout: Duration) -> Result<reqwest::Client, AppError> {
     // 更新相关请求必须尊重系统代理；Cargo 特性启用后，默认 Client 会读取 Windows 代理和代理环境变量。
     reqwest::Client::builder()
         .connect_timeout(UPDATE_HTTP_CONNECT_TIMEOUT)
@@ -160,7 +160,7 @@ fn build_update_http_client(total_timeout: Duration) -> Result<reqwest::Client, 
 
 // 直连客户端：忽略系统代理。代理节点的数据中心 IP 常被 GitHub API 风控（403），
 // 更新请求在代理失败时回退直连重试，避免把代理服务器的拒绝误报成 GitHub 限流。
-fn build_direct_http_client(total_timeout: Duration) -> Result<reqwest::Client, AppError> {
+pub(super) fn build_direct_http_client(total_timeout: Duration) -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
         .no_proxy()
         .connect_timeout(UPDATE_HTTP_CONNECT_TIMEOUT)

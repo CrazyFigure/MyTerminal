@@ -412,6 +412,32 @@ export interface UpdateCheckResult {
   releaseBody?: string;
 }
 
+/** 后端校验通过后返回的应用内字体字形；path 不会指向系统字体目录。 */
+export interface FontPackFace {
+  family: string;
+  weight: string;
+  style: string;
+  path: string;
+}
+
+/** 字体资源包独立于应用版本持久化，missing/invalid 时 faces 必须为空。 */
+export interface FontPackStatus {
+  id: string;
+  version: string;
+  state: 'missing' | 'ready' | 'invalid';
+  installedSizeBytes: number;
+  downloadSizeBytes: number;
+  downloadUrl: string;
+  faces: FontPackFace[];
+}
+
+/** 大文件下载进度由 Rust 节流后推送，避免每个网络分片都触发 React 更新。 */
+export interface DownloadProgress {
+  downloadedBytes: number;
+  totalBytes?: number;
+  percent?: number;
+}
+
 export interface LocalTerminalCommand {
   id: string;
   name: string;

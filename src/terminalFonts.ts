@@ -54,14 +54,17 @@ const terminalMonospaceFallbacks = [
   'Courier New',
 ] as const;
 
-// 软件内置字体集合（随安装包打包，开箱即用，始终可用且优先于系统缺失探测）
-export const builtinTerminalFontFamilies = new Set([
-  'jetbrains mono',
-  'jetbrains mono light',
-  'maple mono normal nf cn',
-  'maple mono normal nf cn light',
-  'maple mono normal nf cn regular',
-]);
+// 可选字体包提供的稳定族名；这里只描述能力，不能据此把尚未下载的字体误判为可用。
+export const packagedTerminalFontFamilies = [
+  'JetBrains Mono',
+  'JetBrains Mono Light',
+  'Maple Mono Normal NF CN',
+  'Maple Mono Normal NF CN Light',
+  'Maple Mono Normal NF CN Regular',
+] as const;
+
+// 当前 WebView 已成功注册的应用字体；下载、删除或修复资源包后由字体应用服务原子替换。
+const applicationTerminalFontFamilies = new Set<string>();
 
 const genericFontFamilies = new Set(['monospace', 'sans-serif', 'serif', 'cursive', 'fantasy', 'system-ui', 'ui-monospace']);
 const fontDetectionFallbacks = ['monospace', 'sans-serif', 'serif'] as const;
@@ -71,6 +74,19 @@ const fontMetricTolerance = 0.05;
 const fontAvailabilityCache = new Map<string, boolean>();
 const fontMonospaceCache = new Map<string, boolean>();
 let fontMeasurementContext: CanvasRenderingContext2D | null | undefined;
+
+// 动态字体切换后必须清空可用性与等宽缓存，否则下载前记录的 false 会让新字体在本次运行期仍不可选。
+export const setApplicationTerminalFontFamilies = (fontFamilies: readonly string[]) => {
+  applicationTerminalFontFamilies.clear();
+  fontFamilies.forEach((fontFamily) => {
+    const normalized = fontFamily.trim().toLowerCase();
+    if (normalized) {
+      applicationTerminalFontFamilies.add(normalized);
+    }
+  });
+  fontAvailabilityCache.clear();
+  fontMonospaceCache.clear();
+};
 
 export const normalizeTerminalFontFamily = (fontFamily: string) =>
   fontFamily.trim().replace(/^['"]|['"]$/g, '');
@@ -114,8 +130,8 @@ export const isTerminalFontFamilyAvailable = (fontFamily: string) => {
   if (!cleaned) {
     return false;
   }
-  // 通用族名与内置打包字体始终可用
-  if (genericFontFamilies.has(normalized) || builtinTerminalFontFamilies.has(normalized)) {
+  // 通用族名与当前 WebView 已注册的应用字体无需再与系统 fallback 做宽度比较。
+  if (genericFontFamilies.has(normalized) || applicationTerminalFontFamilies.has(normalized)) {
     return true;
   }
   const cached = fontAvailabilityCache.get(normalized);
@@ -145,8 +161,8 @@ export const isTerminalMonospaceFontFamily = (fontFamily: string) => {
   if (!cleaned) {
     return false;
   }
-  // 通用等宽与内置等宽字体始终判定为等宽可用
-  if (normalized === 'monospace' || normalized === 'ui-monospace' || builtinTerminalFontFamilies.has(normalized)) {
+  // 字体包清单只包含终端等宽字体；只有注册成功后才进入该快速路径。
+  if (normalized === 'monospace' || normalized === 'ui-monospace' || applicationTerminalFontFamilies.has(normalized)) {
     return true;
   }
   const cached = fontMonospaceCache.get(normalized);
@@ -199,9 +215,9 @@ export const resolveTerminalLatinFontFamily = (
       continue;
     }
     seen.add(normalized);
-    // 优先命中系统字体；若系统未安装但属于软件内置字体，仍判定命中
+    // 优先命中系统字体；若系统未安装但已由应用字体包注册，仍判定命中。
     const installedName = installedFonts
-      ? (installedFonts.get(normalized) ?? (builtinTerminalFontFamilies.has(normalized) ? candidate : undefined))
+      ? (installedFonts.get(normalized) ?? (applicationTerminalFontFamilies.has(normalized) ? candidate : undefined))
       : candidate;
     if (!installedName || !isTerminalMonospaceFontFamily(installedName)) {
       continue;
@@ -272,9 +288,9 @@ export const buildAgentChatFontFamily = (
       continue;
     }
     seen.add(normalized);
-    // 优先命中系统字体；若系统未安装但属于软件内置字体，仍判定命中
+    // 优先命中系统字体；若系统未安装但已由应用字体包注册，仍判定命中。
     const installedName = installedFonts
-      ? (installedFonts.get(normalized) ?? (builtinTerminalFontFamilies.has(normalized) ? candidate : undefined))
+      ? (installedFonts.get(normalized) ?? (applicationTerminalFontFamilies.has(normalized) ? candidate : undefined))
       : candidate;
     if (installedName && isTerminalFontFamilyAvailable(installedName)) {
       primaryFont = quoteTerminalFontFamily(installedName) ?? 'sans-serif';

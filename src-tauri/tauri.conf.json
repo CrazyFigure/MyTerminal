@@ -11,7 +11,7 @@
   },
   "app": {
     "security": {
-      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost https: http: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'",
+      "csp": "default-src 'self' ipc: http://ipc.localhost; font-src 'self' asset: http://asset.localhost; img-src 'self' asset: http://asset.localhost https: http: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'",
       "assetProtocol": {
         "enable": true,
         "scope": ["**"]

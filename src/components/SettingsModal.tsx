@@ -18,11 +18,16 @@ import {
   terminalLatinFontOptions,
 } from '../terminalFonts';
 import { UpdateModal, type UpdateDownloadProgress } from '../UpdateModal';
-import type { AgentBridgeStatus, AgentModel, AgentProvider, AppSettings, UpdateCheckResult } from '../types';
+import type { AgentBridgeStatus, AgentModel, AgentProvider, AppSettings, DownloadProgress, UpdateCheckResult } from '../types';
 import { buildConnectionGroupTree, normalizeConnectionGroupPath } from '../app/connectionGroups';
 import { buildPreviewFontFamily } from '../app/fonts';
 import { isTauriRuntime } from '../app/runtime';
 import { translateUpdateCheckError } from '../app/updates';
+import {
+  resolveSystemFontFallback,
+  shouldPromptForFontPack,
+  translateFontPackError,
+} from '../app/fontPack';
 import { FloatingToast, type FloatingToastTone } from '../shared/ui/FloatingToast';
 import { BackupSelectorModal } from '../features/settings/BackupSelectorModal';
 import {
@@ -63,6 +68,9 @@ export function SettingsModal({
   const {
     checkForUpdates,
     connections,
+    downloadFontPack,
+    fontPackStatus,
+    importFontPack,
     installUpdate,
     settings,
     testWebdavConnection,
@@ -71,12 +79,16 @@ export function SettingsModal({
     exportLocalConfig,
     importLocalConfig,
     persistSettings,
+    removeFontPack,
     updateCheckResult: storeUpdateCheckResult,
     updateSettings,
   } = useAppStore(
     useShallow((state) => ({
       checkForUpdates: state.checkForUpdates,
       connections: state.connections,
+      downloadFontPack: state.downloadFontPack,
+      fontPackStatus: state.fontPackStatus,
+      importFontPack: state.importFontPack,
       installUpdate: state.installUpdate,
       settings: state.settings,
       testWebdavConnection: state.testWebdavConnection,
@@ -85,6 +97,7 @@ export function SettingsModal({
       exportLocalConfig: state.exportLocalConfig,
       importLocalConfig: state.importLocalConfig,
       persistSettings: state.persistSettings,
+      removeFontPack: state.removeFontPack,
       updateCheckResult: state.updateCheckResult,
       updateSettings: state.updateSettings,
     })),
@@ -115,6 +128,9 @@ export function SettingsModal({
   // 本机已安装字体列表用于剔除不存在的推荐项，并限制英文字体下拉只展示真实等宽字体。
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
   const [systemFontsLoaded, setSystemFontsLoaded] = useState(false);
+  const [fontPackActionRunning, setFontPackActionRunning] = useState<'download' | 'import' | 'remove' | ''>('');
+  const [fontPackDownloadProgress, setFontPackDownloadProgress] = useState<DownloadProgress | null>(null);
+  const [fontPackError, setFontPackError] = useState<string | null>(null);
   // AI 端点草稿：与其它设置一样先在本地编辑，点击保存才落盘。
   const [agentProviderDrafts, setAgentProviderDrafts] = useState<AgentProvider[]>([]);
   // 端点列表的基线快照：与草稿对比判断是否存在未保存修改，从而禁用保存按钮。
@@ -142,19 +158,26 @@ export function SettingsModal({
   }, [open]);
 
 
+  // 字体下拉和字体包删除共用同一次系统字体枚举；失败时返回空列表，由通用族名完成最终兜底。
+  const loadSystemFonts = async () => {
+    if (systemFontsLoaded) {
+      return systemFonts;
+    }
+    try {
+      const fonts = await backend.listSystemFonts();
+      setSystemFonts(fonts);
+      setSystemFontsLoaded(true);
+      return fonts;
+    } catch {
+      // 枚举失败时只保留前端实际测量为可用的字体，不能把整份推荐列表重新当作已安装字体。
+      setSystemFontsLoaded(true);
+      return [];
+    }
+  };
+
   // 懒加载系统字体列表，仅在用户首次点击字体下拉时触发，避免打开设置时的卡顿。
   const loadSystemFontsOnce = () => {
-    if (systemFontsLoaded) return;
-    backend
-      .listSystemFonts()
-      .then((fonts) => {
-        setSystemFonts(fonts);
-        setSystemFontsLoaded(true);
-      })
-      .catch(() => {
-        // 枚举失败时只保留前端实际测量为可用的字体，不能把整份推荐列表重新当作已安装字体。
-        setSystemFontsLoaded(true);
-      });
+    void loadSystemFonts();
   };
 
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
@@ -271,6 +294,77 @@ export function SettingsModal({
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       showSettingsFeedback('error', `${t('statusSettingsFailed')} ${reason}`.trim());
+    }
+  };
+
+  const handleDownloadFontPack = async () => {
+    setFontPackActionRunning('download');
+    setFontPackDownloadProgress(null);
+    setFontPackError(null);
+    try {
+      await downloadFontPack();
+      showSettingsFeedback('success', t('fontPackActionInstalled'));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      setFontPackError(translateFontPackError(reason, draftSettings.uiLanguage));
+    } finally {
+      setFontPackActionRunning('');
+      setFontPackDownloadProgress(null);
+    }
+  };
+
+  const handleImportFontPack = async () => {
+    const sourcePath = await openFileDialog({
+      multiple: false,
+      filters: [{ name: 'MyTerminal Font Pack', extensions: ['zip'] }],
+    });
+    if (!sourcePath || Array.isArray(sourcePath)) {
+      return;
+    }
+    setFontPackActionRunning('import');
+    setFontPackError(null);
+    try {
+      await importFontPack(sourcePath);
+      showSettingsFeedback('success', t('fontPackActionImported'));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      setFontPackError(translateFontPackError(reason, draftSettings.uiLanguage));
+    } finally {
+      setFontPackActionRunning('');
+    }
+  };
+
+  const handleRemoveFontPack = async () => {
+    if (!window.confirm(t('fontPackRemoveConfirm'))) {
+      return;
+    }
+    setFontPackActionRunning('remove');
+    setFontPackError(null);
+    try {
+      const installedFonts = await loadSystemFonts();
+      await removeFontPack();
+      // 只保存字体字段，不能把设置弹窗中其它尚未保存的草稿一起意外落盘。
+      if (shouldPromptForFontPack(settings, installedFonts)) {
+        const fallback = resolveSystemFontFallback(installedFonts);
+        const saved = await persistSettings({
+          ...settings,
+          shellLatinFontFamily: fallback.latin,
+          shellCjkFontFamily: fallback.cjk,
+          shellFontFamily: `${fallback.latin}, ${fallback.cjk}`,
+        });
+        setDraftSettings((current) => ({
+          ...current,
+          shellLatinFontFamily: saved.shellLatinFontFamily,
+          shellCjkFontFamily: saved.shellCjkFontFamily,
+          shellFontFamily: saved.shellFontFamily,
+        }));
+      }
+      showSettingsFeedback('success', t('fontPackActionRemoved'));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      setFontPackError(translateFontPackError(reason, draftSettings.uiLanguage));
+    } finally {
+      setFontPackActionRunning('');
     }
   };
   const refreshAgentBridgeStatus = async () => {
@@ -614,6 +708,9 @@ export function SettingsModal({
       setDraftSettings(settings);
       setSettingsFeedback(null);
       setSettingsActionRunning('');
+      setFontPackActionRunning('');
+      setFontPackDownloadProgress(null);
+      setFontPackError(null);
       // 打开设置页时同步定时检测缓存的结果，避免首页已发现更新而关于页仍显示旧版本。
       setUpdateCheckResult(storeUpdateCheckResult);
       void refreshAgentBridgeStatus();
@@ -667,6 +764,31 @@ export function SettingsModal({
     };
   }, []);
 
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return undefined;
+    }
+    let unlistenFn: (() => void) | undefined;
+    let isMounted = true;
+    void import('@tauri-apps/api/event').then(({ listen }) =>
+      listen<DownloadProgress>('myterminal-font-pack-download-progress', (event) => {
+        setFontPackDownloadProgress(event.payload);
+      }),
+    ).then((unlisten) => {
+      if (isMounted) {
+        unlistenFn = unlisten;
+      } else {
+        unlisten();
+      }
+    }).catch(() => {
+      // 进度事件不可用时按钮忙碌态仍能阻止重复操作，下载与校验继续在后端完成。
+    });
+    return () => {
+      isMounted = false;
+      unlistenFn?.();
+    };
+  }, []);
+
   if (!open) {
     return null;
   }
@@ -713,9 +835,16 @@ export function SettingsModal({
                 cjkOptions={cjkOptions}
                 draftSettings={draftSettings}
                 hasSettingsChanges={hasSettingsChanges}
+                fontPackActionRunning={fontPackActionRunning}
+                fontPackError={fontPackError}
+                fontPackProgress={fontPackDownloadProgress}
+                fontPackStatus={fontPackStatus}
                 latinOptions={latinOptions}
                 onChooseLocalBackgroundImage={handleLocalBackgroundImage}
                 onLoadSystemFonts={loadSystemFontsOnce}
+                onDownloadFontPack={() => void handleDownloadFontPack()}
+                onImportFontPack={() => void handleImportFontPack()}
+                onRemoveFontPack={() => void handleRemoveFontPack()}
                 onSave={persistSettingsWithFeedback}
                 onUpdate={updateDraftSettings}
                 selectedCjkFontFamily={selectedCjkFontFamily}

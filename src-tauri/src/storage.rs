@@ -166,6 +166,22 @@ impl StorageService {
         self.data_dir.join("downloads")
     }
 
+    /// 字体资源包是可重新下载的大体积本地资源：发布版放入 LOCALAPPDATA，避免随漫游配置同步；
+    /// 开发版继续放在工作区数据目录，防止调试构建误用或修改已安装应用的字体缓存。
+    pub fn font_packs_dir_path(&self) -> PathBuf {
+        if !cfg!(debug_assertions) && cfg!(windows) {
+            if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+                let trimmed = local_appdata.trim();
+                if !trimmed.is_empty() {
+                    return PathBuf::from(trimmed)
+                        .join("com.myterminal.app")
+                        .join("font-packs");
+                }
+            }
+        }
+        self.data_dir.join("font-packs")
+    }
+
     pub fn exports_dir_path(&self) -> PathBuf {
         self.data_dir.join("exports")
     }
