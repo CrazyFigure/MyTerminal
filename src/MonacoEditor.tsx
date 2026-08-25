@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Editor, { loader } from '@monaco-editor/react';
 import * as monaco from 'monaco-editor';
 import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker';
@@ -6,6 +6,7 @@ import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker';
 import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
 import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
+import { EditorFindReplaceWidget } from './components/EditorFindReplaceWidget';
 
 // 安装包环境会受 Tauri CSP 约束，不能依赖 @monaco-editor/loader 默认的 CDN 地址加载编辑器脚本。
 loader.config({ monaco });
@@ -53,6 +54,11 @@ export default function MonacoEditor({
   value,
 }: MonacoEditorProps) {
   const onSaveRef = useRef(onSave);
+  const [editorInstance, setEditorInstance] = useState<monaco.editor.IStandaloneCodeEditor | null>(
+    null,
+  );
+  const [isFindWidgetOpen, setIsFindWidgetOpen] = useState(false);
+  const [findWidgetMode, setFindWidgetMode] = useState<'find' | 'replace'>('find');
 
   useEffect(() => {
     // 快捷键命令只在 Monaco 挂载时注册一次，回调用 ref 保持为当前文件的最新保存逻辑。
@@ -60,6 +66,8 @@ export default function MonacoEditor({
   }, [onSave]);
 
   const handleEditorMount = useCallback((editor: monaco.editor.IStandaloneCodeEditor) => {
+    setEditorInstance(editor);
+
     // 为终端用户补充 Ctrl/Cmd+Shift+C/V 别名，并转交 Monaco 原生命令，确保选区、多光标、撤销栈与常规复制粘贴完全一致。
     const clipboardShortcutModifier = monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift;
     editor.addCommand(clipboardShortcutModifier | monaco.KeyCode.KeyC, () => {
@@ -72,30 +80,57 @@ export default function MonacoEditor({
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       onSaveRef.current?.();
     });
-    // Ctrl/Cmd+R 在内置编辑器中与默认的 Ctrl/Cmd+H 一致，打开 Monaco 查找替换框而不是刷新 WebView。
+
+    // 拦截 Ctrl/Cmd+F 打开自定义查找浮窗
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyF, () => {
+      setFindWidgetMode('find');
+      setIsFindWidgetOpen(true);
+    });
+
+    // 拦截 Ctrl/Cmd+H 打开自定义查找替换浮窗
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyH, () => {
+      setFindWidgetMode('replace');
+      setIsFindWidgetOpen(true);
+    });
+
+    // Ctrl/Cmd+R 在内置编辑器中与 Ctrl/Cmd+H 一致，打开自定义查找替换框而不是刷新 WebView。
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyR, () => {
-      editor.trigger('keyboard', 'editor.action.startFindReplaceAction', null);
+      setFindWidgetMode('replace');
+      setIsFindWidgetOpen(true);
     });
   }, []);
 
   return (
-    <Editor
-      height="100%"
-      language={language}
-      loading={null}
-      onChange={onChange}
-      onMount={handleEditorMount}
-      options={{
-        automaticLayout: true,
-        fontFamily,
-        fontSize,
-        minimap: { enabled: false },
-        // 远程配置文件编辑以可读和稳定为先，禁用底部额外空白避免内容区看起来像被遮挡。
-        scrollBeyondLastLine: false,
-        wordWrap: 'on',
-      }}
-      theme={theme}
-      value={value}
-    />
+    <div className="monaco-editor-container">
+      <Editor
+        height="100%"
+        language={language}
+        loading={null}
+        onChange={onChange}
+        onMount={handleEditorMount}
+        options={{
+          automaticLayout: true,
+          find: {
+            addExtraSpaceOnTop: false,
+            autoFindInSelection: 'never',
+            seedSearchStringFromSelection: 'never',
+          },
+          fontFamily,
+          fontSize,
+          minimap: { enabled: false },
+          // 远程配置文件编辑以可读和稳定为先，禁用底部额外空白避免内容区看起来像被遮挡。
+          scrollBeyondLastLine: false,
+          wordWrap: 'on',
+        }}
+        theme={theme}
+        value={value}
+      />
+      <EditorFindReplaceWidget
+        editor={editorInstance}
+        initialMode={findWidgetMode}
+        isOpen={isFindWidgetOpen}
+        onClose={() => setIsFindWidgetOpen(false)}
+      />
+    </div>
   );
 }

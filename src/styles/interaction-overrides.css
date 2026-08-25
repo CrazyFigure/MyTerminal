@@ -93,6 +93,252 @@
   background-color: inherit;
 }
 
+/* 隐藏 Monaco 原生 VSCode 风格的查找替换浮窗，由自定义圆角卡片浮窗全面接管。 */
+.monaco-editor .find-widget {
+  display: none !important;
+}
+
+.monaco-editor-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+/* 自定义查找与替换浮窗卡片 */
+.editor-find-replace-card {
+  position: absolute;
+  top: 12px;
+  right: 20px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 372px;
+  max-width: calc(100% - 32px);
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: #ffffff;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12), 0 4px 12px rgba(15, 23, 42, 0.06);
+  user-select: none;
+  animation: editorFindFadeIn 0.15s ease-out;
+}
+
+.app-shell.theme-dark .editor-find-replace-card {
+  background: #1e293b;
+  border-color: rgba(148, 163, 184, 0.2);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.38), 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+
+@keyframes editorFindFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.editor-find-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editor-find-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.app-shell.theme-dark .editor-find-input-wrap {
+  background: #0f172a;
+  border-color: #334155;
+}
+
+.editor-find-input-wrap:focus-within {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 1.5px rgba(99, 102, 241, 0.25);
+}
+
+.editor-find-field-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-right: 6px;
+  color: #94a3b8;
+}
+
+.editor-find-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 13px;
+  color: var(--app-text);
+  padding: 0;
+}
+
+.editor-find-input::placeholder {
+  color: #94a3b8;
+}
+
+.editor-find-count-badge {
+  flex-shrink: 0;
+  margin-left: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.app-shell.theme-dark .editor-find-count-badge {
+  color: #94a3b8;
+}
+
+.editor-find-count-badge.empty {
+  color: #ef4444;
+}
+
+.editor-find-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s, transform 0.1s;
+}
+
+.app-shell.theme-dark .editor-find-icon-btn {
+  color: #94a3b8;
+}
+
+.editor-find-icon-btn:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--app-text);
+}
+
+.editor-find-icon-btn:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+.editor-find-icon-btn.close-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+}
+
+.editor-find-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: var(--app-text);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s, transform 0.1s;
+}
+
+.app-shell.theme-dark .editor-find-action-btn {
+  background: #1e293b;
+  border-color: #334155;
+}
+
+.editor-find-action-btn:hover:not(:disabled) {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.app-shell.theme-dark .editor-find-action-btn:hover:not(:disabled) {
+  background: #334155;
+  border-color: #475569;
+}
+
+.editor-find-action-btn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.editor-find-options-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 2px 2px 0 2px;
+}
+
+.editor-find-option-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #64748b;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s;
+}
+
+.app-shell.theme-dark .editor-find-option-label {
+  color: #94a3b8;
+}
+
+.editor-find-option-label:hover {
+  color: var(--app-text);
+}
+
+.editor-find-checkbox {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #6366f1;
+  cursor: pointer;
+}
+
+/* 编辑器内部文本匹配高亮样式 */
+.monaco-find-match-highlight {
+  background-color: rgba(245, 158, 11, 0.28) !important;
+  border-radius: 2px;
+}
+
+.app-shell.theme-dark .monaco-find-match-highlight {
+  background-color: rgba(245, 158, 11, 0.35) !important;
+}
+
+.monaco-find-match-current {
+  background-color: rgba(245, 158, 11, 0.6) !important;
+  border-radius: 2px;
+  outline: 1px solid rgba(234, 88, 12, 0.9) !important;
+}
+
+.app-shell.theme-dark .monaco-find-match-current {
+  background-color: rgba(245, 158, 11, 0.7) !important;
+  outline: 1px solid rgba(251, 146, 60, 0.95) !important;
+}
+
 /* 文件管理列宽调整只在表头展示窄分隔线，保证列表保持专业工具的紧凑密度。 */
 .explorer-column-header {
   position: relative;
