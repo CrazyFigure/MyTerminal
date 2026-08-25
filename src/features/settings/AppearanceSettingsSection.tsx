@@ -1,10 +1,10 @@
 import type { CSSProperties } from "react";
-import { RotateCcw, Save, Upload } from "lucide-react";
+import { Download, PackageCheck, RotateCcw, Save, Trash2, Upload } from "lucide-react";
 
 import { clamp } from "../../app/layout";
 import { CustomSelect } from "../../CustomSelect";
 import type { TranslationKey } from "../../i18n";
-import type { AppSettings, UiLanguage } from "../../types";
+import type { AppSettings, DownloadProgress, FontPackStatus, UiLanguage } from "../../types";
 import {
   appearanceFieldDefaults,
   terminalBackgroundFitOptions,
@@ -16,10 +16,17 @@ type Props = {
   agentChatPreviewStyle: CSSProperties;
   cjkOptions: string[];
   draftSettings: AppSettings;
+  fontPackActionRunning: "download" | "import" | "remove" | "";
+  fontPackError: string | null;
+  fontPackProgress: DownloadProgress | null;
+  fontPackStatus: FontPackStatus | null;
   hasSettingsChanges: boolean;
   latinOptions: string[];
   onChooseLocalBackgroundImage: () => void | Promise<unknown>;
+  onDownloadFontPack: () => void;
+  onImportFontPack: () => void;
   onLoadSystemFonts: () => void;
+  onRemoveFontPack: () => void;
   onSave: () => void | Promise<unknown>;
   onUpdate: (updater: (settings: AppSettings) => AppSettings) => void;
   selectedCjkFontFamily: string;
@@ -31,6 +38,13 @@ type Props = {
   terminalPreviewStyle: CSSProperties;
 };
 
+const formatFontPackBytes = (value?: number) => {
+  if (!value || !Number.isFinite(value)) {
+    return "—";
+  }
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+};
+
 // 外观设置是纯受控草稿视图：即时预览读取草稿，只有父级保存事务成功后才正式生效。
 export function AppearanceSettingsSection({
   agentChatCjkOptions,
@@ -38,10 +52,17 @@ export function AppearanceSettingsSection({
   agentChatPreviewStyle,
   cjkOptions,
   draftSettings,
+  fontPackActionRunning,
+  fontPackError,
+  fontPackProgress,
+  fontPackStatus,
   hasSettingsChanges,
   latinOptions,
   onChooseLocalBackgroundImage,
+  onDownloadFontPack,
+  onImportFontPack,
   onLoadSystemFonts,
+  onRemoveFontPack,
   onSave,
   onUpdate,
   selectedCjkFontFamily,
@@ -49,6 +70,19 @@ export function AppearanceSettingsSection({
   t,
   terminalPreviewStyle,
 }: Props) {
+  const fontPackBusy = Boolean(fontPackActionRunning);
+  const fontPackReady = fontPackStatus?.state === "ready";
+  const fontPackStatusText = fontPackStatus?.state === "ready"
+    ? t("fontPackStatusReady", { version: fontPackStatus.version })
+    : fontPackStatus?.state === "invalid"
+      ? t("fontPackStatusInvalid")
+      : t("fontPackStatusMissing");
+  const fontPackTotalBytes = fontPackProgress?.totalBytes ?? fontPackStatus?.downloadSizeBytes;
+  const fontPackPercent = fontPackProgress?.percent
+    ?? (fontPackProgress && fontPackTotalBytes
+      ? Math.round((fontPackProgress.downloadedBytes / fontPackTotalBytes) * 100)
+      : 0);
+
   return (
     <div className="stack gap-16 settings-appearance-pane">
       {/* 外观页按用户认知路径分块：先配置应用偏好，再调整终端视觉与交互。 */}
@@ -92,6 +126,64 @@ export function AppearanceSettingsSection({
               ]}
             />
           </div>
+        </div>
+      </section>
+
+      <section className="settings-section-block font-pack-settings-card">
+        <div className="font-pack-settings-heading">
+          <div>
+            <h3>{t("fontPackSettingsTitle")}</h3>
+            <p className="field-hint">{t("fontPackSettingsDescription")}</p>
+          </div>
+          <span className={`font-pack-status-badge is-${fontPackStatus?.state ?? "missing"}`}>
+            <PackageCheck size={15} />
+            {fontPackStatusText}
+          </span>
+        </div>
+
+        <div className="font-pack-settings-meta">
+          <span>{t("fontPackInstalledSize", { size: formatFontPackBytes(fontPackStatus?.installedSizeBytes) })}</span>
+          <span>{t("fontPackPromptPrivacy")}</span>
+        </div>
+
+        {fontPackActionRunning === "download" ? (
+          <div className="font-pack-progress" aria-live="polite">
+            <div className="font-pack-progress-copy">
+              <span>{t("fontPackDownloading")}</span>
+              <span>{fontPackPercent}%</span>
+            </div>
+            <div className="font-pack-progress-track">
+              <div className="font-pack-progress-fill" style={{ width: `${Math.min(100, Math.max(0, fontPackPercent))}%` }} />
+            </div>
+            <span className="field-hint">
+              {t("fontPackDownloadProgress", {
+                downloaded: formatFontPackBytes(fontPackProgress?.downloadedBytes),
+                total: formatFontPackBytes(fontPackTotalBytes),
+              })}
+            </span>
+          </div>
+        ) : null}
+
+        {fontPackError ? <p className="font-pack-error" role="alert">{fontPackError}</p> : null}
+
+        <div className="font-pack-settings-actions">
+          <button className="secondary-button font-pack-action-button" disabled={fontPackBusy} onClick={onImportFontPack} type="button">
+            <Upload size={15} /> {t("fontPackImport")}
+          </button>
+          {fontPackReady ? (
+            <button className="danger-button font-pack-action-button" disabled={fontPackBusy} onClick={onRemoveFontPack} type="button">
+              <Trash2 size={15} /> {t("fontPackRemove")}
+            </button>
+          ) : (
+            <button className="primary-button font-pack-action-button" disabled={fontPackBusy} onClick={onDownloadFontPack} type="button">
+              <Download size={15} />
+              {fontPackActionRunning === "download"
+                ? t("fontPackDownloading")
+                : fontPackStatus?.state === "invalid"
+                  ? t("fontPackRepair")
+                  : t("fontPackDownloadAndEnable")}
+            </button>
+          )}
         </div>
       </section>
 

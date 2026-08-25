@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 
 import { backend } from './backend';
+import { activateFontPack } from './app/fontPack';
 import type { StoreState } from './application/store/contracts';
 import { resolveBoundConnectionId } from './application/store/sessionRuntime';
 import { statusText } from './application/store/status';
@@ -57,10 +58,23 @@ export const useAppStore = create<StoreState>((set, get) => ({
   showTunnelForm: false,
   tunnelDraft: emptyTunnelDraft(),
   updateCheckResult: null,
+  fontPackStatus: null,
 
   bootstrap: async () => {
     set({ loading: true, statusMessage: statusText(get().settings, 'statusLoadingWorkspace') });
-    const state = await backend.bootstrap();
+    // 工作区数据与字体包状态并行读取；只有字体完成本地注册后才挂载终端，避免先按 fallback 测量再跳格。
+    const [state, fontPackStatus] = await Promise.all([
+      backend.bootstrap(),
+      backend.getFontPackStatus(),
+    ]);
+    let activeFontPackStatus = fontPackStatus;
+    try {
+      await activateFontPack(fontPackStatus);
+    } catch {
+      // 字体文件虽通过后端校验但 WebView 拒绝解析时继续启动，并把资源标记为待修复。
+      activeFontPackStatus = { ...fontPackStatus, state: 'invalid', faces: [] };
+      await activateFontPack(activeFontPackStatus);
+    }
     const activeSessionId = state.sessions[0]?.id;
     const activeConnectionId = state.sessions[0]?.kind === 'local' ? undefined : state.sessions[0]?.connectionId;
     set({
@@ -68,6 +82,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
       loading: false,
       statusMessage: statusText(state.settings, 'statusWorkspaceLoaded'),
       settings: state.settings,
+      fontPackStatus: activeFontPackStatus,
       localTerminals: state.localTerminals,
       connections: state.connections.map((connection) => normalizeLoadedConnection(connection)),
       history: state.history,

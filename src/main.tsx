@@ -4,8 +4,7 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import { installSystemClipboardBridge } from './clipboard';
 import './styles.css';
-// 引入内置字体（JetBrains Mono 与 Maple Mono Normal NF CN）
-import './styles/fonts.css';
+// 可选字体包在启动阶段由 FontFace API 从应用数据目录注册；不再静态导入，避免字体进入每个安装包。
 // 功能样式按原文件中的先后顺序加载，避免拆分后改变同权重选择器的级联结果。
 import './styles/agent.css';
 import './styles/interaction-overrides.css';

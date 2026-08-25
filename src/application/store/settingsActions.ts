@@ -1,5 +1,7 @@
 import { backend } from '../../backend';
+import { activateFontPack } from '../../app/fontPack';
 import { normalizeLoadedConnection } from '../../domain/connections/model';
+import type { FontPackStatus } from '../../types';
 import type { StoreGet, StoreSet, StoreState } from './contracts';
 import { statusText } from './status';
 
@@ -12,9 +14,31 @@ type SettingsActionKeys =
   | 'exportLocalConfig'
   | 'importLocalConfig'
   | 'checkForUpdates'
-  | 'installUpdate';
+  | 'installUpdate'
+  | 'refreshFontPack'
+  | 'downloadFontPack'
+  | 'importFontPack'
+  | 'removeFontPack';
 
 export type SettingsActions = Pick<StoreState, SettingsActionKeys>;
+
+// 后端完成文件校验后，前端必须再确认 WebView 能实际加载；注册失败时标记 invalid，不能继续宣称字体可用。
+const activateAndStoreFontPack = async (
+  set: StoreSet,
+  status: FontPackStatus,
+): Promise<FontPackStatus> => {
+  try {
+    await activateFontPack(status);
+    set({ fontPackStatus: status });
+    return status;
+  } catch (error) {
+    const invalidStatus: FontPackStatus = { ...status, state: 'invalid', faces: [] };
+    await activateFontPack(invalidStatus);
+    set({ fontPackStatus: invalidStatus });
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`font_pack_error:install:${reason}`);
+  }
+};
 
 // 设置切片统一处理草稿持久化、配置包同步和更新安装；任何全量配置替换都同时清理会话派生缓存。
 export const createSettingsActions = (set: StoreSet, get: StoreGet): SettingsActions => ({
@@ -137,6 +161,26 @@ export const createSettingsActions = (set: StoreSet, get: StoreGet): SettingsAct
       }));
       throw error instanceof Error ? error : new Error(reason);
     }
+  },
+
+  refreshFontPack: async () => {
+    const status = await backend.getFontPackStatus();
+    return activateAndStoreFontPack(set, status);
+  },
+
+  downloadFontPack: async () => {
+    const status = await backend.downloadFontPack();
+    return activateAndStoreFontPack(set, status);
+  },
+
+  importFontPack: async (sourcePath) => {
+    const status = await backend.importFontPack(sourcePath);
+    return activateAndStoreFontPack(set, status);
+  },
+
+  removeFontPack: async () => {
+    const status = await backend.removeFontPack();
+    return activateAndStoreFontPack(set, status);
   },
 
 });
