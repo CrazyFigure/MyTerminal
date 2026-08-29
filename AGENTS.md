@@ -8,7 +8,7 @@ MyTerminal 由 React 19/TypeScript 前端与 Tauri 2/Rust 桌面后端组成。*
 
 - `npm ci`：按锁文件安装依赖。
 - `npm run check:env`：检查 Node、npm、Rust、Perl 和 Windows 链接器。
-- `npm run dev`：仅启动 1420 端口的 Vite 前端。
+- `npm run dev`：仅启动 Vite 前端，默认从 1420 起寻找空闲端口；完整 Tauri 开发命令使用系统动态端口。
 - `npm run tauri:dev`：启动完整桌面开发环境。
 - `npm run typecheck`：执行 TypeScript 类型检查。
 - `npm run check:web`：构建前端并检查包体内存限制。

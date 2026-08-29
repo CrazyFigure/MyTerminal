@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "npm run dev:web",
-    "dev:web": "vite --host 0.0.0.0 --port 1420",
+    "dev:web": "vite",
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
     "sync:version": "node scripts/sync-version.mjs",
@@ -22,7 +22,7 @@
     "pretauri": "npm run sync:version",
     "tauri": "tauri",
     "pretauri:dev": "npm run sync:version",
-    "tauri:dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
+    "tauri:dev": "node scripts/run-tauri-dev.mjs",
     "build:cli-sidecar": "node scripts/build-cli-sidecar.mjs",
     "pretauri:build": "npm run sync:version",
     "tauri:build": "tauri build",

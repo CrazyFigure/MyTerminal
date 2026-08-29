@@ -32,6 +32,13 @@ if (!packageJson.version) {
   throw new Error('package.json is missing a version field.');
 }
 
+// 标准 Tauri 开发命令会注入系统分配的空闲端口；单独启动网页时才从 1420 起自动寻找端口。
+const configuredDevPort = Number.parseInt(process.env.MYTERMINAL_DEV_PORT ?? '', 10);
+const hasAllocatedDevPort = Number.isInteger(configuredDevPort)
+  && configuredDevPort > 0
+  && configuredDevPort <= 65535;
+const devPort = hasAllocatedDevPort ? configuredDevPort : 1420;
+
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
@@ -40,8 +47,9 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    port: 1420,
-    strictPort: true,
+    port: devPort,
+    // Tauri 已预选端口时必须锁定；网页单独开发时允许 Vite 遇到占用后顺延。
+    strictPort: hasAllocatedDevPort,
     // Cargo 编译期间会持续改写 target；该目录既不是前端源码，也不能参与 HMR 监听。
     watch: {
       ignored: ['**/src-tauri/target/**', '**/.myterminal-data/**'],
