@@ -120,7 +120,7 @@
 | :--- | :--- | :--- |
 | **TypeScript 类型检查** | `npm run typecheck` | 0 errors, 0 warnings (PASS) |
 | **前端打包与体积守卫** | `npm run check:web` | Monaco 动态分包守卫通过，体积合规 (PASS) |
-| **Rust 编译与版本同步** | `npm run check:rust` | 编译 0 warnings, 版本 0.8.1 同步 (PASS) |
+| **Rust 编译与版本同步** | `npm run check:rust` | 编译 0 warnings, 版本 0.8.2 同步 (PASS) |
 | **Rust 单元测试** | `cargo check --tests --manifest-path src-tauri/Cargo.toml` | 单元测试编译通过 (PASS) |
 | **全量质量检查套件** | `npm run check` | 全流程通过 (PASS) |
 
