@@ -161,10 +161,7 @@ export interface AgentChatMessage {
 export interface AppSettings {
   uiLanguage: UiLanguage;
   themeMode: ThemeMode;
-  runtimeRefreshIntervalSec: number;
-  /** 存储行展开后的大文件列表刷新频率，独立控制较重的文件系统扫描。 */
-  runtimeStorageRefreshIntervalSec: number;
-  /** 内存行展开后的进程/线程资源明细刷新频率，只影响资源明细接口。 */
+  /** 进程/线程和连接展开明细的刷新频率；概览固定每秒由后端推送。 */
   runtimeResourceRefreshIntervalSec: number;
   /** 内存行展开后的资源明细默认来源，容器环境可切到 Docker/Compose、Podman 或 K8s。 */
   runtimeResourceSource: RuntimeResourceSource;
@@ -283,22 +280,64 @@ export interface SftpTransferProgress {
   directories: number;
 }
 
-export interface RuntimeOverview {
+export interface RuntimePercentMetric {
+  percent: number | null;
+}
+
+export interface RuntimeCpuCore {
+  name: string;
+  percent: number;
+}
+
+export interface RuntimeMemoryMetric {
+  percent: number | null;
+  usedKib: number | null;
+  totalKib: number | null;
+}
+
+export interface RuntimeStorageMetric {
+  percent: number | null;
+  mount: string;
+  usedKib: number | null;
+  totalKib: number | null;
+}
+
+export interface RuntimeConnectionMetric {
+  tcpEstablished: number | null;
+  sshEstablished: number | null;
+}
+
+export interface RuntimeOverviewSnapshot {
+  schemaVersion: number;
   host: string;
   os: string;
-  cpu: string;
-  /** 每个 CPU 核心的占用率，点击 CPU 行展开展示。 */
-  cpuCores: Array<{
-    name: string;
-    percent: number;
-  }>;
-  memory: string;
-  storage: string;
-  /** 远端主机已建立 TCP 连接数，并附带最终 sshd 实际端口的连接数；无法可靠采集时 SSH 显示不可用。 */
-  connections: string;
-  network: string;
-  uptime: string;
+  primaryAddress: string | null;
+  capturedAt: string;
+  cpu: RuntimePercentMetric;
+  cpuCores: RuntimeCpuCore[];
+  memory: RuntimeMemoryMetric;
+  storage: RuntimeStorageMetric;
+  connections: RuntimeConnectionMetric;
+  uptimeSeconds: number | null;
 }
+
+export type RuntimeOverviewEvent =
+  | {
+      kind: 'snapshot';
+      subscriptionId: string;
+      connectionId: string;
+      sequence: number;
+      snapshot: RuntimeOverviewSnapshot;
+    }
+  | {
+      kind: 'error';
+      subscriptionId: string;
+      connectionId: string;
+      sequence: number;
+      attemptedAt: string;
+      message: string;
+      retryInMs: number;
+    };
 
 export interface RuntimeResourceUsageRequest {
   source: RuntimeResourceSource;
@@ -324,22 +363,6 @@ export interface RuntimeResourceUsage {
   metric: RuntimeResourceMetric;
   target: RuntimeResourceTarget;
   items: RuntimeResourceUsageItem[];
-  capturedAt: string;
-  error?: string;
-}
-
-// 存储展开列表的单文件数据，名称用于紧凑展示，路径用于定位和悬浮完整查看。
-export interface RuntimeStorageFileItem {
-  rank: number;
-  name: string;
-  path: string;
-  size: string;
-  sizeKib: number;
-}
-
-// 存储展开列表的后端响应，只在存储行展开时刷新，error 直接显示在列表区域。
-export interface RuntimeStorageFiles {
-  items: RuntimeStorageFileItem[];
   capturedAt: string;
   error?: string;
 }

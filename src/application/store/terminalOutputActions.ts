@@ -146,13 +146,12 @@ export const createTerminalOutputActions = (
       const shouldClearActiveRemoteData =
         activeSessionBecameUnavailable &&
         (state.files.length > 0 ||
-          Boolean(state.runtimeOverview) ||
           Boolean(state.currentRemotePath));
       // 只要会话变为不可用（含握手失败、cwd 为空的场景），就无条件熄灭加载动画；
       // 这一步不依赖是否有旧数据可清，否则握手失败又没有旧内容时动画会一直空转。
       const shouldStopLoading =
         activeSessionBecameUnavailable &&
-        (state.filesLoading || state.runtimeLoading || state.historyLoading);
+        (state.filesLoading || state.historyLoading);
 
       return {
         ...(sessionsChanged ? { sessions: nextSessions } : {}),
@@ -161,13 +160,12 @@ export const createTerminalOutputActions = (
           : {}),
         // 会话变为不可用（断开/异常）时清掉残留的远端数据，避免继续展示上一台主机的内容。
         ...(shouldClearActiveRemoteData
-          ? { files: [], runtimeOverview: undefined, currentRemotePath: "" }
+          ? { files: [], currentRemotePath: "" }
           : {}),
         // 加载动画的熄灭独立判断，覆盖“无旧数据可清但动画已点亮”的握手失败场景。
         ...(shouldStopLoading
           ? {
               filesLoading: false,
-              runtimeLoading: false,
               historyLoading: false,
             }
           : {}),

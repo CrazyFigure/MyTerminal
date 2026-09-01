@@ -200,7 +200,6 @@ export const createConnectionActions = (set: StoreSet, get: StoreGet): Connectio
         sessions: nextSessions,
         activeConnectionId: nextActiveConnectionId,
         activeSessionId: nextActiveSessionId,
-        runtimeOverview: deletedActiveConnection ? undefined : state.runtimeOverview,
         files: deletedActiveConnection ? [] : state.files,
         currentRemotePath: deletedActiveConnection ? nextSessions.find((item) => item.id === nextActiveSessionId)?.cwd ?? '' : state.currentRemotePath,
         commandBuffers: nextCommandBuffers,

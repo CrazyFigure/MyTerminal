@@ -10,9 +10,8 @@ import type {
   LocalTerminalSettings,
   RemoteFileEntry,
   RuntimeConnectionList,
-  RuntimeOverview,
+  RuntimeOverviewSnapshot,
   RuntimeResourceUsage,
-  RuntimeStorageFiles,
   TunnelRecord,
   UpdateCheckResult,
 } from "../types";
@@ -21,8 +20,6 @@ import { normalizeProxyConfig, nowIso } from "./normalizers";
 export const mockSettings: AppSettings = {
   uiLanguage: "zh-CN",
   themeMode: "light",
-  runtimeRefreshIntervalSec: 1,
-  runtimeStorageRefreshIntervalSec: 5,
   runtimeResourceRefreshIntervalSec: 3,
   runtimeResourceSource: "system",
   sshKeepaliveIntervalSec: 30,
@@ -160,21 +157,35 @@ export const mockFiles: RemoteFileEntry[] = [
   },
 ];
 
-export const mockRuntimeOverview: RuntimeOverview = {
+export const mockRuntimeOverviewSnapshot: RuntimeOverviewSnapshot = {
+  schemaVersion: 1,
   host: "192.168.12.28",
   os: "Linux demo-host 6.8 x86_64",
-  cpu: "Load 0.21",
+  primaryAddress: "192.168.12.28",
+  capturedAt: nowIso(),
+  cpu: { percent: 21 },
   cpuCores: [
     { name: "CPU 0", percent: 18 },
     { name: "CPU 1", percent: 24 },
     { name: "CPU 2", percent: 11 },
     { name: "CPU 3", percent: 35 },
   ],
-  memory: "1423 / 4096 MB (35%)",
-  storage: "18 / 64 GB (29%)",
-  connections: "TCP 18 / SSH 1",
-  network: "192.168.12.28",
-  uptime: "3d 4h",
+  memory: {
+    percent: 34.7,
+    usedKib: 1423 * 1024,
+    totalKib: 4096 * 1024,
+  },
+  storage: {
+    percent: 28.1,
+    mount: "/",
+    usedKib: 18 * 1024 * 1024,
+    totalKib: 64 * 1024 * 1024,
+  },
+  connections: {
+    tcpEstablished: 18,
+    sshEstablished: 1,
+  },
+  uptimeSeconds: 3 * 86400 + 4 * 3600,
 };
 
 export const mockRuntimeResourceUsage: RuntimeResourceUsage = {
@@ -215,34 +226,6 @@ export const mockRuntimeResourceUsage: RuntimeResourceUsage = {
       detail: "node server.js",
       cpuPercent: 2.1,
       memoryPercent: 7.1,
-    },
-  ],
-};
-
-// 本地预览时模拟远端大文件列表，保持存储展开区在非 Tauri 环境也能完整渲染。
-export const mockRuntimeStorageFiles: RuntimeStorageFiles = {
-  capturedAt: nowIso(),
-  items: [
-    {
-      rank: 1,
-      name: "mysql.ibd",
-      path: "/var/lib/mysql/ology/mysql.ibd",
-      size: "12.4 GB",
-      sizeKib: 13_002_342,
-    },
-    {
-      rank: 2,
-      name: "app.log",
-      path: "/srv/ology/logs/app.log",
-      size: "4.7 GB",
-      sizeKib: 4_928_307,
-    },
-    {
-      rank: 3,
-      name: "container-json.log",
-      path: "/var/lib/docker/containers/demo/demo-json.log",
-      size: "2.1 GB",
-      sizeKib: 2_202_009,
     },
   ],
 };

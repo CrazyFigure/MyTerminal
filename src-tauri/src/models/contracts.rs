@@ -151,10 +151,6 @@ pub struct StoredAppSettings {
     pub ui_language: String,
     #[serde(default = "default_theme_mode")]
     pub theme_mode: String,
-    #[serde(default = "default_runtime_refresh_interval_sec")]
-    pub runtime_refresh_interval_sec: u16,
-    #[serde(default = "default_runtime_storage_refresh_interval_sec")]
-    pub runtime_storage_refresh_interval_sec: u16,
     #[serde(default = "default_runtime_resource_refresh_interval_sec")]
     pub runtime_resource_refresh_interval_sec: u16,
     #[serde(default = "default_runtime_resource_source")]

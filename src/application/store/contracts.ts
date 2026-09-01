@@ -9,7 +9,6 @@ import type {
   LocalTerminalProfile,
   LocalTerminalSettings,
   RemoteFileEntry,
-  RuntimeOverview,
   TerminalSession,
   TunnelDraft,
   TunnelRecord,
@@ -37,9 +36,6 @@ export type StoreState = {
   suggestions: Record<string, string[]>;
   files: RemoteFileEntry[];
   currentRemotePath: string;
-  runtimeOverview?: RuntimeOverview;
-  // 面板刷新态只在没有旧内容时显示加载动画，后台定时刷新不应让已有内容闪烁。
-  runtimeLoading: boolean;
   filesLoading: boolean;
   historyLoading: boolean;
   connectionTestResult?: ConnectionTestResult;
@@ -115,7 +111,6 @@ export type StoreState = {
   renameRemotePath: (path: string, newName: string) => Promise<void>;
   copyRemotePaths: (sources: string[], targetDir: string) => Promise<void>;
   createRemoteEntry: (remoteDir: string, name: string, isDirectory: boolean) => Promise<void>;
-  refreshRuntimeOverview: () => Promise<void>;
   openRemoteFile: (path: string) => Promise<void>;
   closeEditorDocument: () => void;
   setEditorContent: (content: string) => void;

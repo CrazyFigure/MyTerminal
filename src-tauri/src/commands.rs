@@ -28,8 +28,7 @@ use crate::{
         AppSettings, BootstrapState,
         ConnectionProfile, HistoryEntry,
         HistoryEntryInput, LocalTerminalProfile, LocalTerminalSettings,
-        RuntimeConnectionList, RuntimeOverview, SshProxyConfig,
-        RuntimeResourceUsage, RuntimeResourceUsageRequest, RuntimeStorageFiles,
+        SshProxyConfig,
         TerminalOutputChunk, TerminalSession, TunnelOpenRequest, TunnelRecord, TunnelUpdateRequest,
     },
     state::{
@@ -722,46 +721,7 @@ pub fn list_tunnels(state: State<'_, AppState>) -> Result<Vec<TunnelRecord>, Str
     Ok(state.storage.load_tunnels()?)
 }
 
-// 运行状态要跑多条远端命令，必须用 (async) 放到独立线程执行，避免阻塞主线程冻结整个 UI 和终端输入。
-#[tauri::command(async)]
-pub fn fetch_runtime_overview(
-    state: State<'_, AppState>,
-    connection_id: String,
-) -> Result<RuntimeOverview, String> {
-    let connection = ensure_connection_exists(&state, &connection_id)?;
-    Ok(query_runtime_overview_cached(&state, &connection)?)
-}
 
-// 资源明细只在内存行展开时按需执行，避免常规运行状态刷新反复拉取进程、线程或容器列表。
-#[tauri::command(async)]
-pub fn fetch_runtime_resource_usage(
-    state: State<'_, AppState>,
-    connection_id: String,
-    request: RuntimeResourceUsageRequest,
-) -> Result<RuntimeResourceUsage, String> {
-    let connection = ensure_connection_exists(&state, &connection_id)?;
-    Ok(query_runtime_resource_usage_cached(&state, &connection, &request)?)
-}
-
-// 最大文件扫描可能触发较多磁盘遍历，仅在存储行展开后由前端按需调用。
-#[tauri::command(async)]
-pub fn fetch_runtime_storage_files(
-    state: State<'_, AppState>,
-    connection_id: String,
-) -> Result<RuntimeStorageFiles, String> {
-    let connection = ensure_connection_exists(&state, &connection_id)?;
-    Ok(query_runtime_storage_files_cached(&state, &connection)?)
-}
-
-// 连接明细只在连接数行展开后由前端按需调用，复用辅助会话读取网络表，不占用主终端会话。
-#[tauri::command(async)]
-pub fn fetch_runtime_connection_list(
-    state: State<'_, AppState>,
-    connection_id: String,
-) -> Result<RuntimeConnectionList, String> {
-    let connection = ensure_connection_exists(&state, &connection_id)?;
-    Ok(query_runtime_connection_list_cached(&state, &connection)?)
-}
 
 #[tauri::command]
 pub fn open_tunnel(
@@ -1020,6 +980,7 @@ pub fn get_command_suggestions(
 // 本地配置与 WebDAV 同步独立成业务模块；命令名保持不变，仅调整 Rust 内部注册路径。
 pub mod config_sync;
 pub mod font_pack;
+pub mod runtime_monitor;
 
 // Shell 输出协议作为领域对象独立维护；命令层只负责编排 PTY、队列和事件。
 mod shell_output;
@@ -1029,13 +990,9 @@ use shell_output::{
 };
 
 // 远程访问适配器封装 SFTP、历史与运行指标采集；命令层只调用公开用例入口。
-mod remote_access;
+pub(crate) mod remote_access;
 use remote_access::{
     load_remote_identity_maps,
-    query_runtime_overview_cached,
-    query_runtime_resource_usage_cached,
-    query_runtime_storage_files_cached,
-    query_runtime_connection_list_cached,
     read_remote_shell_history_entries_cached,
 };
 
@@ -1075,12 +1032,16 @@ use ssh_transport::spawn_tunnel_listener;
 
 // SSH 会话运行时维护辅助连接缓存与交互 Shell 循环。
 mod ssh_sessions;
-use ssh_sessions::{
+pub(crate) use ssh_sessions::{
     drop_auxiliary_session,
     clear_auxiliary_sessions,
     evict_idle_auxiliary_sessions,
     with_auxiliary_session,
     with_auxiliary_session_once,
+    drop_runtime_detail_session,
+    clear_runtime_detail_sessions,
+    evict_idle_runtime_detail_sessions,
+    with_runtime_detail_session,
     auxiliary_sftp,
     auxiliary_identity_maps,
     ssh_socket_error_code,

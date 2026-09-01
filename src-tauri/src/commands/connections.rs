@@ -1,6 +1,8 @@
 //! 连接配置与 RDP 命令适配器。
 //! 负责协议字段归一、认证配置校验、Windows 凭据写入以及连接配置 CRUD；SSH PTY 生命周期仍由父命令层维护。
 
+use crate::state::RuntimeOverviewMonitorControl;
+
 use super::*;
 
 fn validate_ssh_auth_fields(
@@ -357,6 +359,20 @@ pub fn delete_connection(
     connection_id: String,
 ) -> Result<bool, String> {
     drop_auxiliary_session(&state, &connection_id);
+    drop_runtime_detail_session(&state, &connection_id);
+
+    // 停止并清理使用被删连接的运行概览监控 Worker
+    if let Ok(mut monitors) = state.runtime_overview_monitors.lock() {
+        monitors.retain(|_, runtime| {
+            if runtime.connection_id == connection_id {
+                let _ = runtime.control_tx.send(RuntimeOverviewMonitorControl::Stop);
+                false
+            } else {
+                true
+            }
+        });
+    }
+
     let mut connections = state.storage.load_connections(&state.crypto)?;
     connections.retain(|item| item.id != connection_id);
     state

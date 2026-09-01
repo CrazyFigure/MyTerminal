@@ -71,7 +71,7 @@ import {
   type FileContextMenuTarget,
   type RemoteFileClipboard,
 } from './features/files';
-import { parseMetricPercent, RuntimePanel, useRuntimeMonitor } from './features/runtime';
+import { RuntimeSidebar } from './features/runtime';
 import { SessionContextMenu, type SessionContextMenuTarget } from './features/sessions';
 import {
   AppTitlebar,
@@ -145,12 +145,6 @@ export default function App() {
   const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
   const [localFileDropActive, setLocalFileDropActive] = useState(false);
   const [remoteDownloadDragPaths, setRemoteDownloadDragPaths] = useState<string[]>([]);
-  // 运行状态区的展开态独立保存；存储明细只在 storageFilesExpanded 为 true 时触发远端扫描。
-  const [cpuCoresExpanded, setCpuCoresExpanded] = useState(false);
-  const [memoryResourcesExpanded, setMemoryResourcesExpanded] = useState(false);
-  const [storageFilesExpanded, setStorageFilesExpanded] = useState(false);
-  // 连接数展开态与明细数据独立保存；明细只在 connectionsExpanded 为 true 时触发远端采集。
-  const [connectionsExpanded, setConnectionsExpanded] = useState(false);
   // 底部功能栏默认收起：日常操作集中在终端，命令/隧道/历史面板按需展开，把纵向空间让给终端。
   const [bottomDockCollapsed, setBottomDockCollapsed] = useState(true);
   const [agentBridgeRequests, setAgentBridgeRequests] = useState<AgentBridgeRequest[]>([]);
@@ -220,13 +214,10 @@ export default function App() {
     pollTerminalOutputs,
     refreshFiles,
     refreshRemoteHistory,
-    refreshRuntimeOverview,
     reconnectSession: reconnectSessionById,
     renameRemotePath,
     reorderSessions,
     reorderPaneSessions,
-    runtimeOverview,
-    runtimeLoading,
     selectSession,
     sendCommand,
     sendTerminalData,
@@ -280,13 +271,10 @@ export default function App() {
       pollTerminalOutputs: state.pollTerminalOutputs,
       refreshFiles: state.refreshFiles,
       refreshRemoteHistory: state.refreshRemoteHistory,
-      refreshRuntimeOverview: state.refreshRuntimeOverview,
       reconnectSession: state.reconnectSession,
       renameRemotePath: state.renameRemotePath,
       reorderSessions: state.reorderSessions,
       reorderPaneSessions: state.reorderPaneSessions,
-      runtimeOverview: state.runtimeOverview,
-      runtimeLoading: state.runtimeLoading,
       selectSession: state.selectSession,
       sendCommand: state.sendCommand,
       sendTerminalData: state.sendTerminalData,
@@ -354,15 +342,6 @@ export default function App() {
       unlisten?.();
     };
   }, [reportTransferProgress, t]);
-  const runtimeResourceSourceLabel = useCallback((source: RuntimeResourceSource) => {
-    const labelKeyBySource: Record<RuntimeResourceSource, TranslationKey> = {
-      system: 'runtimeResourceSourceSystem',
-      docker: 'runtimeResourceSourceDocker',
-      podman: 'runtimeResourceSourcePodman',
-      kubernetes: 'runtimeResourceSourceKubernetes',
-    };
-    return t(labelKeyBySource[source] ?? 'runtimeResourceSourceSystem');
-  }, [t]);
 
   // 首页工具栏“更新”按钮和设置页共用后端安装接口，但下载进度与弹窗状态各自独立。
   const openAppExternalLink = useCallback((url: string) => {
@@ -502,33 +481,6 @@ export default function App() {
     () => connections.find((item) => item.id === activeRemoteConnectionId),
     [activeRemoteConnectionId, connections],
   );
-  const {
-    refreshRuntimeOverviewOnce,
-    runtimeConnections,
-    runtimeConnectionsError,
-    runtimeConnectionsLoading,
-    runtimeResourceError,
-    runtimeResourceLoading,
-    runtimeResourceMetric,
-    runtimeResourceTarget,
-    runtimeResourceUsage,
-    runtimeStorageFiles,
-    runtimeStorageFilesError,
-    runtimeStorageFilesLoading,
-    setRuntimeResourceMetric,
-    setRuntimeResourceTarget,
-  } = useRuntimeMonitor({
-    activeRemoteConnectionId,
-    connectionsExpanded,
-    memoryResourcesExpanded,
-    refreshRuntimeOverview,
-    setConnectionsExpanded,
-    setCpuCoresExpanded,
-    setMemoryResourcesExpanded,
-    setStorageFilesExpanded,
-    settings,
-    storageFilesExpanded,
-  });
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -1099,8 +1051,6 @@ export default function App() {
     };
   }, [refreshAgentBridgeRequests]);
 
-  // 左上运行状态直接以主机 IP 作为标题，减少说明性文字占位，把空间留给终端和文件表格。
-  const runtimeHostLabel = runtimeOverview?.host ?? activeRemoteConnection?.host ?? '--';
   // 命令输入框按会话分别暂存，切换标签时各自的半句命令都还在。
   const activeCommand = activeSessionId ? commandBuffers[activeSessionId] ?? '' : '';
   const activeBottomTab = activeRemoteConnectionId ? bottomTabByConnection[activeRemoteConnectionId] ?? globalBottomTab : globalBottomTab;
@@ -1297,8 +1247,7 @@ export default function App() {
     // 只在切换连接或聚焦会话时恢复文件路径；终端内 cd 的目录变化由 cwd 元数据单独刷新，避免旧记忆路径覆盖真实 PWD。
     const rememberedPath = pathByConnectionRef.current[activeRemoteConnectionId];
     void refreshFiles(rememberedPath ?? focusedSession?.cwd ?? '~');
-    refreshRuntimeOverviewOnce();
-  }, [activeRemoteConnectionId, activeSessionId, focusedSession?.status, refreshFiles, refreshRuntimeOverviewOnce]);
+  }, [activeRemoteConnectionId, activeSessionId, focusedSession?.status, refreshFiles]);
 
   useEffect(() => {
     if (!activeRemoteConnectionId) {
@@ -1321,23 +1270,6 @@ export default function App() {
     setPathInput(hasActiveRemoteSession ? currentRemotePath || '~' : '');
   }, [currentRemotePath, hasActiveRemoteSession]);
 
-  useEffect(() => {
-    if (!activeRemoteConnectionId) {
-      return;
-    }
-
-    // 运行状态会发起多条远端命令；自动刷新保持最低 5 秒间隔，避免拖慢终端输入、选区和文件列表滚动。
-    const timer = window.setInterval(refreshRuntimeOverviewOnce, Math.max(5, settings.runtimeRefreshIntervalSec) * 1000);
-    return () => window.clearInterval(timer);
-  }, [activeRemoteConnectionId, refreshRuntimeOverviewOnce, settings.runtimeRefreshIntervalSec]);
-
-  const runtimeItems = [
-    { id: 'cpu', icon: Activity, label: t('metricCpu'), value: runtimeOverview?.cpu ?? t('metricUnavailable'), percent: parseMetricPercent(runtimeOverview?.cpu ?? '') },
-    { id: 'memory', icon: MemoryStick, label: t('metricMemory'), value: runtimeOverview?.memory ?? t('metricUnavailable'), percent: parseMetricPercent(runtimeOverview?.memory ?? '') },
-    { id: 'storage', icon: HardDrive, label: t('metricStorage'), value: runtimeOverview?.storage ?? t('metricUnavailable'), percent: parseMetricPercent(runtimeOverview?.storage ?? '') },
-    { id: 'connections', icon: Cable, label: t('metricConnections'), value: runtimeOverview?.connections ?? t('metricUnavailable'), percent: undefined },
-    { id: 'uptime', icon: RefreshCw, label: t('metricUptime'), value: runtimeOverview?.uptime ?? t('metricUnavailable'), percent: undefined },
-  ];
   const selectExplorerFile = useCallback((file: RemoteFileEntry, event?: ReactMouseEvent<HTMLElement>) => {
     const filePath = file.path;
     if (event?.ctrlKey || event?.metaKey) {
@@ -1819,38 +1751,12 @@ export default function App() {
       <div className="app-body">
       {!sidebarCollapsed ? (
       <aside className="sidebar card" style={{ minWidth: sidePanelMinWidth, width: sidebarWidth }}>
-        <RuntimePanel
+        <RuntimeSidebar
           activeRemoteConnectionId={activeRemoteConnectionId}
-          connectionsExpanded={connectionsExpanded}
-          cpuCoresExpanded={cpuCoresExpanded}
+          activeRemoteConnectionHost={activeRemoteConnection?.host}
           hasActiveRemoteSession={hasActiveRemoteSession}
           height={runtimePanelHeight}
-          memoryResourcesExpanded={memoryResourcesExpanded}
-          onRefresh={refreshRuntimeOverviewOnce}
-          runtimeConnections={runtimeConnections ?? undefined}
-          runtimeConnectionsError={runtimeConnectionsError}
-          runtimeConnectionsLoading={runtimeConnectionsLoading}
-          runtimeHostLabel={runtimeHostLabel}
-          runtimeItems={runtimeItems}
-          runtimeLoading={runtimeLoading}
-          runtimeOverview={runtimeOverview}
-          runtimeResourceError={runtimeResourceError}
-          runtimeResourceLoading={runtimeResourceLoading}
-          runtimeResourceMetric={runtimeResourceMetric}
-          runtimeResourceSource={settings.runtimeResourceSource ?? 'system'}
-          runtimeResourceSourceLabel={runtimeResourceSourceLabel}
-          runtimeResourceTarget={runtimeResourceTarget}
-          runtimeResourceUsage={runtimeResourceUsage ?? undefined}
-          runtimeStorageFiles={runtimeStorageFiles ?? undefined}
-          runtimeStorageFilesError={runtimeStorageFilesError}
-          runtimeStorageFilesLoading={runtimeStorageFilesLoading}
-          setConnectionsExpanded={setConnectionsExpanded}
-          setCpuCoresExpanded={setCpuCoresExpanded}
-          setMemoryResourcesExpanded={setMemoryResourcesExpanded}
-          setRuntimeResourceMetric={setRuntimeResourceMetric}
-          setRuntimeResourceTarget={setRuntimeResourceTarget}
-          setStorageFilesExpanded={setStorageFilesExpanded}
-          storageFilesExpanded={storageFilesExpanded}
+          settings={settings}
           t={t}
         />        <div
           className="resize-handle resize-handle-sidebar-horizontal"

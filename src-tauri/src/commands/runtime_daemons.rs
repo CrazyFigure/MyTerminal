@@ -1,4 +1,4 @@
-//! 后台运行时关闭、Agent Bridge 启动准备、SSH 保活与隧道健康监控。
+use crate::state::RuntimeOverviewMonitorControl;
 
 use super::*;
 
@@ -10,6 +10,13 @@ pub(super) fn stop_all_runtimes(state: &AppState) -> Result<(), AppError> {
     }
     drop(sessions);
     clear_auxiliary_sessions(state);
+    clear_runtime_detail_sessions(state);
+
+    if let Ok(mut monitors) = state.runtime_overview_monitors.lock() {
+        for (_, runtime) in monitors.drain() {
+            let _ = runtime.control_tx.send(RuntimeOverviewMonitorControl::Stop);
+        }
+    }
 
     let mut tunnels = lock_tunnels(state)?;
     for runtime in tunnels.drain().map(|(_, runtime)| runtime) {
@@ -83,8 +90,9 @@ pub fn spawn_keepalive_daemon(app_handle: tauri::AppHandle) {
         if state.is_shutting_down.load(Ordering::Relaxed) {
             return;
         }
-        // 无论保活是否开启，每轮都顺带回收空闲超时或超量的辅助连接，收敛长时间运行的常驻内存。
+        // 无论保活是否开启，每轮都顺带回收空闲超时或超量的辅助连接与监控明细连接，收敛长时间运行的常驻内存。
         evict_idle_auxiliary_sessions(&state);
+        evict_idle_runtime_detail_sessions(&state);
         // 间隔为 0 表示用户关闭了保活，本轮不再发 keepalive，仅保持线程存活等待重新开启。
         if state.ssh_keepalive_interval_sec.load(Ordering::Relaxed) == 0 {
             continue;
@@ -99,6 +107,19 @@ pub fn spawn_keepalive_daemon(app_handle: tauri::AppHandle) {
             }
         };
         for session in auxiliary {
+            if let Ok(guard) = session.try_lock() {
+                let _ = guard.session.keepalive_send();
+            }
+        }
+
+        // 监控明细会话保活
+        let detail_sessions = {
+            match state.runtime_detail_sessions.lock() {
+                Ok(map) => map.values().cloned().collect::<Vec<_>>(),
+                Err(_) => Vec::new(),
+            }
+        };
+        for session in detail_sessions {
             if let Ok(guard) = session.try_lock() {
                 let _ = guard.session.keepalive_send();
             }

@@ -33,21 +33,9 @@ export function ResourceSettingsSection({
         <div><h3>{t('runtimeResourceSettingsTitle')}</h3></div>
         <div className="form-grid settings-single-column-grid settings-compact-form-grid">
           <label>
-            <span>{t('fieldRuntimeRefreshInterval')}</span>
-            <input {...numericSettingInputProps} aria-label={t('fieldRuntimeRefreshInterval')} value={draftSettings.runtimeRefreshIntervalSec} onChange={(event) =>
-              onUpdate((current) => ({ ...current, runtimeRefreshIntervalSec: readBoundedIntegerInput(event.target.value, 1, 60, 1) }))
-            } />
-          </label>
-          <label>
             <span>{t('fieldRuntimeResourceRefreshInterval')}</span>
             <input {...numericSettingInputProps} aria-label={t('fieldRuntimeResourceRefreshInterval')} value={draftSettings.runtimeResourceRefreshIntervalSec ?? 3} onChange={(event) =>
               onUpdate((current) => ({ ...current, runtimeResourceRefreshIntervalSec: readBoundedIntegerInput(event.target.value, 1, 300, 3) }))
-            } />
-          </label>
-          <label>
-            <span>{t('fieldRuntimeStorageRefreshInterval')}</span>
-            <input {...numericSettingInputProps} aria-label={t('fieldRuntimeStorageRefreshInterval')} value={draftSettings.runtimeStorageRefreshIntervalSec ?? 5} onChange={(event) =>
-              onUpdate((current) => ({ ...current, runtimeStorageRefreshIntervalSec: readBoundedIntegerInput(event.target.value, 5, 300, 5) }))
             } />
           </label>
           <label>

@@ -17,9 +17,9 @@ use crate::{
     error::AppError,
     models::{
         ConnectionProfile, HistoryEntry, RemoteFileEntry, RuntimeConnectionItem,
-        RuntimeConnectionList, RuntimeCpuCore, RuntimeOverview, RuntimeResourceUsage,
-        RuntimeResourceUsageItem, RuntimeResourceUsageRequest, RuntimeStorageFileItem,
-        RuntimeStorageFiles,
+        RuntimeConnectionList, RuntimeConnectionMetric, RuntimeCpuCore, RuntimeMemoryMetric,
+        RuntimeOverviewSnapshot, RuntimePercentMetric, RuntimeResourceUsage,
+        RuntimeResourceUsageItem, RuntimeResourceUsageRequest, RuntimeStorageMetric,
     },
     state::AppState,
 };
@@ -29,16 +29,18 @@ use super::{
     with_auxiliary_session_once, FileTransferSummary,
 };
 
-// Linux/容器运行指标独立于 SFTP 文件传输；对命令层继续暴露原有缓存查询入口。
-mod runtime_metrics;
+// Linux/容器运行指标独立于 SFTP 文件传输；对命令层暴露无状态采集与解析接口。
+pub(crate) mod runtime_metrics;
 #[cfg(test)]
 use runtime_metrics::{
-    connection_list_command, decode_proc_net_address, parse_connection_counts,
-    parse_connection_list, runtime_overview_command,
+    connection_list_command, decode_proc_net_address, parse_connection_metric,
+    parse_connection_list, runtime_dynamic_sample_command,
 };
-pub(super) use runtime_metrics::{
-    query_runtime_connection_list_cached, query_runtime_overview_cached,
-    query_runtime_resource_usage_cached, query_runtime_storage_files_cached,
+pub(crate) use runtime_metrics::{
+    build_runtime_overview_snapshot,
+    query_dynamic_runtime_sample_with_session, query_runtime_connection_list_with_session,
+    query_runtime_resource_usage_with_session, query_static_runtime_info_with_session, RawCpuSample,
+    StaticRuntimeInfo,
 };
 
 /// 传输内核向命令层上报的真实进度快照；命令层负责节流并转成 Tauri 事件。
@@ -1506,8 +1508,11 @@ mod remote_access_command_tests {
     fn parses_available_tcp_and_ssh_connection_counts() {
         // 正常采集结果必须同时保留 TCP 总数和最终 sshd 端口对应的连接数。
         assert_eq!(
-            parse_connection_counts("tcp=18 ssh=2"),
-            Some("TCP 18 / SSH 2".to_string())
+            parse_connection_metric("tcp=18 ssh=2"),
+            crate::models::RuntimeConnectionMetric {
+                tcp_established: Some(18),
+                ssh_established: Some(2),
+            }
         );
     }
 
@@ -1515,14 +1520,17 @@ mod remote_access_command_tests {
     fn marks_ssh_connection_count_unavailable_instead_of_zero() {
         // 端口无法识别或网络表不可见时远端返回 --，前端展示也不能回退成误导性的 SSH 0。
         assert_eq!(
-            parse_connection_counts("tcp=18 ssh=--"),
-            Some("TCP 18 / SSH --".to_string())
+            parse_connection_metric("tcp=18 ssh=--"),
+            crate::models::RuntimeConnectionMetric {
+                tcp_established: Some(18),
+                ssh_established: None,
+            }
         );
     }
 
     #[test]
     fn runtime_overview_discovers_the_final_remote_ssh_port() {
-        let command = runtime_overview_command();
+        let command = runtime_dynamic_sample_command();
         // 跳板和端口映射场景必须依据最终 sshd 注入的会话环境，不能再嵌入客户端 connection.port。
         assert!(command.contains("SSH_CONNECTION"));
         assert!(command.contains("SSH_CLIENT"));

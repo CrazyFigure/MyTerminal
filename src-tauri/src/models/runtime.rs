@@ -30,7 +30,14 @@ pub struct RemoteFileEntry {
     pub group: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimePercentMetric {
+    #[serde(default)]
+    pub percent: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeCpuCore {
     #[serde(default)]
@@ -39,29 +46,89 @@ pub struct RuntimeCpuCore {
     pub percent: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct RuntimeOverview {
+pub struct RuntimeMemoryMetric {
+    #[serde(default)]
+    pub percent: Option<f64>,
+    #[serde(default)]
+    pub used_kib: Option<u64>,
+    #[serde(default)]
+    pub total_kib: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeStorageMetric {
+    #[serde(default)]
+    pub percent: Option<f64>,
+    #[serde(default)]
+    pub mount: String,
+    #[serde(default)]
+    pub used_kib: Option<u64>,
+    #[serde(default)]
+    pub total_kib: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeConnectionMetric {
+    #[serde(default)]
+    pub tcp_established: Option<u64>,
+    #[serde(default)]
+    pub ssh_established: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeOverviewSnapshot {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     #[serde(default)]
     pub host: String,
     #[serde(default)]
     pub os: String,
     #[serde(default)]
-    pub cpu: String,
-    /// 每个 CPU 核心的采样占用率，前端点击总 CPU 行时按需展开。
+    pub primary_address: Option<String>,
+    #[serde(default)]
+    pub captured_at: String,
+    #[serde(default)]
+    pub cpu: RuntimePercentMetric,
     #[serde(default)]
     pub cpu_cores: Vec<RuntimeCpuCore>,
     #[serde(default)]
-    pub memory: String,
+    pub memory: RuntimeMemoryMetric,
     #[serde(default)]
-    pub storage: String,
-    /// 远端主机当前已建立 TCP 连接数，附带最终 sshd 实际端口的连接数；无法可靠采集时 SSH 显示不可用。
+    pub storage: RuntimeStorageMetric,
     #[serde(default)]
-    pub connections: String,
+    pub connections: RuntimeConnectionMetric,
     #[serde(default)]
-    pub network: String,
-    #[serde(default)]
-    pub uptime: String,
+    pub uptime_seconds: Option<u64>,
+}
+
+fn default_schema_version() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum RuntimeOverviewEvent {
+    #[serde(rename = "snapshot")]
+    Snapshot {
+        subscription_id: String,
+        connection_id: String,
+        sequence: u64,
+        snapshot: RuntimeOverviewSnapshot,
+    },
+    #[serde(rename = "error")]
+    Error {
+        subscription_id: String,
+        connection_id: String,
+        sequence: u64,
+        attempted_at: String,
+        message: String,
+        retry_in_ms: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,34 +178,6 @@ pub struct RuntimeResourceUsage {
     pub target: String,
     #[serde(default)]
     pub items: Vec<RuntimeResourceUsageItem>,
-    #[serde(default)]
-    pub captured_at: String,
-    #[serde(default)]
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-// 存储展开区的单文件信息，前端依赖名称、路径和格式化大小同时展示与悬浮提示。
-pub struct RuntimeStorageFileItem {
-    #[serde(default)]
-    pub rank: usize,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub path: String,
-    #[serde(default)]
-    pub size: String,
-    #[serde(default)]
-    pub size_kib: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-// 存储展开区的扫描结果，error 用于把远端扫描异常直接反馈到列表占位区域。
-pub struct RuntimeStorageFiles {
-    #[serde(default)]
-    pub items: Vec<RuntimeStorageFileItem>,
     #[serde(default)]
     pub captured_at: String,
     #[serde(default)]

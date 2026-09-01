@@ -135,6 +135,7 @@ impl TerminalOutputQueue {
         self.enforce_limit();
     }
 
+
     /// 入队 cwd/status/PTY 尺寸等控制元数据分片；这类分片不计入内容字节预算，也不参与内容合并。
     pub fn push_meta(&mut self, chunk: TerminalOutputChunk) {
         self.chunks.push_back(chunk);
@@ -265,8 +266,39 @@ impl std::fmt::Debug for TunnelSshPoolSession {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeOverviewMonitorControl {
+    Pause,
+    Resume,
+    Refresh,
+    Stop,
+}
+
+#[derive(Debug)]
+pub struct RuntimeOverviewMonitorRuntime {
+    pub subscription_id: String,
+    /// 前端生成的单调代次；并发到达的旧 start 不得覆盖较新的 StrictMode/HMR 订阅。
+    pub generation: u64,
+    pub connection_id: String,
+    pub control_tx: Sender<RuntimeOverviewMonitorControl>,
+}
+
+pub struct RuntimeDetailSshSession {
+    pub session: Session,
+    pub last_used_at: Instant,
+}
+
+impl std::fmt::Debug for RuntimeDetailSshSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeDetailSshSession")
+            .field("last_used_at", &self.last_used_at)
+            .finish()
+    }
+}
+
 pub struct AuxiliarySshSession {
-    /// 文件管理、运行状态和历史查询共用的 SSH 会话，避免每次刷新都重新握手。
+    /// 文件管理与历史查询共用的 SSH 会话，避免每次操作都重新握手。
     pub session: Session,
     /// SFTP 子系统按需初始化；目录切换和文件读取优先复用同一个远端文件通道。
     pub sftp: Option<Sftp>,
@@ -274,7 +306,7 @@ pub struct AuxiliarySshSession {
     pub user_names: Option<HashMap<u32, String>>,
     /// 远端 gid 到组名的缓存，SFTP 属性刷新时不重复读取 /etc/group。
     pub group_names: Option<HashMap<u32, String>>,
-    /// 最近一次被文件/历史/资源操作访问的时刻；保活守护线程据此按空闲 TTL 回收连接。
+    /// 最近一次被文件或历史操作访问的时刻；保活守护线程据此按空闲 TTL 回收连接。
     pub last_used_at: Instant,
 }
 
@@ -300,13 +332,18 @@ pub struct AppState {
     pub sessions: Mutex<HashMap<String, RuntimeSession>>,
     /// 关闭流程只允许启动一次；后续 CloseRequested 必须放行，让 WebView 窗口正常销毁。
     pub is_shutting_down: AtomicBool,
-    /// 辅助 SSH 缓存只服务非交互查询，不和终端 PTY 共用连接，避免文件管理阻塞键盘输入。
+    /// 辅助 SSH 缓存只服务文件与历史查询，不和终端 PTY 共用连接，避免文件管理阻塞键盘输入。
     pub auxiliary_sessions: Mutex<HashMap<String, Arc<Mutex<AuxiliarySshSession>>>>,
-    /// 首次建立辅助连接按连接 ID 串行化，防止文件列表和运行状态同时触发两次 SSH 握手。
+    /// 首次建立辅助连接按连接 ID 串行化，防止文件列表同时触发两次 SSH 握手。
     pub auxiliary_session_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// 运行概览监控 worker，按 Webview label 唯一登记。
+    pub runtime_overview_monitors: Mutex<HashMap<String, RuntimeOverviewMonitorRuntime>>,
+    /// 监控展开明细（进程/线程与连接）专用会话缓存，脱离文件管理辅助会话。
+    pub runtime_detail_sessions: Mutex<HashMap<String, Arc<Mutex<RuntimeDetailSshSession>>>>,
+    /// 监控明细连接锁。
+    pub runtime_detail_session_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// SFTP 传输取消标记按前端任务 ID 登记；取消命令只写原子标记，不等待被占用的辅助 SSH 锁。
     pub sftp_transfer_cancellations: Mutex<HashMap<String, Arc<AtomicBool>>>,
-    /// agent 会话到终端会话的粘性绑定：同一 agent 会话的后续命令固定落到同一个标签，
     /// 保证 cd 状态与 shell 历史连贯。目标标签消失时在查找阶段惰性清理。
     pub agent_terminal_bindings: Mutex<HashMap<String, String>>,
     pub tunnels: Mutex<HashMap<String, TunnelRuntime>>,
@@ -348,6 +385,9 @@ impl AppState {
             is_shutting_down: AtomicBool::new(false),
             auxiliary_sessions: Mutex::new(HashMap::new()),
             auxiliary_session_locks: Mutex::new(HashMap::new()),
+            runtime_overview_monitors: Mutex::new(HashMap::new()),
+            runtime_detail_sessions: Mutex::new(HashMap::new()),
+            runtime_detail_session_locks: Mutex::new(HashMap::new()),
             sftp_transfer_cancellations: Mutex::new(HashMap::new()),
             agent_terminal_bindings: Mutex::new(HashMap::new()),
             tunnels: Mutex::new(HashMap::new()),

@@ -41,12 +41,7 @@ const clampLineHeight = (value: number | undefined, fallback: number) => {
   // 保留两位小数，避免浮点误差写进配置文件。
   return Math.round(Math.min(2.5, Math.max(1, numericValue)) * 100) / 100;
 };
-const clampRefreshInterval = (value: number, fallback = 1) =>
-  clampInteger(value, 1, 60, fallback);
-// 大文件扫描比普通状态刷新更重，最小 5 秒，避免误操作造成连续扫盘。
-const clampStorageRefreshInterval = (value: number, fallback = 5) =>
-  clampInteger(value, 5, 300, fallback);
-// 进程/线程资源明细是独立接口，默认 3 秒；前端还会阻止同一轮询并发重入。
+// 进程/线程和连接明细是独立接口，默认 3 秒；概览固定每秒由 Rust worker 推送。
 const clampResourceRefreshInterval = (value: number, fallback = 3) =>
   clampInteger(value, 1, 300, fallback);
 const clampRatio = (value: number | undefined, fallback: number) => {
@@ -187,12 +182,6 @@ export const normalizeSettings = (settings: AppSettings): AppSettings => ({
     }
     return clampFontSize(value);
   })(),
-  runtimeRefreshIntervalSec: clampRefreshInterval(
-    settings.runtimeRefreshIntervalSec,
-  ),
-  runtimeStorageRefreshIntervalSec: clampStorageRefreshInterval(
-    settings.runtimeStorageRefreshIntervalSec,
-  ),
   runtimeResourceRefreshIntervalSec: clampResourceRefreshInterval(
     settings.runtimeResourceRefreshIntervalSec,
   ),

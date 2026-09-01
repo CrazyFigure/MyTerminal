@@ -26,15 +26,11 @@ export const numericSettingInputProps = {
 
 // 资源页“重置”只恢复本页字段的产品默认值；这些值先写入草稿，仍需点击保存才会持久化并生效。
 export const resourceSettingsDefaults = {
-  runtimeRefreshIntervalSec: 1,
-  runtimeStorageRefreshIntervalSec: 5,
   runtimeResourceRefreshIntervalSec: 3,
   runtimeResourceSource: 'system',
   sshKeepaliveIntervalSec: 30,
 } satisfies Pick<
   AppSettings,
-  | 'runtimeRefreshIntervalSec'
-  | 'runtimeStorageRefreshIntervalSec'
   | 'runtimeResourceRefreshIntervalSec'
   | 'runtimeResourceSource'
   | 'sshKeepaliveIntervalSec'
