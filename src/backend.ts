@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import type {
   AgentBridgeRequest,
@@ -20,6 +21,7 @@ import type {
   RuntimeResourceUsage,
   RuntimeResourceUsageRequest,
   RuntimeStorageFiles,
+  SftpTransferProgress,
   StoredAgentConversation,
   TerminalOutputChunk,
   TerminalSession,
@@ -185,17 +187,26 @@ export const backend = {
     call<RemoteFileEntry[]>('list_remote_files', { connectionId, path }, mockFiles),
   uploadRemoteFile: (connectionId: string, remoteDir: string, fileName: string, contentBase64: string) =>
     call<boolean>('upload_remote_file', { connectionId, remoteDir, fileName, contentBase64 }, true),
-  uploadLocalPaths: (connectionId: string, remoteDir: string, localPaths: string[]) =>
-    call<FileTransferSummary>('upload_local_paths', { connectionId, remoteDir, localPaths }, {
+  uploadLocalPaths: (connectionId: string, remoteDir: string, localPaths: string[], transferId: string) =>
+    call<FileTransferSummary>('upload_local_paths', { connectionId, remoteDir, localPaths, transferId }, {
       files: localPaths.length,
       directories: 0,
       bytes: 0,
       destinations: localPaths.map((path) => `${remoteDir.replace(/\/$/, '')}/${path.split(/[\\/]/).pop() ?? 'upload'}`),
     }),
+  cancelSftpTransfer: (transferId: string) =>
+    call<boolean>('cancel_sftp_transfer', { transferId }, false),
+  // 单一全局事件流按 transferId 路由；Web 预览返回空清理器，调用方无需分支处理生命周期。
+  listenSftpTransferProgress: (handler: (progress: SftpTransferProgress) => void): Promise<UnlistenFn> => {
+    if (!isTauriRuntime()) {
+      return Promise.resolve(() => undefined);
+    }
+    return listen<SftpTransferProgress>('sftp-transfer-progress', (event) => handler(event.payload));
+  },
   downloadRemoteFile: (connectionId: string, path: string) =>
     call<string>('download_remote_file', { connectionId, path }, `C:/Software/WorkSpace/MyTerminal/.myterminal-data/downloads/${path.split('/').pop() ?? 'download.bin'}`),
-  downloadRemotePaths: (connectionId: string, paths: string[], localDir?: string) =>
-    call<FileTransferSummary>('download_remote_paths', { connectionId, paths, localDir }, {
+  downloadRemotePaths: (connectionId: string, paths: string[], localDir: string | undefined, transferId: string) =>
+    call<FileTransferSummary>('download_remote_paths', { connectionId, paths, localDir, transferId }, {
       files: paths.length,
       directories: 0,
       bytes: 0,
@@ -209,6 +220,8 @@ export const backend = {
     call<boolean>('rename_remote_path', { connectionId, path, newPath }, true),
   copyRemotePaths: (connectionId: string, sources: string[], targetDir: string) =>
     call<boolean>('copy_remote_paths', { connectionId, sources, targetDir }, true),
+  createRemoteEntry: (connectionId: string, remoteDir: string, name: string, isDirectory: boolean) =>
+    call<string>('create_remote_entry', { connectionId, remoteDir, name, isDirectory }, `${remoteDir.replace(/\/$/, '')}/${name}`),
   loadEditorDocument: (connectionId: string, path: string) =>
     call<EditorDocument>('load_editor_document', { connectionId, path }, {
       connectionId,

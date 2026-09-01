@@ -66,6 +66,7 @@ import {
   explorerDefaultColumnWidths,
   explorerOverscanRows,
   explorerRowHeight,
+  formatBytes,
   isEditableFile,
   type FileContextMenuTarget,
   type RemoteFileClipboard,
@@ -199,6 +200,7 @@ export default function App() {
     currentRemotePath,
     deleteRemotePaths,
     copyRemotePaths,
+    createRemoteEntry,
     downloadRemotePaths,
     downloadFontPack,
     duplicateSession: duplicateSessionById,
@@ -258,6 +260,7 @@ export default function App() {
       currentRemotePath: state.currentRemotePath,
       deleteRemotePaths: state.deleteRemotePaths,
       copyRemotePaths: state.copyRemotePaths,
+      createRemoteEntry: state.createRemoteEntry,
       downloadRemotePaths: state.downloadRemotePaths,
       downloadFontPack: state.downloadFontPack,
       duplicateSession: state.duplicateSession,
@@ -307,10 +310,50 @@ export default function App() {
   const t = useCallback((key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements), [settings.uiLanguage]);
   const {
+    cancel: cancelTransferProgress,
     dismiss: dismissTransferProgress,
     items: transferProgressItems,
+    report: reportTransferProgress,
     run: runTransferProgress,
-  } = useTransferProgress(t('saved'));
+    runTracked: runTrackedTransferProgress,
+  } = useTransferProgress(t('saved'), t('transferCancelling'), t('transferCancelled'));
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let mounted = true;
+    // Tauri 全局事件流按任务 ID 路由到对应卡片；监听失败只降级反馈，不得影响后端传输。
+    void backend.listenSftpTransferProgress((progress) => {
+      if (!mounted) {
+        return;
+      }
+      if (progress.phase === 'preparing') {
+        reportTransferProgress(progress.transferId, 0, t('transferPreparing'), true);
+        return;
+      }
+      const percent = progress.totalBytes > 0
+        ? (progress.transferredBytes / progress.totalBytes) * 100
+        : 0;
+      reportTransferProgress(
+        progress.transferId,
+        percent,
+        t('transferProgressBytes', {
+          transferred: formatBytes(progress.transferredBytes),
+          total: formatBytes(progress.totalBytes),
+        }),
+      );
+    }).then((dispose) => {
+      if (mounted) {
+        unlisten = dispose;
+      } else {
+        dispose();
+      }
+    }).catch(() => {
+      // Web 预览或窗口销毁期间无法订阅事件时，保留任务完成/失败反馈，不阻断实际传输。
+    });
+    return () => {
+      mounted = false;
+      unlisten?.();
+    };
+  }, [reportTransferProgress, t]);
   const runtimeResourceSourceLabel = useCallback((source: RuntimeResourceSource) => {
     const labelKeyBySource: Record<RuntimeResourceSource, TranslationKey> = {
       system: 'runtimeResourceSourceSystem',
@@ -1360,12 +1403,38 @@ export default function App() {
     const title = uploadPaths.length === 1
       ? `${t('upload')} ${uploadPaths[0].split(/[\\/]/).pop() ?? uploadPaths[0]}`
       : `${t('upload')} ${uploadPaths.length}`;
-    void runTransferProgress(title, async (setPercent) => {
-      setPercent(18);
-      await uploadLocalPaths(uploadPaths);
-      setPercent(92);
+    void runTrackedTransferProgress(
+      title,
+      async (transferId) => uploadLocalPaths(uploadPaths, transferId),
+      (transferId) => backend.cancelSftpTransfer(transferId),
+    );
+  }, [runTrackedTransferProgress, t, uploadLocalPaths]);
+  // 桌面文件选择器直接返回本机路径，统一走 Rust 流式上传，避免 File/base64 进入 WebView 内存。
+  const selectUploadFiles = useCallback(() => {
+    void openFileDialog({
+      directory: false,
+      multiple: true,
+      title: t('selectUploadFiles'),
+    }).then((selected) => {
+      const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
+      uploadLocalPathsWithProgress(paths);
+    }).catch((error) => {
+      setStatusMessage(error instanceof Error ? error.message : String(error));
     });
-  }, [runTransferProgress, t, uploadLocalPaths]);
+  }, [setStatusMessage, t, uploadLocalPathsWithProgress]);
+  // 文件夹选择同样只传根路径，由 Rust 递归保留目录结构并统计真实总字节。
+  const selectUploadFolder = useCallback(() => {
+    void openFileDialog({
+      directory: true,
+      multiple: true,
+      title: t('selectUploadFolder'),
+    }).then((selected) => {
+      const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
+      uploadLocalPathsWithProgress(paths);
+    }).catch((error) => {
+      setStatusMessage(error instanceof Error ? error.message : String(error));
+    });
+  }, [setStatusMessage, t, uploadLocalPathsWithProgress]);
   const selectDownloadDirectory = useCallback(async () => {
     // 下载文件和文件夹前必须让用户明确选择本地目录，避免内容静默落到默认下载目录里找不到。
     const selected = await openFileDialog({
@@ -1390,15 +1459,15 @@ export default function App() {
       const title = downloadPaths.length === 1
         ? `${t('download')} ${downloadPaths[0].split('/').filter(Boolean).at(-1) ?? downloadPaths[0]}`
         : `${t('download')} ${downloadPaths.length}`;
-      void runTransferProgress(title, async (setPercent) => {
-        setPercent(22);
-        await downloadRemotePaths(downloadPaths, localDir);
-        setPercent(92);
-      });
+      void runTrackedTransferProgress(
+        title,
+        async (transferId) => downloadRemotePaths(downloadPaths, localDir, transferId),
+        (transferId) => backend.cancelSftpTransfer(transferId),
+      );
     })().catch((error) => {
       setStatusMessage(error instanceof Error ? error.message : String(error));
     });
-  }, [downloadRemotePaths, runTransferProgress, selectDownloadDirectory, setStatusMessage, t]);
+  }, [downloadRemotePaths, runTrackedTransferProgress, selectDownloadDirectory, setStatusMessage, t]);
   const downloadFileWithProgress = useCallback((path: string) => {
     downloadPathsWithProgress([path]);
   }, [downloadPathsWithProgress]);
@@ -1808,11 +1877,14 @@ export default function App() {
           handleScroll={handleExplorerScroll}
           hasActiveRemoteSession={hasActiveRemoteSession}
           localFileDropActive={localFileDropActive}
+          nativeUploadPathSelection={isTauriRuntime()}
           openEntry={openRemoteFileEntry}
           pathInput={pathInput}
           refreshFiles={refreshFiles}
           remoteDownloadDragPaths={remoteDownloadDragPaths}
           selectFile={selectExplorerFile}
+          selectUploadFiles={selectUploadFiles}
+          selectUploadFolder={selectUploadFolder}
           selectedFilePathSet={selectedFilePathSet}
           selectedFilePaths={selectedFilePaths}
           setFileContextMenu={setFileContextMenu}
@@ -1835,6 +1907,7 @@ export default function App() {
           clipboard={fileClipboard}
           copyName={copyFileNameToClipboard}
           copySelection={copyRemoteSelection}
+          createEntry={createRemoteEntry}
           deletePaths={deleteSelectedRemotePaths}
           downloadFile={downloadFileWithProgress}
           downloadPaths={downloadPathsWithProgress}
@@ -2055,7 +2128,12 @@ export default function App() {
       <EditorModal onSaveWithProgress={saveRemoteFileWithProgress} />
       <ConnectionFormModal />
       <TunnelFormModal />
-      <TransferProgressStack dismiss={dismissTransferProgress} items={transferProgressItems} />
+      <TransferProgressStack
+        cancel={cancelTransferProgress}
+        cancelLabel={t('cancelTransfer')}
+        dismiss={dismissTransferProgress}
+        items={transferProgressItems}
+      />
     </div>
   </TooltipProvider>
   );

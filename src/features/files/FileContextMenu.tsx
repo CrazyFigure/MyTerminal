@@ -12,6 +12,7 @@ type Props = {
   clipboard: RemoteFileClipboard | null;
   copyName: (text: string) => void;
   copySelection: (paths: string[]) => void;
+  createEntry: (remoteDir: string, name: string, isDirectory: boolean) => Promise<void>;
   deletePaths: (paths: string[]) => void;
   downloadFile: (path: string) => void;
   downloadPaths: (paths: string[]) => void;
@@ -32,6 +33,7 @@ export function FileContextMenu({
   clipboard,
   copyName,
   copySelection,
+  createEntry,
   deletePaths,
   downloadFile,
   downloadPaths,
@@ -47,7 +49,10 @@ export function FileContextMenu({
 }: Props) {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [copyNameSubmenuFlipLeft, setCopyNameSubmenuFlipLeft] = useState(false);
-  const menuPaths = selectedFilePathSet.has(target.file.path) ? selectedFilePaths : [target.file.path];
+  const entry = target.kind === 'entry' ? target.file : undefined;
+  const menuPaths = entry
+    ? selectedFilePathSet.has(entry.path) ? selectedFilePaths : [entry.path]
+    : [];
   const canPaste = Boolean(clipboard && clipboard.connectionId === activeConnectionId && clipboard.paths.length);
 
   // 菜单首次测量后在绘制前收回视口内，避免主菜单或二级菜单被窗口边缘裁切。
@@ -71,9 +76,33 @@ export function FileContextMenu({
     setCopyNameSubmenuFlipLeft(left + rect.width + 160 > window.innerWidth - margin);
   }, [target]);
 
+  if (target.kind === 'background') {
+    const requestCreate = (isDirectory: boolean) => {
+      const name = window.prompt(t(isDirectory ? 'newDirectoryNamePrompt' : 'newFileNamePrompt'))?.trim();
+      onClose();
+      if (name) {
+        // Store 已统一落状态栏错误；这里消费 rejected Promise，避免浏览器额外产生未处理异常噪声。
+        void createEntry(target.directory, name, isDirectory).catch(() => undefined);
+      }
+    };
+    return (
+      <div ref={menuRef} className="context-menu file-context-menu" style={{ left: target.x, top: target.y }} onClick={(event) => event.stopPropagation()}>
+        <button className="context-menu-item" onClick={() => requestCreate(true)} type="button">{t('fileMenuNewDirectory')}</button>
+        <button className="context-menu-item" onClick={() => requestCreate(false)} type="button">{t('fileMenuNewFile')}</button>
+        <button className="context-menu-item" disabled={!canPaste} onClick={pasteClipboard} type="button">{t('fileMenuPaste')}</button>
+        <button className="context-menu-item" onClick={() => {
+          void refreshFiles(target.directory);
+          onClose();
+        }} type="button">{t('refresh')}</button>
+      </div>
+    );
+  }
+
+  const file = target.file;
+
   return (
     <div ref={menuRef} className="context-menu file-context-menu" style={{ left: target.x, top: target.y }} onClick={(event) => event.stopPropagation()}>
-      {selectedFilePathSet.has(target.file.path) && selectedFilePaths.length > 1 ? (
+      {selectedFilePathSet.has(file.path) && selectedFilePaths.length > 1 ? (
         <>
           <button className="context-menu-item" onClick={() => {
             downloadPaths(selectedFilePaths);
@@ -86,28 +115,28 @@ export function FileContextMenu({
           </button>
         </>
       ) : null}
-      {target.file.isDir ? (
+      {file.isDir ? (
         <button className="context-menu-item" onClick={() => {
-          void refreshFiles(target.file.path);
+          void refreshFiles(file.path);
           onClose();
         }} type="button">{t('fileMenuOpen')}</button>
       ) : null}
-      {!target.file.isDir && isEditableFile(target.file.path) ? (
+      {!file.isDir && isEditableFile(file.path) ? (
         <button className="context-menu-item" onClick={() => {
-          openEditor(target.file.path);
+          openEditor(file.path);
           onClose();
         }} type="button">{t('fileMenuEdit')}</button>
       ) : null}
       <button className="context-menu-item" onClick={() => {
-        downloadFile(target.file.path);
+        downloadFile(file.path);
         onClose();
       }} type="button">{t('fileMenuDownload')}</button>
       <div className="context-menu-item has-submenu" tabIndex={0}>
         <span className="context-menu-item-label"><Copy size={14} /> {t('fileMenuCopyName')}</span>
         <ChevronRight className="context-submenu-caret" size={12} />
         <div className={`context-menu file-context-menu context-submenu${copyNameSubmenuFlipLeft ? ' flip-left' : ''}`}>
-          <button className="context-menu-item" onClick={() => copyName(target.file.name)} type="button">{t('fileMenuCopyFileName')}</button>
-          <button className="context-menu-item" onClick={() => copyName(target.file.path)} type="button">{t('fileMenuCopyFullPath')}</button>
+          <button className="context-menu-item" onClick={() => copyName(file.name)} type="button">{t('fileMenuCopyFileName')}</button>
+          <button className="context-menu-item" onClick={() => copyName(file.path)} type="button">{t('fileMenuCopyFullPath')}</button>
         </div>
       </div>
       <button className="context-menu-item" onClick={() => copySelection(menuPaths)} type="button">
@@ -115,9 +144,9 @@ export function FileContextMenu({
       </button>
       <button className="context-menu-item" disabled={!canPaste} onClick={pasteClipboard} type="button">{t('fileMenuPaste')}</button>
       <button className="context-menu-item" onClick={() => {
-        const nextName = window.prompt(t('rename'), target.file.name);
+        const nextName = window.prompt(t('rename'), file.name);
         if (nextName) {
-          void renamePath(target.file.path, nextName);
+          void renamePath(file.path, nextName);
         }
         onClose();
       }} type="button">{t('fileMenuRename')}</button>

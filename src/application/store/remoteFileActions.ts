@@ -16,6 +16,7 @@ type RemoteFileActionKeys =
   | 'deleteRemotePaths'
   | 'renameRemotePath'
   | 'copyRemotePaths'
+  | 'createRemoteEntry'
   | 'openRemoteFile'
   | 'closeEditorDocument'
   | 'setEditorContent'
@@ -38,6 +39,11 @@ const normalizeRemoteFilesPath = (path: string) => {
   }
   return normalized === '/' ? normalized : normalized.replace(/\/+$/, '');
 };
+
+// Rust 取消通过统一错误通道结束阻塞命令；识别该稳定标记后展示“已取消”，不能误报成文件操作失败。
+const isSftpTransferCancelled = (error: unknown) => (
+  (error instanceof Error ? error.message : String(error)).includes('SFTP transfer cancelled')
+);
 
 const isSameRemoteFilesTarget = (
   request: Pick<RemoteFilesRefreshRequest, 'connectionId' | 'path'> | undefined,
@@ -192,7 +198,7 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
     }
   },
 
-  uploadLocalPaths: async (localPaths) => {
+  uploadLocalPaths: async (localPaths, transferId) => {
     const { currentRemotePath } = get();
     const activeConnectionId = resolveBoundConnectionId(get());
     const uploadPaths = Array.from(new Set(localPaths.map((path) => path.trim()).filter(Boolean)));
@@ -202,7 +208,13 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
 
     try {
       // 桌面拖放上传直接把本机路径交给后端递归读取，避免大文件和目录树经过前端 base64 中转。
-      await backend.uploadLocalPaths(activeConnectionId, currentRemotePath, uploadPaths);
+      // 桌面路径上传把任务 ID 一并交给 Rust，真实字节事件和取消命令才能精确命中并发任务。
+      await backend.uploadLocalPaths(
+        activeConnectionId,
+        currentRemotePath,
+        uploadPaths,
+        transferId ?? crypto.randomUUID(),
+      );
       await get().refreshFiles(currentRemotePath);
       set({
         statusMessage: uploadPaths.length === 1
@@ -211,9 +223,11 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
       });
     } catch (error) {
       set((state) => ({
-        statusMessage: statusText(state.settings, 'statusFileOperationFailed', {
-          reason: error instanceof Error ? error.message : String(error),
-        }),
+        statusMessage: isSftpTransferCancelled(error)
+          ? statusText(state.settings, 'transferCancelled')
+          : statusText(state.settings, 'statusFileOperationFailed', {
+              reason: error instanceof Error ? error.message : String(error),
+            }),
       }));
       throw error;
     }
@@ -238,7 +252,7 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
     }
   },
 
-  downloadRemotePaths: async (paths, localDir) => {
+  downloadRemotePaths: async (paths, localDir, transferId) => {
     const activeConnectionId = resolveBoundConnectionId(get());
     const normalizedPaths = Array.from(new Set(paths.filter(Boolean)));
     if (!activeConnectionId || !normalizedPaths.length) {
@@ -246,7 +260,12 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
     }
 
     try {
-      const summary = await backend.downloadRemotePaths(activeConnectionId, normalizedPaths, localDir);
+      const summary = await backend.downloadRemotePaths(
+        activeConnectionId,
+        normalizedPaths,
+        localDir,
+        transferId ?? crypto.randomUUID(),
+      );
       set({
         statusMessage: normalizedPaths.length === 1
           ? statusText(get().settings, 'statusDownloadedFile', { path: summary.destinations[0] ?? normalizedPaths[0] })
@@ -257,9 +276,11 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
       });
     } catch (error) {
       set((state) => ({
-        statusMessage: statusText(state.settings, 'statusFileOperationFailed', {
-          reason: error instanceof Error ? error.message : String(error),
-        }),
+        statusMessage: isSftpTransferCancelled(error)
+          ? statusText(state.settings, 'transferCancelled')
+          : statusText(state.settings, 'statusFileOperationFailed', {
+              reason: error instanceof Error ? error.message : String(error),
+            }),
       }));
       throw error;
     }
@@ -349,6 +370,32 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
       await backend.copyRemotePaths(activeConnectionId, normalizedSources, destination);
       await get().refreshFiles(currentRemotePath);
       set({ statusMessage: statusText(get().settings, 'statusCopiedPaths', { count: normalizedSources.length }) });
+    } catch (error) {
+      set((state) => ({
+        statusMessage: statusText(state.settings, 'statusFileOperationFailed', {
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      }));
+      throw error;
+    }
+  },
+
+  createRemoteEntry: async (remoteDir, name, isDirectory) => {
+    const activeConnectionId = resolveBoundConnectionId(get());
+    const normalizedName = name.trim();
+    if (!activeConnectionId || !normalizedName) {
+      return;
+    }
+
+    try {
+      // 后端在创建前检查同名目标，文件创建不会沿用 SFTP create 的截断语义覆盖已有内容。
+      await backend.createRemoteEntry(activeConnectionId, remoteDir, normalizedName, isDirectory);
+      await get().refreshFiles(remoteDir);
+      set({
+        statusMessage: statusText(get().settings, isDirectory ? 'statusCreatedDirectory' : 'statusCreatedFile', {
+          name: normalizedName,
+        }),
+      });
     } catch (error) {
       set((state) => ({
         statusMessage: statusText(state.settings, 'statusFileOperationFailed', {

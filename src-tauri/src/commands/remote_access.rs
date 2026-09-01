@@ -11,6 +11,7 @@ use std::{
 
 use chrono::{TimeZone, Utc};
 use ssh2::{Session, Sftp};
+use uuid::Uuid;
 
 use crate::{
     error::AppError,
@@ -30,15 +31,28 @@ use super::{
 
 // Linux/容器运行指标独立于 SFTP 文件传输；对命令层继续暴露原有缓存查询入口。
 mod runtime_metrics;
-pub(super) use runtime_metrics::{
-    query_runtime_connection_list_cached, query_runtime_overview_cached,
-    query_runtime_resource_usage_cached, query_runtime_storage_files_cached,
-};
 #[cfg(test)]
 use runtime_metrics::{
     connection_list_command, decode_proc_net_address, parse_connection_counts,
     parse_connection_list, runtime_overview_command,
 };
+pub(super) use runtime_metrics::{
+    query_runtime_connection_list_cached, query_runtime_overview_cached,
+    query_runtime_resource_usage_cached, query_runtime_storage_files_cached,
+};
+
+/// 传输内核向命令层上报的真实进度快照；命令层负责节流并转成 Tauri 事件。
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct SftpTransferProgressSnapshot {
+    /// preparing 阶段正在递归统计总字节，transferring 阶段才可计算确定百分比。
+    pub phase: &'static str,
+    pub transferred_bytes: u64,
+    pub total_bytes: u64,
+    pub files: usize,
+    pub directories: usize,
+}
+
+const SFTP_COPY_BUFFER_BYTES: usize = 64 * 1024;
 
 pub(super) fn normalize_remote_path(path: &str) -> String {
     let normalized = path.trim().replace('\\', "/");
@@ -103,6 +117,17 @@ fn normalize_remote_relative_path(path: &str) -> Result<String, AppError> {
     }
 
     Ok(parts.join("/"))
+}
+
+// 右键新建只接受当前目录下的单个名称；禁止路径分隔符，避免一个“新建文件”动作越出当前目录。
+fn normalize_remote_leaf_name(name: &str) -> Result<String, AppError> {
+    let normalized = normalize_remote_relative_path(name)?;
+    if normalized.contains('/') {
+        return Err(AppError::Validation(
+            "remote entry name cannot contain path separators".into(),
+        ));
+    }
+    Ok(normalized)
 }
 
 fn join_remote_path(remote_dir: &str, file_name: &str) -> String {
@@ -231,9 +256,7 @@ fn delete_remote_path_with_sftp(sftp: &Sftp, path: &str) -> Result<(), AppError>
     if stat_is_symlink(&stat) {
         sftp.unlink(Path::new(&remote_path)).map_err(ssh_error)?;
     } else if stat_is_dir(&stat) {
-        for (entry_path, _entry_stat) in
-            sftp.readdir(Path::new(&remote_path)).map_err(ssh_error)?
-        {
+        for (entry_path, _entry_stat) in sftp.readdir(Path::new(&remote_path)).map_err(ssh_error)? {
             let Some(name) = entry_path.file_name().and_then(|value| value.to_str()) else {
                 continue;
             };
@@ -624,33 +647,96 @@ pub(super) fn upload_remote_file_with_cache(
     })
 }
 
-pub(super) fn upload_local_paths_with_cache(
+pub(super) fn create_remote_entry_with_cache(
+    state: &AppState,
+    connection: &ConnectionProfile,
+    remote_dir: &str,
+    name: &str,
+    is_directory: bool,
+) -> Result<String, AppError> {
+    with_auxiliary_session_once(state, connection, |auxiliary| {
+        let sftp = auxiliary_sftp(auxiliary)?;
+        let directory = resolve_remote_dir(sftp, remote_dir)?;
+        let entry_name = normalize_remote_leaf_name(name)?;
+        let remote_path = join_remote_path(&directory, &entry_name);
+
+        // 新建操作绝不能沿用 create 的截断语义；目标已存在时明确失败，保护现有文件内容。
+        if sftp.lstat(Path::new(&remote_path)).is_ok() {
+            return Err(AppError::Validation(format!(
+                "remote path already exists: {remote_path}"
+            )));
+        }
+        if is_directory {
+            sftp.mkdir(Path::new(&remote_path), 0o755)
+                .map_err(ssh_error)?;
+        } else {
+            let mut remote_file = sftp.create(Path::new(&remote_path)).map_err(ssh_error)?;
+            remote_file.flush()?;
+        }
+        Ok(remote_path)
+    })
+}
+
+pub(super) fn upload_local_paths_with_cache<F>(
     state: &AppState,
     connection: &ConnectionProfile,
     remote_dir: &str,
     local_paths: &[String],
-) -> Result<FileTransferSummary, AppError> {
+    mut on_progress: F,
+) -> Result<FileTransferSummary, AppError>
+where
+    F: FnMut(SftpTransferProgressSnapshot) -> Result<(), AppError>,
+{
     with_auxiliary_session_once(state, connection, |auxiliary| {
         let sftp = auxiliary_sftp(auxiliary)?;
         let directory = resolve_remote_dir(sftp, remote_dir)?;
         let mut summary = FileTransferSummary::default();
-
-        // 桌面拖放会直接给本机路径；批量上传复用同一条 SFTP 连接，逐项创建远端根目录或文件。
-        for local_path in local_paths
+        let sources = local_paths
             .iter()
             .map(|path| path.trim())
             .filter(|path| !path.is_empty())
-        {
-            let source = PathBuf::from(local_path);
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let mut total_bytes = 0_u64;
+
+        // 上传前只读取本机元数据统计总字节；符号链接和特殊文件与正式传输保持同样的忽略规则。
+        for source in &sources {
+            collect_local_transfer_bytes(source, &mut total_bytes, &mut on_progress)?;
+        }
+        on_progress(SftpTransferProgressSnapshot {
+            phase: "transferring",
+            total_bytes,
+            ..Default::default()
+        })?;
+
+        // 桌面拖放会直接给本机路径；批量上传复用同一条 SFTP 连接，逐项创建远端根目录或文件。
+        for source in sources {
             let source_name = source
                 .file_name()
                 .and_then(|value| value.to_str())
-                .ok_or_else(|| AppError::Validation(format!("invalid local path: {local_path}")))?;
+                .ok_or_else(|| {
+                    AppError::Validation(format!("invalid local path: {}", source.display()))
+                })?;
             let remote_name = normalize_remote_relative_path(source_name)?;
             let remote_path = join_remote_path(&directory, &remote_name);
-            upload_local_path_to_remote(sftp, &source, &remote_path, &mut summary)?;
+            upload_local_path_to_remote(
+                sftp,
+                &source,
+                &remote_path,
+                total_bytes,
+                &mut summary,
+                &mut on_progress,
+            )?;
             summary.destinations.push(remote_path);
         }
+
+        on_progress(SftpTransferProgressSnapshot {
+            phase: "transferring",
+            transferred_bytes: summary.bytes,
+            total_bytes,
+            files: summary.files,
+            directories: summary.directories,
+        })?;
 
         Ok(summary)
     })
@@ -666,26 +752,58 @@ pub(super) fn download_remote_file_with_cache(
     with_auxiliary_session_once(state, connection, |auxiliary| {
         let sftp = auxiliary_sftp(auxiliary)?;
         let remote_path = normalize_remote_path(path);
-        let remote_stat = sftp.stat(Path::new(&remote_path)).map_err(ssh_error)?;
+        let link_stat = sftp.lstat(Path::new(&remote_path)).map_err(ssh_error)?;
+        let remote_stat = if stat_is_symlink(&link_stat) {
+            let target_stat = sftp.stat(Path::new(&remote_path)).map_err(ssh_error)?;
+            if stat_is_dir(&target_stat) {
+                return Err(AppError::Validation(
+                    "remote directory symlinks cannot be downloaded recursively".into(),
+                ));
+            }
+            target_stat
+        } else {
+            link_stat
+        };
         let file_name = remote_file_name(&remote_path).unwrap_or_else(|| "download".into());
         let destination = downloads_dir.join(sanitize_local_file_name(&file_name, "download"));
         let mut summary = FileTransferSummary::default();
+        let mut total_bytes = 0_u64;
+        let mut ignore_progress = |_snapshot: SftpTransferProgressSnapshot| Ok(());
+        collect_remote_transfer_bytes(sftp, &remote_path, &mut total_bytes, &mut ignore_progress)?;
         if stat_is_dir(&remote_stat) {
-            download_remote_directory_to_local(sftp, &remote_path, &destination, &mut summary)?;
+            download_remote_directory_to_local(
+                sftp,
+                &remote_path,
+                &destination,
+                total_bytes,
+                &mut summary,
+                &mut ignore_progress,
+            )?;
         } else {
-            download_remote_file_to_local(sftp, &remote_path, &destination, &mut summary)?;
+            download_remote_file_to_local(
+                sftp,
+                &remote_path,
+                &destination,
+                total_bytes,
+                &mut summary,
+                &mut ignore_progress,
+            )?;
         }
 
         Ok(destination.to_string_lossy().to_string())
     })
 }
 
-pub(super) fn download_remote_paths_with_cache(
+pub(super) fn download_remote_paths_with_cache<F>(
     state: &AppState,
     connection: &ConnectionProfile,
     paths: &[String],
     local_dir: Option<&str>,
-) -> Result<FileTransferSummary, AppError> {
+    mut on_progress: F,
+) -> Result<FileTransferSummary, AppError>
+where
+    F: FnMut(SftpTransferProgressSnapshot) -> Result<(), AppError>,
+{
     let base_dir = local_dir
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -697,23 +815,49 @@ pub(super) fn download_remote_paths_with_cache(
         let sftp = auxiliary_sftp(auxiliary)?;
         let mut used_destinations = HashSet::new();
         let mut summary = FileTransferSummary::default();
-        // 多路径下载只建立一次 SFTP 会话；同名文件自动追加序号，避免后下载项覆盖先下载项。
-        for path in paths
+        let remote_paths = paths
             .iter()
             .map(|path| path.trim())
             .filter(|path| !path.is_empty())
-        {
-            let remote_path = normalize_remote_path(path);
+            .map(normalize_remote_path)
+            .collect::<Vec<_>>();
+        let mut total_bytes = 0_u64;
+        // 远端目录必须先递归 stat 才能得到总字节；期间上报 preparing，让前端显示不确定进度而不是假百分比。
+        for remote_path in &remote_paths {
+            collect_remote_transfer_bytes(sftp, remote_path, &mut total_bytes, &mut on_progress)?;
+        }
+        on_progress(SftpTransferProgressSnapshot {
+            phase: "transferring",
+            total_bytes,
+            ..Default::default()
+        })?;
+        // 多路径下载只建立一次 SFTP 会话；同名文件自动追加序号，避免后下载项覆盖先下载项。
+        for remote_path in remote_paths {
             let file_name = remote_file_name(&remote_path).unwrap_or_else(|| "download".into());
             let destination = unique_local_destination(
                 base_dir.join(sanitize_local_file_name(&file_name, "download")),
                 &mut used_destinations,
             );
-            download_remote_path_to_local(sftp, &remote_path, &destination, &mut summary)?;
+            download_remote_path_to_local(
+                sftp,
+                &remote_path,
+                &destination,
+                total_bytes,
+                &mut summary,
+                &mut on_progress,
+            )?;
             summary
                 .destinations
                 .push(destination.to_string_lossy().to_string());
         }
+
+        on_progress(SftpTransferProgressSnapshot {
+            phase: "transferring",
+            transferred_bytes: summary.bytes,
+            total_bytes,
+            files: summary.files,
+            directories: summary.directories,
+        })?;
 
         Ok(summary)
     })
@@ -806,31 +950,175 @@ pub(super) fn copy_remote_paths_with_cache(
     })
 }
 
-fn upload_local_file_to_remote(
+// 预扫描本机路径得到真实总字节；每访问一个节点都回调一次，使取消在大目录准备阶段同样生效。
+fn collect_local_transfer_bytes<F>(
+    local_path: &Path,
+    total_bytes: &mut u64,
+    on_progress: &mut F,
+) -> Result<(), AppError>
+where
+    F: FnMut(SftpTransferProgressSnapshot) -> Result<(), AppError>,
+{
+    on_progress(SftpTransferProgressSnapshot {
+        phase: "preparing",
+        total_bytes: *total_bytes,
+        ..Default::default()
+    })?;
+    let metadata = fs::symlink_metadata(local_path)?;
+    if metadata.is_dir() {
+        for entry in fs::read_dir(local_path)? {
+            let entry = entry?;
+            collect_local_transfer_bytes(&entry.path(), total_bytes, on_progress)?;
+        }
+    } else if metadata.is_file() {
+        *total_bytes = total_bytes.saturating_add(metadata.len());
+    }
+    Ok(())
+}
+
+// 预扫描远端路径得到真实总字节；目录符号链接不递归，保持与正式下载的防循环规则一致。
+fn collect_remote_transfer_bytes<F>(
+    sftp: &Sftp,
+    remote_path: &str,
+    total_bytes: &mut u64,
+    on_progress: &mut F,
+) -> Result<(), AppError>
+where
+    F: FnMut(SftpTransferProgressSnapshot) -> Result<(), AppError>,
+{
+    on_progress(SftpTransferProgressSnapshot {
+        phase: "preparing",
+        total_bytes: *total_bytes,
+        ..Default::default()
+    })?;
+    let remote_path_ref = Path::new(remote_path);
+    let link_stat = sftp.lstat(remote_path_ref).map_err(ssh_error)?;
+    let target_stat = if stat_is_symlink(&link_stat) {
+        sftp.stat(remote_path_ref).ok()
+    } else {
+        None
+    };
+    let effective_stat = target_stat.as_ref().unwrap_or(&link_stat);
+    if stat_is_dir(effective_stat) {
+        if stat_is_symlink(&link_stat) {
+            return Ok(());
+        }
+        for (entry_path, _) in sftp.readdir(remote_path_ref).map_err(ssh_error)? {
+            let Some(name) = entry_path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if name == "." || name == ".." {
+                continue;
+            }
+            let child_path = entry_path.to_string_lossy().replace('\\', "/");
+            collect_remote_transfer_bytes(sftp, &child_path, total_bytes, on_progress)?;
+        }
+    } else {
+        *total_bytes = total_bytes.saturating_add(effective_stat.size.unwrap_or(0));
+    }
+    Ok(())
+}
+
+// 64 KiB 分片复制既避免整文件驻留内存，也为真实进度和取消检查提供稳定粒度。
+fn copy_stream_with_progress<R, W, F>(
+    reader: &mut R,
+    writer: &mut W,
+    total_bytes: u64,
+    summary: &mut FileTransferSummary,
+    on_progress: &mut F,
+) -> Result<u64, AppError>
+where
+    R: Read,
+    W: Write,
+    F: FnMut(SftpTransferProgressSnapshot) -> Result<(), AppError>,
+{
+    let mut copied = 0_u64;
+    let mut buffer = [0_u8; SFTP_COPY_BUFFER_BYTES];
+    loop {
+        // 即使远端暂时没有产生新字节，也先检查取消标记，避免任务只能在下一次 UI 节流点取消。
+        on_progress(SftpTransferProgressSnapshot {
+            phase: "transferring",
+            transferred_bytes: summary.bytes,
+            total_bytes,
+            files: summary.files,
+            directories: summary.directories,
+        })?;
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        writer.write_all(&buffer[..read])?;
+        copied = copied.saturating_add(read as u64);
+        summary.bytes = summary.bytes.saturating_add(read as u64);
+        on_progress(SftpTransferProgressSnapshot {
+            phase: "transferring",
+            transferred_bytes: summary.bytes,
+            total_bytes,
+            files: summary.files,
+            directories: summary.directories,
+        })?;
+    }
+    Ok(copied)
+}
+
+fn upload_local_file_to_remote<F>(
     sftp: &Sftp,
     local_path: &Path,
     remote_path: &str,
+    total_bytes: u64,
     summary: &mut FileTransferSummary,
-) -> Result<(), AppError> {
+    on_progress: &mut F,
+) -> Result<(), AppError>
+where
+    F: FnMut(SftpTransferProgressSnapshot) -> Result<(), AppError>,
+{
     if let Some(parent) = remote_parent_path(remote_path) {
         ensure_remote_directory(sftp, &parent)?;
     }
 
     let mut local_file = fs::File::open(local_path)?;
-    let mut remote_file = sftp.create(Path::new(remote_path)).map_err(ssh_error)?;
-    let copied = std::io::copy(&mut local_file, &mut remote_file)?;
-    remote_file.flush()?;
+    // 先写同目录临时文件，完成后再覆盖式重命名；取消或失败不会把已有远端文件截断成半成品。
+    let temporary_path = format!("{remote_path}.myterminal-{}.part", Uuid::new_v4());
+    let transfer_result: Result<(), AppError> = (|| {
+        let mut remote_file = sftp.create(Path::new(&temporary_path)).map_err(ssh_error)?;
+        copy_stream_with_progress(
+            &mut local_file,
+            &mut remote_file,
+            total_bytes,
+            summary,
+            on_progress,
+        )?;
+        remote_file.flush()?;
+        drop(remote_file);
+        sftp.rename(Path::new(&temporary_path), Path::new(remote_path), None)
+            .map_err(ssh_error)
+    })();
+    if transfer_result.is_err() {
+        let _ = sftp.unlink(Path::new(&temporary_path));
+    }
+    transfer_result?;
     summary.files += 1;
-    summary.bytes = summary.bytes.saturating_add(copied);
     Ok(())
 }
 
-fn upload_local_directory_to_remote(
+fn upload_local_directory_to_remote<F>(
     sftp: &Sftp,
     local_dir: &Path,
     remote_dir: &str,
+    total_bytes: u64,
     summary: &mut FileTransferSummary,
-) -> Result<(), AppError> {
+    on_progress: &mut F,
+) -> Result<(), AppError>
+where
+    F: FnMut(SftpTransferProgressSnapshot) -> Result<(), AppError>,
+{
+    on_progress(SftpTransferProgressSnapshot {
+        phase: "transferring",
+        transferred_bytes: summary.bytes,
+        total_bytes,
+        files: summary.files,
+        directories: summary.directories,
+    })?;
     ensure_remote_directory(sftp, remote_dir)?;
     summary.directories += 1;
 
@@ -843,9 +1131,23 @@ fn upload_local_directory_to_remote(
         let local_child = entry.path();
 
         if file_type.is_dir() {
-            upload_local_directory_to_remote(sftp, &local_child, &remote_child, summary)?;
+            upload_local_directory_to_remote(
+                sftp,
+                &local_child,
+                &remote_child,
+                total_bytes,
+                summary,
+                on_progress,
+            )?;
         } else if file_type.is_file() {
-            upload_local_file_to_remote(sftp, &local_child, &remote_child, summary)?;
+            upload_local_file_to_remote(
+                sftp,
+                &local_child,
+                &remote_child,
+                total_bytes,
+                summary,
+                on_progress,
+            )?;
         }
         // 本地符号链接和设备等特殊文件不上传，避免把未知目标或不可复制内容写到远端。
     }
@@ -853,17 +1155,36 @@ fn upload_local_directory_to_remote(
     Ok(())
 }
 
-fn upload_local_path_to_remote(
+fn upload_local_path_to_remote<F>(
     sftp: &Sftp,
     local_path: &Path,
     remote_path: &str,
+    total_bytes: u64,
     summary: &mut FileTransferSummary,
-) -> Result<(), AppError> {
+    on_progress: &mut F,
+) -> Result<(), AppError>
+where
+    F: FnMut(SftpTransferProgressSnapshot) -> Result<(), AppError>,
+{
     let metadata = fs::symlink_metadata(local_path)?;
     if metadata.is_dir() {
-        upload_local_directory_to_remote(sftp, local_path, remote_path, summary)
+        upload_local_directory_to_remote(
+            sftp,
+            local_path,
+            remote_path,
+            total_bytes,
+            summary,
+            on_progress,
+        )
     } else if metadata.is_file() {
-        upload_local_file_to_remote(sftp, local_path, remote_path, summary)
+        upload_local_file_to_remote(
+            sftp,
+            local_path,
+            remote_path,
+            total_bytes,
+            summary,
+            on_progress,
+        )
     } else {
         Err(AppError::Validation(format!(
             "local path {} is not a regular file or directory",
@@ -872,30 +1193,69 @@ fn upload_local_path_to_remote(
     }
 }
 
-fn download_remote_file_to_local(
+fn download_remote_file_to_local<F>(
     sftp: &Sftp,
     remote_path: &str,
     local_path: &Path,
+    total_bytes: u64,
     summary: &mut FileTransferSummary,
-) -> Result<(), AppError> {
+    on_progress: &mut F,
+) -> Result<(), AppError>
+where
+    F: FnMut(SftpTransferProgressSnapshot) -> Result<(), AppError>,
+{
     if let Some(parent) = local_path.parent() {
         fs::create_dir_all(parent)?;
     }
     let mut remote_file = sftp.open(Path::new(remote_path)).map_err(ssh_error)?;
-    let mut local_file = fs::File::create(local_path)?;
-    let copied = std::io::copy(&mut remote_file, &mut local_file)?;
-    local_file.flush()?;
+    let temporary_path = local_path.with_file_name(format!(
+        ".{}.myterminal-{}.part",
+        local_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("download"),
+        Uuid::new_v4()
+    ));
+    let transfer_result: Result<(), AppError> = (|| {
+        let mut local_file = fs::File::create(&temporary_path)?;
+        copy_stream_with_progress(
+            &mut remote_file,
+            &mut local_file,
+            total_bytes,
+            summary,
+            on_progress,
+        )?;
+        local_file.flush()?;
+        drop(local_file);
+        fs::rename(&temporary_path, local_path)?;
+        Ok(())
+    })();
+    if transfer_result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    transfer_result?;
     summary.files += 1;
-    summary.bytes = summary.bytes.saturating_add(copied);
     Ok(())
 }
 
-fn download_remote_directory_to_local(
+fn download_remote_directory_to_local<F>(
     sftp: &Sftp,
     remote_dir: &str,
     local_dir: &Path,
+    total_bytes: u64,
     summary: &mut FileTransferSummary,
-) -> Result<(), AppError> {
+    on_progress: &mut F,
+) -> Result<(), AppError>
+where
+    F: FnMut(SftpTransferProgressSnapshot) -> Result<(), AppError>,
+{
+    on_progress(SftpTransferProgressSnapshot {
+        phase: "transferring",
+        transferred_bytes: summary.bytes,
+        total_bytes,
+        files: summary.files,
+        directories: summary.directories,
+    })?;
     fs::create_dir_all(local_dir)?;
     summary.directories += 1;
     let entries = sftp.readdir(Path::new(remote_dir)).map_err(ssh_error)?;
@@ -920,10 +1280,24 @@ fn download_remote_directory_to_local(
             .unwrap_or_else(|| stat_is_dir(&stat));
 
         if is_directory && !stat_is_symlink(&stat) {
-            download_remote_directory_to_local(sftp, &remote_child, &local_child, summary)?;
+            download_remote_directory_to_local(
+                sftp,
+                &remote_child,
+                &local_child,
+                total_bytes,
+                summary,
+                on_progress,
+            )?;
         } else if !(stat_is_symlink(&stat) && is_directory) {
             // 符号链接目录不递归跟随，避免远端循环链接导致下载无限展开；普通文件和文件链接按目标内容下载。
-            download_remote_file_to_local(sftp, &remote_child, &local_child, summary)?;
+            download_remote_file_to_local(
+                sftp,
+                &remote_child,
+                &local_child,
+                total_bytes,
+                summary,
+                on_progress,
+            )?;
         }
     }
 
@@ -960,23 +1334,142 @@ fn unique_local_destination(destination: PathBuf, used: &mut HashSet<PathBuf>) -
     destination
 }
 
-fn download_remote_path_to_local(
+fn download_remote_path_to_local<F>(
     sftp: &Sftp,
     remote_path: &str,
     destination: &Path,
+    total_bytes: u64,
     summary: &mut FileTransferSummary,
-) -> Result<(), AppError> {
-    let remote_stat = sftp.stat(Path::new(remote_path)).map_err(ssh_error)?;
-    if stat_is_dir(&remote_stat) {
-        download_remote_directory_to_local(sftp, remote_path, destination, summary)
+    on_progress: &mut F,
+) -> Result<(), AppError>
+where
+    F: FnMut(SftpTransferProgressSnapshot) -> Result<(), AppError>,
+{
+    let link_stat = sftp.lstat(Path::new(remote_path)).map_err(ssh_error)?;
+    let remote_stat = if stat_is_symlink(&link_stat) {
+        let target_stat = sftp.stat(Path::new(remote_path)).map_err(ssh_error)?;
+        if stat_is_dir(&target_stat) {
+            return Err(AppError::Validation(
+                "remote directory symlinks cannot be downloaded recursively".into(),
+            ));
+        }
+        target_stat
     } else {
-        download_remote_file_to_local(sftp, remote_path, destination, summary)
+        link_stat
+    };
+    if stat_is_dir(&remote_stat) {
+        download_remote_directory_to_local(
+            sftp,
+            remote_path,
+            destination,
+            total_bytes,
+            summary,
+            on_progress,
+        )
+    } else {
+        download_remote_file_to_local(
+            sftp,
+            remote_path,
+            destination,
+            total_bytes,
+            summary,
+            on_progress,
+        )
     }
 }
 
 #[cfg(test)]
 mod remote_access_command_tests {
     use super::*;
+
+    #[test]
+    fn normalizes_remote_paths_without_changing_root_semantics() {
+        assert_eq!(normalize_remote_path("  \\var\\log\\  "), "/var/log/");
+        assert_eq!(normalize_remote_path("   "), ".");
+        assert_eq!(normalize_remote_path("/"), "/");
+    }
+
+    #[test]
+    fn joins_remote_paths_for_root_home_and_regular_directories() {
+        assert_eq!(join_remote_path("/", "notes.txt"), "/notes.txt");
+        assert_eq!(join_remote_path(".", "notes.txt"), "notes.txt");
+        assert_eq!(
+            join_remote_path("/srv/data/", "/notes.txt"),
+            "/srv/data/notes.txt"
+        );
+    }
+
+    #[test]
+    fn sanitizes_remote_names_for_local_downloads() {
+        assert_eq!(
+            sanitize_local_file_name("report:2026?.txt", "download"),
+            "report_2026_.txt"
+        );
+        assert_eq!(sanitize_local_file_name("...", "download"), "download");
+        assert_eq!(
+            sanitize_local_file_name(" normal.txt ", "download"),
+            "normal.txt"
+        );
+    }
+
+    #[test]
+    fn rejects_nested_names_for_context_menu_creation() {
+        assert_eq!(
+            normalize_remote_leaf_name("notes.txt").unwrap(),
+            "notes.txt"
+        );
+        assert!(normalize_remote_leaf_name("nested/notes.txt").is_err());
+        assert!(normalize_remote_leaf_name("..").is_err());
+    }
+
+    #[test]
+    fn copies_streams_in_chunks_and_reports_real_bytes() {
+        let source = vec![7_u8; SFTP_COPY_BUFFER_BYTES * 3 + 17];
+        let mut reader = std::io::Cursor::new(source.clone());
+        let mut destination = Vec::new();
+        let mut summary = FileTransferSummary::default();
+        let mut reported_bytes = Vec::new();
+        copy_stream_with_progress(
+            &mut reader,
+            &mut destination,
+            source.len() as u64,
+            &mut summary,
+            &mut |snapshot| {
+                reported_bytes.push(snapshot.transferred_bytes);
+                Ok(())
+            },
+        )
+        .expect("stream copy should succeed");
+
+        assert_eq!(destination, source);
+        assert_eq!(summary.bytes, source.len() as u64);
+        assert_eq!(reported_bytes.last().copied(), Some(source.len() as u64));
+    }
+
+    #[test]
+    fn stops_stream_copy_when_progress_callback_cancels() {
+        let source = vec![9_u8; SFTP_COPY_BUFFER_BYTES * 4];
+        let mut reader = std::io::Cursor::new(source);
+        let mut destination = Vec::new();
+        let mut summary = FileTransferSummary::default();
+        let result = copy_stream_with_progress(
+            &mut reader,
+            &mut destination,
+            (SFTP_COPY_BUFFER_BYTES * 4) as u64,
+            &mut summary,
+            &mut |snapshot| {
+                if snapshot.transferred_bytes >= SFTP_COPY_BUFFER_BYTES as u64 {
+                    Err(AppError::Validation("cancelled by test".into()))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+
+        assert!(matches!(result, Err(AppError::Validation(_))));
+        assert_eq!(summary.bytes, SFTP_COPY_BUFFER_BYTES as u64);
+        assert_eq!(destination.len(), SFTP_COPY_BUFFER_BYTES);
+    }
 
     #[test]
     fn build_remote_copy_command_quotes_sources_and_target() {
