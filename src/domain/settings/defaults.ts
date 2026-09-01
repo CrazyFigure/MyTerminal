@@ -4,10 +4,7 @@ import type { AppSettings, LocalTerminalSettings } from '../../types';
 export const defaultSettings: AppSettings = {
   uiLanguage: 'zh-CN',
   themeMode: 'light',
-  runtimeRefreshIntervalSec: 1,
-  // 大文件扫描独立于常规运行状态，默认 5 秒刷新一次。
-  runtimeStorageRefreshIntervalSec: 5,
-  // 进程/线程资源明细只在内存展开时刷新，默认 3 秒。
+  // 进程/线程和连接明细只在对应行展开时刷新，默认 3 秒；概览固定每秒由后端推送。
   runtimeResourceRefreshIntervalSec: 3,
   runtimeResourceSource: 'system',
   sshKeepaliveIntervalSec: 30,

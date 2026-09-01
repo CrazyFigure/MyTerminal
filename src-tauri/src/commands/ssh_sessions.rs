@@ -17,7 +17,10 @@ use ssh2::{Channel, ExtendedData, Session, Sftp};
 use crate::{
     error::AppError,
     models::ConnectionProfile,
-    state::{AgentPtyState, AppState, AuxiliarySshSession, SessionControl, TerminalOutputQueue},
+    state::{
+        AgentPtyState, AppState, AuxiliarySshSession, RuntimeDetailSshSession, SessionControl,
+        TerminalOutputQueue,
+    },
 };
 
 use super::{
@@ -66,13 +69,13 @@ fn get_or_connect_auxiliary_session(
     Ok(Arc::clone(entry))
 }
 
-pub(super) fn drop_auxiliary_session(state: &AppState, connection_id: &str) {
+pub(crate) fn drop_auxiliary_session(state: &AppState, connection_id: &str) {
     if let Ok(mut sessions) = lock_auxiliary_sessions(state) {
         sessions.remove(connection_id);
     }
 }
 
-pub(super) fn clear_auxiliary_sessions(state: &AppState) {
+pub(crate) fn clear_auxiliary_sessions(state: &AppState) {
     if let Ok(mut sessions) = lock_auxiliary_sessions(state) {
         sessions.clear();
     }
@@ -81,7 +84,7 @@ pub(super) fn clear_auxiliary_sessions(state: &AppState) {
 /// 保活守护线程每轮顺带执行的辅助连接淘汰：回收空闲超过 TTL 的连接，并在空闲连接过多时
 /// 保留最近使用的若干个、淘汰其余最久未用者。只回收当前无人持有（Arc strong_count==1）
 /// 且能立即 try_lock 的连接，避免误删正在进行文件/资源操作的活跃会话。
-pub(super) fn evict_idle_auxiliary_sessions(state: &AppState) {
+pub(crate) fn evict_idle_auxiliary_sessions(state: &AppState) {
     let mut removed_ids: Vec<String> = Vec::new();
     if let Ok(mut sessions) = state.auxiliary_sessions.lock() {
         let now = Instant::now();
@@ -142,7 +145,156 @@ pub(super) fn evict_idle_auxiliary_sessions(state: &AppState) {
     }
 }
 
-pub(super) fn with_auxiliary_session<T>(
+fn lock_runtime_detail_sessions(
+    state: &AppState,
+) -> Result<std::sync::MutexGuard<'_, HashMap<String, Arc<std::sync::Mutex<RuntimeDetailSshSession>>>>, AppError> {
+    state
+        .runtime_detail_sessions
+        .lock()
+        .map_err(|_| AppError::Validation("runtime detail ssh session map is unavailable".into()))
+}
+
+fn runtime_detail_session_lock(
+    state: &AppState,
+    connection_id: &str,
+) -> Result<Arc<std::sync::Mutex<()>>, AppError> {
+    let mut locks = state
+        .runtime_detail_session_locks
+        .lock()
+        .map_err(|_| AppError::Validation("runtime detail session lock map is unavailable".into()))?;
+    let lock = locks
+        .entry(connection_id.to_string())
+        .or_insert_with(|| Arc::new(std::sync::Mutex::new(())));
+    Ok(Arc::clone(lock))
+}
+
+fn get_or_connect_runtime_detail_session(
+    state: &AppState,
+    connection: &ConnectionProfile,
+) -> Result<Arc<std::sync::Mutex<RuntimeDetailSshSession>>, AppError> {
+    if let Some(cached) = lock_runtime_detail_sessions(state)?.get(&connection.id).cloned() {
+        return Ok(cached);
+    }
+
+    let connect_lock = runtime_detail_session_lock(state, &connection.id)?;
+    let _connect_guard = connect_lock
+        .lock()
+        .map_err(|_| AppError::Validation("runtime detail ssh connect lock is unavailable".into()))?;
+    if let Some(cached) = lock_runtime_detail_sessions(state)?.get(&connection.id).cloned() {
+        return Ok(cached);
+    }
+
+    let session = connect_ssh(connection)?;
+    session.set_timeout(AUXILIARY_IO_TIMEOUT.as_millis() as u32);
+    let cached = Arc::new(std::sync::Mutex::new(RuntimeDetailSshSession {
+        session,
+        last_used_at: Instant::now(),
+    }));
+
+    let mut sessions = lock_runtime_detail_sessions(state)?;
+    let entry = sessions
+        .entry(connection.id.clone())
+        .or_insert_with(|| Arc::clone(&cached));
+    Ok(Arc::clone(entry))
+}
+
+pub(crate) fn drop_runtime_detail_session(state: &AppState, connection_id: &str) {
+    if let Ok(mut sessions) = lock_runtime_detail_sessions(state) {
+        sessions.remove(connection_id);
+    }
+}
+
+pub(crate) fn clear_runtime_detail_sessions(state: &AppState) {
+    if let Ok(mut sessions) = lock_runtime_detail_sessions(state) {
+        sessions.clear();
+    }
+}
+
+pub(crate) fn with_runtime_detail_session<T>(
+    state: &AppState,
+    connection: &ConnectionProfile,
+    operation: impl Fn(&mut RuntimeDetailSshSession) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let cached = get_or_connect_runtime_detail_session(state, connection)?;
+    let mut session = cached
+        .lock()
+        .map_err(|_| AppError::Validation("runtime detail ssh session is unavailable".into()))?;
+    session.last_used_at = Instant::now();
+    match operation(&mut session) {
+        Ok(value) => Ok(value),
+        Err(error @ (AppError::Ssh(_) | AppError::Io(_))) => {
+            drop(session);
+            drop_runtime_detail_session(state, &connection.id);
+            let refreshed = get_or_connect_runtime_detail_session(state, connection)?;
+            let mut refreshed_session = refreshed.lock().map_err(|_| {
+                AppError::Validation("runtime detail ssh session is unavailable".into())
+            })?;
+            operation(&mut refreshed_session).map_err(|retry_error| {
+                if matches!(retry_error, AppError::Ssh(_) | AppError::Io(_)) {
+                    retry_error
+                } else {
+                    error
+                }
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) fn evict_idle_runtime_detail_sessions(state: &AppState) {
+    let mut removed_ids: Vec<String> = Vec::new();
+    if let Ok(mut sessions) = state.runtime_detail_sessions.lock() {
+        let now = Instant::now();
+        let mut idle: Vec<(String, Duration)> = Vec::new();
+        for (id, session) in sessions.iter() {
+            if Arc::strong_count(session) > 1 {
+                continue;
+            }
+            if let Ok(guard) = session.try_lock() {
+                idle.push((
+                    id.clone(),
+                    now.saturating_duration_since(guard.last_used_at),
+                ));
+            }
+        }
+
+        for (id, idle_for) in &idle {
+            if *idle_for >= AUXILIARY_IDLE_TTL {
+                removed_ids.push(id.clone());
+            }
+        }
+
+        let mut survivors: Vec<&(String, Duration)> = idle
+            .iter()
+            .filter(|(id, _)| !removed_ids.contains(id))
+            .collect();
+        if survivors.len() > AUXILIARY_MAX_IDLE_SESSIONS {
+            survivors.sort_by(|a, b| b.1.cmp(&a.1));
+            for (id, _) in survivors
+                .iter()
+                .take(survivors.len() - AUXILIARY_MAX_IDLE_SESSIONS)
+            {
+                removed_ids.push(id.clone());
+            }
+        }
+
+        for id in &removed_ids {
+            sessions.remove(id);
+        }
+    }
+
+    if !removed_ids.is_empty() {
+        if let Ok(mut locks) = state.runtime_detail_session_locks.lock() {
+            if let Ok(sessions) = state.runtime_detail_sessions.lock() {
+                locks.retain(|id, lock| {
+                    sessions.contains_key(id) || Arc::strong_count(lock) > 1
+                });
+            }
+        }
+    }
+}
+
+pub(crate) fn with_auxiliary_session<T>(
     state: &AppState,
     connection: &ConnectionProfile,
     operation: impl Fn(&mut AuxiliarySshSession) -> Result<T, AppError>,
@@ -177,7 +329,7 @@ pub(super) fn with_auxiliary_session<T>(
     }
 }
 
-pub(super) fn with_auxiliary_session_once<T>(
+pub(crate) fn with_auxiliary_session_once<T>(
     state: &AppState,
     connection: &ConnectionProfile,
     operation: impl FnOnce(&mut AuxiliarySshSession) -> Result<T, AppError>,
@@ -200,7 +352,7 @@ pub(super) fn with_auxiliary_session_once<T>(
     result
 }
 
-pub(super) fn auxiliary_sftp(session: &mut AuxiliarySshSession) -> Result<&Sftp, AppError> {
+pub(crate) fn auxiliary_sftp(session: &mut AuxiliarySshSession) -> Result<&Sftp, AppError> {
     if session.sftp.is_none() {
         // SFTP 子系统初始化成功后挂在辅助 SSH 会话上，目录切换不再重复打开子系统。
         session.sftp = Some(session.session.sftp().map_err(ssh_error)?);
@@ -212,7 +364,7 @@ pub(super) fn auxiliary_sftp(session: &mut AuxiliarySshSession) -> Result<&Sftp,
         .ok_or_else(|| AppError::Validation("sftp session is unavailable".into()))
 }
 
-pub(super) fn auxiliary_identity_maps(
+pub(crate) fn auxiliary_identity_maps(
     session: &mut AuxiliarySshSession,
 ) -> (HashMap<u32, String>, HashMap<u32, String>) {
     if session.user_names.is_none() || session.group_names.is_none() {
@@ -269,7 +421,7 @@ fn flush_pending_shell_input(
 }
 
 #[cfg(windows)]
-pub(super) fn ssh_socket_error_code(session: &Session) -> Option<libc::c_int> {
+pub(crate) fn ssh_socket_error_code(session: &Session) -> Option<libc::c_int> {
     use std::os::windows::io::AsRawSocket;
 
     // Windows 版 libc 未公开 WinSock 的 SOL_SOCKET/SO_ERROR 常量；这里使用 WinSock 固定值读取底层 socket 状态。
@@ -296,7 +448,7 @@ pub(super) fn ssh_socket_error_code(session: &Session) -> Option<libc::c_int> {
 }
 
 #[cfg(unix)]
-pub(super) fn ssh_socket_error_code(session: &Session) -> Option<libc::c_int> {
+pub(crate) fn ssh_socket_error_code(session: &Session) -> Option<libc::c_int> {
     use std::os::fd::AsRawFd;
 
     let mut error_code = 0 as libc::c_int;
@@ -319,7 +471,7 @@ pub(super) fn ssh_socket_error_code(session: &Session) -> Option<libc::c_int> {
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(super) fn ssh_socket_error_code(_session: &Session) -> Option<libc::c_int> {
+pub(crate) fn ssh_socket_error_code(_session: &Session) -> Option<libc::c_int> {
     None
 }
 
@@ -330,7 +482,7 @@ fn ssh_socket_error_hint(_session: &Session) -> String {
     }
 }
 
-pub(super) fn spawn_shell_thread(
+pub(crate) fn spawn_shell_thread(
     session_id: String,
     ssh_session: Session,
     cols: u16,

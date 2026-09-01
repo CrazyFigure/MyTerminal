@@ -284,7 +284,8 @@ fn query_system_resource_usage_with_session(
             "sh -lc 'LC_ALL=C ps -eo pid=,comm=,pcpu=,pmem=,rss= --sort=-{sort_field} 2>/dev/null | head -n {limit}'"
         )
     };
-    let contents = exec_remote_command(session, &command).unwrap_or_default();
+    // 传输错误必须交给会话层重连，不能伪装成空列表让前端每轮闪空。
+    let contents = exec_remote_command(session, &command)?;
     Ok(parse_system_resource_usage(
         &contents, metric, target, limit,
     ))
@@ -298,7 +299,7 @@ fn query_docker_resource_usage_with_session(
 ) -> Result<RuntimeResourceUsage, AppError> {
     // Docker stats 覆盖普通 Docker 和 Docker Compose 容器，按容器粒度展示资源占用。
     let command = r#"sh -lc 'command -v docker >/dev/null 2>&1 || exit 0; if command -v timeout >/dev/null 2>&1; then timeout 3s docker stats --no-stream --format "{{.Container}}|{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}" 2>/dev/null || true; else docker stats --no-stream --format "{{.Container}}|{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}" 2>/dev/null || true; fi'"#;
-    let contents = exec_remote_command(session, command).unwrap_or_default();
+    let contents = exec_remote_command(session, command)?;
     Ok(parse_container_resource_usage(
         &contents, metric, target, limit, "docker", "Docker",
     ))
@@ -312,7 +313,7 @@ fn query_podman_resource_usage_with_session(
 ) -> Result<RuntimeResourceUsage, AppError> {
     // Podman 模板字段与 Docker 的容器 ID 字段不同，主动适配后再复用统一的容器统计解析格式。
     let command = r#"sh -lc 'command -v podman >/dev/null 2>&1 || exit 0; if command -v timeout >/dev/null 2>&1; then timeout 3s podman stats --no-stream --format "{{.ID}}|{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}" 2>/dev/null || true; else podman stats --no-stream --format "{{.ID}}|{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}" 2>/dev/null || true; fi'"#;
-    let contents = exec_remote_command(session, command).unwrap_or_default();
+    let contents = exec_remote_command(session, command)?;
     Ok(parse_container_resource_usage(
         &contents, metric, target, limit, "podman", "Podman",
     ))
@@ -328,14 +329,13 @@ fn query_kubernetes_resource_usage_with_session(
     let contents = exec_remote_command(
         session,
         "sh -lc 'command -v kubectl >/dev/null 2>&1 || exit 0; if command -v timeout >/dev/null 2>&1; then timeout 3s kubectl top pods -A --no-headers 2>/dev/null || true; else kubectl top pods -A --no-headers 2>/dev/null || true; fi'",
-    )
-    .unwrap_or_default();
+    )?;
     Ok(parse_kubernetes_resource_usage(
         &contents, metric, target, limit,
     ))
 }
 
-pub(super) fn query_runtime_resource_usage_with_session(
+pub(crate) fn query_runtime_resource_usage_with_session(
     session: &Session,
     request: &RuntimeResourceUsageRequest,
 ) -> Result<RuntimeResourceUsage, AppError> {

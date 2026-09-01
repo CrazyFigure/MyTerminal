@@ -1,5 +1,4 @@
 import {
-  useCallback,
   useEffect,
   useRef,
   useState,
@@ -14,7 +13,6 @@ import type {
   RuntimeResourceMetric,
   RuntimeResourceTarget,
   RuntimeResourceUsage,
-  RuntimeStorageFiles,
 } from '../../types';
 import { runtimeResourceDetailLimit } from './presentation';
 
@@ -22,246 +20,191 @@ type RuntimeMonitorOptions = {
   activeRemoteConnectionId?: string;
   connectionsExpanded: boolean;
   memoryResourcesExpanded: boolean;
-  refreshRuntimeOverview: () => Promise<void>;
   setConnectionsExpanded: Dispatch<SetStateAction<boolean>>;
   setCpuCoresExpanded: Dispatch<SetStateAction<boolean>>;
   setMemoryResourcesExpanded: Dispatch<SetStateAction<boolean>>;
-  setStorageFilesExpanded: Dispatch<SetStateAction<boolean>>;
   settings: AppSettings;
-  storageFilesExpanded: boolean;
 };
 
-// 运行状态监视器按展开态启动三个明细轮询，并用序号丢弃切换连接后的迟到响应。
+// 运行状态监视器只为进程/线程与连接列表启动按需自调度轮询；存储仅保留概览用量，不再执行高成本全盘扫描。
 export function useRuntimeMonitor({
   activeRemoteConnectionId,
   connectionsExpanded,
   memoryResourcesExpanded,
-  refreshRuntimeOverview,
   setConnectionsExpanded,
   setCpuCoresExpanded,
   setMemoryResourcesExpanded,
-  setStorageFilesExpanded,
   settings,
-  storageFilesExpanded,
 }: RuntimeMonitorOptions) {
   const [runtimeResourceMetric, setRuntimeResourceMetric] = useState<RuntimeResourceMetric>('memory');
   const [runtimeResourceTarget, setRuntimeResourceTarget] = useState<RuntimeResourceTarget>('process');
   const [runtimeResourceUsage, setRuntimeResourceUsage] = useState<RuntimeResourceUsage | null>(null);
   const [runtimeResourceLoading, setRuntimeResourceLoading] = useState(false);
   const [runtimeResourceError, setRuntimeResourceError] = useState('');
-  const [runtimeStorageFiles, setRuntimeStorageFiles] = useState<RuntimeStorageFiles | null>(null);
-  const [runtimeStorageFilesLoading, setRuntimeStorageFilesLoading] = useState(false);
-  const [runtimeStorageFilesError, setRuntimeStorageFilesError] = useState('');
   const [runtimeConnections, setRuntimeConnections] = useState<RuntimeConnectionList | null>(null);
   const [runtimeConnectionsLoading, setRuntimeConnectionsLoading] = useState(false);
   const [runtimeConnectionsError, setRuntimeConnectionsError] = useState('');
-  const runtimeRefreshInFlightRef = useRef(false);
-  const runtimeRefreshPendingRef = useRef(false);
+
   const runtimeResourceRefreshSeqRef = useRef(0);
-  const runtimeResourceRefreshInFlightRef = useRef(false);
-  const runtimeStorageFilesRefreshSeqRef = useRef(0);
-  const runtimeStorageFilesRefreshInFlightRef = useRef(false);
+  const runtimeResourceEmptyStreakRef = useRef(0);
   const runtimeConnectionsRefreshSeqRef = useRef(0);
-  const runtimeConnectionsRefreshInFlightRef = useRef(false);
 
-  const refreshRuntimeOverviewOnce = useCallback(() => {
-    // 正在刷新时不并发重入，只记下“还需再刷一次”的诉求；否则切换连接时新刷新会被丢弃，
-    // 导致运行状态加载动画一直空转到下一次定时器才恢复。
-    if (runtimeRefreshInFlightRef.current) {
-      runtimeRefreshPendingRef.current = true;
-      return;
-    }
-    const run = () => {
-      runtimeRefreshInFlightRef.current = true;
-      runtimeRefreshPendingRef.current = false;
-      void refreshRuntimeOverview().finally(() => {
-        runtimeRefreshInFlightRef.current = false;
-        // 刷新期间若又发起过（如切换了连接），补跑一次以覆盖最新的活动连接，避免漏刷。
-        if (runtimeRefreshPendingRef.current) {
-          run();
-        }
-      });
-    };
-    run();
-  }, [refreshRuntimeOverview]);
-
-  const refreshRuntimeResourceUsageOnce = useCallback(() => {
-    if (!activeRemoteConnectionId || !memoryResourcesExpanded || runtimeResourceRefreshInFlightRef.current) {
-      return;
-    }
-
-    const requestSeq = ++runtimeResourceRefreshSeqRef.current;
-    runtimeResourceRefreshInFlightRef.current = true;
-    setRuntimeResourceLoading(true);
+  // 切换主机、来源、排序指标或进程/线程口径时旧列表语义已失效，立即清空并重新建立空结果计数。
+  useEffect(() => {
+    runtimeResourceEmptyStreakRef.current = 0;
+    setRuntimeResourceUsage(null);
     setRuntimeResourceError('');
-    void backend.fetchRuntimeResourceUsage(activeRemoteConnectionId, {
-      source: settings.runtimeResourceSource ?? 'system',
-      metric: runtimeResourceMetric,
-      target: runtimeResourceTarget,
-      limit: runtimeResourceDetailLimit,
-    }).then((usage) => {
-      if (requestSeq !== runtimeResourceRefreshSeqRef.current) {
-        return;
-      }
-      setRuntimeResourceUsage(usage);
-      setRuntimeResourceError(usage.error ?? '');
-    }).catch((error) => {
-      if (requestSeq !== runtimeResourceRefreshSeqRef.current) {
-        return;
-      }
-      // 刷新失败时保留旧明细，避免网络抖动或远端命令慢导致展开区突然清空。
-      setRuntimeResourceError(error instanceof Error ? error.message : String(error));
-    }).finally(() => {
-      if (requestSeq === runtimeResourceRefreshSeqRef.current) {
-        runtimeResourceRefreshInFlightRef.current = false;
-        setRuntimeResourceLoading(false);
-      }
-    });
-  }, [activeRemoteConnectionId, memoryResourcesExpanded, runtimeResourceMetric, runtimeResourceTarget, settings.runtimeResourceSource]);
+  }, [activeRemoteConnectionId, runtimeResourceMetric, runtimeResourceTarget, settings.runtimeResourceSource]);
 
+  // 1. 资源明细（进程/内存）自调度轮询
   useEffect(() => {
     if (!memoryResourcesExpanded || !activeRemoteConnectionId) {
       runtimeResourceRefreshSeqRef.current += 1;
-      runtimeResourceRefreshInFlightRef.current = false;
+      runtimeResourceEmptyStreakRef.current = 0;
       setRuntimeResourceLoading(false);
+      setRuntimeResourceUsage(null);
+      setRuntimeResourceError('');
       return undefined;
     }
 
-    // 内存明细展开、切换 CPU/内存、切换进程/线程或来源设置变化时都会立即刷新一次。
-    // 后续按资源设置里的进程状态刷新频率轮询；收起时 cleanup 会关闭轮询。
-    refreshRuntimeResourceUsageOnce();
-    const timer = window.setInterval(
-      refreshRuntimeResourceUsageOnce,
-      Math.max(1, settings.runtimeResourceRefreshIntervalSec ?? 3) * 1000,
-    );
+    let active = true;
+    let timer: number | null = null;
+
+    const queryCycle = async () => {
+      if (!active) return;
+      const requestSeq = ++runtimeResourceRefreshSeqRef.current;
+      setRuntimeResourceLoading(true);
+      setRuntimeResourceError('');
+
+      try {
+        const usage = await backend.getRuntimeResourceUsage(activeRemoteConnectionId, {
+          source: settings.runtimeResourceSource ?? 'system',
+          metric: runtimeResourceMetric,
+          target: runtimeResourceTarget,
+          limit: runtimeResourceDetailLimit,
+        });
+        if (!active || requestSeq !== runtimeResourceRefreshSeqRef.current) return;
+        if (usage.items.length > 0) {
+          runtimeResourceEmptyStreakRef.current = 0;
+          setRuntimeResourceUsage(usage);
+        } else {
+          // 单次空结果可能来自远端工具瞬时超时；已有列表先保留，连续两次确认为空后再展示空态。
+          runtimeResourceEmptyStreakRef.current += 1;
+          setRuntimeResourceUsage((current) => (
+            !current || current.items.length === 0 || runtimeResourceEmptyStreakRef.current >= 2
+              ? usage
+              : current
+          ));
+        }
+        setRuntimeResourceError(usage.error ?? '');
+      } catch (error) {
+        if (!active || requestSeq !== runtimeResourceRefreshSeqRef.current) return;
+        setRuntimeResourceError(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (active && requestSeq === runtimeResourceRefreshSeqRef.current) {
+          setRuntimeResourceLoading(false);
+          const delay = Math.max(1, settings.runtimeResourceRefreshIntervalSec ?? 3) * 1000;
+          timer = window.setTimeout(queryCycle, delay);
+        }
+      }
+    };
+
+    void queryCycle();
+
     return () => {
+      active = false;
       runtimeResourceRefreshSeqRef.current += 1;
-      runtimeResourceRefreshInFlightRef.current = false;
-      window.clearInterval(timer);
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
     };
-  }, [activeRemoteConnectionId, memoryResourcesExpanded, refreshRuntimeResourceUsageOnce, settings.runtimeResourceRefreshIntervalSec]);
+  }, [
+    activeRemoteConnectionId,
+    memoryResourcesExpanded,
+    runtimeResourceMetric,
+    runtimeResourceTarget,
+    settings.runtimeResourceRefreshIntervalSec,
+    settings.runtimeResourceSource,
+  ]);
 
-  // 存储最大文件扫描按展开态触发；未选连接或已收起时直接跳过，减少远端磁盘遍历。
-  const refreshRuntimeStorageFilesOnce = useCallback(() => {
-    if (!activeRemoteConnectionId || !storageFilesExpanded || runtimeStorageFilesRefreshInFlightRef.current) {
-      return;
-    }
-
-    const requestSeq = ++runtimeStorageFilesRefreshSeqRef.current;
-    runtimeStorageFilesRefreshInFlightRef.current = true;
-    setRuntimeStorageFilesLoading(true);
-    setRuntimeStorageFilesError('');
-    void backend.fetchRuntimeStorageFiles(activeRemoteConnectionId).then((files) => {
-      if (requestSeq !== runtimeStorageFilesRefreshSeqRef.current) {
-        return;
-      }
-      setRuntimeStorageFiles(files);
-      setRuntimeStorageFilesError(files.error ?? '');
-    }).catch((error) => {
-      if (requestSeq !== runtimeStorageFilesRefreshSeqRef.current) {
-        return;
-      }
-      // 刷新失败时保留旧文件列表，避免一次扫描超时导致已展示的大文件数据消失。
-      setRuntimeStorageFilesError(error instanceof Error ? error.message : String(error));
-    }).finally(() => {
-      if (requestSeq === runtimeStorageFilesRefreshSeqRef.current) {
-        runtimeStorageFilesRefreshInFlightRef.current = false;
-        setRuntimeStorageFilesLoading(false);
-      }
-    });
-  }, [activeRemoteConnectionId, storageFilesExpanded]);
-
-  useEffect(() => {
-    if (!storageFilesExpanded || !activeRemoteConnectionId) {
-      runtimeStorageFilesRefreshSeqRef.current += 1;
-      runtimeStorageFilesRefreshInFlightRef.current = false;
-      setRuntimeStorageFilesLoading(false);
-      return undefined;
-    }
-
-    // 存储展开时立即扫描一次，后续按资源设置里的大文件状态刷新频率轮询；收起时 cleanup 会关闭轮询。
-    refreshRuntimeStorageFilesOnce();
-    const timer = window.setInterval(
-      refreshRuntimeStorageFilesOnce,
-      Math.max(5, settings.runtimeStorageRefreshIntervalSec ?? 5) * 1000,
-    );
-    return () => {
-      runtimeStorageFilesRefreshSeqRef.current += 1;
-      runtimeStorageFilesRefreshInFlightRef.current = false;
-      window.clearInterval(timer);
-    };
-  }, [activeRemoteConnectionId, refreshRuntimeStorageFilesOnce, settings.runtimeStorageRefreshIntervalSec, storageFilesExpanded]);
-
-  // 连接明细按展开态触发；读取 /proc 网络表开销小，但仍只在本行展开时才请求，收起即停止。
-  const refreshRuntimeConnectionsOnce = useCallback(() => {
-    if (!activeRemoteConnectionId || !connectionsExpanded || runtimeConnectionsRefreshInFlightRef.current) {
-      return;
-    }
-
-    const requestSeq = ++runtimeConnectionsRefreshSeqRef.current;
-    runtimeConnectionsRefreshInFlightRef.current = true;
-    setRuntimeConnectionsLoading(true);
-    setRuntimeConnectionsError('');
-    void backend.fetchRuntimeConnectionList(activeRemoteConnectionId).then((list) => {
-      if (requestSeq !== runtimeConnectionsRefreshSeqRef.current) {
-        return;
-      }
-      setRuntimeConnections(list);
-      setRuntimeConnectionsError(list.error ?? '');
-    }).catch((error) => {
-      if (requestSeq !== runtimeConnectionsRefreshSeqRef.current) {
-        return;
-      }
-      // 刷新失败时保留旧明细，避免一次网络抖动清空已展示的连接列表。
-      setRuntimeConnectionsError(error instanceof Error ? error.message : String(error));
-    }).finally(() => {
-      if (requestSeq === runtimeConnectionsRefreshSeqRef.current) {
-        runtimeConnectionsRefreshInFlightRef.current = false;
-        setRuntimeConnectionsLoading(false);
-      }
-    });
-  }, [activeRemoteConnectionId, connectionsExpanded]);
-
+  // 2. 连接明细与进程明细共用“明细刷新频率”，避免为轻量展开项再增加一个设置。
   useEffect(() => {
     if (!connectionsExpanded || !activeRemoteConnectionId) {
       runtimeConnectionsRefreshSeqRef.current += 1;
-      runtimeConnectionsRefreshInFlightRef.current = false;
       setRuntimeConnectionsLoading(false);
+      setRuntimeConnections(null);
+      setRuntimeConnectionsError('');
       return undefined;
     }
 
-    // 展开时立即拉取一次，随后跟随运行状态主刷新频率轮询（最低 5 秒），与连接数主行保持同节奏。
-    refreshRuntimeConnectionsOnce();
-    const timer = window.setInterval(
-      refreshRuntimeConnectionsOnce,
-      Math.max(5, settings.runtimeRefreshIntervalSec) * 1000,
-    );
-    return () => {
-      runtimeConnectionsRefreshSeqRef.current += 1;
-      runtimeConnectionsRefreshInFlightRef.current = false;
-      window.clearInterval(timer);
-    };
-  }, [activeRemoteConnectionId, connectionsExpanded, refreshRuntimeConnectionsOnce, settings.runtimeRefreshIntervalSec]);
+    let active = true;
+    let timer: number | null = null;
 
-  // 活动远端连接变化时（关闭 SSH tab、切到其它连接或断开），收起运行状态所有下拉并清空已暂存的明细。
-  // 否则下拉会停留在上一个连接的内存/存储数据上：无连接时轮询已停止无法刷新，看起来像卡死；
-  // 切到其它连接时又会短暂显示旧连接数据，语义错误。收起后用户重新展开即按新连接重新拉取。
+    const queryCycle = async () => {
+      if (!active) return;
+      const requestSeq = ++runtimeConnectionsRefreshSeqRef.current;
+      setRuntimeConnectionsLoading(true);
+      setRuntimeConnectionsError('');
+
+      try {
+        const list = await backend.getRuntimeConnectionList(activeRemoteConnectionId);
+        if (!active || requestSeq !== runtimeConnectionsRefreshSeqRef.current) return;
+        // 传输错误返回的空列表不能覆盖上一份成功数据；真实无连接时 error 为空，仍会正常切换到空态。
+        setRuntimeConnections((current) => (
+          list.error && current?.items.length ? current : list
+        ));
+        setRuntimeConnectionsError(list.error ?? '');
+      } catch (error) {
+        if (!active || requestSeq !== runtimeConnectionsRefreshSeqRef.current) return;
+        setRuntimeConnectionsError(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (active && requestSeq === runtimeConnectionsRefreshSeqRef.current) {
+          setRuntimeConnectionsLoading(false);
+          const delay = Math.max(1, settings.runtimeResourceRefreshIntervalSec ?? 3) * 1000;
+          timer = window.setTimeout(queryCycle, delay);
+        }
+      }
+    };
+
+    void queryCycle();
+
+    return () => {
+      active = false;
+      runtimeConnectionsRefreshSeqRef.current += 1;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [activeRemoteConnectionId, connectionsExpanded, settings.runtimeResourceRefreshIntervalSec]);
+
+  // 两类明细全部收起时立即释放 Rust 侧专用 SSH Session；切换连接或组件卸载也释放旧连接缓存。
+  useEffect(() => {
+    if (activeRemoteConnectionId && !memoryResourcesExpanded && !connectionsExpanded) {
+      // 清理命令属于尽力而为：窗口退出或后端热重载时失败不能形成未处理的 Promise 拒绝。
+      void backend.releaseRuntimeDetailSession(activeRemoteConnectionId).catch(() => undefined);
+    }
+  }, [activeRemoteConnectionId, connectionsExpanded, memoryResourcesExpanded]);
+
+  useEffect(() => {
+    if (!activeRemoteConnectionId) return undefined;
+    const connectionId = activeRemoteConnectionId;
+    return () => {
+      void backend.releaseRuntimeDetailSession(connectionId).catch(() => undefined);
+    };
+  }, [activeRemoteConnectionId]);
+
+  // 3. 活动远端连接变化时收起按需明细并清空缓存，避免短暂展示上一台主机的数据。
   useEffect(() => {
     setCpuCoresExpanded(false);
     setMemoryResourcesExpanded(false);
-    setStorageFilesExpanded(false);
     setConnectionsExpanded(false);
     setRuntimeResourceUsage(null);
     setRuntimeResourceError('');
-    setRuntimeStorageFiles(null);
-    setRuntimeStorageFilesError('');
     setRuntimeConnections(null);
     setRuntimeConnectionsError('');
-  }, [activeRemoteConnectionId]);
-
+  }, [activeRemoteConnectionId, setConnectionsExpanded, setCpuCoresExpanded, setMemoryResourcesExpanded]);
 
   return {
-    refreshRuntimeOverviewOnce,
     runtimeConnections,
     runtimeConnectionsError,
     runtimeConnectionsLoading,
@@ -270,9 +213,6 @@ export function useRuntimeMonitor({
     runtimeResourceMetric,
     runtimeResourceTarget,
     runtimeResourceUsage,
-    runtimeStorageFiles,
-    runtimeStorageFilesError,
-    runtimeStorageFilesLoading,
     setRuntimeResourceMetric,
     setRuntimeResourceTarget,
   };

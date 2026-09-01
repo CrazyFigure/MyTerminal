@@ -6,9 +6,7 @@ import type { StoreState } from './application/store/contracts';
 import { resolveBoundConnectionId } from './application/store/sessionRuntime';
 import { statusText } from './application/store/status';
 import { createTunnelActions } from './application/store/tunnelActions';
-import {
-  createRemoteFileActions,
-} from './application/store/remoteFileActions';
+import { createRemoteFileActions } from './application/store/remoteFileActions';
 import { createSettingsActions } from './application/store/settingsActions';
 import { createConnectionActions } from './application/store/connectionActions';
 import { createSessionActions } from './application/store/sessionActions';
@@ -16,15 +14,14 @@ import {
   emptyConnectionDraft,
   normalizeLoadedConnection,
 } from './domain/connections/model';
+import { emptyTunnelDraft, getTunnelDraftValidationKey } from './domain/tunnels/model';
 import { createSplitLayout } from './features/terminal/splitLayout';
 import { defaultLocalTerminals, defaultSettings } from './domain/settings/defaults';
-import { emptyTunnelDraft, getTunnelDraftValidationKey } from './domain/tunnels/model';
 import type {
   TunnelOpenRequest,
   TunnelUpdateRequest,
 } from './types';
 
-let runtimeOverviewRefreshSeq = 0;
 let remoteHistoryRefreshSeq = 0;
 
 export const useAppStore = create<StoreState>((set, get) => ({
@@ -41,16 +38,13 @@ export const useAppStore = create<StoreState>((set, get) => ({
   suggestions: {},
   files: [],
   currentRemotePath: '',
-  runtimeOverview: undefined,
-  runtimeLoading: false,
   filesLoading: false,
   historyLoading: false,
   connectionTestResult: undefined,
   editorDocument: undefined,
   activeConnectionId: undefined,
   activeSessionId: undefined,
-  // 分屏布局只存在于运行期：会话本身重启后是否还在无法保证，
-  // 恢复一个指向失效会话的布局反而困惑，因此每次启动都从单格开始。
+  // 分屏布局只存在于运行期：会话本身重启后是否还在无法保证，每次启动都从单格开始。
   splitLayout: createSplitLayout(),
   activePanel: 'files',
   showConnectionForm: false,
@@ -94,7 +88,6 @@ export const useAppStore = create<StoreState>((set, get) => ({
       splitLayout: createSplitLayout(activeSessionId),
       files: [],
       currentRemotePath: activeConnectionId ? '~' : '',
-      runtimeOverview: undefined,
     });
   },
 
@@ -159,29 +152,26 @@ export const useAppStore = create<StoreState>((set, get) => ({
   },
 
   refreshRemoteHistory: async (connectionId) => {
-    const boundConnectionId = resolveBoundConnectionId(get());
-    const targetConnectionId = connectionId ?? boundConnectionId;
-    // 历史同样跟随绑定会话；切分屏焦点不触发重新拉取，也不会清掉已加载的记录。
-    if (!targetConnectionId || targetConnectionId !== boundConnectionId) {
+    // 历史同样跟随绑定会话；分屏切换时不应向无关会话拉取历史。
+    const boundConnectionId = connectionId ?? resolveBoundConnectionId(get());
+    if (!boundConnectionId) {
+      set({ historyLoading: false });
       return;
     }
 
+    const requestConnectionId = boundConnectionId;
     const requestSeq = ++remoteHistoryRefreshSeq;
-    // 仅在当前没有该连接历史缓存时才进入加载态显示动画；有旧内容则静默刷新，避免闪烁。
-    if (!get().history.some((item) => item.connectionId === targetConnectionId)) {
-      set({ historyLoading: true });
-    }
+    set({ historyLoading: true });
     try {
-      const remoteHistory = await backend.readRemoteHistory(targetConnectionId);
-      if (requestSeq !== remoteHistoryRefreshSeq) {
+      const history = await backend.readRemoteHistory(requestConnectionId);
+      if (requestSeq !== remoteHistoryRefreshSeq || resolveBoundConnectionId(get()) !== requestConnectionId) {
         return;
       }
 
       set((state) => ({
-        // 历史来源以远端 Shell 为准：刷新当前连接时只替换该连接记录，保留其他连接缓存。
         history: [
-          ...remoteHistory,
-          ...state.history.filter((item) => item.connectionId !== targetConnectionId),
+          ...history,
+          ...state.history.filter((item) => item.connectionId !== requestConnectionId),
         ],
         historyLoading: false,
         statusMessage: statusText(state.settings, 'statusLoadedRemoteHistory'),
@@ -201,36 +191,6 @@ export const useAppStore = create<StoreState>((set, get) => ({
   },
 
   ...createRemoteFileActions(set, get),
-  refreshRuntimeOverview: async () => {
-    // 运行状态跟随绑定会话；点击其他分屏不再清空已加载的指标。
-    const boundConnectionId = resolveBoundConnectionId(get());
-    if (!boundConnectionId) {
-      set({ runtimeOverview: undefined, runtimeLoading: false });
-      return;
-    }
-
-    const requestConnectionId = boundConnectionId;
-    const requestSeq = ++runtimeOverviewRefreshSeq;
-    // 首次加载（还没有任何运行状态数据）才显示动画，定时轮询有旧内容时不打扰。
-    if (!get().runtimeOverview) {
-      set({ runtimeLoading: true });
-    }
-    try {
-      const runtimeOverview = await backend.fetchRuntimeOverview(requestConnectionId);
-      if (requestSeq !== runtimeOverviewRefreshSeq || resolveBoundConnectionId(get()) !== requestConnectionId) {
-        return;
-      }
-
-      set({ runtimeOverview, runtimeLoading: false });
-    } catch {
-      if (requestSeq !== runtimeOverviewRefreshSeq || resolveBoundConnectionId(get()) !== requestConnectionId) {
-        return;
-      }
-
-      set({ runtimeOverview: undefined, runtimeLoading: false });
-    }
-  },
-
   ...createSettingsActions(set, get),
   ...createTunnelActions(set, get),
 }));

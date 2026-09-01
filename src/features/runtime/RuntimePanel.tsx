@@ -6,12 +6,11 @@ import { clamp } from '../../shared/numbers';
 import { Tooltip } from '../../components/Tooltip';
 import type {
   RuntimeConnectionList,
-  RuntimeOverview,
+  RuntimeOverviewSnapshot,
   RuntimeResourceMetric,
   RuntimeResourceSource,
   RuntimeResourceTarget,
   RuntimeResourceUsage,
-  RuntimeStorageFiles,
 } from '../../types';
 import { metricTone } from './presentation';
 
@@ -31,13 +30,14 @@ type RuntimePanelProps = {
   height: number;
   memoryResourcesExpanded: boolean;
   onRefresh: () => void;
-  runtimeConnections?: RuntimeConnectionList;
+  runtimeConnections?: RuntimeConnectionList | null;
   runtimeConnectionsError: string;
   runtimeConnectionsLoading: boolean;
   runtimeHostLabel: string;
   runtimeItems: RuntimeSummaryItem[];
+  runtimeError: string;
   runtimeLoading: boolean;
-  runtimeOverview?: RuntimeOverview;
+  snapshot?: RuntimeOverviewSnapshot | null;
   runtimeResourceError: string;
   runtimeResourceLoading: boolean;
   runtimeResourceMetric: RuntimeResourceMetric;
@@ -45,20 +45,15 @@ type RuntimePanelProps = {
   runtimeResourceSourceLabel: (source: RuntimeResourceSource) => string;
   runtimeResourceTarget: RuntimeResourceTarget;
   runtimeResourceUsage?: RuntimeResourceUsage;
-  runtimeStorageFiles?: RuntimeStorageFiles;
-  runtimeStorageFilesError: string;
-  runtimeStorageFilesLoading: boolean;
   setConnectionsExpanded: Dispatch<SetStateAction<boolean>>;
   setCpuCoresExpanded: Dispatch<SetStateAction<boolean>>;
   setMemoryResourcesExpanded: Dispatch<SetStateAction<boolean>>;
   setRuntimeResourceMetric: Dispatch<SetStateAction<RuntimeResourceMetric>>;
   setRuntimeResourceTarget: Dispatch<SetStateAction<RuntimeResourceTarget>>;
-  setStorageFilesExpanded: Dispatch<SetStateAction<boolean>>;
-  storageFilesExpanded: boolean;
   t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
 };
 
-// 运行状态面板只负责展示与展开交互；远端轮询节奏仍由 App 的用例编排控制。
+// 运行状态面板只负责展示与展开交互；概览事件和按需明细生命周期由 RuntimeSidebar 编排。
 export function RuntimePanel({
   activeRemoteConnectionId,
   connectionsExpanded,
@@ -72,8 +67,8 @@ export function RuntimePanel({
   runtimeConnectionsLoading,
   runtimeHostLabel,
   runtimeItems,
+  runtimeError,
   runtimeLoading,
-  runtimeOverview,
   runtimeResourceError,
   runtimeResourceLoading,
   runtimeResourceMetric,
@@ -81,63 +76,56 @@ export function RuntimePanel({
   runtimeResourceSourceLabel,
   runtimeResourceTarget,
   runtimeResourceUsage,
-  runtimeStorageFiles,
-  runtimeStorageFilesError,
-  runtimeStorageFilesLoading,
   setConnectionsExpanded,
   setCpuCoresExpanded,
   setMemoryResourcesExpanded,
   setRuntimeResourceMetric,
   setRuntimeResourceTarget,
-  setStorageFilesExpanded,
-  storageFilesExpanded,
+  snapshot,
   t,
 }: RuntimePanelProps) {
   return (
     <section className="sidebar-panel runtime-panel" style={{ height }}>
       <div className="section-row runtime-header">
         <h3>{runtimeHostLabel}</h3>
-        <button className="icon-button" disabled={!hasActiveRemoteSession} onClick={onRefresh} type="button">
-          <RefreshCw className={runtimeLoading ? 'is-spinning' : ''} size={16} />
-        </button>
+        <Tooltip content={runtimeError || t('refresh')}>
+          <button aria-label={t('refresh')} className="icon-button" disabled={!hasActiveRemoteSession} onClick={onRefresh} type="button">
+            <RefreshCw className={runtimeLoading ? 'is-spinning' : ''} size={16} />
+          </button>
+        </Tooltip>
       </div>
 
-      <div className={`runtime-list ${runtimeLoading && !runtimeOverview ? 'is-panel-loading' : ''}`}>
-        {runtimeLoading && !runtimeOverview ? (
+      <div className={`runtime-list ${runtimeLoading && !snapshot ? 'is-panel-loading' : ''}`}>
+        {runtimeLoading && !snapshot ? (
           <div className="panel-loading-overlay">
             <RefreshCw className="is-spinning" size={18} />
             <span>{t('panelRefreshing')}</span>
           </div>
         ) : null}
+        {!snapshot && runtimeError ? <div className="runtime-resource-empty" role="alert">{runtimeError}</div> : null}
         {runtimeItems.map(({ id, icon: Icon, label, percent, value }) => {
           const isCpuMetric = id === 'cpu';
           const isMemoryMetric = id === 'memory';
-          const isStorageMetric = id === 'storage';
           const isConnectionsMetric = id === 'connections';
-          const cpuCoreCount = runtimeOverview?.cpuCores?.length ?? 0;
+          const cpuCoreCount = snapshot?.cpuCores?.length ?? 0;
           const isCpuExpandable = isCpuMetric && cpuCoreCount > 0;
           const isMemoryExpandable = isMemoryMetric && Boolean(activeRemoteConnectionId);
-          const isStorageExpandable = isStorageMetric && Boolean(activeRemoteConnectionId);
           const isConnectionsExpandable = isConnectionsMetric && Boolean(activeRemoteConnectionId);
-          const isExpandableMetric = isCpuExpandable || isMemoryExpandable || isStorageExpandable || isConnectionsExpandable;
+          const isExpandableMetric = isCpuExpandable || isMemoryExpandable || isConnectionsExpandable;
           const expanded = isCpuMetric
             ? cpuCoresExpanded
             : isMemoryMetric
               ? memoryResourcesExpanded
-              : isStorageMetric
-                ? storageFilesExpanded
-                : isConnectionsMetric
-                  ? connectionsExpanded
-                  : undefined;
+              : isConnectionsMetric
+                ? connectionsExpanded
+                : undefined;
           const controlsId = isCpuExpandable
             ? 'runtime-cpu-core-list'
             : isMemoryExpandable
               ? 'runtime-memory-resource-list'
-              : isStorageExpandable
-                ? 'runtime-storage-file-list'
-                : isConnectionsExpandable
-                  ? 'runtime-connection-list'
-                  : undefined;
+              : isConnectionsExpandable
+                ? 'runtime-connection-list'
+                : undefined;
           return (
             <div key={id} className="runtime-row-group">
               <button
@@ -148,7 +136,6 @@ export function RuntimePanel({
                 onClick={() => {
                   if (isCpuExpandable) setCpuCoresExpanded((current) => !current);
                   if (isMemoryExpandable) setMemoryResourcesExpanded((current) => !current);
-                  if (isStorageExpandable) setStorageFilesExpanded((current) => !current);
                   if (isConnectionsExpandable) setConnectionsExpanded((current) => !current);
                 }}
                 type="button"
@@ -166,7 +153,7 @@ export function RuntimePanel({
 
               {isCpuMetric && cpuCoresExpanded && cpuCoreCount > 0 ? (
                 <div className="runtime-core-list" id="runtime-cpu-core-list">
-                  {runtimeOverview?.cpuCores.map((core) => {
+                  {snapshot?.cpuCores.map((core) => {
                     const percentValue = clamp(core.percent, 0, 100);
                     return (
                       <div key={core.name} className={`runtime-core-row metric-tone-${metricTone(percentValue)}`}>
@@ -216,25 +203,6 @@ export function RuntimePanel({
                 </div>
               ) : null}
 
-              {isStorageMetric && storageFilesExpanded ? (
-                <div className="runtime-storage-panel" id="runtime-storage-file-list">
-                  <div className="runtime-storage-header"><span>#</span><span>{t('runtimeStorageFileName')}</span><span>{t('runtimeStorageFileSize')}</span></div>
-                  {runtimeStorageFiles?.items.length ? (
-                    <div className="runtime-storage-table">
-                      {runtimeStorageFiles.items.map((item) => (
-                        <Tooltip content={`${item.name}\n${item.path}\n${item.size}`} key={`${item.path}-${item.rank}`} side="bottom">
-                          <div className="runtime-storage-row">
-                            <span className="runtime-storage-rank">{item.rank}</span>
-                            <span className="runtime-storage-file"><strong>{item.name}</strong><small>{item.path}</small></span>
-                            <span className="runtime-storage-size">{item.size}</span>
-                          </div>
-                        </Tooltip>
-                      ))}
-                    </div>
-                  ) : <div className="runtime-resource-empty">{runtimeStorageFilesLoading ? t('panelRefreshing') : runtimeStorageFilesError || t('runtimeStorageFilesEmpty')}</div>}
-                </div>
-              ) : null}
-
               {isConnectionsMetric && connectionsExpanded ? (
                 <div className="runtime-connection-panel" id="runtime-connection-list">
                   <div className="runtime-connection-note">{t('runtimeConnectionsPerspective', { host: runtimeHostLabel })}</div>
@@ -258,7 +226,7 @@ export function RuntimePanel({
             </div>
           );
         })}
-        <div className="runtime-extra"><span>{runtimeOverview?.os ?? '--'}</span></div>
+        <div className="runtime-extra"><span>{snapshot?.os ?? '--'}</span></div>
       </div>
     </section>
   );

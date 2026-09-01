@@ -46,16 +46,7 @@ pub(super) fn default_agent_chat_line_height() -> f32 {
     1.6
 }
 
-pub(super) fn default_runtime_refresh_interval_sec() -> u16 {
-    1
-}
-
-// 大文件扫描默认 5 秒刷新一次；该命令会遍历文件系统，默认值不跟随常规运行状态的 1 秒刷新。
-pub(super) fn default_runtime_storage_refresh_interval_sec() -> u16 {
-    5
-}
-
-// 进程/线程资源明细默认 3 秒刷新一次；该接口只在内存行展开后启用。
+// 进程/线程和连接明细默认 3 秒刷新一次；概览固定每秒由后端 worker 推送。
 pub(super) fn default_runtime_resource_refresh_interval_sec() -> u16 {
     3
 }
@@ -465,12 +456,7 @@ pub struct AppSettings {
     pub ui_language: String,
     #[serde(default = "default_theme_mode")]
     pub theme_mode: String,
-    #[serde(default = "default_runtime_refresh_interval_sec")]
-    pub runtime_refresh_interval_sec: u16,
-    /// 存储行展开后的大文件列表刷新频率（秒），独立于常规运行状态刷新。
-    #[serde(default = "default_runtime_storage_refresh_interval_sec")]
-    pub runtime_storage_refresh_interval_sec: u16,
-    /// 内存行展开后的进程/线程资源明细刷新频率（秒），独立于常规运行状态刷新。
+    /// 进程/线程与连接展开明细的刷新频率（秒）；概览固定每秒推送。
     #[serde(default = "default_runtime_resource_refresh_interval_sec")]
     pub runtime_resource_refresh_interval_sec: u16,
     /// 内存行展开后的资源明细默认来源；Docker 覆盖 Compose，Podman 使用独立命令采集。
@@ -557,8 +543,6 @@ impl Default for AppSettings {
         Self {
             ui_language: "zh-CN".into(),
             theme_mode: "light".into(),
-            runtime_refresh_interval_sec: 1,
-            runtime_storage_refresh_interval_sec: default_runtime_storage_refresh_interval_sec(),
             runtime_resource_refresh_interval_sec: default_runtime_resource_refresh_interval_sec(),
             runtime_resource_source: default_runtime_resource_source(),
             ssh_keepalive_interval_sec: default_ssh_keepalive_interval_sec(),

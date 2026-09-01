@@ -273,8 +273,6 @@ impl StorageService {
         Ok(AppSettings {
             ui_language: stored.ui_language,
             theme_mode: stored.theme_mode,
-            runtime_refresh_interval_sec: stored.runtime_refresh_interval_sec,
-            runtime_storage_refresh_interval_sec: stored.runtime_storage_refresh_interval_sec,
             runtime_resource_refresh_interval_sec: stored.runtime_resource_refresh_interval_sec,
             runtime_resource_source: stored.runtime_resource_source,
             ssh_keepalive_interval_sec: stored.ssh_keepalive_interval_sec,
@@ -333,8 +331,6 @@ impl StorageService {
         let stored = StoredAppSettings {
             ui_language: settings.ui_language.clone(),
             theme_mode: settings.theme_mode.clone(),
-            runtime_refresh_interval_sec: settings.runtime_refresh_interval_sec,
-            runtime_storage_refresh_interval_sec: settings.runtime_storage_refresh_interval_sec,
             runtime_resource_refresh_interval_sec: settings.runtime_resource_refresh_interval_sec,
             runtime_resource_source: settings.runtime_resource_source.clone(),
             ssh_keepalive_interval_sec: settings.ssh_keepalive_interval_sec,

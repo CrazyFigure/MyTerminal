@@ -264,9 +264,7 @@ export function SettingsModal({
   const hasSettingsChanges = JSON.stringify(draftSettings) !== JSON.stringify(settings);
   // 重置按钮只比较资源页自身字段；草稿已是默认值时禁用，但不会影响尚待保存的其它设置。
   const hasResourceSettingsChangesFromDefaults =
-    draftSettings.runtimeRefreshIntervalSec !== resourceSettingsDefaults.runtimeRefreshIntervalSec
-    || draftSettings.runtimeStorageRefreshIntervalSec !== resourceSettingsDefaults.runtimeStorageRefreshIntervalSec
-    || draftSettings.runtimeResourceRefreshIntervalSec !== resourceSettingsDefaults.runtimeResourceRefreshIntervalSec
+    draftSettings.runtimeResourceRefreshIntervalSec !== resourceSettingsDefaults.runtimeResourceRefreshIntervalSec
     || draftSettings.runtimeResourceSource !== resourceSettingsDefaults.runtimeResourceSource
     || draftSettings.sshKeepaliveIntervalSec !== resourceSettingsDefaults.sshKeepaliveIntervalSec;
   // 端点保存按钮只在草稿相对基线有改动（含新输入密钥）时可用；基线未拉取完成前保持禁用。

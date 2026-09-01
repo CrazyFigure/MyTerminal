@@ -64,6 +64,7 @@ src-tauri/src/
 │  ├─ shell_output.rs          # Shell 输出同步协议领域状态机
 │  ├─ remote_access.rs         # SFTP、历史和运行指标基础设施适配器
 │  ├─ config_sync.rs           # 本地配置与 WebDAV 同步用例
+│  ├─ runtime_monitor.rs       # 运行概览独占 Worker、控制流与进程/连接明细查询
 │  ├─ runtime_daemons.rs       # 后台关闭、保活与隧道健康监控
 │  ├─ shell_runtime.rs         # 输出队列、Agent 可见进度与 cwd 协议辅助
 │  ├─ ssh_transport/tunnels.rs # 隧道 SSH 连接池与监听器

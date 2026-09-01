@@ -59,8 +59,6 @@ const panelFieldsForFocusedSession = (
   // 只有换到别的连接且需要拉取远端时才进入加载态；保留旧内容时不显示动画。
   const willRefreshRemote = isUsableRemoteSession(nextSession);
   return {
-    runtimeOverview: keepCurrentFiles ? state.runtimeOverview : undefined,
-    runtimeLoading: willRefreshRemote && !keepCurrentFiles,
     files: keepCurrentFiles ? state.files : [],
     filesLoading: willRefreshRemote && !keepCurrentFiles,
     currentRemotePath:
@@ -181,10 +179,8 @@ export const createSessionLifecycleActions = (
         }),
         files: [],
         currentRemotePath: nextSession.cwd ?? "~",
-        runtimeOverview: undefined,
         // 新开会话即将拉取远端数据，先点亮加载动画，等状态事件触发的刷新完成后自动熄灭。
         filesLoading: true,
-        runtimeLoading: true,
         };
       });
       // SSH 握手在后端后台线程完成；连接状态事件回来后再刷新文件、运行状态和首屏输出。
@@ -263,10 +259,8 @@ export const createSessionLifecycleActions = (
         activeConnectionId: undefined,
         files: [],
         currentRemotePath: "",
-        runtimeOverview: undefined,
         // 本地终端没有远端面板，直接熄灭加载态，避免遗留卡死的动画。
         filesLoading: false,
-        runtimeLoading: false,
         historyLoading: false,
         statusMessage: statusText(state.settings, "statusLocalTerminalOpened", {
           title: session.title,
@@ -356,10 +350,8 @@ export const createSessionLifecycleActions = (
           activeConnectionId: undefined,
           files: [],
           currentRemotePath: "",
-          runtimeOverview: undefined,
           // 本地终端没有远端面板，直接熄灭加载态。
           filesLoading: false,
-          runtimeLoading: false,
           historyLoading: false,
           statusMessage: statusText(
             current.settings,
@@ -404,10 +396,8 @@ export const createSessionLifecycleActions = (
         activeConnectionId: connection.id,
         files: [],
         currentRemotePath: nextSession.cwd ?? "~",
-        runtimeOverview: undefined,
         // 新会话即将拉取远端数据，先点亮加载动画，等状态事件触发的刷新完成后自动熄灭。
         filesLoading: true,
-        runtimeLoading: true,
         statusMessage: statusText(current.settings, "statusSessionReady", {
           name: connection.name,
         }),
@@ -491,10 +481,8 @@ export const createSessionLifecycleActions = (
             suggestions: nextSuggestions,
             files: [],
             currentRemotePath: "",
-            runtimeOverview: undefined,
             // 本地终端无远端面板，熄灭加载态。
             filesLoading: false,
-            runtimeLoading: false,
             historyLoading: false,
             statusMessage: statusText(
               current.settings,
@@ -573,10 +561,8 @@ export const createSessionLifecycleActions = (
           suggestions: nextSuggestions,
           files: [],
           currentRemotePath: nextSession.cwd ?? "~",
-          runtimeOverview: undefined,
           // 重连后即将重新拉取远端数据，先点亮加载动画。
           filesLoading: true,
-          runtimeLoading: true,
           statusMessage: statusText(current.settings, "statusSessionReady", {
             name: connection.name,
           }),
@@ -718,9 +704,7 @@ export const createSessionLifecycleActions = (
                 activeConnectionId: connection.id,
                 currentRemotePath: nextSession.cwd ?? "~",
                 files: [],
-                runtimeOverview: undefined,
                 filesLoading: true,
-                runtimeLoading: true,
               }
             : {}),
         };

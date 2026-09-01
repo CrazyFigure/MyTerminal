@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 
 import type {
   AgentBridgeRequest,
@@ -17,10 +18,10 @@ import type {
   LocalTerminalSettings,
   RemoteFileEntry,
   RuntimeConnectionList,
-  RuntimeOverview,
+  RuntimeOverviewEvent,
+  RuntimeOverviewSnapshot,
   RuntimeResourceUsage,
   RuntimeResourceUsageRequest,
-  RuntimeStorageFiles,
   SftpTransferProgress,
   StoredAgentConversation,
   TerminalOutputChunk,
@@ -49,9 +50,8 @@ import {
   mockHistory,
   mockLocalTerminals,
   mockRuntimeConnectionList,
-  mockRuntimeOverview,
+  mockRuntimeOverviewSnapshot,
   mockRuntimeResourceUsage,
-  mockRuntimeStorageFiles,
   mockState,
   mockTunnels,
   mockUpdateCheckResult,
@@ -232,38 +232,77 @@ export const backend = {
     }),
   saveEditorDocument: (connectionId: string, path: string, content: string) =>
     call<boolean>('save_editor_document', { connectionId, path, content }, true),
-  fetchRuntimeOverview: (connectionId: string) =>
-    call<RuntimeOverview>('fetch_runtime_overview', { connectionId }, {
-      ...mockRuntimeOverview,
-      host: mockConnections.find((item) => item.id === connectionId)?.host ?? mockRuntimeOverview.host,
-    }),
-  fetchRuntimeResourceUsage: (connectionId: string, request: RuntimeResourceUsageRequest) =>
-    call<RuntimeResourceUsage>('fetch_runtime_resource_usage', { connectionId, request }, {
+  // 概览订阅 ID 由前端在 effect 启动前生成；Rust 只接受匹配 ID 的控制命令，避免 StrictMode 旧 cleanup 停掉新 worker。
+  startRuntimeOverviewMonitor: (connectionId: string, subscriptionId: string, generation: number) =>
+    isTauriRuntime()
+      ? invoke<void>('start_runtime_overview_monitor', { connectionId, subscriptionId, generation })
+      : Promise.resolve(),
+  setRuntimeOverviewMonitorPaused: (subscriptionId: string, paused: boolean) =>
+    isTauriRuntime()
+      ? invoke<void>('set_runtime_overview_monitor_paused', { subscriptionId, paused })
+      : Promise.resolve(),
+  refreshRuntimeOverviewMonitor: (subscriptionId: string) =>
+    isTauriRuntime()
+      ? invoke<void>('refresh_runtime_overview_monitor', { subscriptionId })
+      : Promise.resolve(),
+  stopRuntimeOverviewMonitor: (subscriptionId: string) =>
+    isTauriRuntime()
+      ? invoke<void>('stop_runtime_overview_monitor', { subscriptionId })
+      : Promise.resolve(),
+  listenRuntimeOverview: (
+    subscriptionId: string,
+    connectionId: string,
+    handler: (event: RuntimeOverviewEvent) => void,
+  ): Promise<UnlistenFn> => {
+    if (!isTauriRuntime()) {
+      let seq = 0;
+      // 浏览器预览直接产生与当前订阅匹配的 typed mock；首帧立即到达，后续固定 1 秒模拟实时推送。
+      const pushSnapshot = () => {
+        seq += 1;
+        handler({
+          kind: 'snapshot',
+          subscriptionId,
+          connectionId,
+          sequence: seq,
+          snapshot: {
+            ...mockRuntimeOverviewSnapshot,
+            capturedAt: nowIso(),
+          },
+        });
+      };
+      const firstFrame = window.setTimeout(pushSnapshot, 0);
+      const interval = window.setInterval(pushSnapshot, 1000);
+      return Promise.resolve(() => {
+        window.clearTimeout(firstFrame);
+        window.clearInterval(interval);
+      });
+    }
+    // Rust 使用 emit_to 定向发送，必须在当前 WebviewWindow 上监听；全局 event.listen 收不到定向事件。
+    return getCurrentWebviewWindow().listen<RuntimeOverviewEvent>('runtime-overview-updated', (event) => {
+      handler(event.payload);
+    });
+  },
+  getRuntimeResourceUsage: (connectionId: string, request: RuntimeResourceUsageRequest) =>
+    call<RuntimeResourceUsage>('get_runtime_resource_usage', { connectionId, request }, {
       ...mockRuntimeResourceUsage,
       source: normalizeRuntimeResourceSource(request.source),
       metric: request.metric,
       target: request.target,
       capturedAt: nowIso(),
     }),
-  // 存储大文件扫描由前端展开态驱动调用，收起时不会触发这个远端命令。
-  fetchRuntimeStorageFiles: (connectionId: string) =>
-    call<RuntimeStorageFiles>('fetch_runtime_storage_files', { connectionId }, {
-      ...mockRuntimeStorageFiles,
-      capturedAt: nowIso(),
-    }),
-  // 连接明细同样由连接数行展开态驱动，收起时不会读取远端网络表。
-  fetchRuntimeConnectionList: (connectionId: string) =>
-    call<RuntimeConnectionList>('fetch_runtime_connection_list', { connectionId }, {
+  getRuntimeConnectionList: (connectionId: string) =>
+    call<RuntimeConnectionList>('get_runtime_connection_list', { connectionId }, {
       ...mockRuntimeConnectionList,
       capturedAt: nowIso(),
     }),
+  // 明细全部收起时主动释放专用 SSH 会话；浏览器预览没有真实会话，直接成功。
+  releaseRuntimeDetailSession: (connectionId: string) =>
+    call<boolean>('release_runtime_detail_session', { connectionId }, true),
   listTunnels: () => call<TunnelRecord[]>('list_tunnels', undefined, mockTunnels),
-  // 新建隧道只保存配置，真正绑定本地端口交给 startTunnel，避免端口占用导致配置无法添加。
   openTunnel: (request: TunnelOpenRequest) => {
     const normalized = normalizeTunnelRequest(request);
     return call<TunnelRecord>('open_tunnel', { request: normalized }, { ...normalized, id: crypto.randomUUID(), status: 'stopped' });
   },
-  // 编辑隧道会让后端停止旧监听并保存为 stopped，用户确认后可再手动开启新端点。
   updateTunnel: (request: TunnelUpdateRequest) => {
     const normalized = normalizeTunnelRequest(request);
     const fallback = mockTunnels.find((item) => item.id === request.id);
