@@ -9,6 +9,7 @@ import { CustomSelect } from '../CustomSelect';
 import { collectOrderedGroupPaths, normalizeConnectionGroupPath } from '../app/connectionGroups';
 import { portTextInputProps } from '../app/formControls';
 import { FloatingToast } from '../shared/ui/FloatingToast';
+import { Tooltip } from './Tooltip';
 
 export type ConnectionFormTab = 'basic' | 'jumpHosts' | 'proxy';
 
@@ -380,16 +381,17 @@ export function ConnectionFormModal() {
                         value={connectionDraft.passphrase}
                         onChange={(event) => updateConnectionDraft('passphrase', event.target.value)}
                       />
-                      <button
-                        aria-label={passphraseToggleLabel}
-                        className="secondary-button slim password-toggle-button"
-                        onClick={() => setRevealPassphrase((value) => !value)}
-                        title={passphraseToggleLabel}
-                        type="button"
-                      >
-                        {revealPassphrase ? <EyeOff size={16} /> : <Eye size={16} />}
-                        <span>{passphraseToggleLabel}</span>
-                      </button>
+                      <Tooltip content={passphraseToggleLabel} side="top">
+                        <button
+                          aria-label={passphraseToggleLabel}
+                          className="secondary-button slim password-toggle-button"
+                          onClick={() => setRevealPassphrase((value) => !value)}
+                          type="button"
+                        >
+                          {revealPassphrase ? <EyeOff size={16} /> : <Eye size={16} />}
+                          <span>{passphraseToggleLabel}</span>
+                        </button>
+                      </Tooltip>
                     </div>
                   </label>
                   <p className="field-hint span-2">{t('privateKeyHint')}</p>
@@ -403,16 +405,17 @@ export function ConnectionFormModal() {
                       value={connectionDraft.password}
                       onChange={(event) => updateConnectionDraft('password', event.target.value)}
                     />
-                    <button
-                      aria-label={passwordToggleLabel}
-                      className="secondary-button slim password-toggle-button"
-                      onClick={() => setRevealPassword((value) => !value)}
-                      title={passwordToggleLabel}
-                      type="button"
-                    >
-                      {revealPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                      <span>{passwordToggleLabel}</span>
-                    </button>
+                    <Tooltip content={passwordToggleLabel} side="top">
+                      <button
+                        aria-label={passwordToggleLabel}
+                        className="secondary-button slim password-toggle-button"
+                        onClick={() => setRevealPassword((value) => !value)}
+                        type="button"
+                      >
+                        {revealPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                        <span>{passwordToggleLabel}</span>
+                      </button>
+                    </Tooltip>
                   </div>
                 </label>
               )}

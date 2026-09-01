@@ -7,6 +7,7 @@ import { translate, type TranslationKey } from '../i18n';
 import { useAppStore } from '../store';
 import type { LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings } from '../types';
 import { CustomSelect } from '../CustomSelect';
+import { Tooltip } from './Tooltip';
 import {
   createLocalTerminalProfile,
   defaultLocalTerminalCwd,
@@ -330,15 +331,17 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
                     })()}
                     <span>{getLocalTerminalCommandName(item)}</span>
                   </div>
-                  <button
-                    className="icon-button"
-                    disabled={item.id === 'shell'}
-                    onClick={() => void deleteCommand(item.id)}
-                    title={item.id === 'shell' ? t('localTerminalBuiltInCommandLocked') : t('localTerminalDeleteCommand')}
-                    type="button"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  <Tooltip content={item.id === 'shell' ? t('localTerminalBuiltInCommandLocked') : t('localTerminalDeleteCommand')} side="top">
+                    <button
+                      aria-label={item.id === 'shell' ? t('localTerminalBuiltInCommandLocked') : t('localTerminalDeleteCommand')}
+                      className="icon-button"
+                      disabled={item.id === 'shell'}
+                      onClick={() => void deleteCommand(item.id)}
+                      type="button"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </Tooltip>
                 </div>
               ))}
             </div>
@@ -380,9 +383,11 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
                   >
                     <Play size={14} /> {t('localTerminalOpen')}
                   </button>
-                  <button className="icon-button" onClick={() => void deleteProfile(profile.id)} title={t('localTerminalDeleteHistory')} type="button">
-                    <X size={14} />
-                  </button>
+                  <Tooltip content={t('localTerminalDeleteHistory')} side="top">
+                    <button aria-label={t('localTerminalDeleteHistory')} className="icon-button" onClick={() => void deleteProfile(profile.id)} type="button">
+                      <X size={14} />
+                    </button>
+                  </Tooltip>
                 </div>
               )) : (
                 <div className="empty-state">{t('localTerminalHistoryEmpty')}</div>

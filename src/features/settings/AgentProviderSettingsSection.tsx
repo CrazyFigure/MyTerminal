@@ -3,6 +3,7 @@ import { Eye, EyeOff, Plus, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { CustomSelect } from "../../CustomSelect";
 import type { TranslationKey } from "../../i18n";
 import type { AgentModel, AgentProtocol, AgentProvider } from "../../types";
+import { Tooltip } from "../../components/Tooltip";
 import { agentProtocolUrlSpec, previewAgentRequestUrl } from "./model";
 
 type Props = {
@@ -77,14 +78,16 @@ export function AgentProviderSettingsSection({
               <div key={provider.id} className="agent-provider-card">
                 <div className="section-row compact">
                   <strong>{provider.name || provider.id}</strong>
-                  <button
-                    className="icon-button"
-                    onClick={() => onRemoveProvider(provider.id)}
-                    title={t("agentProviderDelete")}
-                    type="button"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  <Tooltip content={t("agentProviderDelete")} side="top">
+                    <button
+                      aria-label={t("agentProviderDelete")}
+                      className="icon-button"
+                      onClick={() => onRemoveProvider(provider.id)}
+                      type="button"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </Tooltip>
                 </div>
                 <div className="form-grid">
                   <label>
@@ -169,32 +172,36 @@ export function AgentProviderSettingsSection({
                         }
                         value={provider.apiKey ?? ""}
                       />
-                      <button
-                        aria-label={
+                      <Tooltip
+                        content={
                           revealedApiKeys[provider.id]
                             ? t("hideSecret")
                             : t("showSecret")
                         }
-                        className="secondary-button slim password-toggle-button"
-                        onClick={() => onToggleApiKey(provider.id)}
-                        title={
-                          revealedApiKeys[provider.id]
-                            ? t("hideSecret")
-                            : t("showSecret")
-                        }
-                        type="button"
+                        side="top"
                       >
-                        {revealedApiKeys[provider.id] ? (
-                          <EyeOff size={16} />
-                        ) : (
-                          <Eye size={16} />
-                        )}
-                        <span>
-                          {revealedApiKeys[provider.id]
-                            ? t("hideSecret")
-                            : t("showSecret")}
-                        </span>
-                      </button>
+                        <button
+                          aria-label={
+                            revealedApiKeys[provider.id]
+                              ? t("hideSecret")
+                              : t("showSecret")
+                          }
+                          className="secondary-button slim password-toggle-button"
+                          onClick={() => onToggleApiKey(provider.id)}
+                          type="button"
+                        >
+                          {revealedApiKeys[provider.id] ? (
+                            <EyeOff size={16} />
+                          ) : (
+                            <Eye size={16} />
+                          )}
+                          <span>
+                            {revealedApiKeys[provider.id]
+                              ? t("hideSecret")
+                              : t("showSecret")}
+                          </span>
+                        </button>
+                      </Tooltip>
                     </div>
                   </label>
                   <div className="span-2">
@@ -254,16 +261,18 @@ export function AgentProviderSettingsSection({
                               type="number"
                               value={model.maxTokens}
                             />
-                            <button
-                              className="icon-button"
-                              onClick={() =>
-                                onRemoveModel(provider.id, modelIndex)
-                              }
-                              title={t("agentProviderModelRemove")}
-                              type="button"
-                            >
-                              <Trash2 size={14} />
-                            </button>
+                            <Tooltip content={t("agentProviderModelRemove")} side="top">
+                              <button
+                                aria-label={t("agentProviderModelRemove")}
+                                className="icon-button"
+                                onClick={() =>
+                                  onRemoveModel(provider.id, modelIndex)
+                                }
+                                type="button"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </Tooltip>
                           </div>
                         ))}
                       </div>

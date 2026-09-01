@@ -2,6 +2,7 @@ import { useMemo, useState, type RefObject } from 'react';
 import { ChevronDown, ChevronUp, Copy, Pencil, Play, Plus, RefreshCw, Search, Square, Trash2, X } from 'lucide-react';
 
 import { translateStatus, type TranslationKey } from '../../i18n';
+import { Tooltip } from '../../components/Tooltip';
 import { scoreCommandMatch } from '../../shared/fuzzy';
 import type { AppSettings, HistoryEntry, TunnelRecord } from '../../types';
 import {
@@ -138,29 +139,32 @@ export function BottomDock({
               value={historySearchQuery}
             />
             {historySearchQuery ? (
-              <button
-                aria-label={t('clear')}
-                className="history-search-clear-button"
-                onClick={() => setHistorySearchQuery('')}
-                title={t('clear')}
-                type="button"
-              >
-                <X size={12} />
-              </button>
+              <Tooltip content={t('clear')} side="top">
+                <button
+                  aria-label={t('clear')}
+                  className="history-search-clear-button"
+                  onClick={() => setHistorySearchQuery('')}
+                  type="button"
+                >
+                  <X size={12} />
+                </button>
+              </Tooltip>
             ) : null}
           </div>
         ) : null}
         <div className={`panel-tab-actions ${compactActions ? 'is-compact-actions' : ''}`}>
-          <button
-            className="secondary-button slim"
-            onClick={onToggleCollapsed}
-            style={buildActionButtonStyle(collapsed ? t('expandBottomDock') : t('collapseBottomDock'), compactActions)}
-            title={collapsed ? t('expandBottomDock') : t('collapseBottomDock')}
-            type="button"
-          >
-            {collapsed ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-            {renderActionButtonLabel(collapsed ? t('expandBottomDock') : t('collapseBottomDock'), compactActions)}
-          </button>
+          <Tooltip content={collapsed ? t('expandBottomDock') : t('collapseBottomDock')} side="top">
+            <button
+              aria-label={collapsed ? t('expandBottomDock') : t('collapseBottomDock')}
+              className="secondary-button slim"
+              onClick={onToggleCollapsed}
+              style={buildActionButtonStyle(collapsed ? t('expandBottomDock') : t('collapseBottomDock'), compactActions)}
+              type="button"
+            >
+              {collapsed ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              {renderActionButtonLabel(collapsed ? t('expandBottomDock') : t('collapseBottomDock'), compactActions)}
+            </button>
+          </Tooltip>
           {activeBottomTab === 'commands' ? (
             <button
               className="primary-button"

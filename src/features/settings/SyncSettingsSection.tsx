@@ -2,6 +2,7 @@ import { Download, Eye, EyeOff, RefreshCw, Save, Upload } from "lucide-react";
 
 import type { TranslationKey } from "../../i18n";
 import type { AppSettings } from "../../types";
+import { Tooltip } from "../../components/Tooltip";
 
 type Props = {
   hasChanges: boolean;
@@ -107,16 +108,17 @@ export function SyncSettingsSection({
                   }))
                 }
               />
-              <button
-                aria-label={passwordToggleLabel}
-                className="secondary-button slim password-toggle-button"
-                onClick={onTogglePassword}
-                title={passwordToggleLabel}
-                type="button"
-              >
-                {passwordRevealed ? <EyeOff size={16} /> : <Eye size={16} />}
-                <span>{passwordToggleLabel}</span>
-              </button>
+              <Tooltip content={passwordToggleLabel} side="top">
+                <button
+                  aria-label={passwordToggleLabel}
+                  className="secondary-button slim password-toggle-button"
+                  onClick={onTogglePassword}
+                  type="button"
+                >
+                  {passwordRevealed ? <EyeOff size={16} /> : <Eye size={16} />}
+                  <span>{passwordToggleLabel}</span>
+                </button>
+              </Tooltip>
             </div>
           </label>
           <label className="span-2">

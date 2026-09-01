@@ -38,6 +38,7 @@ import { EditorModal } from './components/EditorModal';
 import { LocalTerminalManagerModal } from './components/LocalTerminalManagerModal';
 import { SettingsModal } from './components/SettingsModal';
 import { FontPackPromptModal } from './components/FontPackPromptModal';
+import { TooltipProvider } from './components/Tooltip';
 import type { SettingsTab } from './features/settings';
 import { TunnelFormModal } from './components/TunnelFormModal';
 import { beginResize, clamp } from './app/layout';
@@ -1723,7 +1724,8 @@ export default function App() {
   );
 
   return (
-    <div className={shellClassName} style={appShellStyle}>
+    <TooltipProvider delayDuration={100} skipDelayDuration={300}>
+      <div className={shellClassName} style={appShellStyle}>
       {/* 自定义标题栏：关闭原生装饰后承载操作入口和窗口控制，中间空白区作为拖动手柄。 */}
       <AppTitlebar
         agentSidebarCollapsed={agentSidebarCollapsed}
@@ -2055,5 +2057,6 @@ export default function App() {
       <TunnelFormModal />
       <TransferProgressStack dismiss={dismissTransferProgress} items={transferProgressItems} />
     </div>
+  </TooltipProvider>
   );
 }

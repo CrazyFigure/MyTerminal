@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 
 import { TitlebarWindowControls } from '../../components/TitlebarWindowControls';
+import { Tooltip } from '../../components/Tooltip';
 import type { TranslationKey } from '../../i18n';
 import type { AppSettings } from '../../types';
 
@@ -57,64 +58,76 @@ export function AppTitlebar({
           工具栏不复存在，窗口级的显隐开关归到窗口级的标题栏才说得通。
           用 PanelLeft/PanelRight 而非箭头——图标本身就画出了它控制的那块面板。 */}
       <div className="app-titlebar-panels">
-        <button
-          aria-label={sidebarLabel}
-          aria-pressed={!sidebarCollapsed}
-          className={`titlebar-icon-button ${sidebarCollapsed ? '' : 'is-active'}`}
-          onClick={onToggleSidebar}
-          title={sidebarLabel}
-          type="button"
-        >
-          <PanelLeft size={16} />
-        </button>
-        <button
-          aria-label={agentSidebarLabel}
-          aria-pressed={!agentSidebarCollapsed}
-          className={`titlebar-icon-button ${agentSidebarCollapsed ? '' : 'is-active'}`}
-          onClick={onToggleAgentSidebar}
-          title={agentSidebarLabel}
-          type="button"
-        >
-          <PanelRight size={16} />
-        </button>
+        <Tooltip content={sidebarLabel} side="bottom">
+          <button
+            aria-label={sidebarLabel}
+            aria-pressed={!sidebarCollapsed}
+            className={`titlebar-icon-button ${sidebarCollapsed ? '' : 'is-active'}`}
+            onClick={onToggleSidebar}
+            type="button"
+          >
+            <PanelLeft size={16} />
+          </button>
+        </Tooltip>
+        <Tooltip content={agentSidebarLabel} side="bottom">
+          <button
+            aria-label={agentSidebarLabel}
+            aria-pressed={!agentSidebarCollapsed}
+            className={`titlebar-icon-button ${agentSidebarCollapsed ? '' : 'is-active'}`}
+            onClick={onToggleAgentSidebar}
+            type="button"
+          >
+            <PanelRight size={16} />
+          </button>
+        </Tooltip>
       </div>
       <div className="app-titlebar-actions">
-        <button aria-label={t('newConnection')} className="titlebar-action-button" onClick={onCreateConnection} title={t('newConnection')} type="button">
-          <Plus size={16} /> <span className="button-label">{t('newConnection')}</span>
-        </button>
-        <button className="titlebar-action-button" onClick={onManageConnections} title={t('manageConnections')} type="button">
-          <FolderTree size={16} /> <span className="button-label">{t('manageConnections')}</span>
-        </button>
-        <button className="titlebar-action-button" onClick={onManageLocalTerminals} title={t('localTerminalTitle')} type="button">
-          <Laptop size={16} /> <span className="button-label">{t('localTerminalTitle')}</span>
-        </button>
+        <Tooltip content={t('newConnection')} side="bottom">
+          <button aria-label={t('newConnection')} className="titlebar-action-button" onClick={onCreateConnection} type="button">
+            <Plus size={16} /> <span className="button-label">{t('newConnection')}</span>
+          </button>
+        </Tooltip>
+        <Tooltip content={t('manageConnections')} side="bottom">
+          <button className="titlebar-action-button" onClick={onManageConnections} type="button">
+            <FolderTree size={16} /> <span className="button-label">{t('manageConnections')}</span>
+          </button>
+        </Tooltip>
+        <Tooltip content={t('localTerminalTitle')} side="bottom">
+          <button className="titlebar-action-button" onClick={onManageLocalTerminals} type="button">
+            <Laptop size={16} /> <span className="button-label">{t('localTerminalTitle')}</span>
+          </button>
+        </Tooltip>
       </div>
       {/* 空白区专用于拖动窗口，避免按钮区误触发 Tauri 拖动。 */}
       <div className="app-titlebar-drag" data-tauri-drag-region />
       <div className="app-titlebar-system">
-        <button
-          aria-label={t('checkUpdates')}
-          className="titlebar-icon-button"
-          disabled={checkingUpdate}
-          onClick={() => void onCheckUpdate()}
-          title={t('checkUpdates')}
-          type="button"
-        >
-          <CloudDownload className={checkingUpdate ? 'is-spinning' : ''} size={16} />
-          {updateAvailable ? <span className="titlebar-badge-dot" /> : null}
-        </button>
-        <button
-          aria-label={darkMode ? t('switchToLightMode') : t('switchToDarkMode')}
-          className="titlebar-icon-button"
-          onClick={onToggleTheme}
-          title={darkMode ? t('switchToLightMode') : t('switchToDarkMode')}
-          type="button"
-        >
-          {darkMode ? <Sun size={16} /> : <Moon size={16} />}
-        </button>
-        <button aria-label={t('openSettings')} className="titlebar-icon-button" onClick={onOpenSettings} title={t('openSettings')} type="button">
-          <Settings size={16} />
-        </button>
+        <Tooltip content={t('checkUpdates')} side="bottom">
+          <button
+            aria-label={t('checkUpdates')}
+            className="titlebar-icon-button"
+            disabled={checkingUpdate}
+            onClick={() => void onCheckUpdate()}
+            type="button"
+          >
+            <CloudDownload className={checkingUpdate ? 'is-spinning' : ''} size={16} />
+            {updateAvailable ? <span className="titlebar-badge-dot" /> : null}
+          </button>
+        </Tooltip>
+        <Tooltip content={darkMode ? t('switchToLightMode') : t('switchToDarkMode')} side="bottom">
+          <button
+            aria-label={darkMode ? t('switchToLightMode') : t('switchToDarkMode')}
+            className="titlebar-icon-button"
+            onClick={onToggleTheme}
+            type="button"
+          >
+            {darkMode ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
+        </Tooltip>
+        <Tooltip content={t('openSettings')} side="bottom">
+          <button aria-label={t('openSettings')} className="titlebar-icon-button" onClick={onOpenSettings} type="button">
+            <Settings size={16} />
+          </button>
+        </Tooltip>
         <TitlebarWindowControls t={t} />
       </div>
     </header>

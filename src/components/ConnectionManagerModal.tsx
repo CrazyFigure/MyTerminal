@@ -4,6 +4,7 @@ import { Copy, Folder, FolderTree, GripVertical, Monitor, Pencil, Play, Plus, Sa
 import { useShallow } from 'zustand/react/shallow';
 import { translate, type TranslationKey } from '../i18n';
 import { useAppStore } from '../store';
+import { Tooltip } from './Tooltip';
 import { beginResize, clamp } from '../app/layout';
 import {
   buildConnectionGroupTree,
@@ -65,43 +66,47 @@ export function ConnectionGroupTree({
             data-group-path={node.path}
             className={`connection-group-row ${selectedPath === node.path ? 'is-selected' : ''} ${dragState?.type === 'group' && dragState.path === node.path ? 'is-dragging' : ''} ${dropTarget?.type === 'connection-group' && dropTarget.groupPath === node.path ? 'is-drop-target' : ''} ${dropTarget?.type === 'group-insert' && dropTarget.groupPath === node.path ? `is-drop-${dropTarget.placement}` : ''}`}
           >
-            <button
-              aria-label={`拖动分组 ${node.path}`}
-              className="drag-handle"
-              onPointerDown={(event) => onStartGroupDrag(event, node.path, node.name)}
-              title={`拖动分组 ${node.path}`}
-              type="button"
-            >
-              <GripVertical size={14} />
-            </button>
-            <button
-              className="connection-group-button"
-              onClick={() => onSelect(node.path)}
-              title={node.path}
-              type="button"
-            >
-              <Folder size={14} />
-              <span>{node.name}</span>
-            </button>
+            <Tooltip content={`拖动分组 ${node.path}`} side="right">
+              <button
+                aria-label={`拖动分组 ${node.path}`}
+                className="drag-handle"
+                onPointerDown={(event) => onStartGroupDrag(event, node.path, node.name)}
+                type="button"
+              >
+                <GripVertical size={14} />
+              </button>
+            </Tooltip>
+            <Tooltip content={node.path} side="right">
+              <button
+                className="connection-group-button"
+                onClick={() => onSelect(node.path)}
+                type="button"
+              >
+                <Folder size={14} />
+                <span>{node.name}</span>
+              </button>
+            </Tooltip>
             <div className="connection-group-actions">
-              <button
-                aria-label={`${editLabel}: ${node.path}`}
-                className="icon-button tiny"
-                onClick={() => onEdit(node.path)}
-                title={editLabel}
-                type="button"
-              >
-                <Pencil size={13} />
-              </button>
-              <button
-                aria-label={`${deleteLabel}: ${node.path}`}
-                className="icon-button tiny danger-button"
-                onClick={() => onDelete(node.path)}
-                title={deleteLabel}
-                type="button"
-              >
-                <Trash2 size={13} />
-              </button>
+              <Tooltip content={editLabel} side="top">
+                <button
+                  aria-label={`${editLabel}: ${node.path}`}
+                  className="icon-button tiny"
+                  onClick={() => onEdit(node.path)}
+                  type="button"
+                >
+                  <Pencil size={13} />
+                </button>
+              </Tooltip>
+              <Tooltip content={deleteLabel} side="top">
+                <button
+                  aria-label={`${deleteLabel}: ${node.path}`}
+                  className="icon-button tiny danger-button"
+                  onClick={() => onDelete(node.path)}
+                  type="button"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </Tooltip>
             </div>
           </div>
           {node.children.length ? (
@@ -585,19 +590,20 @@ export function ConnectionManagerModal({ open, onClose }: { open: boolean; onClo
             </div>
           </aside>
 
-          <button
-            aria-label={t('resizeConnectionPanels')}
-            aria-orientation="vertical"
-            aria-valuemax={connectionManagerSidebarMaxWidth}
-            aria-valuemin={connectionManagerSidebarMinWidth}
-            aria-valuenow={Math.round(groupSidebarWidth)}
-            className="connection-manager-resizer"
-            onKeyDown={handleConnectionManagerSidebarResizeKeyDown}
-            onPointerDown={beginConnectionManagerSidebarResize}
-            role="separator"
-            title={t('resizeConnectionPanels')}
-            type="button"
-          />
+          <Tooltip content={t('resizeConnectionPanels')} side="right">
+            <button
+              aria-label={t('resizeConnectionPanels')}
+              aria-orientation="vertical"
+              aria-valuemax={connectionManagerSidebarMaxWidth}
+              aria-valuemin={connectionManagerSidebarMinWidth}
+              aria-valuenow={Math.round(groupSidebarWidth)}
+              className="connection-manager-resizer"
+              onKeyDown={handleConnectionManagerSidebarResizeKeyDown}
+              onPointerDown={beginConnectionManagerSidebarResize}
+              role="separator"
+              type="button"
+            />
+          </Tooltip>
 
           <section className="connection-table-shell">
             <div className="section-row compact">
@@ -611,13 +617,14 @@ export function ConnectionManagerModal({ open, onClose }: { open: boolean; onClo
                 {[t('fieldName'), t('fieldHost'), t('fieldPort'), t('fieldUsername')].map((label, index) => (
                   <span key={label} className="connection-column-header">
                     <span>{label}</span>
-                    <button
-                      aria-label={`调整${label}列宽`}
-                      className="connection-column-resizer"
-                      onPointerDown={(event) => beginConnectionTableColumnResize(event, index + 1)}
-                      title={`调整${label}列宽`}
-                      type="button"
-                    />
+                    <Tooltip content={`调整${label}列宽`} side="top">
+                      <button
+                        aria-label={`调整${label}列宽`}
+                        className="connection-column-resizer"
+                        onPointerDown={(event) => beginConnectionTableColumnResize(event, index + 1)}
+                        type="button"
+                      />
+                    </Tooltip>
                   </span>
                 ))}
                 <span className="connection-column-header" />
@@ -635,40 +642,47 @@ export function ConnectionManagerModal({ open, onClose }: { open: boolean; onClo
                       className={`connection-table-row ${dragState?.type === 'connection' && dragState.id === connection.id ? 'is-dragging' : ''} ${dropTarget?.type === 'connection-insert' && dropTarget.connectionId === connection.id ? `is-drop-${dropTarget.placement}` : ''}`}
                       style={connectionTableGridStyle}
                     >
-                      <button
-                        aria-label={`拖动连接 ${connection.name}`}
-                        className="drag-handle"
-                        onPointerDown={(event) => startConnectionManagerDrag(event, { type: 'connection', id: connection.id, label: connection.name })}
-                        title={`拖动连接 ${connection.name}`}
-                        type="button"
-                      >
-                        <GripVertical size={14} />
-                      </button>
-                      <div className="connection-name-cell" title={connection.name}>
-                        {connection.protocol === 'rdp' ? (
-                          <span
-                            aria-label={t('connectionProtocolRdp')}
-                            className="connection-type-icon"
-                            role="img"
-                            title={t('connectionProtocolRdp')}
-                          >
-                            <Monitor size={13} />
-                          </span>
-                        ) : (
-                          <span
-                            aria-label={t('connectionProtocolSsh')}
-                            className="connection-type-icon"
-                            role="img"
-                            title={t('connectionProtocolSsh')}
-                          >
-                            <TerminalSquare size={13} />
-                          </span>
-                        )}
-                        <span>{connection.name}</span>
-                      </div>
-                      <span title={connection.host}>{connection.host}</span>
-                      <span title={String(connection.port)}>{connection.port}</span>
-                      <span title={connection.username}>{connection.username}</span>
+                      <Tooltip content={`拖动连接 ${connection.name}`} side="right">
+                        <button
+                          aria-label={`拖动连接 ${connection.name}`}
+                          className="drag-handle"
+                          onPointerDown={(event) => startConnectionManagerDrag(event, { type: 'connection', id: connection.id, label: connection.name })}
+                          type="button"
+                        >
+                          <GripVertical size={14} />
+                        </button>
+                      </Tooltip>
+                      <Tooltip content={connection.name} side="bottom">
+                        <div className="connection-name-cell">
+                          {connection.protocol === 'rdp' ? (
+                            <span
+                              aria-label={t('connectionProtocolRdp')}
+                              className="connection-type-icon"
+                              role="img"
+                            >
+                              <Monitor size={13} />
+                            </span>
+                          ) : (
+                            <span
+                              aria-label={t('connectionProtocolSsh')}
+                              className="connection-type-icon"
+                              role="img"
+                            >
+                              <TerminalSquare size={13} />
+                            </span>
+                          )}
+                          <span>{connection.name}</span>
+                        </div>
+                      </Tooltip>
+                      <Tooltip content={connection.host} side="bottom">
+                        <span>{connection.host}</span>
+                      </Tooltip>
+                      <Tooltip content={String(connection.port)} side="bottom">
+                        <span>{connection.port}</span>
+                      </Tooltip>
+                      <Tooltip content={connection.username} side="bottom">
+                        <span>{connection.username}</span>
+                      </Tooltip>
                       {/* 连接列表操作按钮保留文字，同时补充图标帮助用户更快识别常用动作。 */}
                       <div className="connection-table-actions">
                         <button className="ghost-button slim" onClick={() => {
