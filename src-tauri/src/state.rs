@@ -304,6 +304,8 @@ pub struct AppState {
     pub auxiliary_sessions: Mutex<HashMap<String, Arc<Mutex<AuxiliarySshSession>>>>,
     /// 首次建立辅助连接按连接 ID 串行化，防止文件列表和运行状态同时触发两次 SSH 握手。
     pub auxiliary_session_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// SFTP 传输取消标记按前端任务 ID 登记；取消命令只写原子标记，不等待被占用的辅助 SSH 锁。
+    pub sftp_transfer_cancellations: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// agent 会话到终端会话的粘性绑定：同一 agent 会话的后续命令固定落到同一个标签，
     /// 保证 cd 状态与 shell 历史连贯。目标标签消失时在查找阶段惰性清理。
     pub agent_terminal_bindings: Mutex<HashMap<String, String>>,
@@ -346,6 +348,7 @@ impl AppState {
             is_shutting_down: AtomicBool::new(false),
             auxiliary_sessions: Mutex::new(HashMap::new()),
             auxiliary_session_locks: Mutex::new(HashMap::new()),
+            sftp_transfer_cancellations: Mutex::new(HashMap::new()),
             agent_terminal_bindings: Mutex::new(HashMap::new()),
             tunnels: Mutex::new(HashMap::new()),
             tunnel_ssh_pools: Mutex::new(HashMap::new()),

@@ -271,6 +271,18 @@ export interface FileTransferSummary {
   destinations: string[];
 }
 
+export interface SftpTransferProgress {
+  /** 与前端进度卡片共用的任务 ID，用于并发传输时精确路由事件。 */
+  transferId: string;
+  direction: 'upload' | 'download';
+  /** preparing 正在统计目录总量，此时不能展示伪造百分比。 */
+  phase: 'preparing' | 'transferring';
+  transferredBytes: number;
+  totalBytes: number;
+  files: number;
+  directories: number;
+}
+
 export interface RuntimeOverview {
   host: string;
   os: string;

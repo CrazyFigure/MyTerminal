@@ -3747,6 +3747,7 @@ select:disabled {
 }
 
 .transfer-progress-track {
+  position: relative;
   height: 6px;
   overflow: hidden;
   border-radius: 999px;
@@ -3761,6 +3762,18 @@ select:disabled {
   transition: width 180ms ease;
 }
 
+/* 准备阶段尚未得到总字节，使用往返条明确表示正在统计，避免伪造固定百分比。 */
+.transfer-progress-track.is-indeterminate .transfer-progress-fill {
+  position: absolute;
+  width: 34% !important;
+  animation: transfer-progress-indeterminate 1s ease-in-out infinite;
+}
+
+@keyframes transfer-progress-indeterminate {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(310%); }
+}
+
 .transfer-progress-card.is-success .transfer-progress-fill {
   background: #16a34a;
 }
@@ -3769,10 +3782,22 @@ select:disabled {
   background: #dc2626;
 }
 
+.transfer-progress-card.is-cancelling .transfer-progress-fill,
+.transfer-progress-card.is-cancelled .transfer-progress-fill {
+  background: #64748b;
+}
+
 .transfer-progress-close {
   width: 22px;
   height: 22px;
   padding: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .transfer-progress-track.is-indeterminate .transfer-progress-fill {
+    animation: none;
+    transform: translateX(96%);
+  }
 }
 
 .resize-handle-horizontal {

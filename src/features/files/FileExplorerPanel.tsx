@@ -23,8 +23,10 @@ import {
   parentPath,
 } from './presentation';
 
-export type FileContextMenuTarget = {
-  file: RemoteFileEntry;
+export type FileContextMenuTarget = (
+  | { kind: 'entry'; file: RemoteFileEntry }
+  | { kind: 'background'; directory: string }
+) & {
   x: number;
   y: number;
 };
@@ -44,11 +46,14 @@ type FileExplorerPanelProps = {
   handleScroll: () => void;
   hasActiveRemoteSession: boolean;
   localFileDropActive: boolean;
+  nativeUploadPathSelection: boolean;
   openEntry: (file: RemoteFileEntry) => void;
   pathInput: string;
   refreshFiles: (path?: string) => Promise<void>;
   remoteDownloadDragPaths: string[];
   selectFile: (file: RemoteFileEntry, event: ReactMouseEvent<HTMLButtonElement>) => void;
+  selectUploadFiles: () => void;
+  selectUploadFolder: () => void;
   selectedFilePathSet: Set<string>;
   selectedFilePaths: string[];
   setFileContextMenu: Dispatch<SetStateAction<FileContextMenuTarget | null>>;
@@ -79,11 +84,14 @@ export function FileExplorerPanel({
   handleScroll,
   hasActiveRemoteSession,
   localFileDropActive,
+  nativeUploadPathSelection,
   openEntry,
   pathInput,
   refreshFiles,
   remoteDownloadDragPaths,
   selectFile,
+  selectUploadFiles,
+  selectUploadFolder,
   selectedFilePathSet,
   selectedFilePaths,
   setFileContextMenu,
@@ -102,35 +110,47 @@ export function FileExplorerPanel({
       <div className="explorer-toolbar">
         <div className="explorer-toolbar-actions">
           <Tooltip content={t('upload')} side="bottom">
-            <label className="secondary-button slim file-upload-button">
-              <Upload size={14} />
-              <input
-                className="hidden-file-input"
-                disabled={!hasActiveRemoteSession}
-                multiple
-                type="file"
-                onChange={(event) => {
-                  uploadFiles(Array.from(event.currentTarget.files ?? []));
-                  event.currentTarget.value = '';
-                }}
-              />
-            </label>
+            {nativeUploadPathSelection ? (
+              <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={selectUploadFiles} type="button">
+                <Upload size={14} />
+              </button>
+            ) : (
+              <label className="secondary-button slim file-upload-button">
+                <Upload size={14} />
+                <input
+                  className="hidden-file-input"
+                  disabled={!hasActiveRemoteSession}
+                  multiple
+                  type="file"
+                  onChange={(event) => {
+                    uploadFiles(Array.from(event.currentTarget.files ?? []));
+                    event.currentTarget.value = '';
+                  }}
+                />
+              </label>
+            )}
           </Tooltip>
           <Tooltip content={t('uploadFolder')} side="bottom">
-            <label className="secondary-button slim file-upload-button">
-              <FolderTree size={14} />
-              <input
-                {...{ directory: '', webkitdirectory: '' }}
-                className="hidden-file-input"
-                disabled={!hasActiveRemoteSession}
-                multiple
-                type="file"
-                onChange={(event) => {
-                  uploadFolder(Array.from(event.currentTarget.files ?? []));
-                  event.currentTarget.value = '';
-                }}
-              />
-            </label>
+            {nativeUploadPathSelection ? (
+              <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={selectUploadFolder} type="button">
+                <FolderTree size={14} />
+              </button>
+            ) : (
+              <label className="secondary-button slim file-upload-button">
+                <FolderTree size={14} />
+                <input
+                  {...{ directory: '', webkitdirectory: '' }}
+                  className="hidden-file-input"
+                  disabled={!hasActiveRemoteSession}
+                  multiple
+                  type="file"
+                  onChange={(event) => {
+                    uploadFolder(Array.from(event.currentTarget.files ?? []));
+                    event.currentTarget.value = '';
+                  }}
+                />
+              </label>
+            )}
           </Tooltip>
           <Tooltip content={remoteDownloadDragPaths.length ? t('dropToDownload') : t('download')} side="bottom">
             <button
@@ -182,7 +202,32 @@ export function FileExplorerPanel({
       </div>
 
       <div className="explorer-shell explorer-shell-dense">
-        <div ref={explorerListRef} className="explorer-list" onKeyDown={handleKeyDown} onScroll={handleScroll} tabIndex={hasActiveRemoteSession ? 0 : -1}>
+        <div
+          ref={explorerListRef}
+          className="explorer-list"
+          onContextMenu={(event) => {
+            const target = event.target;
+            if (
+              !hasActiveRemoteSession
+              || !(target instanceof Element)
+              || target.closest('.explorer-row, .explorer-list-header')
+            ) {
+              return;
+            }
+            event.preventDefault();
+            setSelectedFilePath('');
+            setSelectedFilePaths([]);
+            setFileContextMenu({
+              kind: 'background',
+              directory: currentRemotePath,
+              x: event.clientX,
+              y: event.clientY,
+            });
+          }}
+          onKeyDown={handleKeyDown}
+          onScroll={handleScroll}
+          tabIndex={hasActiveRemoteSession ? 0 : -1}
+        >
           <div className="explorer-list-header" style={explorerGridStyle}>
             {[t('fieldName'), t('fieldSize'), t('fieldType'), t('fieldModifiedAt'), t('fieldPermission'), t('fieldOwnerGroup')].map((label, index, labels) => (
               <span key={`${label}-${index}`} className="explorer-column-header">
@@ -212,11 +257,12 @@ export function FileExplorerPanel({
                     className={`explorer-row is-virtual ${index % 2 === 0 ? '' : 'is-odd'} ${isSelected ? 'is-selected' : ''}`}
                     onContextMenu={(event) => {
                       event.preventDefault();
+                      event.stopPropagation();
                       if (!selectedFilePathSet.has(file.path)) {
                         setSelectedFilePath(file.path);
                         setSelectedFilePaths([file.path]);
                       }
-                      setFileContextMenu({ file, x: event.clientX, y: event.clientY });
+                      setFileContextMenu({ kind: 'entry', file, x: event.clientX, y: event.clientY });
                     }}
                     onDoubleClick={() => openEntry(file)}
                     style={{ height: explorerRowHeight, transform: `translateY(${index * explorerRowHeight}px)` }}

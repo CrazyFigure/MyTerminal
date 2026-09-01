@@ -592,6 +592,12 @@
   font-size: 0.78rem;
 }
 
+/* 文件菜单按下时给出即时位移反馈；禁用项保持静止，避免把不可用粘贴误认为已执行。 */
+.file-context-menu .context-menu-item:active:not(:disabled) {
+  transform: translateY(1px);
+  background: var(--app-active-bg);
+}
+
 /* 文件右键“复制名称”的二级菜单：悬停或聚焦父项时向右浮出，靠近窗口右缘时加 .flip-left 翻到左侧。 */
 .context-menu-item.has-submenu {
   position: relative;
