@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { Copy, Minus, Square, X } from 'lucide-react';
 import type { TranslationKey } from '../i18n';
+import { Tooltip } from './Tooltip';
 
 // 自定义标题栏的窗口控制按钮：最小化、最大化/还原、关闭。
 // 关闭原生装饰后由前端接管这些操作，同时监听窗口尺寸变化保持最大化图标状态同步。
@@ -51,33 +52,36 @@ export function TitlebarWindowControls({
 
   return (
     <div className="titlebar-window-controls">
-      <button
-        aria-label={t('windowMinimize')}
-        className="titlebar-window-button"
-        onClick={() => runWindowAction((currentWindow) => void currentWindow.minimize())}
-        title={t('windowMinimize')}
-        type="button"
-      >
-        <Minus size={16} />
-      </button>
-      <button
-        aria-label={isMaximized ? t('windowRestore') : t('windowMaximize')}
-        className="titlebar-window-button"
-        onClick={() => runWindowAction((currentWindow) => void currentWindow.toggleMaximize())}
-        title={isMaximized ? t('windowRestore') : t('windowMaximize')}
-        type="button"
-      >
-        {isMaximized ? <Copy size={14} /> : <Square size={13} />}
-      </button>
-      <button
-        aria-label={t('windowClose')}
-        className="titlebar-window-button titlebar-window-close"
-        onClick={() => runWindowAction((currentWindow) => void currentWindow.close())}
-        title={t('windowClose')}
-        type="button"
-      >
-        <X size={16} />
-      </button>
+      <Tooltip content={t('windowMinimize')} side="bottom">
+        <button
+          aria-label={t('windowMinimize')}
+          className="titlebar-window-button"
+          onClick={() => runWindowAction((currentWindow) => void currentWindow.minimize())}
+          type="button"
+        >
+          <Minus size={16} />
+        </button>
+      </Tooltip>
+      <Tooltip content={isMaximized ? t('windowRestore') : t('windowMaximize')} side="bottom">
+        <button
+          aria-label={isMaximized ? t('windowRestore') : t('windowMaximize')}
+          className="titlebar-window-button"
+          onClick={() => runWindowAction((currentWindow) => void currentWindow.toggleMaximize())}
+          type="button"
+        >
+          {isMaximized ? <Copy size={14} /> : <Square size={13} />}
+        </button>
+      </Tooltip>
+      <Tooltip content={t('windowClose')} side="bottom">
+        <button
+          aria-label={t('windowClose')}
+          className="titlebar-window-button titlebar-window-close"
+          onClick={() => runWindowAction((currentWindow) => void currentWindow.close())}
+          type="button"
+        >
+          <X size={16} />
+        </button>
+      </Tooltip>
     </div>
   );
 }

@@ -1,0 +1,131 @@
+/* Tooltip 悬浮提示微动效与主题适配（仿照 NoteBoard 规范） */
+
+.mt-tooltip-content {
+  /* 使用顶层绝对优先级 z-index，保证悬浮层绝不被任何内部容器、滚动条、终端或弹窗遮挡在底部 */
+  z-index: 999999;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 360px;
+  padding: 4px 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--app-text, #0f172a);
+  background: var(--app-overlay-bg, #ffffff);
+  border: 1px solid var(--app-modal-border, rgba(100, 116, 139, 0.38));
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+  user-select: none;
+  pointer-events: none;
+  word-break: break-word;
+  white-space: pre-line;
+  animation-duration: 120ms;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity;
+}
+
+body.theme-dark .mt-tooltip-content,
+:root[style*="color-scheme: dark"] .mt-tooltip-content {
+  color: #e2e8f0;
+  background: #1e293b;
+  border-color: rgba(148, 163, 184, 0.4);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.mt-tooltip-content[data-state='delayed-open'][data-side='top'],
+.mt-tooltip-content[data-state='instant-open'][data-side='top'] {
+  animation-name: mt-tooltip-slide-down-and-fade;
+}
+
+.mt-tooltip-content[data-state='delayed-open'][data-side='bottom'],
+.mt-tooltip-content[data-state='instant-open'][data-side='bottom'] {
+  animation-name: mt-tooltip-slide-up-and-fade;
+}
+
+.mt-tooltip-content[data-state='delayed-open'][data-side='left'],
+.mt-tooltip-content[data-state='instant-open'][data-side='left'] {
+  animation-name: mt-tooltip-slide-right-and-fade;
+}
+
+.mt-tooltip-content[data-state='delayed-open'][data-side='right'],
+.mt-tooltip-content[data-state='instant-open'][data-side='right'] {
+  animation-name: mt-tooltip-slide-left-and-fade;
+}
+
+.mt-tooltip-arrow {
+  fill: var(--app-overlay-bg, #ffffff);
+  stroke: var(--app-modal-border, rgba(100, 116, 139, 0.38));
+  stroke-width: 1px;
+}
+
+body.theme-dark .mt-tooltip-arrow,
+:root[style*="color-scheme: dark"] .mt-tooltip-arrow {
+  fill: #1e293b;
+  stroke: rgba(148, 163, 184, 0.4);
+}
+
+.mt-tooltip-kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 4px;
+  font-size: 10px;
+  font-family: Consolas, "Segoe UI Mono", monospace;
+  font-weight: 500;
+  color: var(--app-muted, #64748b);
+  background: rgba(148, 163, 184, 0.14);
+  border: 1px solid var(--app-card-border, rgba(148, 163, 184, 0.28));
+  border-radius: 3px;
+  line-height: 1.2;
+}
+
+body.theme-dark .mt-tooltip-kbd,
+:root[style*="color-scheme: dark"] .mt-tooltip-kbd {
+  color: #94a3b8;
+  background: rgba(148, 163, 184, 0.2);
+  border-color: rgba(148, 163, 184, 0.35);
+}
+
+@keyframes mt-tooltip-slide-up-and-fade {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes mt-tooltip-slide-down-and-fade {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes mt-tooltip-slide-left-and-fade {
+  from {
+    opacity: 0;
+    transform: translateX(3px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes mt-tooltip-slide-right-and-fade {
+  from {
+    opacity: 0;
+    transform: translateX(-3px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}

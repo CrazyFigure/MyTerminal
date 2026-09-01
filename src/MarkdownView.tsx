@@ -3,6 +3,7 @@ import { Check, Copy } from 'lucide-react';
 
 import { writeClipboardText } from './clipboard';
 import { parseMarkdown, type InlineSpan, type MarkdownNode } from './markdown';
+import { Tooltip } from './components/Tooltip';
 
 /** 渲染行内标记。 */
 function InlineSpans({ spans }: { spans: InlineSpan[] }) {
@@ -23,9 +24,11 @@ function InlineSpans({ spans }: { spans: InlineSpan[] }) {
           case 'link':
             // 不做跳转：AI 给的链接可能指向任意地址，这里只展示文本与地址，避免误触外链。
             return (
-              <span key={index} className="md-link" title={span.href}>
-                {span.text || span.href}
-              </span>
+              <Tooltip content={span.href} key={index} side="bottom">
+                <span className="md-link">
+                  {span.text || span.href}
+                </span>
+              </Tooltip>
             );
           default:
             return <Fragment key={index}>{span.text}</Fragment>;
@@ -43,23 +46,26 @@ function CodeBlock({ lang, text, closed }: { lang: string; text: string; closed:
     <div className={`md-code-block ${closed ? '' : 'is-streaming'}`}>
       <div className="md-code-head">
         <span>{lang || 'text'}</span>
-        <button
-          className="md-code-copy"
-          onClick={() => {
-            // 桌面端显式走 Tauri 原生插件，确保按钮复制的代码进入 Windows 系统剪贴板及其历史。
-            void writeClipboardText(text)
-              .then(() => {
-                setCopied(true);
-                window.setTimeout(() => setCopied(false), 1500);
-              })
-              .catch(() => {
-                // 剪贴板不可用时静默失败，不打断阅读。
-              });
-          }}
-          type="button"
-        >
-          {copied ? <Check size={12} /> : <Copy size={12} />}
-        </button>
+        <Tooltip content={copied ? '已复制' : '复制代码'} side="top">
+          <button
+            aria-label={copied ? '已复制' : '复制代码'}
+            className="md-code-copy"
+            onClick={() => {
+              // 桌面端显式走 Tauri 原生插件，确保按钮复制的代码进入 Windows 系统剪贴板及其历史。
+              void writeClipboardText(text)
+                .then(() => {
+                  setCopied(true);
+                  window.setTimeout(() => setCopied(false), 1500);
+                })
+                .catch(() => {
+                  // 剪贴板不可用时静默失败，不打断阅读。
+                });
+            }}
+            type="button"
+          >
+            {copied ? <Check size={12} /> : <Copy size={12} />}
+          </button>
+        </Tooltip>
       </div>
       <pre>
         <code>{text}</code>

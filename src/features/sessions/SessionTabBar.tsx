@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { TerminalSquare, X } from 'lucide-react';
 
+import { Tooltip } from '../../components/Tooltip';
 import { formatLocalTerminalTabLabel, getLocalTerminalIcon } from '../../app/localTerminal';
 import { clamp } from '../../app/layout';
 import {
@@ -447,34 +448,35 @@ export function SessionTabBar({
                 onPointerDown={(event) => startTabDrag(event, session, sessionLabel)}
               >
                 <button className="session-tab-trigger" onClick={() => onSelectSession(session.id)} type="button">
-                  {localTerminalIcon ? (
-                    <img
-                      src={localTerminalIcon}
-                      className="session-status-icon-image"
-                      alt=""
-                      title={translateStatus(uiLanguage, session.status)}
-                    />
-                  ) : (
-                    <span
-                      aria-label={translateStatus(uiLanguage, session.status)}
-                      className={sessionStatusClassName(session.status)}
-                      title={translateStatus(uiLanguage, session.status)}
-                    />
-                  )}
+                  <Tooltip content={translateStatus(uiLanguage, session.status)} side="bottom">
+                    {localTerminalIcon ? (
+                      <img
+                        src={localTerminalIcon}
+                        className="session-status-icon-image"
+                        alt=""
+                      />
+                    ) : (
+                      <span
+                        aria-label={translateStatus(uiLanguage, session.status)}
+                        className={sessionStatusClassName(session.status)}
+                      />
+                    )}
+                  </Tooltip>
                   <span>{sessionLabel}</span>
                 </button>
-                <button
-                  aria-label={closeLabel}
-                  className="session-tab-close"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void onCloseSession(session.id);
-                  }}
-                  title={closeLabel}
-                  type="button"
-                >
-                  <X size={10} />
-                </button>
+                <Tooltip content={closeLabel} side="bottom">
+                  <button
+                    aria-label={closeLabel}
+                    className="session-tab-close"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void onCloseSession(session.id);
+                    }}
+                    type="button"
+                  >
+                    <X size={10} />
+                  </button>
+                </Tooltip>
               </div>
             );
           })}

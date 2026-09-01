@@ -2,6 +2,7 @@
 import { useMemo, useState } from 'react';
 import { Download, Trash2, X } from 'lucide-react';
 import type { TranslationKey } from '../../i18n';
+import { Tooltip } from '../../components/Tooltip';
 
 /* ── Backup Selector Modal ─────────────────────────────────────────────── */
 
@@ -78,7 +79,9 @@ export function BackupSelectorModal({
             ) : (
               parsed.map((item) => (
                 <div key={item.filename} className="backup-table-row">
-                  <span className="backup-col-name" title={item.filename}>{item.filename}</span>
+                  <Tooltip content={item.filename} side="bottom">
+                    <span className="backup-col-name">{item.filename}</span>
+                  </Tooltip>
                   <span className="backup-col-time">{item.timestamp}</span>
                   <span className="backup-col-type">
                     {item.type === 'bundle' ? t('typeBundle') : item.type === 'settings' ? t('typeSettings') : t('typeConnections')}

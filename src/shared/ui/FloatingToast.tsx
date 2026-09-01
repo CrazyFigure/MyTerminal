@@ -25,7 +25,7 @@ export function FloatingToast({ message, tone, onDismiss }: FloatingToastProps) 
 
   return (
     <div className="floating-toast-layer" aria-live={tone === 'error' ? 'assertive' : 'polite'}>
-      <div className={`floating-toast is-${tone}`} role={tone === 'error' ? 'alert' : 'status'} title={message}>
+      <div className={`floating-toast is-${tone}`} role={tone === 'error' ? 'alert' : 'status'}>
         <span className="floating-toast-status-icon" aria-hidden="true">
           {tone === 'success' ? <Check size={11} strokeWidth={3} /> : <span className="floating-toast-error-mark">!</span>}
         </span>

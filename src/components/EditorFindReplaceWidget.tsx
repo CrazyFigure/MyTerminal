@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp, Search, X } from 'lucide-react';
 import type * as monaco from 'monaco-editor';
 import { translate, type TranslationKey } from '../i18n';
 import { useAppStore } from '../store';
+import { Tooltip } from './Tooltip';
 
 // 替换图标（两向替换/交换箭头）
 function ReplaceIcon({ size = 14 }: { size?: number }) {
@@ -441,37 +442,40 @@ export function EditorFindReplaceWidget({
           )}
         </div>
 
-        <button
-          aria-label={t('editorPreviousMatch')}
-          className="editor-find-icon-btn"
-          disabled={matches.length === 0}
-          onClick={handleFindPrevious}
-          title={t('editorPreviousMatch')}
-          type="button"
-        >
-          <ChevronUp size={16} />
-        </button>
+        <Tooltip content={t('editorPreviousMatch')} shortcut="Shift+Enter" side="top">
+          <button
+            aria-label={t('editorPreviousMatch')}
+            className="editor-find-icon-btn"
+            disabled={matches.length === 0}
+            onClick={handleFindPrevious}
+            type="button"
+          >
+            <ChevronUp size={16} />
+          </button>
+        </Tooltip>
 
-        <button
-          aria-label={t('editorNextMatch')}
-          className="editor-find-icon-btn"
-          disabled={matches.length === 0}
-          onClick={handleFindNext}
-          title={t('editorNextMatch')}
-          type="button"
-        >
-          <ChevronDown size={16} />
-        </button>
+        <Tooltip content={t('editorNextMatch')} shortcut="Enter" side="top">
+          <button
+            aria-label={t('editorNextMatch')}
+            className="editor-find-icon-btn"
+            disabled={matches.length === 0}
+            onClick={handleFindNext}
+            type="button"
+          >
+            <ChevronDown size={16} />
+          </button>
+        </Tooltip>
 
-        <button
-          aria-label={t('close')}
-          className="editor-find-icon-btn close-btn"
-          onClick={handleClose}
-          title={t('close')}
-          type="button"
-        >
-          <X size={16} />
-        </button>
+        <Tooltip content={t('close')} shortcut="Esc" side="top">
+          <button
+            aria-label={t('close')}
+            className="editor-find-icon-btn close-btn"
+            onClick={handleClose}
+            type="button"
+          >
+            <X size={16} />
+          </button>
+        </Tooltip>
       </div>
 
       {/* 替换行 */}

@@ -3,6 +3,7 @@ import { RefreshCw, type LucideIcon } from 'lucide-react';
 
 import type { TranslationKey } from '../../i18n';
 import { clamp } from '../../shared/numbers';
+import { Tooltip } from '../../components/Tooltip';
 import type {
   RuntimeConnectionList,
   RuntimeOverview,
@@ -202,11 +203,13 @@ export function RuntimePanel({
                   {runtimeResourceUsage?.items.length ? (
                     <div className="runtime-resource-table">
                       {runtimeResourceUsage.items.map((item, index) => (
-                        <div className="runtime-resource-row" key={`${item.id}-${index}`} title={item.detail}>
-                          <span className="runtime-resource-rank">{item.rank}</span>
-                          <span className="runtime-resource-name"><strong>{item.name || item.id}</strong><small>{item.context}</small></span>
-                          <span>{item.cpu}</span><span>{item.memory}</span>
-                        </div>
+                        <Tooltip content={item.detail} key={`${item.id}-${index}`} side="bottom">
+                          <div className="runtime-resource-row">
+                            <span className="runtime-resource-rank">{item.rank}</span>
+                            <span className="runtime-resource-name"><strong>{item.name || item.id}</strong><small>{item.context}</small></span>
+                            <span>{item.cpu}</span><span>{item.memory}</span>
+                          </div>
+                        </Tooltip>
                       ))}
                     </div>
                   ) : <div className="runtime-resource-empty">{runtimeResourceLoading ? t('panelRefreshing') : runtimeResourceError || t('runtimeResourceEmpty')}</div>}
@@ -219,11 +222,13 @@ export function RuntimePanel({
                   {runtimeStorageFiles?.items.length ? (
                     <div className="runtime-storage-table">
                       {runtimeStorageFiles.items.map((item) => (
-                        <div className="runtime-storage-row" key={`${item.path}-${item.rank}`} title={`${item.name}\n${item.path}\n${item.size}`}>
-                          <span className="runtime-storage-rank">{item.rank}</span>
-                          <span className="runtime-storage-file"><strong>{item.name}</strong><small>{item.path}</small></span>
-                          <span className="runtime-storage-size">{item.size}</span>
-                        </div>
+                        <Tooltip content={`${item.name}\n${item.path}\n${item.size}`} key={`${item.path}-${item.rank}`} side="bottom">
+                          <div className="runtime-storage-row">
+                            <span className="runtime-storage-rank">{item.rank}</span>
+                            <span className="runtime-storage-file"><strong>{item.name}</strong><small>{item.path}</small></span>
+                            <span className="runtime-storage-size">{item.size}</span>
+                          </div>
+                        </Tooltip>
                       ))}
                     </div>
                   ) : <div className="runtime-resource-empty">{runtimeStorageFilesLoading ? t('panelRefreshing') : runtimeStorageFilesError || t('runtimeStorageFilesEmpty')}</div>}
@@ -237,11 +242,13 @@ export function RuntimePanel({
                   {runtimeConnections?.items.length ? (
                     <div className="runtime-connection-table">
                       {runtimeConnections.items.map((item, index) => (
-                        <div className="runtime-connection-row" key={`${item.local}-${item.remote}-${index}`} title={`${item.local} ↔ ${item.remote}`}>
-                          <span className="runtime-connection-rank">{index + 1}</span>
-                          <span className="runtime-connection-addr">{item.isSsh ? <em className="runtime-connection-ssh-tag">SSH</em> : null}{item.local}</span>
-                          <span className="runtime-connection-addr">{item.remote}</span>
-                        </div>
+                        <Tooltip content={`${item.local} ↔ ${item.remote}`} key={`${item.local}-${item.remote}-${index}`} side="bottom">
+                          <div className="runtime-connection-row">
+                            <span className="runtime-connection-rank">{index + 1}</span>
+                            <span className="runtime-connection-addr">{item.isSsh ? <em className="runtime-connection-ssh-tag">SSH</em> : null}{item.local}</span>
+                            <span className="runtime-connection-addr">{item.remote}</span>
+                          </div>
+                        </Tooltip>
                       ))}
                       {runtimeConnections.total > runtimeConnections.items.length ? <div className="runtime-resource-empty">{t('runtimeConnectionsOmitted', { count: runtimeConnections.total - runtimeConnections.items.length })}</div> : null}
                     </div>

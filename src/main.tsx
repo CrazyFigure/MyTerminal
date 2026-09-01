@@ -12,6 +12,7 @@ import './styles/backup-selector.css';
 import './styles/terminal-extras.css';
 import './styles/update-modal.css';
 import './styles/custom-select.css';
+import './styles/tooltip.css';
 
 // 桌面端所有 WebView 复制/剪切统一同步到 Windows 系统剪贴板，覆盖文本框、Markdown 与内置编辑器。
 const disposeSystemClipboardBridge = installSystemClipboardBridge();

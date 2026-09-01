@@ -1,6 +1,7 @@
 import { CustomSelect } from "../../CustomSelect";
 import type { TranslationKey } from "../../i18n";
 import type { AgentEffort, AgentProvider, AgentRunOptions } from "../../types";
+import { Tooltip } from "../../components/Tooltip";
 
 type Props = {
   activeProvider?: AgentProvider;
@@ -55,9 +56,11 @@ export function AgentChatOptions({
           }
           type="checkbox"
         />
-        <span title={t("agentChatAutoCompactDesc")}>
-          {t("agentChatAutoCompact")}
-        </span>
+        <Tooltip content={t("agentChatAutoCompactDesc")} side="right">
+          <span>
+            {t("agentChatAutoCompact")}
+          </span>
+        </Tooltip>
       </label>
       {runOptions.autoCompact ? (
         <label>

@@ -12,6 +12,7 @@ import { ChevronUp, CornerDownLeft, Download, FolderTree, RefreshCw, Upload } fr
 
 import type { TranslationKey } from '../../i18n';
 import type { RemoteFileEntry } from '../../types';
+import { Tooltip } from '../../components/Tooltip';
 import {
   explorerRowHeight,
   fileLabelIcon,
@@ -100,56 +101,63 @@ export function FileExplorerPanel({
     <section ref={explorerPanelRef} className={`sidebar-panel explorer-panel ${localFileDropActive ? 'is-local-drop-active' : ''}`}>
       <div className="explorer-toolbar">
         <div className="explorer-toolbar-actions">
-          <label className="secondary-button slim file-upload-button" title={t('upload')}>
-            <Upload size={14} />
-            <input
-              className="hidden-file-input"
+          <Tooltip content={t('upload')} side="bottom">
+            <label className="secondary-button slim file-upload-button">
+              <Upload size={14} />
+              <input
+                className="hidden-file-input"
+                disabled={!hasActiveRemoteSession}
+                multiple
+                type="file"
+                onChange={(event) => {
+                  uploadFiles(Array.from(event.currentTarget.files ?? []));
+                  event.currentTarget.value = '';
+                }}
+              />
+            </label>
+          </Tooltip>
+          <Tooltip content={t('uploadFolder')} side="bottom">
+            <label className="secondary-button slim file-upload-button">
+              <FolderTree size={14} />
+              <input
+                {...{ directory: '', webkitdirectory: '' }}
+                className="hidden-file-input"
+                disabled={!hasActiveRemoteSession}
+                multiple
+                type="file"
+                onChange={(event) => {
+                  uploadFolder(Array.from(event.currentTarget.files ?? []));
+                  event.currentTarget.value = '';
+                }}
+              />
+            </label>
+          </Tooltip>
+          <Tooltip content={remoteDownloadDragPaths.length ? t('dropToDownload') : t('download')} side="bottom">
+            <button
+              className={`secondary-button slim ${remoteDownloadDragPaths.length ? 'is-drop-target' : ''}`}
               disabled={!hasActiveRemoteSession}
-              multiple
-              type="file"
-              onChange={(event) => {
-                uploadFiles(Array.from(event.currentTarget.files ?? []));
-                event.currentTarget.value = '';
+              onClick={() => downloadPaths(selectedFilePaths)}
+              onDragOver={(event) => {
+                if (hasActiveRemoteSession) {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = 'copy';
+                }
               }}
-            />
-          </label>
-          <label className="secondary-button slim file-upload-button" title={t('uploadFolder')}>
-            <FolderTree size={14} />
-            <input
-              {...{ directory: '', webkitdirectory: '' }}
-              className="hidden-file-input"
-              disabled={!hasActiveRemoteSession}
-              multiple
-              type="file"
-              onChange={(event) => {
-                uploadFolder(Array.from(event.currentTarget.files ?? []));
-                event.currentTarget.value = '';
-              }}
-            />
-          </label>
-          <button
-            className={`secondary-button slim ${remoteDownloadDragPaths.length ? 'is-drop-target' : ''}`}
-            disabled={!hasActiveRemoteSession}
-            onClick={() => downloadPaths(selectedFilePaths)}
-            onDragOver={(event) => {
-              if (hasActiveRemoteSession) {
-                event.preventDefault();
-                event.dataTransfer.dropEffect = 'copy';
-              }
-            }}
-            onDrop={dropRemoteSelectionToDownload}
-            title={remoteDownloadDragPaths.length ? t('dropToDownload') : t('download')}
-            type="button"
-          >
-            <Download size={14} />
-          </button>
+              onDrop={dropRemoteSelectionToDownload}
+              type="button"
+            >
+              <Download size={14} />
+            </button>
+          </Tooltip>
           <span className="explorer-toolbar-spacer" />
           <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles(parentPath(currentRemotePath))} type="button">
             <ChevronUp size={14} /> {t('up')}
           </button>
-          <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles()} title={t('refresh')} type="button">
-            <RefreshCw className={filesLoading ? 'is-spinning' : ''} size={14} />
-          </button>
+          <Tooltip content={t('refresh')} side="bottom">
+            <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles()} type="button">
+              <RefreshCw className={filesLoading ? 'is-spinning' : ''} size={14} />
+            </button>
+          </Tooltip>
         </div>
         <div className="address-bar">
           <input
@@ -165,9 +173,11 @@ export function FileExplorerPanel({
               }
             }}
           />
-          <button className="secondary-button slim address-go-button" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles(pathInput.trim() || '~')} title={t('goToPath')} type="button">
-            <CornerDownLeft size={14} />
-          </button>
+          <Tooltip content={t('goToPath')} side="bottom">
+            <button className="secondary-button slim address-go-button" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles(pathInput.trim() || '~')} type="button">
+              <CornerDownLeft size={14} />
+            </button>
+          </Tooltip>
         </div>
       </div>
 
@@ -177,7 +187,11 @@ export function FileExplorerPanel({
             {[t('fieldName'), t('fieldSize'), t('fieldType'), t('fieldModifiedAt'), t('fieldPermission'), t('fieldOwnerGroup')].map((label, index, labels) => (
               <span key={`${label}-${index}`} className="explorer-column-header">
                 <span>{label}</span>
-                {index < labels.length - 1 ? <button aria-label={`${label} 调整列宽`} className="explorer-column-resizer" onPointerDown={(event) => beginColumnResize(event, index)} title={`${label} 调整列宽`} type="button" /> : null}
+                {index < labels.length - 1 ? (
+                  <Tooltip content={`${label} 调整列宽`} side="top">
+                    <button aria-label={`${label} 调整列宽`} className="explorer-column-resizer" onPointerDown={(event) => beginColumnResize(event, index)} type="button" />
+                  </Tooltip>
+                ) : null}
               </span>
             ))}
           </div>
@@ -217,12 +231,24 @@ export function FileExplorerPanel({
                       style={explorerGridStyle}
                       type="button"
                     >
-                      <span className="explorer-name" title={file.name}><Icon size={16} /><strong>{file.name}</strong></span>
-                      <span title={fileSizeLabel || undefined}>{fileSizeLabel}</span>
-                      <span title={fileTypeLabel}>{fileTypeLabel}</span>
-                      <span title={fileModifiedAtLabel}>{fileModifiedAtLabel}</span>
-                      <span title={filePermissionLabel}>{filePermissionLabel}</span>
-                      <span title={fileOwnerGroupLabel}>{fileOwnerGroupLabel}</span>
+                      <Tooltip content={file.name} side="bottom">
+                        <span className="explorer-name"><Icon size={16} /><strong>{file.name}</strong></span>
+                      </Tooltip>
+                      <Tooltip content={fileSizeLabel || undefined} side="bottom">
+                        <span>{fileSizeLabel}</span>
+                      </Tooltip>
+                      <Tooltip content={fileTypeLabel} side="bottom">
+                        <span>{fileTypeLabel}</span>
+                      </Tooltip>
+                      <Tooltip content={fileModifiedAtLabel} side="bottom">
+                        <span>{fileModifiedAtLabel}</span>
+                      </Tooltip>
+                      <Tooltip content={filePermissionLabel} side="bottom">
+                        <span>{filePermissionLabel}</span>
+                      </Tooltip>
+                      <Tooltip content={fileOwnerGroupLabel} side="bottom">
+                        <span>{fileOwnerGroupLabel}</span>
+                      </Tooltip>
                     </button>
                   </div>
                 );

@@ -3,6 +3,7 @@ import { Save } from "lucide-react";
 import type { ConnectionGroupNode } from "../../app/connectionGroups";
 import type { TranslationKey } from "../../i18n";
 import type { AppSettings, ConnectionProfile } from "../../types";
+import { Tooltip } from "../../components/Tooltip";
 import { AgentAutoConnectionTree } from "./AgentAutoConnectionTree";
 
 type Props = {
@@ -82,9 +83,11 @@ export function ExecutionSettingsSection({
             </div>
           </div>
           <div className="agent-toggle-field settings-inline-toggle">
-            <span title={t("fieldAgentBridgeVisibleExecutionDesc")}>
-              {t("fieldAgentBridgeVisibleExecution")}
-            </span>
+            <Tooltip content={t("fieldAgentBridgeVisibleExecutionDesc")} side="right">
+              <span>
+                {t("fieldAgentBridgeVisibleExecution")}
+              </span>
+            </Tooltip>
             <div className="settings-inline-toggle-control">
               <input
                 aria-label={t("fieldAgentBridgeVisibleExecution")}

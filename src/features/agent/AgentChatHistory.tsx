@@ -1,6 +1,7 @@
 import { Trash2 } from "lucide-react";
 
 import type { TranslationKey } from "../../i18n";
+import { Tooltip } from "../../components/Tooltip";
 
 export type AgentChatHistoryItem = {
   id: string;
@@ -39,14 +40,16 @@ export function AgentChatHistory({
               <span>{item.title}</span>
               <small>{new Date(item.updatedAt).toLocaleString()}</small>
             </button>
-            <button
-              className="icon-button"
-              onClick={() => onDelete(item.id)}
-              title={t("agentChatDelete")}
-              type="button"
-            >
-              <Trash2 size={13} />
-            </button>
+            <Tooltip content={t("agentChatDelete")} side="top">
+              <button
+                aria-label={t("agentChatDelete")}
+                className="icon-button"
+                onClick={() => onDelete(item.id)}
+                type="button"
+              >
+                <Trash2 size={13} />
+              </button>
+            </Tooltip>
           </div>
         ))
       ) : (

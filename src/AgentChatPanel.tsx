@@ -9,6 +9,7 @@ import {
 
 import { CustomSelect } from './CustomSelect';
 import { backend } from './backend';
+import { Tooltip } from './components/Tooltip';
 import { AgentChatHistory } from './features/agent/AgentChatHistory';
 import { AgentChatMessages } from './features/agent/AgentChatMessages';
 import { AgentChatOptions } from './features/agent/AgentChatOptions';
@@ -518,37 +519,43 @@ export function AgentChatPanel({
           }))}
           value={modelId}
         />
-        <button
-          className={`icon-button ${settingsOpen ? 'is-active' : ''}`}
-          onClick={() => {
-            // 两个折叠面板互斥：同时展开会把消息区挤没，且用户很难分辨当前在看哪个。
-            setSettingsOpen((current) => !current);
-            setHistoryOpen(false);
-          }}
-          title={t('agentChatOptions')}
-          type="button"
-        >
-          <SlidersHorizontal size={14} />
-        </button>
-        <button
-          className={`icon-button ${historyOpen ? 'is-active' : ''}`}
-          onClick={() => {
-            setHistoryOpen((current) => !current);
-            setSettingsOpen(false);
-          }}
-          title={t('agentChatHistory')}
-          type="button"
-        >
-          <History size={14} />
-        </button>
-        <button
-          className="icon-button"
-          onClick={startNewConversation}
-          title={t('agentChatNew')}
-          type="button"
-        >
-          <Plus size={14} />
-        </button>
+        <Tooltip content={t('agentChatOptions')} side="bottom">
+          <button
+            aria-label={t('agentChatOptions')}
+            className={`icon-button ${settingsOpen ? 'is-active' : ''}`}
+            onClick={() => {
+              // 两个折叠面板互斥：同时展开会把消息区挤没，且用户很难分辨当前在看哪个。
+              setSettingsOpen((current) => !current);
+              setHistoryOpen(false);
+            }}
+            type="button"
+          >
+            <SlidersHorizontal size={14} />
+          </button>
+        </Tooltip>
+        <Tooltip content={t('agentChatHistory')} side="bottom">
+          <button
+            aria-label={t('agentChatHistory')}
+            className={`icon-button ${historyOpen ? 'is-active' : ''}`}
+            onClick={() => {
+              setHistoryOpen((current) => !current);
+              setSettingsOpen(false);
+            }}
+            type="button"
+          >
+            <History size={14} />
+          </button>
+        </Tooltip>
+        <Tooltip content={t('agentChatNew')} side="bottom">
+          <button
+            aria-label={t('agentChatNew')}
+            className="icon-button"
+            onClick={startNewConversation}
+            type="button"
+          >
+            <Plus size={14} />
+          </button>
+        </Tooltip>
       </div>
 
       {error ? <FloatingToast message={error} onDismiss={() => setError(null)} tone="error" /> : null}
@@ -608,24 +615,28 @@ export function AgentChatPanel({
           value={input}
         />
         {running ? (
-          <button
-            className="icon-button agent-chat-send is-stop"
-            onClick={handleCancel}
-            title={t('agentChatStop')}
-            type="button"
-          >
-            <Square size={14} />
-          </button>
+          <Tooltip content={t('agentChatStop')} side="top">
+            <button
+              aria-label={t('agentChatStop')}
+              className="icon-button agent-chat-send is-stop"
+              onClick={handleCancel}
+              type="button"
+            >
+              <Square size={14} />
+            </button>
+          </Tooltip>
         ) : (
-          <button
-            className="icon-button agent-chat-send"
-            disabled={!input.trim() || !modelId}
-            onClick={() => void handleSend()}
-            title={t('agentChatSend')}
-            type="button"
-          >
-            <Send size={14} />
-          </button>
+          <Tooltip content={t('agentChatSend')} side="top">
+            <button
+              aria-label={t('agentChatSend')}
+              className="icon-button agent-chat-send"
+              disabled={!input.trim() || !modelId}
+              onClick={() => void handleSend()}
+              type="button"
+            >
+              <Send size={14} />
+            </button>
+          </Tooltip>
         )}
       </div>
     </div>

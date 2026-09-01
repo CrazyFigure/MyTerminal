@@ -3,6 +3,7 @@ import { Download, PackageCheck, RotateCcw, Save, Trash2, Upload } from "lucide-
 
 import { clamp } from "../../app/layout";
 import { CustomSelect } from "../../CustomSelect";
+import { Tooltip } from "../../components/Tooltip";
 import type { TranslationKey } from "../../i18n";
 import type { AppSettings, DownloadProgress, FontPackStatus, UiLanguage } from "../../types";
 import {
@@ -249,24 +250,25 @@ export function AppearanceSettingsSection({
                 type="number"
                 value={draftSettings.shellFontSize}
               />
-              <button
-                aria-label={t("resetResourceSettings")}
-                className="icon-button field-reset-button"
-                disabled={
-                  draftSettings.shellFontSize ===
-                  appearanceFieldDefaults.shellFontSize
-                }
-                onClick={() =>
-                  onUpdate((current) => ({
-                    ...current,
-                    shellFontSize: appearanceFieldDefaults.shellFontSize,
-                  }))
-                }
-                title={t("resetResourceSettings")}
-                type="button"
-              >
-                <RotateCcw size={14} />
-              </button>
+              <Tooltip content={t("resetResourceSettings")} side="top">
+                <button
+                  aria-label={t("resetResourceSettings")}
+                  className="icon-button field-reset-button"
+                  disabled={
+                    draftSettings.shellFontSize ===
+                    appearanceFieldDefaults.shellFontSize
+                  }
+                  onClick={() =>
+                    onUpdate((current) => ({
+                      ...current,
+                      shellFontSize: appearanceFieldDefaults.shellFontSize,
+                    }))
+                  }
+                  type="button"
+                >
+                  <RotateCcw size={14} />
+                </button>
+              </Tooltip>
             </div>
           </label>
           {/* 行高是字号的倍数；xterm 对小于 1 的行高会直接抛错，下限锁死在 1。 */}
@@ -289,24 +291,25 @@ export function AppearanceSettingsSection({
                 type="number"
                 value={draftSettings.shellLineHeight}
               />
-              <button
-                aria-label={t("resetResourceSettings")}
-                className="icon-button field-reset-button"
-                disabled={
-                  draftSettings.shellLineHeight ===
-                  appearanceFieldDefaults.shellLineHeight
-                }
-                onClick={() =>
-                  onUpdate((current) => ({
-                    ...current,
-                    shellLineHeight: appearanceFieldDefaults.shellLineHeight,
-                  }))
-                }
-                title={t("resetResourceSettings")}
-                type="button"
-              >
-                <RotateCcw size={14} />
-              </button>
+              <Tooltip content={t("resetResourceSettings")} side="top">
+                <button
+                  aria-label={t("resetResourceSettings")}
+                  className="icon-button field-reset-button"
+                  disabled={
+                    draftSettings.shellLineHeight ===
+                    appearanceFieldDefaults.shellLineHeight
+                  }
+                  onClick={() =>
+                    onUpdate((current) => ({
+                      ...current,
+                      shellLineHeight: appearanceFieldDefaults.shellLineHeight,
+                    }))
+                  }
+                  type="button"
+                >
+                  <RotateCcw size={14} />
+                </button>
+              </Tooltip>
             </div>
           </label>
           <div
@@ -392,26 +395,27 @@ export function AppearanceSettingsSection({
                   appearanceFieldDefaults.agentChatFontSize
                 }
               />
-              <button
-                aria-label={t("resetResourceSettings")}
-                className="icon-button field-reset-button"
-                disabled={
-                  (draftSettings.agentChatFontSize ??
-                    appearanceFieldDefaults.agentChatFontSize) ===
-                  appearanceFieldDefaults.agentChatFontSize
-                }
-                onClick={() =>
-                  onUpdate((current) => ({
-                    ...current,
-                    agentChatFontSize:
-                      appearanceFieldDefaults.agentChatFontSize,
-                  }))
-                }
-                title={t("resetResourceSettings")}
-                type="button"
-              >
-                <RotateCcw size={14} />
-              </button>
+              <Tooltip content={t("resetResourceSettings")} side="top">
+                <button
+                  aria-label={t("resetResourceSettings")}
+                  className="icon-button field-reset-button"
+                  disabled={
+                    (draftSettings.agentChatFontSize ??
+                      appearanceFieldDefaults.agentChatFontSize) ===
+                    appearanceFieldDefaults.agentChatFontSize
+                  }
+                  onClick={() =>
+                    onUpdate((current) => ({
+                      ...current,
+                      agentChatFontSize:
+                        appearanceFieldDefaults.agentChatFontSize,
+                    }))
+                  }
+                  type="button"
+                >
+                  <RotateCcw size={14} />
+                </button>
+              </Tooltip>
             </div>
           </label>
           {/* 对话行高与终端行高相互独立，没有“0 表示跟随”语义；预览面板实时反映基准值效果。 */}
@@ -437,26 +441,27 @@ export function AppearanceSettingsSection({
                   appearanceFieldDefaults.agentChatLineHeight
                 }
               />
-              <button
-                aria-label={t("resetResourceSettings")}
-                className="icon-button field-reset-button"
-                disabled={
-                  (draftSettings.agentChatLineHeight ??
-                    appearanceFieldDefaults.agentChatLineHeight) ===
-                  appearanceFieldDefaults.agentChatLineHeight
-                }
-                onClick={() =>
-                  onUpdate((current) => ({
-                    ...current,
-                    agentChatLineHeight:
-                      appearanceFieldDefaults.agentChatLineHeight,
-                  }))
-                }
-                title={t("resetResourceSettings")}
-                type="button"
-              >
-                <RotateCcw size={14} />
-              </button>
+              <Tooltip content={t("resetResourceSettings")} side="top">
+                <button
+                  aria-label={t("resetResourceSettings")}
+                  className="icon-button field-reset-button"
+                  disabled={
+                    (draftSettings.agentChatLineHeight ??
+                      appearanceFieldDefaults.agentChatLineHeight) ===
+                    appearanceFieldDefaults.agentChatLineHeight
+                  }
+                  onClick={() =>
+                    onUpdate((current) => ({
+                      ...current,
+                      agentChatLineHeight:
+                        appearanceFieldDefaults.agentChatLineHeight,
+                    }))
+                  }
+                  type="button"
+                >
+                  <RotateCcw size={14} />
+                </button>
+              </Tooltip>
             </div>
           </label>
           {/* 空字体与 0 字号都表示跟随终端设置，老配置升级后对话区观感保持不变。 */}
