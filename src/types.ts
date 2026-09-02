@@ -512,6 +512,7 @@ export interface AgentBridgeStatus {
   discoveryPath: string;
   cliCommand: string;
   mcpCommand: string;
+  /** 生命周期独立于 GUI 与 dev target 的 stdio CLI，Codex 会话可跨 MyTerminal 重启继续复用。 */
   cliPath?: string;
   // 当前实际数据目录，前端将它作为旧版固定发现兜底；多实例默认通过全局注册表选择最新健康 Broker。
   dataDir: string;

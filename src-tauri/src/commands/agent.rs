@@ -13,8 +13,8 @@ use crate::{
 };
 
 use super::{
-    prepare_agent_bridge_startup, AgentBridgeNotificationActionEvent,
-    AgentBridgeNotificationRequest, AGENT_BRIDGE_NOTIFICATION_ACTION_EVENT,
+    AgentBridgeNotificationActionEvent, AgentBridgeNotificationRequest,
+    AGENT_BRIDGE_NOTIFICATION_ACTION_EVENT,
     AGENT_BRIDGE_NOTIFICATION_APPROVE_ACTION_ID, AGENT_BRIDGE_NOTIFICATION_REJECT_ACTION_ID,
 };
 
@@ -284,9 +284,7 @@ pub fn set_agent_bridge_enabled(
     let mut settings = state.storage.load_settings(&state.crypto)?;
     settings.agent_bridge.enabled = enabled;
     state.storage.save_settings(&settings, &state.crypto)?;
-    if enabled {
-        prepare_agent_bridge_startup()?;
-    }
+    // stdio MCP 进程由 Codex 等客户端托管；开关只调整 GUI Broker，不能杀掉客户端已经注册的 MCP server。
     agent_bridge::sync_server(
         &state.agent_bridge,
         &state.storage,
@@ -309,9 +307,7 @@ pub fn reset_agent_bridge_token(
     let settings = state.storage.load_settings(&state.crypto)?;
     agent_bridge::stop_server(&state.agent_bridge, &state.storage)?;
     agent_bridge::reset_agent_bridge_token(&state.storage)?;
-    if settings.agent_bridge.enabled {
-        prepare_agent_bridge_startup()?;
-    }
+    // CLI 每次工具调用都会重新发现 Broker 与 token；重置凭据无需重启或终止 stdio MCP 进程。
     agent_bridge::sync_server(
         &state.agent_bridge,
         &state.storage,

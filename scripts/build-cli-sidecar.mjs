@@ -70,27 +70,32 @@ function loadStoredFingerprint() {
   }
 }
 
-// Windows 上即使内容相同，重复 copy 也会刷新 externalBin 时间戳并使 Tauri 主程序重新链接。
-function copyFileIfChanged(sourcePath, targetPath) {
-  const isSameFile = existsSync(targetPath)
+// 只有两个真实文件的长度和内容都一致时才视为同一构建；该规则同时服务 externalBin 复制与 dev 锁定判断。
+function filesHaveSameContent(sourcePath, targetPath) {
+  return existsSync(sourcePath)
+    && existsSync(targetPath)
     && statSync(sourcePath).size === statSync(targetPath).size
     && readFileSync(sourcePath).equals(readFileSync(targetPath));
-  if (isSameFile) {
+}
+
+// Windows 上即使内容相同，重复 copy 也会刷新 externalBin 时间戳并使 Tauri 主程序重新链接。
+function copyFileIfChanged(sourcePath, targetPath) {
+  if (filesHaveSameContent(sourcePath, targetPath)) {
     return false;
   }
   copyFileSync(sourcePath, targetPath);
   return true;
 }
 
-// Windows 不允许覆盖正在运行的 exe。开发态 Codex MCP 可能仍占用 target/debug 下由 Tauri 复制的 sidecar，
-// 因此只在显式 --stop-locked-dev-mcp 模式下，按绝对路径和 mcp --stdio 参数精确停止该旧进程。
-function stopLockedDevMcpSidecar() {
+// Windows 不允许覆盖正在运行的 exe。仅当 target/debug 与即将部署的 externalBin 内容不同时才停止旧 MCP；
+// 普通 dev 重启复用同一构建时保留 stdio 进程，避免 Codex 无故丢失已经注册的 MCP server。
+function stopLockedDevMcpSidecar(nextCliPath) {
   if (process.platform !== 'win32') {
     return;
   }
 
   const debugCliPath = join(srcTauriDir, 'target', 'debug', 'myterminal-cli.exe');
-  if (!existsSync(debugCliPath)) {
+  if (!existsSync(debugCliPath) || filesHaveSameContent(nextCliPath, debugCliPath)) {
     return;
   }
 
@@ -128,9 +133,6 @@ if ($lockedProcesses.Count -gt 0) {
 }
 
 function main() {
-  if (process.argv.includes('--stop-locked-dev-mcp')) {
-    stopLockedDevMcpSidecar();
-  }
   // 一次 rustc 查询同时提供工具链指纹与 host triple，避免为同一启动步骤重复创建子进程。
   const rustcVersion = execFileSync('rustc', ['-vV'], { encoding: 'utf8' });
   const tripleMatch = rustcVersion.match(/^host:\s*(.+)$/m);
@@ -179,6 +181,10 @@ function main() {
 
   // 仅在内容变化时覆盖 externalBin，避免每次开发启动都让 Tauri 主程序误判为需要重新链接。
   const copied = copyFileIfChanged(builtPath, sidecarPath);
+  if (process.argv.includes('--stop-locked-dev-mcp')) {
+    // 先得到本轮确定要部署的 sidecar，再判断旧 debug 文件是否真的需要替换，避免无条件中断 Codex 会话。
+    stopLockedDevMcpSidecar(sidecarPath);
+  }
   mkdirSync(dirname(sidecarFingerprintPath), { recursive: true });
   writeFileSync(sidecarFingerprintPath, `${JSON.stringify({ fingerprint }, null, 2)}\n`, 'utf8');
   console.log(`${copied ? 'Sidecar updated' : 'Sidecar already current'}: ${sidecarPath}`);

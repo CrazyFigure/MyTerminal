@@ -27,44 +27,6 @@ pub(super) fn stop_all_runtimes(state: &AppState) -> Result<(), AppError> {
     Ok(())
 }
 
-#[cfg(windows)]
-fn terminate_myterminal_cli_processes() -> Result<(), AppError> {
-    let script = "Get-CimInstance Win32_Process -Filter \"name like 'myterminal-cli%.exe'\" | \
-         Where-Object { \
-             ($_.Name -eq 'myterminal-cli.exe' -or $_.Name -like 'myterminal-cli-*.exe') -and \
-             $_.CommandLine -match '(?i)(?:^|\\s)mcp\\s+--stdio(?:\\s|$)' \
-         } | \
-         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
-
-    // MCP stdio 进程由 Codex/Claude 等外部客户端启动，可执行文件可能来自安装目录、
-    // 开发 target 目录或带 target-triple 后缀的 sidecar，不能再用主程序旁的固定路径筛选。
-    // 同时校验进程名和完整 `mcp --stdio` 参数，避免影响正在执行普通 CLI 命令的进程。
-    // 发布版主进程没有控制台，关闭应用时启动 PowerShell 必须隐藏窗口，避免退出瞬间闪出黑框。
-    Command::new("powershell")
-        .creation_flags(WINDOWS_CREATE_NO_WINDOW)
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ])
-        .status()
-        .map(|_| ())
-        .map_err(AppError::from)
-}
-
-#[cfg(not(windows))]
-fn terminate_myterminal_cli_processes() -> Result<(), AppError> {
-    // 非 Windows 平台暂不主动扫进程；MCP stdio 客户端正常关闭 stdin 时 CLI 会自然退出。
-    Ok(())
-}
-
-pub fn prepare_agent_bridge_startup() -> Result<(), AppError> {
-    // 每次启用 MCP Bridge 前先关闭旧 stdio 后端，确保客户端重新连接到新编译/新配置的 CLI。
-    terminate_myterminal_cli_processes()
-}
-
 /// 后台 SSH 保活守护线程：周期性向辅助会话与隧道池会话发送协议级 keepalive，
 /// 避免它们在应用后台运行时被服务端/NAT 因空闲回收。交互终端在自己的 shell 循环里保活，此处不处理。
 /// 只有进程未被系统挂起时才生效；Windows 后台节流挂起整个进程时无线程可运行，属于系统层限制。
@@ -295,7 +257,7 @@ fn update_and_emit_tunnel_status(
 }
 
 pub fn shutdown_app_backends(state: &AppState) -> Result<(), AppError> {
-    // 退出清理先停 MyTerminal 自己的 SSH 会话和隧道，再停 MCP Bridge 和外部 CLI 后端。
+    // 退出只清理 MyTerminal 自己的 SSH、隧道与 Broker；stdio MCP 属于 Codex 等客户端进程，必须跨 GUI 重启保留。
     let mut first_error: Option<AppError> = None;
     if let Err(error) = stop_all_runtimes(state) {
         first_error = Some(error);
@@ -305,12 +267,6 @@ pub fn shutdown_app_backends(state: &AppState) -> Result<(), AppError> {
             first_error = Some(error);
         }
     }
-    if let Err(error) = terminate_myterminal_cli_processes() {
-        if first_error.is_none() {
-            first_error = Some(error);
-        }
-    }
-
     if let Some(error) = first_error {
         Err(error)
     } else {
