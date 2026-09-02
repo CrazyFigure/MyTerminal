@@ -276,7 +276,7 @@ export const mockAgentBridgeStatus: AgentBridgeStatus = {
   cliCommand: "myterminal-cli bridge status --json",
   mcpCommand: "myterminal-cli mcp --stdio",
   cliPath:
-    "C:/Software/WorkSpace/MyTerminal/src-tauri/target/debug/myterminal-cli.exe",
+    "C:/Users/User/AppData/Roaming/com.myterminal.app/mcp-runtime/myterminal-cli-preview.exe",
   dataDir: "C:/Software/WorkSpace/MyTerminal/.myterminal-data",
 };
 

@@ -289,8 +289,7 @@ use shell_runtime::{
 
 mod runtime_daemons;
 pub use runtime_daemons::{
-    prepare_agent_bridge_startup, shutdown_app_backends, spawn_keepalive_daemon,
-    spawn_tunnel_monitor,
+    shutdown_app_backends, spawn_keepalive_daemon, spawn_tunnel_monitor,
 };
 use runtime_daemons::stop_all_runtimes;
 

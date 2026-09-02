@@ -514,7 +514,7 @@ export default function App() {
     return () => window.removeEventListener('resize', clampExpandedSidebars);
   }, [agentSidebarCollapsed, agentSidebarWidth, sidebarCollapsed, sidebarWidth]);
 
-  const openAgentRequestPanel = useCallback(async (focusWindow = false) => {
+  const openAgentRequestPanel = useCallback(async () => {
     // MCP 审批入口已经迁到右侧栏，新请求只展开右栏，不再改动底部命令/隧道/历史的当前 tab。
     setAgentSidebarCollapsed(false);
     // 有待审批请求时必须切到审批页签，否则用户停在对话页会完全看不到卡片。
@@ -525,16 +525,12 @@ export default function App() {
     }
 
     try {
-      const { getCurrentWindow, UserAttentionType } = await import('@tauri-apps/api/window');
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
       const currentWindow = getCurrentWindow();
       await currentWindow.show();
       await currentWindow.unminimize();
-      if (focusWindow) {
-        await currentWindow.setFocus();
-      } else {
-        // 未点击通知时只闪烁任务栏，避免外部 agent 请求突然打断用户当前窗口焦点。
-        await currentWindow.requestUserAttention(UserAttentionType.Informational).catch(() => undefined);
-      }
+      // 外部 MCP 人工审批必须把主窗口带到前台；后端也会做一次原生聚焦，覆盖 WebView 尚未订阅事件的时段。
+      await currentWindow.setFocus();
     } catch {
       // Web 预览或系统拒绝聚焦时不影响审批列表本身展示。
     }
@@ -599,7 +595,7 @@ export default function App() {
       });
       notification.onclick = () => {
         notification.close();
-        void openAgentRequestPanel(true);
+        void openAgentRequestPanel();
       };
     } catch {
       // 通知权限、系统策略或 WebView 实现差异都不能阻塞 GUI 审批入口自动展开。
@@ -655,7 +651,7 @@ export default function App() {
       // 只有外部 MCP 请求才进入独立审批页。
       const pendingExternalRequests = pendingNewRequests.filter((request) => !request.conversationId);
       if (pendingExternalRequests.length) {
-        void openAgentRequestPanel(false);
+        void openAgentRequestPanel();
         void showAgentRequestNotification(pendingExternalRequests[0]);
       }
     } catch {
@@ -676,7 +672,7 @@ export default function App() {
         const actionId = event.payload.actionId;
         const requestId = event.payload.requestId;
         if (!requestId) {
-          void openAgentRequestPanel(true);
+          void openAgentRequestPanel();
           return;
         }
 
@@ -698,7 +694,7 @@ export default function App() {
           return;
         }
 
-        void openAgentRequestPanel(true);
+        void openAgentRequestPanel();
       }),
     ).then((unlisten) => {
       if (isMounted) {
@@ -1020,9 +1016,8 @@ export default function App() {
 
 
   useEffect(() => {
-    void refreshAgentBridgeRequests();
-
     if (!isTauriRuntime()) {
+      void refreshAgentBridgeRequests();
       const timer = window.setInterval(() => {
         void refreshAgentBridgeRequests();
       }, 1000);
@@ -1038,17 +1033,40 @@ export default function App() {
     ).then((unlisten) => {
       if (isMounted) {
         unlistenFn = unlisten;
+        // 必须先完成订阅再读取队列：这样请求无论发生在订阅前还是订阅后，都至少会被初次读取或事件捕获一次。
+        void refreshAgentBridgeRequests();
       } else {
         unlisten();
       }
     }).catch(() => {
-      // 事件监听失败时保留初次刷新结果；下一次界面操作仍会主动刷新请求列表。
+      // 事件监听失败时仍做一次直接读取；窗口重新获得焦点或用户进入审批页会继续主动对账。
+      if (isMounted) {
+        void refreshAgentBridgeRequests();
+      }
     });
+
+    const refreshVisibleRequests = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshAgentBridgeRequests();
+      }
+    };
+    window.addEventListener('focus', refreshVisibleRequests);
+    document.addEventListener('visibilitychange', refreshVisibleRequests);
 
     return () => {
       isMounted = false;
       unlistenFn?.();
+      window.removeEventListener('focus', refreshVisibleRequests);
+      document.removeEventListener('visibilitychange', refreshVisibleRequests);
     };
+  }, [refreshAgentBridgeRequests]);
+
+  const handleAgentSidebarTabChange = useCallback((tab: 'chat' | 'requests') => {
+    setAgentSidebarTab(tab);
+    if (tab === 'requests') {
+      // 手工进入审批页时直接与后端队列对账，修复事件丢失或页面挂起恢复后一直显示空列表的问题。
+      void refreshAgentBridgeRequests();
+    }
   }, [refreshAgentBridgeRequests]);
 
   // 命令输入框按会话分别暂存，切换标签时各自的半句命令都还在。
@@ -1982,7 +2000,7 @@ export default function App() {
           onApproveRequest={approveAgentBridgeRequest}
           onClearRequests={clearAgentBridgeRequests}
           onRejectRequest={rejectAgentBridgeRequest}
-          onTabChange={setAgentSidebarTab}
+          onTabChange={handleAgentSidebarTabChange}
           providers={agentProviders}
           requestPanel={agentRequestPanel}
           settings={settings}

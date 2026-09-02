@@ -162,6 +162,12 @@ impl StorageService {
         Self::platform_data_dir().join("agent-bridge-instances")
     }
 
+    /// MCP stdio 入口必须脱离安装目录与 Cargo target：GUI 或 dev 重启时，Codex 已拉起的 CLI 进程仍需存活。
+    /// 安装版与开发版共用该目录，但具体文件按内容指纹分版，避免互相覆盖正在运行的 Windows 可执行文件。
+    pub fn agent_bridge_mcp_runtime_dir_path() -> PathBuf {
+        Self::platform_data_dir().join("mcp-runtime")
+    }
+
     pub fn downloads_dir_path(&self) -> PathBuf {
         self.data_dir.join("downloads")
     }

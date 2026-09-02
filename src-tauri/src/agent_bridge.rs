@@ -16,6 +16,7 @@ use chrono::Utc;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use ssh2::Session;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -82,7 +83,7 @@ pub struct AgentBridgeStatus {
     pub discovery_path: String,
     pub cli_command: String,
     pub mcp_command: String,
-    /// 随应用一同分发的 myterminal-cli 可执行文件绝对路径，供前端拼出直连 stdio 的 MCP 配置。
+    /// 生命周期独立于 GUI 与 dev target 的 CLI 绝对路径，供前端生成可跨应用重启复用的 stdio MCP 配置。
     pub cli_path: Option<String>,
     /// 当前实际使用的数据目录，供前端在 MCP 配置里注入 MYTERMINAL_DATA_DIR，保证 CLI 无论从哪启动都能定位 Broker。
     pub data_dir: String,
@@ -591,6 +592,25 @@ fn remove_owned_discovery(storage: &StorageService, server: &AgentBridgeServer) 
     }
 }
 
+/// 外部 MCP 请求进入人工审批后立即恢复并聚焦主窗口。
+/// 这层原生兜底不依赖 WebView 已完成事件订阅；前端收到同一队列事件后再负责展开右栏并切换审批页签。
+fn focus_external_approval_window(runtime: &AgentBridgeRuntime) {
+    let app_handle = runtime
+        .app_handle
+        .lock()
+        .ok()
+        .and_then(|handle| handle.clone());
+    let Some(app_handle) = app_handle else {
+        return;
+    };
+    let Some(window) = app_handle.get_webview_window("main") else {
+        return;
+    };
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+}
+
 /// Bridge 未启用时仅删除确认失效的本地记录，不能把另一个共用数据目录的健康实例误清掉。
 fn remove_stale_local_discovery(storage: &StorageService) {
     let path = storage.agent_bridge_discovery_path();
@@ -632,6 +652,73 @@ fn resolve_cli_executable() -> Option<PathBuf> {
     None
 }
 
+/// 把随 GUI 分发的 CLI 复制到按内容指纹分版的稳定目录。
+/// Codex 持有的是这里的 stdio 进程，因此关闭 GUI、重启安装版或重新编译 dev 都不会再把 MCP 服务一并杀掉。
+fn materialize_durable_mcp_cli(source: &Path, runtime_dir: &Path) -> Result<PathBuf, AppError> {
+    let mut source_file = fs::File::open(source)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let size = source_file.read(&mut buffer)?;
+        if size == 0 {
+            break;
+        }
+        hasher.update(&buffer[..size]);
+    }
+    let fingerprint = format!("{:x}", hasher.finalize());
+    let extension = source.extension().and_then(|value| value.to_str());
+    let file_name = match extension {
+        Some(extension) if !extension.is_empty() => {
+            format!("myterminal-cli-{fingerprint}.{extension}")
+        }
+        _ => format!("myterminal-cli-{fingerprint}"),
+    };
+
+    fs::create_dir_all(runtime_dir)?;
+    let target = runtime_dir.join(file_name);
+    let source_size = fs::metadata(source)?.len();
+    if fs::metadata(&target)
+        .ok()
+        .is_some_and(|metadata| metadata.len() == source_size)
+    {
+        return Ok(target);
+    }
+
+    // 同时启动安装版和开发版时可能复制同一构建；每个进程先写独立临时文件，再竞争发布最终指纹路径。
+    let temporary = runtime_dir.join(format!("myterminal-cli-{}.tmp", uuid::Uuid::new_v4()));
+    fs::copy(source, &temporary)?;
+    match fs::rename(&temporary, &target) {
+        Ok(()) => Ok(target),
+        Err(_error)
+            if fs::metadata(&target)
+                .ok()
+                .is_some_and(|metadata| metadata.len() == source_size) =>
+        {
+            let _ = fs::remove_file(&temporary);
+            Ok(target)
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&temporary);
+            Err(error.into())
+        }
+    }
+}
+
+/// 优先返回生命周期独立的 MCP CLI；复制失败时保留原 sidecar 兜底，不能让设置页和既有 MCP 功能整体不可用。
+fn resolve_durable_mcp_cli_executable() -> Option<PathBuf> {
+    let source = resolve_cli_executable()?;
+    match materialize_durable_mcp_cli(
+        &source,
+        &StorageService::agent_bridge_mcp_runtime_dir_path(),
+    ) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            eprintln!("failed to materialize durable MCP CLI: {error}");
+            Some(source)
+        }
+    }
+}
+
 pub fn bridge_status(
     runtime: &AgentBridgeRuntime,
     storage: &StorageService,
@@ -665,7 +752,8 @@ pub fn bridge_status(
         data_dir: storage.data_dir_path().to_string_lossy().to_string(),
         cli_command,
         mcp_command,
-        cli_path: resolve_cli_executable().map(|path| path.to_string_lossy().to_string()),
+        cli_path: resolve_durable_mcp_cli_executable()
+            .map(|path| path.to_string_lossy().to_string()),
     })
 }
 
@@ -1832,6 +1920,37 @@ mod tests {
         };
         assert!(requests::should_auto_execute(&settings, "safe"));
         assert!(!requests::should_auto_execute(&settings, "prod"));
+    }
+
+    #[test]
+    fn durable_mcp_cli_is_content_versioned_and_reused() {
+        // 使用隔离临时目录模拟 CLI 产物；同内容必须复用同一路径，内容变化则发布新路径，不能覆盖旧会话正在运行的文件。
+        let test_dir = std::env::temp_dir().join(format!(
+            "myterminal-durable-mcp-cli-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let source = test_dir.join("source").join("myterminal-cli.exe");
+        let runtime_dir = test_dir.join("runtime");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, b"first-cli-build").unwrap();
+
+        let first = materialize_durable_mcp_cli(&source, &runtime_dir).unwrap();
+        let reused = materialize_durable_mcp_cli(&source, &runtime_dir).unwrap();
+        assert_eq!(first, reused);
+        assert_eq!(fs::read(&first).unwrap(), b"first-cli-build");
+
+        fs::write(&source, b"second-cli-build").unwrap();
+        let second = materialize_durable_mcp_cli(&source, &runtime_dir).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(fs::read(&first).unwrap(), b"first-cli-build");
+        assert_eq!(fs::read(&second).unwrap(), b"second-cli-build");
+
+        // 只清理由本用例创建且带固定前缀的临时目录，绝不触碰真实 MCP runtime。
+        assert!(test_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("myterminal-durable-mcp-cli-test-")));
+        fs::remove_dir_all(test_dir).unwrap();
     }
 
     #[test]

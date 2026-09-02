@@ -121,8 +121,8 @@ export const buildAgentMcpConfig = (status?: AgentBridgeStatus | null) => {
     ? { MYTERMINAL_DATA_DIR: dataDir, MYTERMINAL_BRIDGE_SELECTION: 'latest' }
     : { MYTERMINAL_BRIDGE_SELECTION: 'latest' };
 
-  // 安装版随应用分发 myterminal-cli（含 target triple 后缀的 sidecar），后端解析出绝对路径后
-  // 直接作为 stdio MCP server，免去 npx 与本地 launcher 包依赖；两台机器路径天然各自正确。
+  // 后端把随应用分发的 CLI 固化到按内容指纹分版的用户目录；Codex 持有该稳定 stdio 进程，
+  // 关闭 GUI、升级安装版或重新启动 dev 都不会再因 sidecar 被替换而丢失 MCP 注册。
   let server: Record<string, unknown>;
   if (cliPath) {
     server = { type: 'stdio', command: cliPath, args: ['mcp', '--stdio'] };

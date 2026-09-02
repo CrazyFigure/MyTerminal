@@ -299,32 +299,38 @@ fn enqueue_request(
         ),
     };
     let id = uuid::Uuid::new_v4().to_string();
-    let mut requests = lock_requests(runtime)?;
-    requests.push_front(AgentBridgeRequest {
-        id: id.clone(),
-        kind,
-        status: "pending".into(),
-        connection_id: session.connection_id.clone(),
-        session_id: Some(session.id.clone()),
-        title: session.title.clone(),
-        command,
-        path,
-        new_path,
-        content_preview: preview,
-        logs: vec!["等待 GUI 审批。".into()],
-        result: None,
-        error: None,
-        created_at: now.clone(),
-        updated_at: now,
-        conversation_id: context.map(|value| value.conversation_id.to_string()),
-        tool_call_id: context.map(|value| value.tool_call_id.to_string()),
-        action,
-    });
-    while requests.len() > AGENT_BRIDGE_HISTORY_LIMIT {
-        requests.pop_back();
+    {
+        let mut requests = lock_requests(runtime)?;
+        requests.push_front(AgentBridgeRequest {
+            id: id.clone(),
+            kind,
+            status: "pending".into(),
+            connection_id: session.connection_id.clone(),
+            session_id: Some(session.id.clone()),
+            title: session.title.clone(),
+            command,
+            path,
+            new_path,
+            content_preview: preview,
+            logs: vec!["等待 GUI 审批。".into()],
+            result: None,
+            error: None,
+            created_at: now.clone(),
+            updated_at: now,
+            conversation_id: context.map(|value| value.conversation_id.to_string()),
+            tool_call_id: context.map(|value| value.tool_call_id.to_string()),
+            action,
+        });
+        while requests.len() > AGENT_BRIDGE_HISTORY_LIMIT {
+            requests.pop_back();
+        }
     }
     runtime.request_changed.notify_all();
     emit_requests_changed(runtime);
+    // 内置对话审批保留在当前窗口上下文；只有外部 MCP 请求需要强制把主窗口带到前台。
+    if context.is_none() {
+        focus_external_approval_window(runtime);
+    }
     Ok(id)
 }
 
