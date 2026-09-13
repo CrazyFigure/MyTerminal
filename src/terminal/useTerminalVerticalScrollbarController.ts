@@ -191,6 +191,13 @@ export function useTerminalVerticalScrollbarController({
       return;
     }
 
+    // 与终端选区同理：光标移出应用窗口后松手时 mouseup 不会送达，靠按键位掩码判定左键已抬起并结束拖拽，
+    // 否则拇指会继续跟着光标滚动，用户会误以为滚动条仍在被按住。
+    if ((event.buttons & 1) === 0) {
+      stopTerminalVerticalScrollbarDrag();
+      return;
+    }
+
     scrollTerminalVerticalScrollbarToThumbTop(
       dragState.originThumbTop + event.clientY - dragState.originY,
       dragState,
