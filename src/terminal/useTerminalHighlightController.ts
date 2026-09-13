@@ -32,6 +32,7 @@ import {
   type TerminalMatchDecorationRange,
   type TerminalMatchRange,
   type TerminalPromptHighlightColors,
+  type TerminalSelectionPosition,
   type TerminalSelectionSnapshot,
 } from './support';
 
@@ -68,6 +69,9 @@ export function useTerminalHighlightController({
   const terminalSelectionRestoreActiveRef = useRef(false);
   const terminalSelectionDragActiveRef = useRef(false);
   const terminalSelectionDragFrameRef = useRef<number | null>(null);
+  // 左键是否仍按在编辑区内。必须与 terminalSelectionDragActiveRef 分开维护：后者由 window 的 mouseup 清除，
+  // 而 xterm 内部的拖拽监听只有它自己收到 mouseup 才会解绑；两个信号可能不同步，任何一方都不能代表另一方。
+  const terminalPrimaryButtonDownRef = useRef(false);
 
   // 覆盖层宽高必须来自 xterm 实际内容盒，不能让旧 SVG 自身参与 scrollWidth 并形成宽度正反馈。
   const resolveTerminalAuxiliaryLayerSize = (container: HTMLDivElement) => {
@@ -288,23 +292,34 @@ export function useTerminalHighlightController({
     return snapshot;
   };
 
+  // 统一的选区落点入口。xterm 只在收到 mouseup 或重新落一次选区时才摘除 document 上的 drag 监听
+  // （见 SelectionService.setSelection 会调用 _removeMouseDownListeners），所以它同时承担两件事：
+  // 恢复快照选区，以及丢弃丢失 mouseup 后残留在 document 上的拖拽监听。
+  const applyTerminalSelectionPosition = (
+    terminal: Terminal,
+    position: TerminalSelectionPosition,
+  ) => {
+    const selectionLength = resolveTerminalSelectionLength(position, terminal.cols);
+    if (selectionLength <= 0) {
+      return false;
+    }
+
+    terminalSelectionRestoreActiveRef.current = true;
+    try {
+      terminal.select(position.start.x, position.start.y, selectionLength);
+    } finally {
+      terminalSelectionRestoreActiveRef.current = false;
+    }
+    return true;
+  };
+
   const restoreTerminalSelectionFromSnapshot = (snapshot: TerminalSelectionSnapshot) => {
     const terminal = terminalRef.current;
     if (!terminal || terminal.hasSelection()) {
       return;
     }
 
-    const selectionLength = resolveTerminalSelectionLength(snapshot.position, terminal.cols);
-    if (selectionLength <= 0) {
-      return;
-    }
-
-    terminalSelectionRestoreActiveRef.current = true;
-    try {
-      terminal.select(snapshot.position.start.x, snapshot.position.start.y, selectionLength);
-    } finally {
-      terminalSelectionRestoreActiveRef.current = false;
-    }
+    applyTerminalSelectionPosition(terminal, snapshot.position);
   };
 
   const resolveTerminalHighlightMetrics = () => {
@@ -449,6 +464,50 @@ export function useTerminalHighlightController({
     syncTerminalSelectionOverlay();
   };
 
+  // 摘除 xterm 内部残留的拖拽监听，同时保住用户已经选中的内容。
+  // xterm 的 SelectionService 把 mousemove / mouseup 挂在 document 上（SelectionService._addMouseDownListeners），
+  // 且只有自己收到 mouseup 或重新落一次选区（setSelection 内部会走 _removeMouseDownListeners）才会解绑。
+  // 因此监听一旦残留，光标回到编辑区后每次 mousemove 都会继续拉伸选区；这里借 select() 这条唯一公开路径强制解绑。
+  const releaseTerminalNativeDragListeners = () => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+
+    const position = terminal.getSelectionPosition();
+    if (!position || !terminal.hasSelection() || !terminalSelectionPositionHasRange(position)) {
+      // 没有需要保留的选区时，清空是幂等的，只是借同一条路径摘掉残留监听（如只按下未拖动的情况）。
+      terminal.clearSelection();
+      return;
+    }
+
+    applyTerminalSelectionPosition(terminal, position);
+    // 强制落选区期间 onSelectionChange 处于恢复抑制窗口内，这里补记一次快照，保证后续复制与同词匹配仍有回退依据。
+    captureTerminalSelectionSnapshot();
+  };
+
+  // 拖拽状态的唯一权威收敛入口：先落下「左键不再按着」这个事实，再清理残留。
+  // 关键点是应该在按键位掩码复核里无条件调用，不能只在 terminalSelectionDragActiveRef 仍为 true 时才进入——
+  // 该标记会被 window 捕获阶段的 mouseup 提前清掉，而 xterm 的残留监听此时往往还在。
+  const reconcileTerminalSelectionDragState = () => {
+    const shouldReleaseNativeListeners = terminalPrimaryButtonDownRef.current;
+    terminalPrimaryButtonDownRef.current = false;
+    stopTerminalSelectionDragSync();
+    if (shouldReleaseNativeListeners) {
+      releaseTerminalNativeDragListeners();
+    }
+  };
+
+  // 指针事件自带按键位掩码，用它复核左键是否仍然按着，可以兜住任何一种丢失 mouseup 的情形。
+  const verifyTerminalSelectionDragPointerState = (event: MouseEvent) => {
+    if (!terminalPrimaryButtonDownRef.current) {
+      return;
+    }
+    if ((event.buttons & 1) === 0) {
+      reconcileTerminalSelectionDragState();
+    }
+  };
+
   const scheduleTerminalSelectionDragSync = () => {
     if (!terminalSelectionDragActiveRef.current || terminalSelectionDragFrameRef.current !== null) {
       return;
@@ -467,6 +526,7 @@ export function useTerminalHighlightController({
       return;
     }
     clearTerminalSelectionSnapshot();
+    terminalPrimaryButtonDownRef.current = true;
     terminalSelectionDragActiveRef.current = true;
     scheduleTerminalSelectionDragSync();
   };
@@ -678,6 +738,7 @@ export function useTerminalHighlightController({
       }
     }
     terminalSelectionDragActiveRef.current = false;
+    terminalPrimaryButtonDownRef.current = false;
     clearTerminalMatchDecorations();
   };
 
@@ -687,6 +748,7 @@ export function useTerminalHighlightController({
     clearTerminalPromptHighlights,
     clearTerminalSelectionSnapshot,
     disposeTerminalHighlightController,
+    reconcileTerminalSelectionDragState,
     resolveTerminalSelectionSnapshot,
     scheduleTerminalMatchHighlightRefresh,
     scheduleTerminalPromptHighlightRefresh,
@@ -699,5 +761,6 @@ export function useTerminalHighlightController({
     terminalPromptHighlightOverlayRef,
     terminalSelectionOverlayRef,
     terminalSelectionRestoreActiveRef,
+    verifyTerminalSelectionDragPointerState,
   };
 }

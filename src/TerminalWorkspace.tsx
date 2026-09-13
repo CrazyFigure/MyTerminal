@@ -198,6 +198,7 @@ export function TerminalWorkspace({
     clearTerminalPromptHighlights,
     clearTerminalSelectionSnapshot,
     disposeTerminalHighlightController,
+    reconcileTerminalSelectionDragState,
     resolveTerminalSelectionSnapshot,
     scheduleTerminalMatchHighlightRefresh,
     scheduleTerminalPromptHighlightRefresh,
@@ -210,6 +211,7 @@ export function TerminalWorkspace({
     terminalPromptHighlightOverlayRef,
     terminalSelectionOverlayRef,
     terminalSelectionRestoreActiveRef,
+    verifyTerminalSelectionDragPointerState,
   } = useTerminalHighlightController({
     containerRef,
     isAiAgentTerminalSessionRef,
@@ -1654,7 +1656,12 @@ export function TerminalWorkspace({
     observer.observe(containerRef.current);
     window.addEventListener('resize', scheduleTerminalSizeSync);
     window.addEventListener('mouseup', stopTerminalSelectionDragSync, true);
-    window.addEventListener('blur', stopTerminalSelectionDragSync);
+    // window 的 mouseup 只能清掉自绘覆盖层的循环，清不掉 xterm 内部挂在 document 上的拖拽监听：两者可能不同步，
+    // 因此必须用指针事件自带的按键位掩码独立复核左键是否仍按着，一旦抬起就强制收敛，避免松手后选区继续跟着光标走。
+    window.addEventListener('mousemove', verifyTerminalSelectionDragPointerState, true);
+    window.addEventListener('pointermove', verifyTerminalSelectionDragPointerState, true);
+    window.addEventListener('pointercancel', reconcileTerminalSelectionDragState);
+    window.addEventListener('blur', reconcileTerminalSelectionDragState);
     window.addEventListener('mousemove', syncTerminalVerticalScrollbarDrag, true);
     window.addEventListener('mouseup', stopTerminalVerticalScrollbarDrag, true);
     window.addEventListener('blur', stopTerminalVerticalScrollbarDrag);
@@ -1714,7 +1721,10 @@ export function TerminalWorkspace({
       observer.disconnect();
       window.removeEventListener('resize', scheduleTerminalSizeSync);
       window.removeEventListener('mouseup', stopTerminalSelectionDragSync, true);
-      window.removeEventListener('blur', stopTerminalSelectionDragSync);
+      window.removeEventListener('mousemove', verifyTerminalSelectionDragPointerState, true);
+      window.removeEventListener('pointermove', verifyTerminalSelectionDragPointerState, true);
+      window.removeEventListener('pointercancel', reconcileTerminalSelectionDragState);
+      window.removeEventListener('blur', reconcileTerminalSelectionDragState);
       window.removeEventListener('mousemove', syncTerminalVerticalScrollbarDrag, true);
       window.removeEventListener('mouseup', stopTerminalVerticalScrollbarDrag, true);
       window.removeEventListener('blur', stopTerminalVerticalScrollbarDrag);
