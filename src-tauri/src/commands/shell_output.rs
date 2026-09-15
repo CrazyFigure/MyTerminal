@@ -95,6 +95,120 @@ fn trailing_shell_sync_marker_prefix_len(value: &str) -> usize {
     keep
 }
 
+/// 判断去除 ANSI 后的行首是否是常见 Unix Shell 提示符。
+/// 这里只用于“光标刚被动态程序纵向移动过”的保守兜底，不把普通命令输出里的任意 `$`/`#` 当成提示符。
+fn is_unix_shell_prompt_prefix(value: &str) -> bool {
+    let mut candidate = value.trim_start();
+    // Python venv、Conda 等环境名可以叠加在真正的 user@host 前面；只跳过短且闭合的前缀。
+    while let Some(rest) = candidate.strip_prefix('(') {
+        let Some(end) = rest.find(')') else {
+            return false;
+        };
+        if end > 64 {
+            return false;
+        }
+        candidate = rest[end + 1..].trim_start();
+    }
+
+    let Some(at_index) = candidate.find('@') else {
+        return false;
+    };
+    let user = &candidate[..at_index];
+    if user.is_empty()
+        || !user
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._+-".contains(character))
+    {
+        return false;
+    }
+
+    let after_at = &candidate[at_index + 1..];
+    let Some(colon_index) = after_at.find(':') else {
+        return false;
+    };
+    let host = &after_at[..colon_index];
+    if host.is_empty()
+        || !host
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
+    {
+        return false;
+    }
+
+    let after_colon = &after_at[colon_index + 1..];
+    after_colon.char_indices().any(|(index, character)| {
+        matches!(character, '#' | '$' | '%')
+            && after_colon[index + character.len_utf8()..]
+                .chars()
+                .next()
+                .map_or(true, char::is_whitespace)
+    })
+}
+
+/// 返回当前输出最后一条可见行中 Unix 提示符首字符的原始字节位置。
+/// ANSI 颜色码和光标控制不计入可见文本，但其状态仍留在提示符前方，调用方可先应用控制序列再修正落点。
+fn find_unintegrated_unix_prompt_start(value: &str) -> Option<usize> {
+    let mut escape_state = TerminalVisibleLineEscapeState::Ground;
+    let mut visible = String::new();
+    let mut first_visible_index = None;
+
+    for (index, character) in value.char_indices() {
+        let byte = character as u32;
+        escape_state = match escape_state {
+            TerminalVisibleLineEscapeState::Ground => match character {
+                '\x1b' => TerminalVisibleLineEscapeState::Escape,
+                '\r' | '\n' => {
+                    visible.clear();
+                    first_visible_index = None;
+                    TerminalVisibleLineEscapeState::Ground
+                }
+                '\t' => {
+                    first_visible_index.get_or_insert(index);
+                    visible.push(' ');
+                    TerminalVisibleLineEscapeState::Ground
+                }
+                _ if byte <= 0x1f || byte == 0x7f => TerminalVisibleLineEscapeState::Ground,
+                _ => {
+                    first_visible_index.get_or_insert(index);
+                    visible.push(character);
+                    TerminalVisibleLineEscapeState::Ground
+                }
+            },
+            TerminalVisibleLineEscapeState::Escape => match character {
+                '[' => TerminalVisibleLineEscapeState::Csi,
+                ']' | 'P' | '_' | '^' => TerminalVisibleLineEscapeState::String,
+                '\x1b' => TerminalVisibleLineEscapeState::Escape,
+                _ => TerminalVisibleLineEscapeState::Ground,
+            },
+            TerminalVisibleLineEscapeState::Csi => {
+                if ('@'..='~').contains(&character) {
+                    TerminalVisibleLineEscapeState::Ground
+                } else if character == '\x1b' {
+                    TerminalVisibleLineEscapeState::Escape
+                } else {
+                    TerminalVisibleLineEscapeState::Csi
+                }
+            }
+            TerminalVisibleLineEscapeState::String => match character {
+                '\x07' => TerminalVisibleLineEscapeState::Ground,
+                '\x1b' => TerminalVisibleLineEscapeState::StringEscape,
+                _ => TerminalVisibleLineEscapeState::String,
+            },
+            TerminalVisibleLineEscapeState::StringEscape => match character {
+                '\\' => TerminalVisibleLineEscapeState::Ground,
+                '\x1b' => TerminalVisibleLineEscapeState::StringEscape,
+                _ => TerminalVisibleLineEscapeState::String,
+            },
+        };
+    }
+
+    if is_unix_shell_prompt_prefix(&visible) {
+        first_visible_index
+    } else {
+        None
+    }
+}
+
 /// agent 捕获缓冲硬上限；超限后停止累加并标记截断，绝不让一条命令的输出在后端无限驻留。
 /// 用户可见的滚动缓冲不受影响，仍由 TerminalOutputQueue 与前端 LRU 各自管理。
 const AGENT_CAPTURE_MAX_BYTES: usize = 2 * 1024 * 1024;
@@ -282,12 +396,33 @@ impl ShellOutputFilter {
             return;
         }
 
-        self.track_cursor_visibility_sequences(&filtered);
-        self.track_visible_line_state(&filtered);
-        if self.capturing {
-            self.append_capture(&filtered);
+        let fallback_prompt_start = find_unintegrated_unix_prompt_start(&filtered);
+        if let Some(prompt_start) = fallback_prompt_start {
+            let (before_prompt, prompt) = filtered.split_at(prompt_start);
+            self.push_tracked_visible(output, before_prompt);
+            if self.visible_line_position_uncertain {
+                // su/sudo/嵌套 Shell 会丢失 MyTerminal 的 OSC 提示符钩子；若动态程序把光标留在旧状态行，
+                // 在提示符首字符真正写入前把落点移到底部新行，保留原状态行且不留下 `ted` 等尾巴。
+                self.prepare_prompt_line(&mut output.visible);
+            }
+            self.push_tracked_visible(output, prompt);
+            return;
         }
-        output.visible.push_str(&filtered);
+
+        self.push_tracked_visible(output, &filtered);
+    }
+
+    /// 追加一段已完成业务过滤的可见输出，并让光标、行状态和 Agent 捕获始终消费同一份字节流。
+    fn push_tracked_visible(&mut self, output: &mut ShellConsumeOutput, value: &str) {
+        if value.is_empty() {
+            return;
+        }
+        self.track_cursor_visibility_sequences(value);
+        self.track_visible_line_state(value);
+        if self.capturing {
+            self.append_capture(value);
+        }
+        output.visible.push_str(value);
     }
 
     /// 武装或取消 agent 捕获。武装后遇到下一个命令开始标记才真正开始累积；
@@ -505,11 +640,10 @@ impl ShellOutputFilter {
 
     /// 真正的 shell 提示符出现前保留未换行正文，再清空新提示符行；既修复 cat 粘连，也清掉动态重绘留下的 `ted` 等尾巴。
     fn prepare_prompt_line(&mut self, visible: &mut String) {
-        if self.visible_line_dirty {
-            if self.visible_line_position_uncertain {
-                // 光标可能位于旧屏幕任意行；先恢复全屏滚动区并下移到底部，再 LF 滚出新空行，避免 2K 删除下一行正文。
-                visible.push_str("\x1b[r\x1b[999B");
-            }
+        if self.visible_line_position_uncertain {
+            // 即使当前物理行刚被 EL 2 清空，只要光标经历过纵向定位就仍可能停在旧状态行；必须先回到底部再新建提示符行。
+            visible.push_str("\x1b[r\x1b[999B\r\n");
+        } else if self.visible_line_dirty {
             visible.push_str("\r\n");
         }
         // marker 位于 PROMPT_COMMAND/precmd/PS1 开头，此时清行不会删除提示符，只会移除旧进度行或 resize 重绘残留。
@@ -887,6 +1021,48 @@ mod shell_output_filter_tests {
 
         assert_eq!(visible, "Container Started\r\r\n\r\x1b[2K");
         assert_eq!(cwd_updates, vec!["/docker".to_string()]);
+    }
+
+    #[test]
+    fn moves_hooked_prompt_to_bottom_when_cursor_position_is_uncertain_but_line_is_clear() {
+        let mut filter = ShellOutputFilter::default();
+        let (progress_visible, _) = filter.consume_visible("\x1b[1A\r\x1b[2K");
+        assert_eq!(progress_visible, "\x1b[1A\r\x1b[2K");
+
+        let (prompt_visible, cwd_updates) = filter.consume_visible(&prompt_marker("/docker"));
+
+        assert_eq!(prompt_visible, "\x1b[r\x1b[999B\r\n\r\x1b[2K");
+        assert_eq!(cwd_updates, vec!["/docker".to_string()]);
+    }
+
+    #[test]
+    fn moves_unintegrated_child_shell_prompt_below_dynamic_progress_row() {
+        let mut filter = ShellOutputFilter::default();
+        let (progress_visible, _) =
+            filter.consume_visible("Container ology-server Recreated 10.7s\r\n\x1b[1A");
+        assert_eq!(
+            progress_visible,
+            "Container ology-server Recreated 10.7s\r\n\x1b[1A"
+        );
+
+        let colored_prompt = "\x1b[32mroot@Ology\x1b[0m:/ology/ology-server# ";
+        let (prompt_visible, cwd_updates) = filter.consume_visible(colored_prompt);
+
+        assert_eq!(
+            prompt_visible,
+            "\x1b[32m\x1b[r\x1b[999B\r\n\r\x1b[2Kroot@Ology\x1b[0m:/ology/ology-server# "
+        );
+        assert!(cwd_updates.is_empty());
+    }
+
+    #[test]
+    fn leaves_prompt_like_text_untouched_without_prior_cursor_positioning() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (visible, cwd_updates) = filter.consume_visible("root@Ology:/tmp# ordinary output");
+
+        assert_eq!(visible, "root@Ology:/tmp# ordinary output");
+        assert!(cwd_updates.is_empty());
     }
 
     #[test]
