@@ -30,12 +30,18 @@ export type TerminalOutputSubscriber = (
   replayEntry: TerminalReplayEntry | undefined,
 ) => void;
 
+type TerminalOutputSubscription = {
+  // 同一会话可能同时存在于多个终端格；是否可见必须在分片到达时动态读取，不能固化订阅瞬间的状态。
+  isVisible: () => boolean;
+  subscriber: TerminalOutputSubscriber;
+};
+
 // 协议回包必须交回应用层写入 PTY；Hub 只负责判定「该回几次」，不直接触碰后端。
 export type TerminalProtocolReplySender = (sessionId: string, data: string) => void;
 
 const outputCache = new TerminalOutputCache();
 // 同一 sessionId 可能有多个订阅者（同一会话出现在多个格子里时）；用 Set 保证各自都收到。
-const subscribers = new Map<string, Set<TerminalOutputSubscriber>>();
+const subscribers = new Map<string, Set<TerminalOutputSubscription>>();
 const xtVersionParserStateBySession = new Map<string, TerminalXtVersionQueryParserState>();
 const gutterSessionData: Record<string, TerminalGutterSessionData> = {};
 
@@ -85,20 +91,20 @@ const handleTerminalOutput = (event: Event) => {
   // 只扫描后端实时分片并立刻按原会话回包；缓存重放只经过 xterm parser，因此不会重复响应。
   replyXtVersionQueries(chunk);
 
-  // 有订阅者即视为「该会话正在被渲染」，套用活动会话的更宽缓存上限。
+  // 标签切走后仍保留 xterm 订阅以持续推进终端状态，但缓存容量仍按真实可见性区分前后台会话。
   const sessionSubscribers = subscribers.get(chunk.sessionId);
   const replayEntry = outputCache.append(
     chunk.sessionId,
     chunk.content,
-    Boolean(sessionSubscribers?.size),
+    Boolean(sessionSubscribers && [...sessionSubscribers].some((subscription) => subscription.isVisible())),
   );
 
   if (!sessionSubscribers?.size) {
     return;
   }
   // 拷贝一份再遍历：订阅者回调里可能因会话切换而退订，直接遍历会漏掉后续订阅者。
-  for (const subscriber of [...sessionSubscribers]) {
-    subscriber(chunk, replayEntry);
+  for (const subscription of [...sessionSubscribers]) {
+    subscription.subscriber(chunk, replayEntry);
   }
 };
 
@@ -112,21 +118,26 @@ const ensureListening = () => {
 };
 
 // 订阅某会话的实时输出，返回退订函数。
-export const subscribeTerminalOutput = (sessionId: string, subscriber: TerminalOutputSubscriber) => {
+export const subscribeTerminalOutput = (
+  sessionId: string,
+  subscriber: TerminalOutputSubscriber,
+  isVisible: () => boolean = () => true,
+) => {
   ensureListening();
   let sessionSubscribers = subscribers.get(sessionId);
   if (!sessionSubscribers) {
     sessionSubscribers = new Set();
     subscribers.set(sessionId, sessionSubscribers);
   }
-  sessionSubscribers.add(subscriber);
+  const subscription = { isVisible, subscriber };
+  sessionSubscribers.add(subscription);
 
   return () => {
     const currentSubscribers = subscribers.get(sessionId);
     if (!currentSubscribers) {
       return;
     }
-    currentSubscribers.delete(subscriber);
+    currentSubscribers.delete(subscription);
     if (currentSubscribers.size === 0) {
       subscribers.delete(sessionId);
     }

@@ -121,7 +121,7 @@ export function TerminalSplitGrid({
       ref={containerRef}
     >
       {layout.panes.map((pane) => {
-        // 每格只渲染自己那一条标签栏对应的会话；未激活的标签不挂终端实例。
+        // 每格渲染自己标签栏里的全部会话；未激活标签仅隐藏，保留其 xterm 状态以实时接收后台输出。
         const paneSessions = pane.sessionIds
           .map((sessionId) => sessions.find((item) => item.id === sessionId))
           .filter((session): session is TerminalSession => Boolean(session));
@@ -168,20 +168,30 @@ export function TerminalSplitGrid({
               uiLanguage={settings.uiLanguage}
             />
             <div className="terminal-split-pane-body">
-              {paneSession || layout.panes.length === 1 ? (
-                // 单格且无会话时仍挂载终端实例：欢迎/空态画面由 TerminalWorkspace 自己绘制，
-                // 这里不另造一套，保持与分屏前完全一致的首屏。
+              {paneSessions.length > 0 ? (
+                // 每个标签保留自己的 xterm 状态；隐藏标签继续解析后台 ANSI 输出，切回时不再从头重放动态进度帧。
+                <Suspense fallback={<div className="terminal-startup-placeholder">{t('working')}</div>}>
+                  {paneSessions.map((terminalSession) => (
+                    <TerminalWorkspace
+                      isVisible={terminalSession.id === pane.activeSessionId}
+                      key={terminalSession.id}
+                      liveSessionIds={liveSessionIds}
+                      onTerminalData={(data) => onSendTerminalData(terminalSession.id, data)}
+                      onUpdateSettings={onUpdateSettings}
+                      session={terminalSession}
+                      settings={settings}
+                    />
+                  ))}
+                </Suspense>
+              ) : layout.panes.length === 1 ? (
+                // 单格且无会话时仍挂载终端实例：欢迎/空态画面由 TerminalWorkspace 自己绘制。
                 <Suspense fallback={<div className="terminal-startup-placeholder">{t('working')}</div>}>
                   <TerminalWorkspace
+                    isVisible
                     key={pane.id}
                     liveSessionIds={liveSessionIds}
-                    onTerminalData={(data) => {
-                      if (paneSession) {
-                        onSendTerminalData(paneSession.id, data);
-                      }
-                    }}
+                    onTerminalData={() => undefined}
                     onUpdateSettings={onUpdateSettings}
-                    session={paneSession}
                     settings={settings}
                   />
                 </Suspense>

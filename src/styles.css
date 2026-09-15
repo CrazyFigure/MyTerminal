@@ -1040,6 +1040,16 @@ select:disabled {
   overflow: hidden;
 }
 
+/* 同一格子的标签终端占据完全相同的网格区域；切走只隐藏画布，组件与 xterm 解析状态继续保留。 */
+.terminal-split-pane-body > .terminal-workspace {
+  grid-area: 1 / 1;
+}
+
+.terminal-workspace.is-session-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 /* 未分屏时格子铺满整个 2×2，外观与分屏前完全一致。 */
 .terminal-split-grid[data-pane-count='1'] .terminal-split-pane {
   grid-column: 1 / 3;

@@ -6,7 +6,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { backend } from './backend';
 import { readClipboardText, writeClipboardText } from './clipboard';
 import { translate } from './i18n';
-import { type TerminalReplayEntry } from './terminalCache';
+import { initialTerminalReplaySize, type TerminalReplayEntry } from './terminalCache';
 import { buildTerminalFontFamily } from './terminalFonts';
 import type { AppSettings, TerminalOutputChunk, TerminalSession } from './types';
 import { useTerminalGutterController } from './terminal/useTerminalGutterController';
@@ -72,6 +72,8 @@ import {
 import '@xterm/xterm/css/xterm.css';
 
 type Props = {
+  // 标签切走时保留独立 xterm 解析器，仅隐藏渲染面；后台动态输出因此不需要靠原始 ANSI 重放恢复状态。
+  isVisible: boolean;
   session?: TerminalSession;
   settings: AppSettings;
   onTerminalData: (data: string) => void;
@@ -83,6 +85,7 @@ type Props = {
 };
 
 export function TerminalWorkspace({
+  isVisible,
   session,
   settings,
   onTerminalData,
@@ -96,6 +99,8 @@ export function TerminalWorkspace({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  // ResizeObserver、重放回调和焦点回调均可能晚于 React 渲染；通过 ref 读取标签此刻的真实可见性。
+  const sessionVisibleRef = useRef(isVisible);
   // 行号控制器通过稳定引用延迟调用后方定义的尺寸同步函数，避免 Hook 初始化阶段访问未初始化闭包。
   const scheduleTerminalSizeSyncRef = useRef<() => void>(() => undefined);
   // 终端原始输出的分片缓存、协议回包状态机和行号时间线都由 terminalOutputHub 全局持有：
@@ -312,6 +317,7 @@ export function TerminalWorkspace({
   gutterShowLineNumberRef.current = gutterShowLineNumber;
   gutterShowTimestampRef.current = gutterShowTimestamp;
   terminalFontSizeRef.current = settings.shellFontSize;
+  sessionVisibleRef.current = isVisible;
 
   useEffect(() => {
     onTerminalDataRef.current = onTerminalData;
@@ -326,6 +332,7 @@ export function TerminalWorkspace({
     const terminal = terminalRef.current;
     if (
       !terminal
+      || !sessionVisibleRef.current
       || terminalActiveReplayRef.current
       || terminalReplayInputBlockedRef.current
       || !canAcceptTerminalInput(sessionRef.current)
@@ -358,7 +365,7 @@ export function TerminalWorkspace({
     terminalReplayInputBlockedRef.current = blocked;
     const textarea = terminalRef.current?.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
     if (textarea) {
-      textarea.tabIndex = blocked ? -1 : 0;
+      textarea.tabIndex = blocked || !sessionVisibleRef.current ? -1 : 0;
     }
   };
 
@@ -1070,7 +1077,7 @@ export function TerminalWorkspace({
         }
 
         // 历史解析已结束，先恢复 xterm 自动协议回包；DOM 捕获层仍阻止真实用户输入，直到 deferred 全部落屏。
-        terminal.options.disableStdin = !canAcceptTerminalInput(sessionRef.current);
+        terminal.options.disableStdin = !sessionVisibleRef.current || !canAcceptTerminalInput(sessionRef.current);
 
         const runReplayVisualCompletion = () => {
           if (
@@ -1081,7 +1088,7 @@ export function TerminalWorkspace({
           }
           // 重放和期间积累的实时块全部落屏后再测量，避免按半帧 buffer 扩列或刷新覆盖层。
           setTerminalReplayInputBlocked(false);
-          terminal.options.disableStdin = !canAcceptTerminalInput(sessionRef.current);
+          terminal.options.disableStdin = !sessionVisibleRef.current || !canAcceptTerminalInput(sessionRef.current);
           terminalHorizontalFullBufferMeasurePendingRef.current = true;
           scheduleTerminalSizeSync();
           syncLocalCursorVisibility();
@@ -1239,7 +1246,8 @@ export function TerminalWorkspace({
 
   const syncTerminalSizeToRemote = () => {
     const terminal = terminalRef.current;
-    if (!terminal) {
+    // 隐藏标签必须沿用切走前的 xterm/PTY 几何继续解析后台输出，不能因容器仍参与布局就重复改远端尺寸。
+    if (!terminal || !sessionVisibleRef.current || terminalActiveReplayRef.current) {
       return;
     }
 
@@ -1291,14 +1299,17 @@ export function TerminalWorkspace({
       allowProposedApi: true,
       // 交互 SSH PTY 必须保留远端原始 CR/LF 与 ANSI 行编辑序列；convertEol 会破坏长行历史重绘。
       convertEol: false,
+      // 从未显示过的恢复标签也会先在后台收取输出；初始几何必须与后端创建 PTY 的统一尺寸完全一致。
+      cols: initialTerminalReplaySize.cols,
       cursorBlink: !useManagedCursorForSessionRef.current,
-      disableStdin: !canAcceptTerminalInput(sessionRef.current),
+      disableStdin: !sessionVisibleRef.current || !canAcceptTerminalInput(sessionRef.current),
       fontFamily: terminalFontFamily,
       fontSize: settings.shellFontSize,
       letterSpacing: 0,
       // 行高来自设置；xterm 对小于 1 的行高会直接抛错，异常配置由 normalizer 兜底后再兜一层。
       lineHeight: settings.shellLineHeight ?? 1.18,
       minimumContrastRatio: terminalMinimumContrastRatioRef.current,
+      rows: initialTerminalReplaySize.rows,
       scrollback: terminalScrollbackRows,
       theme: terminalTheme,
     });
@@ -1842,7 +1853,11 @@ export function TerminalWorkspace({
       });
     };
 
-    return subscribeTerminalOutput(subscribedSessionId, handleTerminalOutput);
+    return subscribeTerminalOutput(
+      subscribedSessionId,
+      handleTerminalOutput,
+      () => sessionVisibleRef.current,
+    );
   }, [session?.id]);
 
   // 会话列表变化时回收本实例的按会话渲染状态。全局的输出缓存、行号时间线和协议状态机
@@ -1863,12 +1878,54 @@ export function TerminalWorkspace({
       return;
     }
 
-    terminal.options.disableStdin = Boolean(terminalActiveReplayRef.current) || !canAcceptTerminalInput(session);
+    terminal.options.disableStdin = Boolean(terminalActiveReplayRef.current)
+      || !sessionVisibleRef.current
+      || !canAcceptTerminalInput(session);
     applyTerminalSessionBehaviorOptions();
     syncLocalCursorVisibility();
     scheduleTerminalContrastCursorSync();
     window.requestAnimationFrame(focusPendingTerminalInput);
   }, [minimumContrastRatioForSession, session?.id, session?.status, terminalScrollbackRows]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+
+    terminal.options.disableStdin = !isVisible
+      || Boolean(terminalActiveReplayRef.current)
+      || !canAcceptTerminalInput(sessionRef.current);
+    const textarea = terminal.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
+    if (textarea) {
+      textarea.tabIndex = isVisible && !terminalReplayInputBlockedRef.current ? 0 : -1;
+    }
+    if (!isVisible) {
+      // 隐藏标签不能保留 WebView 焦点，否则键盘输入会误发到后台 PTY；菜单也不能悬浮到新标签上。
+      terminal.blur();
+      setTerminalContextMenu(null);
+      setTerminalGutterContextMenu(null);
+      return;
+    }
+
+    // 显示时才按当前格子尺寸同步 xterm 与 PTY，并强制刷新从 display:none 恢复的画布。
+    remoteTerminalSizeRef.current = null;
+    pendingFocusSessionIdRef.current = sessionRef.current?.id ?? null;
+    window.requestAnimationFrame(() => {
+      if (!sessionVisibleRef.current || terminalActiveReplayRef.current) {
+        return;
+      }
+      syncTerminalSizeToRemote();
+      terminal.refresh(0, Math.max(0, terminal.rows - 1));
+      scheduleTerminalMatchHighlightRefresh();
+      scheduleTerminalPromptHighlightRefresh();
+      scheduleTerminalSelectionOverlaySync();
+      scheduleTerminalContrastCursorSync();
+      scheduleTerminalVerticalScrollbarSync();
+      scheduleTerminalGutterSync();
+      focusPendingTerminalInput();
+    });
+  }, [isVisible]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -1980,7 +2037,11 @@ export function TerminalWorkspace({
   }, [effectiveTerminalLineWrapMode]);
 
   return (
-    <section className="terminal-workspace card" style={{ background: terminalBackgroundColor }}>
+    <section
+      aria-hidden={!isVisible}
+      className={`terminal-workspace card ${isVisible ? '' : 'is-session-hidden'}`}
+      style={{ background: terminalBackgroundColor }}
+    >
       {backgroundImageStyle ? <div className="terminal-background-image" style={backgroundImageStyle} /> : null}
       <div
         className={`terminal-surface ${terminalHasHorizontalOverflow && effectiveTerminalLineWrapMode === 'horizontal' ? 'is-horizontal-scroll' : 'is-wrapped'}`}
