@@ -19,7 +19,7 @@ const GLOBAL_MAX_BYTES = 8 * 1024 * 1024;
 // 发生过淘汰时，重放开头插入一条非侵入提示，避免用户误以为终端完整保留了历史。
 const TRUNCATION_NOTICE = '\r\n\x1b[2m[较早的输出因超出缓存上限已被回收]\x1b[0m\r\n';
 // 后端创建 SSH 与本地 PTY 时统一使用 120x32；仅在旧后端未上报尺寸元数据的兼容路径下兜底。
-const INITIAL_TERMINAL_SIZE: TerminalReplaySize = { cols: 120, rows: 32 };
+export const initialTerminalReplaySize: TerminalReplaySize = { cols: 120, rows: 32 };
 
 type SessionCache = {
   // 分片队列，按到达顺序追加；每块携带生成时的 PTY 尺寸，淘汰时从队首移除最旧分片。
@@ -83,7 +83,7 @@ export class TerminalOutputCache {
     }
     const cache = this.ensure(sessionId);
     // 尺寸元数据应先于对应输出到达；极端兼容场景缺少元数据时使用后端创建 PTY 的统一初始尺寸。
-    const terminalSize = cache.terminalSize ?? INITIAL_TERMINAL_SIZE;
+    const terminalSize = cache.terminalSize ?? initialTerminalReplaySize;
     const entry = { content, ...terminalSize };
     cache.chunks.push(entry);
     cache.bytes += content.length;
