@@ -1,7 +1,8 @@
 :root {
   color-scheme: light;
   font-family: Inter, "Segoe UI", sans-serif;
-  background: #e9eef8;
+  /* 基础底色：中性浅灰色，明亮柔和无明显蓝调偏色 */
+  background: #f0f2f5;
   color: #111827;
 }
 
@@ -24,7 +25,7 @@ body,
 
 body {
   overflow: hidden;
-  background: #e7edf6;
+  background: #f0f2f5;
   color: #0f172a;
 }
 
@@ -56,6 +57,8 @@ select:disabled {
   --app-text: #0f172a;
   --app-muted: #64748b;
   --app-subtle-text: #475569;
+  /* 基础画布底色（即各功能块之间缝隙的颜色），浅色模式下为柔和中性浅灰色 */
+  --app-canvas-bg: #f0f2f5;
   --app-card-bg: rgba(255, 255, 255, 0.94);
   /* 弹窗、右键菜单和下拉浮层承载操作入口，必须使用实色背景避免底层终端内容透出。 */
   --app-overlay-bg: #ffffff;
@@ -81,7 +84,8 @@ select:disabled {
   color: var(--app-text);
 }
 
-/* 主体区承接原来的三栏网格：左侧栏 / 终端主体 / 右侧 AI 栏，标题栏之下占满剩余高度。 */
+/* 主体区承接原来的三栏网格：左侧栏 / 终端主体 / 右侧 AI 栏，标题栏之下占满剩余高度。
+   重要逻辑：四周保持 4px 均匀卡片边隙，卡片悬浮于统一底色画布之上。 */
 .app-body {
   flex: 1;
   min-height: 0;
@@ -99,6 +103,8 @@ select:disabled {
   --app-text: #e2e8f0;
   --app-muted: #94a3b8;
   --app-subtle-text: #cbd5e1;
+  /* 深色模式画布底色，与 body 深色背景保持一致 */
+  --app-canvas-bg: #0f172a;
   --app-card-bg: rgba(15, 23, 42, 0.88);
   --app-overlay-bg: #0f172a;
   --app-card-border: rgba(71, 85, 105, 0.42);
@@ -116,21 +122,27 @@ select:disabled {
 
 /* ── 自定义标题栏 ─────────────────────────────────────────────── */
 .app-titlebar {
+  /* 重要逻辑：顶部栏背景与缝隙画布底色融为一体；
+     采用底部对齐且通过高度与 padding 控制，使得按钮下边缘到下方功能块上边缘的间距精准等于正常缝隙高度（4px）。 */
+  position: relative;
+  z-index: 10;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 8px;
-  height: 40px;
-  padding: 0 0 0 8px;
+  height: 35px;
+  padding: 5px 0 0 8px;
   flex: 0 0 auto;
-  border-bottom: 1px solid var(--app-card-border);
-  background: var(--app-panel-bg);
+  border-bottom: none;
+  background: var(--app-canvas-bg, transparent);
   user-select: none;
 }
 
+.app-titlebar-panels,
 .app-titlebar-actions {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 4px;
+  height: 30px;
 }
 
 /* 中间空白拖动区吃掉所有剩余空间，是主要的窗口拖动手柄。 */
@@ -171,21 +183,22 @@ select:disabled {
   flex-shrink: 0;
 }
 
-/* 右侧系统区：更新 / 主题 / 设置图标按钮紧挨窗口控制按钮。 */
+/* 右侧系统区：更新 / 主题 / 设置图标按钮紧挨窗口控制按钮。
+   重要逻辑：高度统一为 30px 且底部对齐，确保下边缘与左侧操作按钮水平绝对平齐。 */
 .app-titlebar-system {
   display: flex;
-  align-items: center;
-  height: 100%;
+  align-items: flex-end;
+  height: 30px;
 }
 
-/* 纯图标功能按钮：无文字，靠 title 悬浮提示，尺寸与窗口控制协调。 */
+/* 纯图标功能按钮：无文字，靠 title 悬浮提示，尺寸与操作按钮保持 30px 高度统一。 */
 .titlebar-icon-button {
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 32px;
+  width: 32px;
+  height: 30px;
   margin: 0 2px;
   border: none;
   border-radius: 8px;
@@ -218,20 +231,20 @@ select:disabled {
 /* 发现新版本时的红点提示，浮在更新图标右上角。 */
 .titlebar-badge-dot {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 6px;
+  right: 6px;
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: #ef4444;
-  border: 1.5px solid var(--app-panel-bg);
+  border: 1.5px solid var(--app-canvas-bg, #f0f2f5);
   pointer-events: none;
 }
 
 .titlebar-window-controls {
   display: flex;
-  align-items: center;
-  height: 100%;
+  align-items: flex-end;
+  height: 30px;
 }
 
 .titlebar-window-button {
@@ -239,7 +252,7 @@ select:disabled {
   align-items: center;
   justify-content: center;
   width: 40px;
-  height: 32px;
+  height: 30px;
   margin: 0 2px;
   border: none;
   border-radius: 8px;
@@ -999,7 +1012,8 @@ select:disabled {
   min-height: 0;
   min-width: 0;
   /* 外圈的边框、圆角、阴影集中在这一层：内部格子只画共用分隔线，
-     由容器统一裁切，四个角就不会出现各画一次的双线。 */
+     由容器统一裁切，四个角就不会出现各画一次的双线。
+     重要逻辑：终端工作区分屏网格保持四周统一圆角，悬浮于底色画布之上。 */
   border: 1px solid var(--app-card-border);
   border-radius: 10px;
   background: var(--app-card-bg);
