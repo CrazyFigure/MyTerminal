@@ -633,14 +633,21 @@
   display: block;
 }
 
-.terminal-context-menu {
+.terminal-context-menu,
+.editor-context-menu {
   z-index: 130;
   min-width: 140px;
 }
 
-.terminal-context-menu .context-menu-item {
+.terminal-context-menu .context-menu-item,
+.editor-context-menu .context-menu-item {
   min-height: 28px;
   padding: 6px 9px;
+}
+
+.terminal-context-menu .context-menu-item:active:not(:disabled),
+.editor-context-menu .context-menu-item:active:not(:disabled) {
+  opacity: 0.85;
 }
 
 .file-upload-button.is-disabled {
