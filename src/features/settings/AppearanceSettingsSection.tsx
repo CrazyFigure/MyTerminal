@@ -37,6 +37,9 @@ type Props = {
     replacements?: Record<string, string | number>,
   ) => string;
   terminalPreviewStyle: CSSProperties;
+  uiCjkOptions: string[];
+  uiLatinOptions: string[];
+  uiPreviewStyle: CSSProperties;
 };
 
 const formatFontPackBytes = (value?: number) => {
@@ -70,6 +73,9 @@ export function AppearanceSettingsSection({
   selectedLatinFontFamily,
   t,
   terminalPreviewStyle,
+  uiCjkOptions,
+  uiLatinOptions,
+  uiPreviewStyle,
 }: Props) {
   const fontPackBusy = Boolean(fontPackActionRunning);
   const fontPackReady = fontPackStatus?.state === "ready";
@@ -317,7 +323,7 @@ export function AppearanceSettingsSection({
             style={terminalPreviewStyle}
           >
             <span>0123456789 abcdefghABCDEFGH</span>
-            <strong>终端中文字体预览</strong>
+            <strong>{t("terminalFontPreviewText")}</strong>
           </div>
         </div>
       </section>
@@ -471,7 +477,115 @@ export function AppearanceSettingsSection({
             style={agentChatPreviewStyle}
           >
             <span>0123456789 abcdefghABCDEFGH</span>
-            <strong>AI 对话字体预览</strong>
+            <strong>{t("agentChatFontPreviewText")}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-section-block">
+        <div>
+          <h3>{t("appearanceUiFontTitle")}</h3>
+        </div>
+
+        <div className="form-grid">
+          <div className="form-field">
+            <span>{t("fieldLatinFontFamily")}</span>
+            <CustomSelect
+              aria-label={t("fieldLatinFontFamily")}
+              emptyText={t("fontSearchEmpty")}
+              value={draftSettings.uiLatinFontFamily ?? ""}
+              onChange={(val) =>
+                onUpdate((current) => ({
+                  ...current,
+                  uiLatinFontFamily: val || undefined,
+                }))
+              }
+              onOpen={onLoadSystemFonts}
+              options={[
+                { value: "", label: t("uiFontFollowTerminal") },
+                ...uiLatinOptions.map((fontFamily) => ({
+                  value: fontFamily,
+                  label: fontFamily,
+                })),
+              ]}
+              searchable
+              searchPlaceholder={t("fontSearchPlaceholder")}
+            />
+          </div>
+          <div className="form-field">
+            <span>{t("fieldCjkFontFamily")}</span>
+            <CustomSelect
+              aria-label={t("fieldCjkFontFamily")}
+              emptyText={t("fontSearchEmpty")}
+              value={draftSettings.uiCjkFontFamily ?? ""}
+              onChange={(val) =>
+                onUpdate((current) => ({
+                  ...current,
+                  uiCjkFontFamily: val || undefined,
+                }))
+              }
+              onOpen={onLoadSystemFonts}
+              options={[
+                { value: "", label: t("uiFontFollowTerminal") },
+                ...uiCjkOptions.map((fontFamily) => ({
+                  value: fontFamily,
+                  label: fontFamily,
+                })),
+              ]}
+              searchable
+              searchPlaceholder={t("fontSearchPlaceholder")}
+            />
+          </div>
+          <label>
+            <span>{t("fieldFontSize")}</span>
+            <div className="field-with-reset">
+              <input
+                max={24}
+                min={0}
+                onChange={(event) =>
+                  onUpdate((current) => ({
+                    ...current,
+                    uiFontSize: Number(event.target.value) || 0,
+                  }))
+                }
+                onWheel={(event) => event.currentTarget.blur()}
+                type="number"
+                value={
+                  draftSettings.uiFontSize ??
+                  appearanceFieldDefaults.uiFontSize
+                }
+              />
+              <Tooltip content={t("resetResourceSettings")} side="top">
+                <button
+                  aria-label={t("resetResourceSettings")}
+                  className="icon-button field-reset-button"
+                  disabled={
+                    (draftSettings.uiFontSize ??
+                      appearanceFieldDefaults.uiFontSize) ===
+                    appearanceFieldDefaults.uiFontSize
+                  }
+                  onClick={() =>
+                    onUpdate((current) => ({
+                      ...current,
+                      uiFontSize: appearanceFieldDefaults.uiFontSize,
+                    }))
+                  }
+                  type="button"
+                >
+                  <RotateCcw size={14} />
+                </button>
+              </Tooltip>
+            </div>
+          </label>
+          <p className="field-hint span-2">
+            {t("uiFontFollowTerminalHint")} {t("uiFontSizeHint")}
+          </p>
+          <div
+            className="font-preview-panel span-2"
+            style={uiPreviewStyle}
+          >
+            <span>0123456789 abcdefghABCDEFGH (English Latin)</span>
+            <strong>{t("uiFontPreviewText")}</strong>
           </div>
         </div>
       </section>

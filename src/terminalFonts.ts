@@ -1,10 +1,10 @@
 // 终端英文字体只允许等宽字体参与首选匹配；比例字体会让 xterm 依据宽字形放大整张字符网格。
-// 优先推荐内置的 JetBrains Mono Light（细体）与标准体、以及 Maple Mono
+// 优先推荐内置的 JetBrains Mono 与标准体、以及 Maple Mono
 export const terminalLatinFontOptions = [
-  'JetBrains Mono Light',
   'JetBrains Mono',
-  'Maple Mono Normal NF CN Light',
+  'JetBrains Mono Light',
   'Maple Mono Normal NF CN',
+  'Maple Mono Normal NF CN Light',
   'Maple Mono Normal NF CN Regular',
   'Cascadia Mono',
   'Consolas',
@@ -16,10 +16,10 @@ export const terminalLatinFontOptions = [
 ];
 
 // 中文字体仍允许选择系统中的任意字体族；真正的 ASCII 单元格宽度始终由已验证的等宽英文字体决定。
-// 优先推荐内置的 Maple Mono Normal NF CN Light 与标准体
+// 优先推荐内置的 Maple Mono Normal NF CN 与细体
 export const terminalCjkFontOptions = [
-  'Maple Mono Normal NF CN Light',
   'Maple Mono Normal NF CN',
+  'Maple Mono Normal NF CN Light',
   'Maple Mono Normal NF CN Regular',
   'Microsoft YaHei UI',
   'Microsoft YaHei',
@@ -33,10 +33,10 @@ export const terminalCjkFontOptions = [
 
 // 跨平台等宽兜底按常见可用性排序；只有首选字体缺失或不是等宽字体时才会接管 ASCII。
 const terminalMonospaceFallbacks = [
-  'JetBrains Mono Light',
   'JetBrains Mono',
-  'Maple Mono Normal NF CN Light',
+  'JetBrains Mono Light',
   'Maple Mono Normal NF CN',
+  'Maple Mono Normal NF CN Light',
   'Cascadia Mono',
   'Consolas',
   'SFMono-Regular',
@@ -52,6 +52,19 @@ const terminalMonospaceFallbacks = [
   'Hack',
   'IBM Plex Mono',
   'Courier New',
+] as const;
+
+// 终端中文字体回退：优先推荐的无衬线等宽与系统现代黑体，坚决避免中文字符降级为系统宋体衬线
+const terminalCjkFallbacks = [
+  'Maple Mono Normal NF CN',
+  'Maple Mono Normal NF CN Light',
+  'Microsoft YaHei UI',
+  'Microsoft YaHei',
+  'PingFang SC',
+  'Hiragino Sans GB',
+  'Noto Sans CJK SC',
+  'WenQuanYi Micro Hei',
+  'sans-serif',
 ] as const;
 
 // 可选字体包提供的稳定族名；这里只描述能力，不能据此把尚未下载的字体误判为可用。
@@ -236,8 +249,8 @@ export const agentChatLatinFontOptions = [
   'Helvetica Neue',
   'Georgia',
   'Times New Roman',
-  'JetBrains Mono Light',
   'JetBrains Mono',
+  'JetBrains Mono Light',
   'Cascadia Mono',
   'Consolas',
   'Fira Code',
@@ -246,8 +259,8 @@ export const agentChatLatinFontOptions = [
 
 // AI 对话中文字体允许任意字体族；代码块单独使用终端等宽字体栈，不受这里影响。
 export const agentChatCjkFontOptions = [
-  'Maple Mono Normal NF CN Light',
   'Maple Mono Normal NF CN',
+  'Maple Mono Normal NF CN Light',
   'Microsoft YaHei UI',
   'Microsoft YaHei',
   'PingFang SC',
@@ -327,7 +340,12 @@ export const buildTerminalFontFamily = (
     .map((fallback) => quoteTerminalFontFamily(fallback))
     .filter((fallback): fallback is string => Boolean(fallback));
 
-  return [primaryFont, cjkFont, ...fallbackFonts, 'monospace']
+  const cjkFallbackFonts = terminalCjkFallbacks
+    .filter((fallback) => fallback.toLowerCase() !== normalizedPrimary && fallback.toLowerCase() !== normalizedCjk)
+    .map((fallback) => quoteTerminalFontFamily(fallback))
+    .filter((fallback): fallback is string => Boolean(fallback));
+
+  return [primaryFont, cjkFont, ...fallbackFonts, ...cjkFallbackFonts, 'monospace']
     .filter((fontFamily): fontFamily is string => Boolean(fontFamily))
     .filter((fontFamily, index, array) => {
       const normalized = normalizeTerminalFontFamily(fontFamily).toLowerCase();

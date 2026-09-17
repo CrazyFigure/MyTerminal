@@ -69,10 +69,14 @@ const runtimeResourceSources = new Set<AppSettings["runtimeResourceSource"]>([
 
 const normalizeSingleFontFamily = (value: string) => {
   // 旧配置可能保存过一整串 fallback 字体；设置页只展示和保存用户明确选择的单个字体。
-  const firstFont = value
+  let firstFont = value
     .split(",")
     .map((item) => item.trim().replace(/^['"]|['"]$/g, ""))
     .find(Boolean);
+  // 历史默认细体自动升级为标准常规体
+  if (firstFont === "JetBrains Mono Light") {
+    firstFont = "JetBrains Mono";
+  }
   return firstFont ?? "JetBrains Mono";
 };
 
@@ -173,6 +177,16 @@ export const normalizeSettings = (settings: AppSettings): AppSettings => ({
   // AI 对话字体为空表示跟随终端字体，字号 0 表示跟随终端字号；避免升级后对话区观感突变。
   agentChatLatinFontFamily: trimToUndefined(settings.agentChatLatinFontFamily),
   agentChatCjkFontFamily: trimToUndefined(settings.agentChatCjkFontFamily),
+  // 全局界面 UI 字体为空表示跟随终端字体；缺省直接回落到终端中英文字体。
+  uiLatinFontFamily: trimToUndefined(settings.uiLatinFontFamily),
+  uiCjkFontFamily: trimToUndefined(settings.uiCjkFontFamily),
+  uiFontSize: (() => {
+    const value = Math.round(Number(settings.uiFontSize));
+    if (!Number.isFinite(value) || value <= 0) {
+      return 0;
+    }
+    return Math.min(24, Math.max(10, value));
+  })(),
   // 对话行高与终端行高相互独立，没有“0 表示跟随”的语义，缺省直接回落到正文默认值。
   agentChatLineHeight: clampLineHeight(settings.agentChatLineHeight, 1.6),
   agentChatFontSize: (() => {

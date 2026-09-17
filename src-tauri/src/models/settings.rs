@@ -17,19 +17,19 @@ pub(super) fn default_ui_language() -> String {
     "zh-CN".into()
 }
 
-// 默认终端字体族名：内置 JetBrains Mono Light（细体）
+// 默认终端字体族名：内置 JetBrains Mono
 pub(super) fn default_shell_font_family() -> String {
-    "JetBrains Mono Light".into()
+    "JetBrains Mono".into()
 }
 
-// 默认终端西文字体：内置 JetBrains Mono Light（细体）
+// 默认终端西文字体：内置 JetBrains Mono
 pub(super) fn default_shell_latin_font_family() -> String {
-    "JetBrains Mono Light".into()
+    "JetBrains Mono".into()
 }
 
-// 默认终端中文字体：内置 Maple Mono Normal NF CN Light（细体）
+// 默认终端中文字体：内置 Maple Mono Normal NF CN
 pub(super) fn default_shell_cjk_font_family() -> String {
-    "Maple Mono Normal NF CN Light".into()
+    "Maple Mono Normal NF CN".into()
 }
 
 pub(super) fn default_shell_font_size() -> u16 {
@@ -491,6 +491,15 @@ pub struct AppSettings {
     /// 右侧 AI 对话正文行高倍数；与终端行高独立，没有“跟随终端”语义。
     #[serde(default = "default_agent_chat_line_height")]
     pub agent_chat_line_height: f32,
+    /// 全局界面英文字体；None 表示跟随终端英文字体，回落由前端解析。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_latin_font_family: Option<String>,
+    /// 全局界面中文字体；None 表示跟随终端中文字体，回落由前端解析。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_cjk_font_family: Option<String>,
+    /// 全局系统界面字号（px）；0 表示默认 15px。
+    #[serde(default)]
+    pub ui_font_size: u16,
     #[serde(default = "default_terminal_background")]
     pub terminal_background: String,
     #[serde(default = "default_terminal_foreground")]
@@ -555,6 +564,9 @@ impl Default for AppSettings {
             agent_chat_cjk_font_family: None,
             agent_chat_font_size: 0,
             agent_chat_line_height: default_agent_chat_line_height(),
+            ui_latin_font_family: None,
+            ui_cjk_font_family: None,
+            ui_font_size: 0,
             terminal_background: "#f7f7f7".into(),
             terminal_foreground: "#111111".into(),
             accent_color: "#4f46e5".into(),

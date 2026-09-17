@@ -175,6 +175,12 @@ pub struct StoredAppSettings {
     pub agent_chat_font_size: u16,
     #[serde(default = "default_agent_chat_line_height")]
     pub agent_chat_line_height: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_latin_font_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_cjk_font_family: Option<String>,
+    #[serde(default)]
+    pub ui_font_size: u16,
     #[serde(default = "default_terminal_background")]
     pub terminal_background: String,
     #[serde(default = "default_terminal_foreground")]

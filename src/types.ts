@@ -184,6 +184,12 @@ export interface AppSettings {
   agentChatFontSize?: number;
   /** 右侧 AI 对话正文行高倍数；与终端行高相互独立，不跟随终端。 */
   agentChatLineHeight?: number;
+  /** 全局界面英文字体；为空表示跟随终端英文字体。 */
+  uiLatinFontFamily?: string;
+  /** 全局界面中文字体；为空表示跟随终端中文字体。 */
+  uiCjkFontFamily?: string;
+  /** 全局系统界面字号（px）；0 表示默认 15px。 */
+  uiFontSize?: number;
   terminalBackground: string;
   terminalForeground: string;
   accentColor: string;

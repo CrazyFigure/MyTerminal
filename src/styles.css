@@ -1,6 +1,9 @@
 :root {
   color-scheme: light;
-  font-family: Inter, "Segoe UI", sans-serif;
+  font-family: var(--app-ui-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif);
+  font-size: var(--app-ui-font-size, 15px);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   /* 基础底色：中性浅灰色，明亮柔和无明显蓝调偏色 */
   background: #f0f2f5;
   color: #111827;
@@ -27,6 +30,8 @@ body {
   overflow: hidden;
   background: #f0f2f5;
   color: #0f172a;
+  font-family: var(--app-ui-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif);
+  font-size: var(--app-ui-font-size, 15px);
 }
 
 body.theme-dark {
@@ -39,6 +44,12 @@ input,
 textarea,
 select {
   font: inherit;
+  font-family: var(--app-ui-font-family, inherit);
+}
+
+select option {
+  font-family: var(--app-ui-font-family, inherit);
+  font-size: var(--app-ui-font-size, inherit);
 }
 
 button {
@@ -74,6 +85,11 @@ select:disabled {
   --app-active-text: #312e81;
   --app-chip-bg: rgba(224, 231, 255, 0.85);
   --app-chip-text: #3730a3;
+  /* 开关与表单控件激活色（浅色模式采用饱满鲜明的靛蓝） */
+  --app-control-accent: #4f46e5;
+  --app-control-accent-hover: #4338ca;
+  --app-switch-off-bg: rgba(148, 163, 184, 0.32);
+  --app-switch-off-border: rgba(148, 163, 184, 0.45);
   position: relative;
   display: flex;
   flex-direction: column;
@@ -118,6 +134,11 @@ select:disabled {
   --app-active-text: #c7d2fe;
   --app-chip-bg: rgba(55, 48, 163, 0.34);
   --app-chip-text: #c7d2fe;
+  /* 开关与表单控件激活色（深色模式采用明亮通透的靛蓝，确保高辨识度与强对比度，避免被误认为禁用置灰） */
+  --app-control-accent: #6366f1;
+  --app-control-accent-hover: #4f46e5;
+  --app-switch-off-bg: rgba(71, 85, 105, 0.45);
+  --app-switch-off-border: rgba(100, 116, 139, 0.52);
 }
 
 /* ── 自定义标题栏 ─────────────────────────────────────────────── */
@@ -955,15 +976,16 @@ select:disabled {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  color: var(--app-subtle-text);
-  font-size: 0.72rem;
+  color: var(--app-text);
+  font-size: 0.8rem;
 }
 
 .runtime-extra span {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 
 .terminal-area {
@@ -1536,7 +1558,7 @@ select:disabled {
   height: 100%;
   min-width: 0;
   padding: 0 24px 0 26px;
-  font-size: 0.8rem;
+  font-size: 0.82rem;
   border-radius: 7px;
   border: 1px solid rgba(148, 163, 184, 0.24);
   background: var(--app-input-bg);
@@ -1549,8 +1571,8 @@ select:disabled {
 }
 
 .history-search-input::placeholder {
-  color: var(--app-subtle-text);
-  opacity: 0.8;
+  color: var(--app-muted);
+  opacity: 0.88;
 }
 
 .history-search-input:hover {
@@ -1682,15 +1704,43 @@ select:disabled {
   height: 100%;
 }
 
-/* 文本编辑器：高度撑满命令面板，占满所有剩余空间 */
+/* 文本编辑器：高度撑满命令面板，优先遵循用户在外观设置中配置的中英文字体栈，彻底避免中文退化为宋体 */
 .command-editor {
   flex: 1 1 auto;
   height: 100%;
   min-height: 88px;
   resize: none;
-  font-family: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  font-family: var(
+    --app-terminal-font-family,
+    "JetBrains Mono",
+    "Maple Mono Normal NF CN",
+    "Maple Mono Normal NF CN Light",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Microsoft YaHei",
+    monospace
+  );
   font-size: 13px;
+  font-weight: 400;
   line-height: 1.45;
+}
+
+/* 命令编辑器占位符：强化对比度，深浅色模式均保持清晰柔和可读，避免过浅发乌 */
+.command-editor::placeholder {
+  color: var(--app-muted);
+  opacity: 0.88;
+}
+
+/* 未激活远程会话禁用时：保持合理的整体透明度与占位符对比，不再叠加过度导致文字隐形 */
+.command-editor:disabled {
+  opacity: 0.72;
+}
+
+.command-editor:disabled::placeholder {
+  color: var(--app-muted);
+  opacity: 0.82;
 }
 
 .panel-tab,
@@ -2003,6 +2053,8 @@ select:disabled {
 }
 
 .panel-tab {
+  gap: 6px;
+  padding: 4px 9px;
   flex-wrap: nowrap;
   flex-shrink: 0;
   white-space: nowrap !important;
@@ -2367,12 +2419,19 @@ select:disabled {
   color: var(--app-text);
 }
 
-/* 命令文本占满剩余宽度并保留换行，完整显示长命令，不做省略截断。 */
+/* 命令文本占满剩余宽度并保留换行，完整显示长命令，采用终端等宽中英文字体栈 */
 .history-row strong {
   flex: 1 1 auto;
   min-width: 0;
   white-space: normal;
   overflow-wrap: anywhere;
+  font-family: var(
+    --app-terminal-font-family,
+    "JetBrains Mono",
+    "Maple Mono Normal NF CN",
+    "Maple Mono Normal NF CN Light",
+    monospace
+  );
 }
 
 /* 执行时间固定单行右对齐，不随左侧命令长度换行或位移。 */
@@ -3329,6 +3388,8 @@ select:disabled {
   background: transparent;
   padding: 24px;
   z-index: 50;
+  font-family: var(--app-ui-font-family, inherit);
+  font-size: var(--app-ui-font-size, inherit);
 }
 
 .modal {
@@ -3340,6 +3401,8 @@ select:disabled {
   max-height: none;
   padding: 20px;
   overflow: auto;
+  font-family: var(--app-ui-font-family, inherit);
+  font-size: var(--app-ui-font-size, inherit);
   /* 拖动只改变外框位置，不参与宽高计算；DOM 卸载后变量随节点销毁，重开仍由网格居中。 */
   transform: translate3d(var(--modal-drag-x), var(--modal-drag-y), 0);
   will-change: transform;
@@ -3852,16 +3915,20 @@ select:disabled {
   white-space: nowrap;
 }
 
+/* 字体预览卡片：居中展示中英文字符样式，并在深浅色切换时平滑过渡 */
 .font-preview-panel {
   display: grid;
   place-items: center;
   gap: 6px;
   min-height: 76px;
   padding: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
+  border: 1px solid var(--app-card-border);
   border-radius: 8px;
   line-height: 1.35;
   text-align: center;
+  background: var(--app-item-bg);
+  color: var(--app-text);
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
 
 .font-preview-panel span,
@@ -4157,7 +4224,7 @@ select:disabled {
   min-height: 27px;
   padding: 2px 8px;
   font-size: 0.86rem;
-  font-weight: 350;
+  font-weight: 400;
   line-height: 1.25;
 }
 
@@ -4170,7 +4237,7 @@ select:disabled {
 }
 
 .explorer-name strong {
-  font-weight: 380;
+  font-weight: 400;
 }
 
 .explorer-row.is-selected,
