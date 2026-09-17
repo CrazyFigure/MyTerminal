@@ -381,6 +381,8 @@ pub fn list_system_fonts() -> Result<Vec<String>, String> {
 fn enumerate_system_fonts() -> Result<Vec<String>, AppError> {
     // 字体名取自 WPF SystemFontFamilies（DirectWrite），得到 WebView2 前端真正用于匹配的完整 typographic
     // 族名，不受 GDI 32 字符 LF_FACESIZE 截断（如 "Maple Mono Normal NF CN" 这类超长 Nerd 字体名）。
+    // 同时展开 FamilyNames 中的本地化别名，让 SimSun/KaiTi 等字体也能以“宋体/楷体”展示和搜索；
+    // 规范英文名仍然保留，避免旧配置失效，并保证英文界面和脚本化配置仍能找到同一字体。
     // 再用 GDI EnumFontFamiliesEx 读取字符集，识别"只有符号字符集（SYMBOL_CHARSET）"的纯图标字体
     // （Wingdings/Marlett 等，在终端只会显示成方块）并从列表剔除；Nerd 等含正常字符集的字体全部保留。
     // 强制 UTF-8 输出，保证中文字体名不乱码。
@@ -428,7 +430,9 @@ public class FontSym {
 }
 '@
 $symbol = [FontSym]::SymbolOnly()
-[System.Windows.Media.Fonts]::SystemFontFamilies | ForEach-Object { $_.Source } | Where-Object { -not $symbol.Contains($_) }"#;
+[System.Windows.Media.Fonts]::SystemFontFamilies |
+    Where-Object { -not $symbol.Contains($_.Source) } |
+    ForEach-Object { $_.Source; $_.FamilyNames.Values }"#;
     let output = Command::new("powershell")
         .creation_flags(WINDOWS_CREATE_NO_WINDOW)
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
