@@ -56,15 +56,12 @@ export const defaultSettings: AppSettings = {
 
 
 
-// 本地终端默认提供“纯 shell”和常见 AI CLI，空命令由后端解释为打开系统 shell。
+// 本地终端默认仅提供内置“纯 shell”，不再默认预填外部命令，完全由用户按需新增与管理。
 export const defaultLocalTerminals: LocalTerminalSettings = {
   shellPath: '',
   shells: [],
   commands: [
     { id: 'shell', name: '本地终端', command: '', builtIn: true },
-    { id: 'claude', name: 'claude', command: 'claude', builtIn: true },
-    { id: 'codex', name: 'codex', command: 'codex', builtIn: true },
-    { id: 'opencode', name: 'opencode', command: 'opencode', builtIn: true },
   ],
   profiles: [],
 };

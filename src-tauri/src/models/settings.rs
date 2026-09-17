@@ -132,33 +132,13 @@ pub(super) fn default_connection_order() -> Vec<String> {
     Vec::new()
 }
 
+// 本地终端默认仅提供内置“纯 shell”，不再默认预设第三方命令，完全由用户按需配置。
 pub(super) fn default_local_terminal_commands() -> Vec<LocalTerminalCommand> {
     vec![
         LocalTerminalCommand {
             id: "shell".into(),
             name: "本地终端".into(),
             command: String::new(),
-            icon: None,
-            built_in: true,
-        },
-        LocalTerminalCommand {
-            id: "claude".into(),
-            name: "claude".into(),
-            command: "claude".into(),
-            icon: None,
-            built_in: true,
-        },
-        LocalTerminalCommand {
-            id: "codex".into(),
-            name: "codex".into(),
-            command: "codex".into(),
-            icon: None,
-            built_in: true,
-        },
-        LocalTerminalCommand {
-            id: "opencode".into(),
-            name: "opencode".into(),
-            command: "opencode".into(),
             icon: None,
             built_in: true,
         },

@@ -3162,6 +3162,7 @@ select:disabled {
 
 /* 预设命令条目 V2 */
 .local-terminal-command-row-v2 {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3172,7 +3173,6 @@ select:disabled {
   border-radius: 6px;
   border: 1px solid rgba(148, 163, 184, 0.16);
   background: var(--app-panel-bg);
-  cursor: grab;
   user-select: none;
   transition: all 0.15s ease;
 }
@@ -3183,9 +3183,43 @@ select:disabled {
 }
 
 .local-terminal-command-row-v2.is-dragging {
-  opacity: 0.4;
-  border-style: dashed;
-  border-color: var(--app-accent-color);
+  opacity: 0.58;
+}
+
+/* 预设命令拖拽落点指示线（参考连接管理交互） */
+.local-terminal-command-row-v2.is-drop-before::before,
+.local-terminal-command-row-v2.is-drop-after::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  border-radius: 999px;
+  background: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.local-terminal-command-row-v2.is-drop-before::before {
+  top: -2px;
+}
+
+.local-terminal-command-row-v2.is-drop-after::after {
+  bottom: -2px;
+}
+
+.local-terminal-v2-list {
+  position: relative;
+}
+
+.local-terminal-v2-list.is-drop-end::after {
+  content: "";
+  display: block;
+  height: 2px;
+  margin: 4px 8px 0;
+  border-radius: 999px;
+  background: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
 .local-terminal-command-row-left {
