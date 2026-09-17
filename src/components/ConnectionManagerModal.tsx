@@ -170,16 +170,7 @@ export function ConnectionGroupTree({
                   </button>
                 </Tooltip>
                 <div className="connection-group-actions">
-                  <Tooltip content={newSubGroupLabel} side="top">
-                    <button
-                      aria-label={`${newSubGroupLabel}: ${node.path}`}
-                      className="icon-button tiny"
-                      onClick={() => onStartInlineCreateSubgroup(node.path)}
-                      type="button"
-                    >
-                      <Plus size={13} />
-                    </button>
-                  </Tooltip>
+                  {/* 分组项仅保留编辑和删除操作，新建分组统一由顶部入口处理 */}
                   <Tooltip content={editLabel} side="top">
                     <button
                       aria-label={`${editLabel}: ${node.path}`}

@@ -499,7 +499,7 @@ export interface LocalTerminalCommand {
   name: string;
   command: string;
   icon?: string;
-  /** 内置命令固定包含 claude/codex/opencode，允许排序但不允许删除。 */
+  /** 是否为内置项（仅 shell 为内置占位项；预设命令列表中的所有命令项均可由用户自由编辑与删除）。 */
   builtIn: boolean;
 }
 

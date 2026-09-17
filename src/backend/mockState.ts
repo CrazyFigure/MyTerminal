@@ -67,9 +67,6 @@ export const mockLocalTerminals: LocalTerminalSettings = {
   shells: [],
   commands: [
     { id: "shell", name: "本地终端", command: "", builtIn: true },
-    { id: "claude", name: "claude", command: "claude", builtIn: true },
-    { id: "codex", name: "codex", command: "codex", builtIn: true },
-    { id: "opencode", name: "opencode", command: "opencode", builtIn: true },
   ],
   profiles: [],
 };

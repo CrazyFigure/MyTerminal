@@ -1,5 +1,5 @@
 /* 本模块由 App 入口按功能域拆出，保留原组件行为与状态订阅方式。 */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import {
   Ban,
@@ -28,6 +28,14 @@ import type {
 import { CustomSelect, type CustomSelectOption } from '../CustomSelect';
 import { Tooltip } from './Tooltip';
 import { beginResize, clamp } from '../app/layout';
+import {
+  isPointInsideElement,
+  moveItemToEnd,
+  moveItemToInsert,
+  resolveInsertPlacement,
+  useFlipListAnimation,
+  type InsertPlacement,
+} from '../app/connectionGroups';
 import {
   AVAILABLE_COMMAND_ICONS,
   AI_COMMAND_ICONS,
@@ -104,14 +112,31 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
   const [editingCommand, setEditingCommand] = useState<EditingCommandState | null>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
 
-  // 原生 HTML5 拖拽状态与处理逻辑
-  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  // 预设命令 Pointer 拖拽与落点状态（对齐连接管理交互，避免 Windows WebView 原生拖拽异常）
+  const [commandDragState, setCommandDragState] = useState<{
+    id: string;
+    label: string;
+    originX: number;
+    originY: number;
+    currentX: number;
+    currentY: number;
+  } | null>(null);
+  const [commandDropTarget, setCommandDropTarget] = useState<
+    | { type: 'command-insert'; commandId: string; placement: InsertPlacement }
+    | { type: 'command-end' }
+    | null
+  >(null);
+  const commandDragStateRef = useRef(commandDragState);
+  const commandDropTargetRef = useRef(commandDropTarget);
+  const commandListRef = useRef<HTMLDivElement | null>(null);
 
-  // 借助 useRef 同步保持 commands 的最新引用，规避拖拽释放事件里可能产生的闭包旧值问题
-  const latestCommandsRef = useRef(draft.commands);
   useEffect(() => {
-    latestCommandsRef.current = draft.commands;
-  }, [draft.commands]);
+    commandDragStateRef.current = commandDragState;
+  }, [commandDragState]);
+
+  useEffect(() => {
+    commandDropTargetRef.current = commandDropTarget;
+  }, [commandDropTarget]);
 
   const t = (key: TranslationKey, replacements?: Record<string, string | number>) =>
     translate(settings.uiLanguage, key, replacements);
@@ -162,6 +187,8 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
 
   useEffect(() => {
     if (!open) {
+      setCommandDragState(null);
+      setCommandDropTarget(null);
       return;
     }
     setDraft(localTerminals);
@@ -172,6 +199,8 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
     setEditingCommand(null);
     setCommandError(null);
     setScanNotice(null);
+    setCommandDragState(null);
+    setCommandDropTarget(null);
   }, [open]);
 
   // 当启动选项列表更新且当前选中的 command 为空或不在选项内时，自动校准为第一个可用项
@@ -203,10 +232,6 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
       setDraft((current) => ({ ...current, shellPath: selected }));
     }
   };
-
-  if (!open) {
-    return null;
-  }
 
   // 检测系统终端
   const handleDetectShells = async () => {
@@ -277,36 +302,120 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
     });
   };
 
-  // 命令拖拽排序
-  const handleDragStart = (e: React.DragEvent, index: number) => {
-    setDraggedIndex(index);
-    e.dataTransfer.effectAllowed = 'move';
+  // 计算预设命令拖拽落点（优先判断目标项的前后半区，或判定是否落在列表底部空白）
+  const resolveCommandDropTarget = (
+    event: PointerEvent,
+    currentDrag: { id: string },
+  ): typeof commandDropTarget => {
+    const target = document.elementFromPoint(event.clientX, event.clientY);
+    const targetRow = target?.closest<HTMLElement>('[data-command-id]');
+    if (targetRow) {
+      const targetCommandId = targetRow.dataset.commandId;
+      if (targetCommandId && targetCommandId !== currentDrag.id) {
+        return {
+          type: 'command-insert',
+          commandId: targetCommandId,
+          placement: resolveInsertPlacement(event, targetRow),
+        };
+      }
+    }
+    if (isPointInsideElement(event, commandListRef.current)) {
+      return { type: 'command-end' };
+    }
+    return null;
   };
 
-  const handleDragOver = (e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    if (draggedIndex === null || draggedIndex === index) {
+  // 启动预设命令 Pointer 拖拽，通过 setPointerCapture 确保指针追踪不丢失
+  const startCommandDrag = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    item: { id: string; name: string },
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+
+    setCommandDragState({
+      id: item.id,
+      label: item.name,
+      originX: event.clientX,
+      originY: event.clientY,
+      currentX: event.clientX,
+      currentY: event.clientY,
+    });
+  };
+
+  // 处理预设命令插入排序（保持内置 shell 占位项不变，准确计算自定义命令顺序）
+  const handleReorderCommands = (sourceId: string, targetId: string, placement: InsertPlacement) => {
+    setCommandDragState(null);
+    setCommandDropTarget(null);
+    const customCommands = draft.commands.filter((c) => c.id !== 'shell');
+    const shellCommands = draft.commands.filter((c) => c.id === 'shell');
+    const currentIds = customCommands.map((c) => c.id);
+    const nextIds = moveItemToInsert(currentIds, sourceId, targetId, placement);
+    const commandMap = new Map(customCommands.map((c) => [c.id, c]));
+    const reorderedCustom = nextIds.map((id) => commandMap.get(id)!).filter(Boolean);
+    const nextCommands = [...shellCommands, ...reorderedCustom];
+    void persistDraft({ ...draft, commands: nextCommands });
+  };
+
+  // 处理预设命令移动到列表末尾
+  const handleReorderCommandsToEnd = (sourceId: string) => {
+    setCommandDragState(null);
+    setCommandDropTarget(null);
+    const customCommands = draft.commands.filter((c) => c.id !== 'shell');
+    const shellCommands = draft.commands.filter((c) => c.id === 'shell');
+    const currentIds = customCommands.map((c) => c.id);
+    const nextIds = moveItemToEnd(currentIds, sourceId);
+    const commandMap = new Map(customCommands.map((c) => [c.id, c]));
+    const reorderedCustom = nextIds.map((id) => commandMap.get(id)!).filter(Boolean);
+    const nextCommands = [...shellCommands, ...reorderedCustom];
+    void persistDraft({ ...draft, commands: nextCommands });
+  };
+
+  // 监听全局指针移动与释放事件
+  useEffect(() => {
+    if (!commandDragState) {
       return;
     }
-    const nextCommands = [...draft.commands];
-    const draggedItem = nextCommands[draggedIndex];
-    nextCommands.splice(draggedIndex, 1);
-    nextCommands.splice(index, 0, draggedItem);
-    setDraft((current) => ({
-      ...current,
-      commands: nextCommands,
-    }));
-    setDraggedIndex(index);
-  };
 
-  const handleDragEnd = async () => {
-    setDraggedIndex(null);
-    const nextDraft = {
-      ...draft,
-      commands: latestCommandsRef.current,
+    const handlePointerMove = (event: PointerEvent) => {
+      setCommandDragState((current) => {
+        if (!current) {
+          return current;
+        }
+        const nextDropTarget = resolveCommandDropTarget(event, current);
+        setCommandDropTarget((prev) => (
+          JSON.stringify(prev) === JSON.stringify(nextDropTarget) ? prev : nextDropTarget
+        ));
+        return { ...current, currentX: event.clientX, currentY: event.clientY };
+      });
     };
-    await persistDraft(nextDraft);
-  };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      const currentDrag = commandDragStateRef.current;
+      if (!currentDrag) {
+        setCommandDragState(null);
+        setCommandDropTarget(null);
+        return;
+      }
+      const finalDropTarget = commandDropTargetRef.current ?? resolveCommandDropTarget(event, currentDrag);
+      setCommandDragState(null);
+      setCommandDropTarget(null);
+
+      if (finalDropTarget?.type === 'command-insert') {
+        handleReorderCommands(currentDrag.id, finalDropTarget.commandId, finalDropTarget.placement);
+      } else if (finalDropTarget?.type === 'command-end') {
+        handleReorderCommandsToEnd(currentDrag.id);
+      }
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp, { once: true });
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [Boolean(commandDragState)]);
 
   // 选择本地自定义图标文件
   const browseCustomIconFile = async () => {
@@ -425,6 +534,13 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
 
   // 预设命令显示列表（排除内置空 shell）
   const displayCommands = draft.commands.filter((c) => c.id !== 'shell');
+  // 预设命令重排落位后平滑过渡动画
+  useFlipListAnimation(commandListRef, '[data-command-id]', [displayCommands.map((c) => c.id).join('|')]);
+
+  // 仅在弹窗开启时渲染 DOM，所有 Hook 均已在上方执行完毕，保证渲染顺序稳定
+  if (!open) {
+    return null;
+  }
 
   return (
     <div className="modal-backdrop">
@@ -557,23 +673,31 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
                   </Tooltip>
                 </div>
 
-                <div className="local-terminal-v2-list">
+                <div
+                  ref={commandListRef}
+                  className={`local-terminal-v2-list ${commandDropTarget?.type === 'command-end' ? 'is-drop-end' : ''}`}
+                >
                   {displayCommands.length > 0 ? (
-                    displayCommands.map((item, index) => {
+                    displayCommands.map((item) => {
                       const rawIcon = getLocalTerminalIcon(item.name, item.command, item.icon);
                       const iconPath = resolveIconDisplayUrl(rawIcon);
                       return (
                         <div
                           key={item.id}
-                          className={`local-terminal-command-row-v2 ${draggedIndex === index ? 'is-dragging' : ''}`}
-                          draggable={true}
-                          onDragStart={(e) => handleDragStart(e, index)}
-                          onDragOver={(e) => handleDragOver(e, index)}
-                          onDragEnd={handleDragEnd}
-                          onDrop={handleDragEnd}
+                          data-command-id={item.id}
+                          className={`local-terminal-command-row-v2 ${commandDragState?.id === item.id ? 'is-dragging' : ''} ${commandDropTarget?.type === 'command-insert' && commandDropTarget.commandId === item.id ? `is-drop-${commandDropTarget.placement}` : ''}`}
                         >
                           <div className="local-terminal-command-row-left">
-                            <GripVertical className="local-terminal-drag-handle" size={13} />
+                            <Tooltip content={`拖动预设命令 ${item.name}`} delayDuration={100} side="right">
+                              <button
+                                aria-label={`拖动预设命令 ${item.name}`}
+                                className="drag-handle"
+                                onPointerDown={(event) => startCommandDrag(event, item)}
+                                type="button"
+                              >
+                                <GripVertical size={13} />
+                              </button>
+                            </Tooltip>
                             {iconPath ? (
                               <img src={iconPath} className="local-terminal-row-icon" alt="" />
                             ) : null}
@@ -596,15 +720,15 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
                                 <Pencil size={13} />
                               </button>
                             </Tooltip>
+                            {/* 预设命令均允许删除，不再受内置锁定限制 */}
                             <Tooltip
-                              content={item.builtIn ? t('localTerminalBuiltInCommandLocked') : t('localTerminalDeleteCommand')}
+                              content={t('localTerminalDeleteCommand')}
                               delayDuration={100}
                               side="top"
                             >
                               <button
-                                aria-label={item.builtIn ? t('localTerminalBuiltInCommandLocked') : t('localTerminalDeleteCommand')}
+                                aria-label={t('localTerminalDeleteCommand')}
                                 className="icon-button"
-                                disabled={item.builtIn}
                                 onClick={() => void deleteCommand(item.id)}
                                 type="button"
                               >
@@ -902,6 +1026,17 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
             </div>
           </div>
         )}
+
+        {/* 预设命令拖拽悬浮预览 */}
+        {commandDragState ? (
+          <div
+            className="drag-preview"
+            style={{ left: commandDragState.currentX + 10, top: commandDragState.currentY + 10 }}
+          >
+            <GripVertical size={13} />
+            <span>{commandDragState.label}</span>
+          </div>
+        ) : null}
 
       </div>
     </div>

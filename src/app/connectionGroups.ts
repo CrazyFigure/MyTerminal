@@ -175,7 +175,9 @@ export const useFlipListAnimation = (containerRef: RefObject<HTMLElement | null>
           ? `group:${element.dataset.groupPath}`
           : element.dataset.sessionId
             ? `session:${element.dataset.sessionId}`
-            : '';
+            : element.dataset.commandId
+              ? `command:${element.dataset.commandId}`
+              : '';
       if (!key) {
         return;
       }
