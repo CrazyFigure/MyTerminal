@@ -99,7 +99,7 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
     const currentLeft = splitLeftWidth ?? (rect.width * 0.54);
     const startX = event.clientX;
     const minLeft = 240;
-    const maxLeft = Math.max(minLeft, rect.width - 240 - 8);
+    const maxLeft = Math.max(minLeft, rect.width - 240 - 14);
 
     beginResize(event, (moveEvent) => {
       const delta = moveEvent.clientX - startX;
@@ -561,7 +561,7 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
             <div
               ref={twoColsRef}
               className="local-terminal-v2-two-cols"
-              style={splitLeftWidth ? { gridTemplateColumns: `${splitLeftWidth}px 8px 1fr` } : undefined}
+              style={splitLeftWidth ? { gridTemplateColumns: `${splitLeftWidth}px 14px 1fr` } : undefined}
             >
               {/* 左列：系统终端 Shell 列表 */}
               <div className="local-terminal-v2-subcard">
