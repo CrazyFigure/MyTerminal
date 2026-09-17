@@ -79,6 +79,7 @@ select:disabled {
   --app-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
   --app-panel-bg: rgba(248, 250, 252, 0.95);
   --app-item-bg: rgba(248, 250, 252, 0.84);
+  --app-item-hover-bg: rgba(238, 242, 255, 0.75);
   --app-input-bg: rgba(255, 255, 255, 0.96);
   --app-active-bg: rgba(238, 242, 255, 0.96);
   --app-active-border: rgba(79, 70, 229, 0.42);
@@ -128,6 +129,7 @@ select:disabled {
   --app-shadow: 0 22px 52px rgba(2, 6, 23, 0.34);
   --app-panel-bg: rgba(30, 41, 59, 0.9);
   --app-item-bg: rgba(30, 41, 59, 0.76);
+  --app-item-hover-bg: rgba(255, 255, 255, 0.08);
   --app-input-bg: rgba(15, 23, 42, 0.9);
   --app-active-bg: rgba(49, 46, 129, 0.34);
   --app-active-border: rgba(129, 140, 248, 0.44);
@@ -2132,7 +2134,6 @@ select:disabled {
 .icon-button:hover:not(:disabled),
 .session-tab:hover:not(.is-active),
 .panel-tab:hover:not(.is-active),
-.history-row:hover:not(:disabled),
 .settings-nav-item:hover:not(.is-active) {
   background: rgba(15, 23, 42, 0.15) !important;
   border-color: rgba(15, 23, 42, 0.25) !important;
@@ -2144,7 +2145,6 @@ select:disabled {
 .app-shell.theme-dark .icon-button:hover:not(:disabled),
 .app-shell.theme-dark .session-tab:hover:not(.is-active),
 .app-shell.theme-dark .panel-tab:hover:not(.is-active),
-.app-shell.theme-dark .history-row:hover:not(:disabled),
 .app-shell.theme-dark .settings-nav-item:hover:not(.is-active) {
   background: rgba(255, 255, 255, 0.20) !important;
   border-color: rgba(255, 255, 255, 0.30) !important;
@@ -2402,42 +2402,10 @@ select:disabled {
 }
 
 .tunnel-card,
-.history-row,
 .empty-state {
   border-radius: 14px;
   padding: 8px;
   background: var(--app-item-bg);
-}
-
-.history-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  width: 100%;
-  text-align: left;
-  color: var(--app-text);
-}
-
-/* 命令文本占满剩余宽度并保留换行，完整显示长命令，采用终端等宽中英文字体栈 */
-.history-row strong {
-  flex: 1 1 auto;
-  min-width: 0;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  font-family: var(
-    --app-terminal-font-family,
-    "JetBrains Mono",
-    "Maple Mono Normal NF CN",
-    "Maple Mono Normal NF CN Light",
-    monospace
-  );
-}
-
-/* 执行时间固定单行右对齐，不随左侧命令长度换行或位移。 */
-.history-row span {
-  flex: 0 0 auto;
-  white-space: nowrap;
 }
 
 .editor-shell {
@@ -5241,3 +5209,375 @@ body.theme-dark .local-terminal-history-folder-icon,
   display: grid;
   gap: 10px;
 }
+
+/* ================= 底部功能栏：收藏命令与拖动排序 ================= */
+
+.favorites-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: relative;
+}
+
+.favorites-list.is-drop-end::after {
+  content: "";
+  display: block;
+  height: 2px;
+  margin: 4px 8px 0;
+  border-radius: 999px;
+  background: var(--app-accent, #4f46e5);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+}
+
+/* 历史与收藏行容器：统一圆角、边框、背景及各交互形态 */
+.history-row,
+.favorite-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: var(--app-item-bg);
+  transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.history-row:hover,
+.favorite-row:hover {
+  background: var(--app-item-hover-bg) !important;
+  border-color: rgba(99, 102, 241, 0.35) !important;
+}
+
+/* 深色模式下统一历史与收藏行 hover 状态 */
+.app-shell.theme-dark .history-row:hover,
+.app-shell.theme-dark .favorite-row:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(129, 140, 248, 0.4) !important;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+}
+
+.favorite-row.is-dragging {
+  opacity: 0.52;
+}
+
+/* 拖拽落点高亮指示线 */
+.favorite-row.is-drop-before::before,
+.favorite-row.is-drop-after::after {
+  content: "";
+  position: absolute;
+  z-index: 3;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--app-accent, #4f46e5);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+}
+
+.favorite-row.is-drop-before::before {
+  top: -2px;
+}
+
+.favorite-row.is-drop-after::after {
+  bottom: -2px;
+}
+
+/* 历史行主体内容：长命令支持自动折行，右侧时间大一号字 */
+.history-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  user-select: text;
+}
+
+.history-command-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(
+    --app-terminal-font-family,
+    "JetBrains Mono",
+    "Maple Mono Normal NF CN",
+    "Maple Mono Normal NF CN Light",
+    monospace
+  );
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--app-text);
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+.history-time-text {
+  font-family: var(--app-ui-font-family, inherit);
+  font-size: 13.5px;
+  color: var(--app-muted);
+  white-space: nowrap;
+  flex: 0 0 auto;
+  margin-right: 4px;
+}
+
+/* 收藏行主体内容：支持多行命令及长文本自动折行，备注在下方舒展排列 */
+.favorite-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  user-select: text;
+}
+
+.favorite-command-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(
+    --app-terminal-font-family,
+    "JetBrains Mono",
+    "Maple Mono Normal NF CN",
+    "Maple Mono Normal NF CN Light",
+    monospace
+  );
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--app-text);
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+.favorite-remark-text {
+  font-size: 12.5px;
+  color: var(--app-muted);
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 历史与收藏操作按钮组 */
+.history-actions,
+.favorite-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+/* 操作图标按钮（大一号：28x28 尺寸、16px 图标、更佳触控与悬停反馈） */
+.action-icon-btn {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  color: var(--app-muted);
+  background: transparent;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+  box-sizing: border-box;
+}
+
+.action-icon-btn svg {
+  flex-shrink: 0;
+}
+
+.action-icon-btn:hover:not(:disabled) {
+  color: var(--app-text);
+  background: rgba(15, 23, 42, 0.08) !important;
+  border-color: rgba(15, 23, 42, 0.14) !important;
+}
+
+.app-shell.theme-dark .action-icon-btn:hover:not(:disabled) {
+  color: #f1f5f9;
+  background: rgba(255, 255, 255, 0.14) !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+}
+
+.action-icon-btn:active:not(:disabled) {
+  transform: scale(0.90);
+}
+
+.action-icon-btn.apply-btn:hover:not(:disabled) {
+  color: var(--app-accent, #4f46e5) !important;
+}
+
+.app-shell.theme-dark .action-icon-btn.apply-btn:hover:not(:disabled) {
+  color: #818cf8 !important;
+}
+
+.action-icon-btn.danger-button:hover:not(:disabled) {
+  color: #ef4444 !important;
+  background: rgba(239, 68, 68, 0.12) !important;
+  border-color: rgba(239, 68, 68, 0.25) !important;
+}
+
+/* 复制成功即时交互反馈 */
+.action-icon-btn.is-copied {
+  opacity: 1 !important;
+  color: #10b981 !important;
+  background: rgba(16, 185, 129, 0.14) !important;
+  border-color: rgba(16, 185, 129, 0.35) !important;
+}
+
+.copy-check-icon {
+  color: #10b981;
+  animation: copy-check-pop 0.22s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+@keyframes copy-check-pop {
+  0% {
+    transform: scale(0.5);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* 收藏新建与编辑弹窗：紧凑美观、无冗余空白、宽度舒适、字体严格跟随系统字体 */
+.favorite-command-modal {
+  width: min(580px, 94vw);
+  max-width: 580px;
+  height: auto !important;
+  min-height: auto !important;
+  max-height: min(600px, calc(100vh - 48px));
+  padding: 22px 24px;
+  border-radius: 12px;
+  box-shadow: 0 16px 36px -8px rgba(15, 23, 42, 0.25), 0 0 0 1px var(--app-modal-border);
+  background: var(--app-overlay-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: visible;
+  font-family: var(
+    --app-ui-font-family,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    "PingFang SC",
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+    sans-serif
+  );
+}
+
+.favorite-command-modal .modal-header {
+  margin-bottom: 0;
+  padding-bottom: 2px;
+}
+
+.favorite-command-modal .modal-header h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--app-text);
+  margin: 0;
+}
+
+.favorite-command-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.favorite-field-label {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--app-text);
+  margin-bottom: 6px;
+}
+
+.favorite-command-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 88px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: var(--app-input-bg);
+  color: var(--app-text);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.favorite-command-textarea:focus {
+  border-color: var(--app-accent, #4f46e5);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
+}
+
+.favorite-command-textarea.is-invalid {
+  border-color: #ef4444;
+}
+
+.favorite-remark-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: var(--app-input-bg);
+  color: var(--app-text);
+  font-size: 13.5px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.favorite-remark-input:focus {
+  border-color: var(--app-accent, #4f46e5);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
+}
+
+/* 底部操作区：取消和保存按钮并排靠右放置，尺寸紧凑适中 */
+.favorite-modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.favorite-modal-actions .favorite-btn {
+  min-width: 80px;
+  height: 34px;
+  padding: 0 18px;
+  border-radius: 7px;
+  font-size: 13.5px;
+  font-weight: 500;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.favorite-modal-actions .favorite-btn:active {
+  transform: scale(0.95);
+}
+
+

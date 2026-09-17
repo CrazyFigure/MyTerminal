@@ -12,7 +12,7 @@ use crate::{
     error::AppError,
     models::{
         AgentConversation, AgentProvider, AppSettings, ConnectionProfile, EditorDocument,
-        HistoryEntry,
+        FavoriteCommand, HistoryEntry,
         LocalTerminalCommand, LocalTerminalProfile, LocalTerminalSettings, SshJumpHost,
         SshProxyConfig, StoredAgentProvider, StoredAppSettings, StoredConnectionProfile,
         StoredSshJumpHost, StoredSshProxyConfig, TunnelRecord, WebDavSettings,
@@ -148,6 +148,10 @@ impl StorageService {
         self.local_terminals_path()
     }
 
+    pub fn favorite_commands_file_path(&self) -> PathBuf {
+        self.favorite_commands_path()
+    }
+
     pub fn agent_bridge_secret_path(&self) -> PathBuf {
         self.data_dir.join("agent-bridge-secret.json")
     }
@@ -210,6 +214,10 @@ impl StorageService {
 
     fn local_terminals_path(&self) -> PathBuf {
         self.data_dir.join("local-terminals.json")
+    }
+
+    fn favorite_commands_path(&self) -> PathBuf {
+        self.data_dir.join("favorite-commands.json")
     }
 
     /// AI 端点单独存文件，确保 API Key 在本机始终以密文落盘；
@@ -600,6 +608,16 @@ impl StorageService {
     pub fn save_local_terminals(&self, settings: &LocalTerminalSettings) -> Result<(), AppError> {
         let normalized = normalize_local_terminal_settings(settings.clone());
         self.write_json(&self.local_terminals_path(), &normalized)
+    }
+
+    /// 加载收藏命令列表；若文件不存在则返回空列表
+    pub fn load_favorite_commands(&self) -> Result<Vec<FavoriteCommand>, AppError> {
+        self.read_json_or_default(&self.favorite_commands_path())
+    }
+
+    /// 持久化保存收藏命令列表
+    pub fn save_favorite_commands(&self, items: &[FavoriteCommand]) -> Result<(), AppError> {
+        self.write_json(&self.favorite_commands_path(), &items)
     }
 
     fn editor_cache_path(&self, connection_id: &str, remote_path: &str) -> PathBuf {

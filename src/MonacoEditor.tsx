@@ -282,6 +282,20 @@ export default function MonacoEditor({
           >
             {translate(uiLanguage, 'editorMenuPaste')}
           </button>
+          {/* 收藏选中文本：唤起收藏弹窗编辑 */}
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              const text = contextMenuTarget.selectedText;
+              setContextMenuTarget(null);
+              useAppStore.getState().openFavoriteModal({
+                command: text,
+              });
+            }}
+            type="button"
+          >
+            {translate(uiLanguage, 'editorMenuFavorite')}
+          </button>
         </div>
       ) : null}
     </div>

@@ -26,7 +26,7 @@ use crate::{
     error::AppError,
     models::{
         AppSettings, BootstrapState,
-        ConnectionProfile, HistoryEntry,
+        ConnectionProfile, FavoriteCommand, HistoryEntry,
         HistoryEntryInput, LocalTerminalProfile, LocalTerminalSettings,
         SshProxyConfig, SystemFontFamily, TerminalOutputChunk, TerminalSession, TunnelOpenRequest,
         TunnelRecord, TunnelUpdateRequest,
@@ -306,6 +306,8 @@ pub(super) fn bootstrap_from_storage(state: &AppState) -> Result<BootstrapState,
         history: state.storage.load_history()?,
         sessions,
         tunnels: state.storage.load_tunnels()?,
+        // 加载收藏命令列表，启动时随工作区一同返回
+        favorite_commands: state.storage.load_favorite_commands()?,
     })
 }
 
@@ -364,6 +366,24 @@ pub fn save_local_terminal_settings(
     // 本地终端配置包含本机目录和 shell 路径，只写入 local-terminals.json，不进入 WebDAV 同步包。
     state.storage.save_local_terminals(&settings)?;
     Ok(state.storage.load_local_terminals()?)
+}
+
+// 加载收藏命令列表
+#[tauri::command]
+pub fn load_favorite_commands(
+    state: State<'_, AppState>,
+) -> Result<Vec<FavoriteCommand>, String> {
+    Ok(state.storage.load_favorite_commands()?)
+}
+
+// 保存收藏命令列表并返回最新存储数据
+#[tauri::command]
+pub fn save_favorite_commands(
+    state: State<'_, AppState>,
+    favorites: Vec<FavoriteCommand>,
+) -> Result<Vec<FavoriteCommand>, String> {
+    state.storage.save_favorite_commands(&favorites)?;
+    Ok(state.storage.load_favorite_commands()?)
 }
 
 #[tauri::command(async)]

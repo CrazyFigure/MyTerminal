@@ -6,6 +6,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { backend } from './backend';
 import { readClipboardText, writeClipboardText } from './clipboard';
 import { translate } from './i18n';
+import { useAppStore } from './store';
 import { initialTerminalReplaySize, type TerminalReplayEntry } from './terminalCache';
 import { buildTerminalFontFamily } from './terminalFonts';
 import type { AppSettings, TerminalOutputChunk, TerminalSession } from './types';
@@ -2083,6 +2084,21 @@ export function TerminalWorkspace({
             type="button"
           >
             {translate(settings.uiLanguage, 'terminalMenuPaste')}
+          </button>
+          {/* 收藏命令：唤起弹窗编辑，若有选中文本则自动预填 */}
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              const selectedText = terminalContextMenu.selectedText;
+              setTerminalContextMenu(null);
+              restoreTerminalFocusAfterContextMenuAction();
+              useAppStore.getState().openFavoriteModal({
+                command: selectedText,
+              });
+            }}
+            type="button"
+          >
+            {translate(settings.uiLanguage, 'terminalMenuFavorite')}
           </button>
         </div>
       ) : null}
