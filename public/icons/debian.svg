@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <defs>
+    <linearGradient id="deb-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#D70A53" />
+      <stop offset="100%" stop-color="#A80038" />
+    </linearGradient>
+    <filter id="deb-shadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1.5" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <circle cx="24" cy="24" r="20" fill="url(#deb-bg)" filter="url(#deb-shadow)" />
+
+  <!-- Debian 官方螺旋 Swirl -->
+  <path d="M 23.5 12 C 29.5 12 34 16 34 21.5 C 34 27.5 28.5 32 22 32 C 17 32 14 28.5 14 25 C 14 21.5 17 19 20 19 C 22.5 19 24 20.5 24 22.5 C 24 24 23 25 21.5 25 C 20.5 25 20 24.5 20 24 C 20 23.8 20.1 23.5 20.3 23.2 C 19.5 23.5 19 24.2 19 25 C 19 26.5 20.5 28 22.5 28 C 26 28 29.5 24.5 29.5 20.5 C 29.5 17 26 14.5 21.5 14.5 C 16 14.5 11 18.5 11 24.5 C 11 31.5 17 36 24 36 C 31.5 36 37 30 37 22 C 37 14 30.5 9 22.5 9 C 21.2 9 20 9.2 18.8 9.5 C 20.3 9.2 21.9 9 23.5 12 Z" fill="#ffffff" />
+</svg>

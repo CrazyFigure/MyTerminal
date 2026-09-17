@@ -687,19 +687,23 @@
   pointer-events: auto;
 }
 
+/* 设置开关主体：保持统一尺寸与平滑过渡，并在深浅色模式下提供清晰明快的底色与即时反馈 */
 .agent-toggle-field input[type='checkbox'] {
   width: 38px;
   height: 20px;
   appearance: none;
-  border: 1px solid var(--app-card-border);
+  border: 1px solid var(--app-switch-off-border, var(--app-card-border));
   border-radius: 999px;
-  background: rgba(148, 163, 184, 0.28);
+  background: var(--app-switch-off-bg, rgba(148, 163, 184, 0.28));
   position: relative;
-  transition: background 0.16s ease, border-color 0.16s ease;
+  transition: background 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 0.2s ease,
+              box-shadow 0.2s ease;
   pointer-events: auto;
   cursor: pointer;
 }
 
+/* 开关圆形滑块：带柔和微立体阴影，按压时具有微拉伸弹性反馈 */
 .agent-toggle-field input[type='checkbox']::after {
   content: '';
   position: absolute;
@@ -709,23 +713,52 @@
   height: 14px;
   border-radius: 999px;
   background: #ffffff;
-  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.18);
-  transition: transform 0.16s ease;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.28);
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), width 0.15s ease;
 }
 
-.agent-toggle-field input[type='checkbox']:checked {
+/* 鼠标悬停（未选中）：边框轻度高亮，提供明确的可交互点击反馈 */
+.agent-toggle-field input[type='checkbox']:hover:not(:disabled) {
   border-color: var(--app-active-border);
-  background: var(--app-active-text);
+  background: color-mix(in srgb, var(--app-switch-off-bg, rgba(148, 163, 184, 0.38)) 85%, #ffffff 15%);
 }
 
+/* 键盘聚焦可达性高亮圈 */
+.agent-toggle-field input[type='checkbox']:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--app-card-bg, #ffffff), 0 0 0 4px var(--app-control-accent, #4f46e5);
+}
+
+/* 按压交互反馈：滑块轻度延展微拉伸，模拟细腻的物理按键触感 */
+.agent-toggle-field input[type='checkbox']:active:not(:disabled)::after {
+  width: 17px;
+}
+
+/* 开启状态：采用饱满明快的控件强调色，深浅色模式均拥有绝佳的对比度与激活识别度，彻底告别置灰感 */
+.agent-toggle-field input[type='checkbox']:checked {
+  border-color: var(--app-control-accent, #4f46e5);
+  background: var(--app-control-accent, #4f46e5);
+}
+
+/* 开启状态悬停：微调强调色并带柔和光晕，强化操作反馈 */
+.agent-toggle-field input[type='checkbox']:checked:hover:not(:disabled) {
+  background: var(--app-control-accent-hover, #4338ca);
+  border-color: var(--app-control-accent-hover, #4338ca);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-control-accent, #6366f1) 25%, transparent);
+}
+
+/* 真正的禁用/等待状态：明确置灰并显示不可操作手势，与正常可用状态形成鲜明区分 */
 .agent-toggle-field.is-pending input[type='checkbox'],
 .agent-toggle-field input[type='checkbox']:disabled {
   cursor: not-allowed;
-  opacity: 0.58;
+  opacity: 0.45;
+  box-shadow: none;
 }
 
-.agent-toggle-field.is-pending input[type='checkbox']:checked {
-  background: rgba(79, 70, 229, 0.38);
+.agent-toggle-field.is-pending input[type='checkbox']:checked,
+.agent-toggle-field input[type='checkbox']:disabled:checked {
+  background: color-mix(in srgb, var(--app-control-accent, #4f46e5) 45%, transparent);
+  border-color: color-mix(in srgb, var(--app-control-accent, #4f46e5) 45%, transparent);
 }
 
 .agent-toggle-field input[type='checkbox']:checked::after {
@@ -768,6 +801,17 @@
 
 .settings-inline-toggle-control > strong {
   justify-self: start;
+  font-size: 13px;
+  color: var(--app-muted);
+  user-select: none;
+  transition: color 0.16s ease;
+}
+
+/* 开启状态联动加亮状态说明文字，与未开启的置灰文字形成直观对比 */
+.settings-inline-toggle-control input[type='checkbox']:checked + strong,
+.agent-toggle-field input[type='checkbox']:checked + strong {
+  color: var(--app-text);
+  font-weight: 600;
 }
 
 .settings-inline-toggle-control input[type='checkbox'] {

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <defs>
+    <linearGradient id="ubuntu-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF6332" />
+      <stop offset="100%" stop-color="#E95420" />
+    </linearGradient>
+    <filter id="ubuntu-shadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1.5" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Ubuntu 官方橙色底圆 -->
+  <circle cx="24" cy="24" r="20" fill="url(#ubuntu-bg)" filter="url(#ubuntu-shadow)" />
+
+  <!-- Ubuntu Circle of Friends 经典三人手拉手友谊圆环 -->
+  <g fill="#ffffff">
+    <!-- 主圆环 (带三处切口断开) -->
+    <path d="M 24 9.5 A 14.5 14.5 0 0 1 36.56 16.75 L 32.8 18.92 A 10.3 10.3 0 0 0 24 13.7 A 10.3 10.3 0 0 0 15.2 18.92 L 11.44 16.75 A 14.5 14.5 0 0 1 24 9.5 Z" />
+    <path d="M 38.5 24 A 14.5 14.5 0 0 1 24 38.5 L 24 34.3 A 10.3 10.3 0 0 0 34.3 24 Z" transform="rotate(60 24 24)" />
+    <path d="M 38.5 24 A 14.5 14.5 0 0 1 24 38.5 L 24 34.3 A 10.3 10.3 0 0 0 34.3 24 Z" transform="rotate(180 24 24)" />
+
+    <!-- 三个人的圆头 (圆形) -->
+    <!-- 顶部偏右/偏左分布 -->
+    <circle cx="24" cy="6" r="3.2" />
+    <circle cx="8.4" cy="33" r="3.2" />
+    <circle cx="39.6" cy="33" r="3.2" />
+  </g>
+</svg>

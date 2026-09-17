@@ -39,12 +39,12 @@ export const ungroupedGroupPath = '__ungrouped__';
 
 
 
-// 名称列优先容纳可读机器名；主机与用户名仍可拖拽扩宽，操作按钮保持完整露出且不引入横向滚动条。
-export const connectionTableDefaultColumnWidths = [24, 184, 130, 54, 94];
+// 名称列优先容纳可读机器名；拖拽抓手列设为 22px 匹配把手尺寸，操作按钮保持完整露出且不引入横向滚动条。
+export const connectionTableDefaultColumnWidths = [22, 184, 130, 54, 94];
 
 
 export const connectionTableColumnLimits = [
-  { min: 24, max: 24 },
+  { min: 22, max: 22 },
   { min: 96, max: 360 },
   { min: 120, max: 400 },
   { min: 48, max: 96 },

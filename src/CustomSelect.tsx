@@ -7,6 +7,9 @@ import clsx from 'clsx';
 export interface CustomSelectOption {
   value: string;
   label: string | React.ReactNode;
+  group?: string;
+  /** 搜索辅助文本只参与匹配、不直接展示，适合字体本地化别名等同义名称。 */
+  searchText?: string;
 }
 
 // 下拉框组件属性接口
@@ -66,7 +69,7 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
       .map((option, index) => {
         const label = typeof option.label === 'string' ? option.label : '';
         // 标签和值分别评分，禁止相同文本拼接后让子序列跨越边界产生伪匹配。
-        const scores = [label, option.value]
+        const scores = [label, option.value, option.searchText ?? '']
           .map((candidate) => scoreFuzzyText(candidate, searchQuery))
           .filter((score): score is number => score !== undefined);
         const score = scores.length ? Math.min(...scores) : undefined;
@@ -210,8 +213,12 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
             style={{
               position: 'absolute',
               top: coords.top,
-              left: coords.left,
-              width: coords.width,
+              left:
+                coords.left + Math.max(coords.width, 210) > window.innerWidth
+                  ? Math.max(8, window.innerWidth - Math.max(coords.width, 210) - 16)
+                  : coords.left,
+              width: Math.max(coords.width, 210),
+              minWidth: coords.width,
               zIndex: 99999,
             }}
           >
@@ -239,20 +246,28 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
               </div>
             ) : null}
             <div className="custom-select-scroll-container">
-              {filteredOptions.map((opt) => {
+              {filteredOptions.map((opt, index) => {
+                const prevGroup = index > 0 ? filteredOptions[index - 1].group : undefined;
+                const showGroupHeader = opt.group && opt.group !== prevGroup;
                 const isSelected = opt.value === value;
                 return (
-                  <div
-                    key={opt.value}
-                    className={clsx('custom-select-item', { 'is-selected': isSelected })}
-                    onClick={() => handleSelect(opt.value)}
-                  >
-                    {/* 勾选图标放置在最左侧，并留出固定占位宽度以保持文字对齐 */}
-                    <div className="custom-select-item-check-wrapper">
-                      {isSelected && <Check size={14} className="custom-select-item-check" />}
+                  <React.Fragment key={opt.value}>
+                    {showGroupHeader && (
+                      <div className="custom-select-group-header">
+                        {opt.group}
+                      </div>
+                    )}
+                    <div
+                      className={clsx('custom-select-item', { 'is-selected': isSelected })}
+                      onClick={() => handleSelect(opt.value)}
+                    >
+                      {/* 勾选图标放置在最左侧，并留出固定占位宽度以保持文字对齐 */}
+                      <div className="custom-select-item-check-wrapper">
+                        {isSelected && <Check size={14} className="custom-select-item-check" />}
+                      </div>
+                      <span className="custom-select-item-label">{opt.label}</span>
                     </div>
-                    <span className="custom-select-item-label">{opt.label}</span>
-                  </div>
+                  </React.Fragment>
                 );
               })}
               {filteredOptions.length === 0 ? (

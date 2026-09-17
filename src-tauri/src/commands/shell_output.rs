@@ -753,23 +753,33 @@ mod shell_output_filter_tests {
     }
 
     #[test]
-    fn dedupe_font_names_trims_dedupes_and_sorts() {
-        let names = [
-            "  JetBrains Mono ",
-            "Microsoft YaHei",
-            "jetbrains mono",
-            "",
-            "Cascadia Mono",
-        ]
-        .into_iter()
-        .map(str::to_string);
-        // 去空白、按小写去重（保留首次出现的大小写）、按字母排序。
+    fn normalize_system_fonts_keeps_localized_names_on_canonical_entries() {
+        let fonts = [
+            SystemFontFamily {
+                family: "  SimSun ".into(),
+                localized_names: [("ZH-CN".into(), " 宋体 ".into())].into(),
+            },
+            SystemFontFamily {
+                family: "simsun".into(),
+                localized_names: Default::default(),
+            },
+            SystemFontFamily {
+                family: "Cascadia Mono".into(),
+                localized_names: Default::default(),
+            },
+        ];
+        // 本地化名称只挂在规范字体项上；规范名按大小写去重并稳定排序。
         assert_eq!(
-            dedupe_font_names(names),
+            normalize_system_fonts(fonts.into_iter()),
             vec![
-                "Cascadia Mono".to_string(),
-                "JetBrains Mono".to_string(),
-                "Microsoft YaHei".to_string(),
+                SystemFontFamily {
+                    family: "Cascadia Mono".into(),
+                    localized_names: Default::default(),
+                },
+                SystemFontFamily {
+                    family: "SimSun".into(),
+                    localized_names: [("zh-cn".into(), "宋体".into())].into(),
+                },
             ]
         );
     }

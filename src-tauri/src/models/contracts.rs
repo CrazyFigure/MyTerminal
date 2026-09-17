@@ -85,6 +85,14 @@ pub struct FontPackStatus {
     pub faces: Vec<FontPackFace>,
 }
 
+/// 系统字体目录项：family 是 CSS 与配置使用的稳定族名，本地化名称只用于设置页展示和搜索。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemFontFamily {
+    pub family: String,
+    pub localized_names: std::collections::HashMap<String, String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalConfigBundle {
@@ -175,6 +183,12 @@ pub struct StoredAppSettings {
     pub agent_chat_font_size: u16,
     #[serde(default = "default_agent_chat_line_height")]
     pub agent_chat_line_height: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_latin_font_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_cjk_font_family: Option<String>,
+    #[serde(default)]
+    pub ui_font_size: u16,
     #[serde(default = "default_terminal_background")]
     pub terminal_background: String,
     #[serde(default = "default_terminal_foreground")]

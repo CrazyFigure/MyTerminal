@@ -1,5 +1,408 @@
 /* 连接表单、编辑器、拖拽与菜单末端覆盖样式；文件顺序用于保持原有 CSS 级联优先级。 */
-/* 分组路径下拉保留全部候选，仅把匹配项排前，避免浏览器 datalist 过滤掉父级分组。 */
+/* ==========================================================================
+   现代化树形级联分组选择器 (ConnectionGroupCombobox)
+   ========================================================================== */
+.modern-group-combobox {
+  position: relative;
+  width: 100%;
+}
+
+.group-combobox-input-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 10px;
+  background: var(--app-input-bg);
+  color: var(--app-text);
+  box-sizing: border-box;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.group-combobox-input-wrapper:hover {
+  border-color: rgba(148, 163, 184, 0.45);
+}
+
+.group-combobox-input-wrapper.is-focused,
+.group-combobox-input-wrapper:focus-within {
+  border-color: var(--app-active-border);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
+}
+
+.group-combobox-prefix-icon {
+  flex-shrink: 0;
+  color: var(--app-muted);
+}
+
+/* 彻底消除 form-grid 内置在 input 上的内框、阴影与圆角，杜绝双层果冻框 */
+.form-grid .group-combobox-input,
+.form-grid .group-combobox-input:focus,
+.form-grid .group-combobox-input:hover,
+.form-grid .group-combobox-input:active,
+.group-combobox-input,
+.group-combobox-input:focus,
+.group-combobox-input:hover,
+.group-combobox-input:active {
+  flex: 1 !important;
+  min-width: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  background: transparent !important;
+  padding: 0 !important;
+  height: auto !important;
+  font-size: 0.9rem !important;
+  color: inherit !important;
+}
+
+.group-combobox-suffix-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.group-combobox-clear-btn {
+  opacity: 0.7;
+  transition: opacity 0.12s ease;
+}
+
+.group-combobox-clear-btn:hover {
+  opacity: 1;
+}
+
+.group-combobox-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--app-muted);
+  border-radius: 4px;
+  transition: transform 0.18s ease, color 0.12s ease, background-color 0.12s ease;
+}
+
+.group-combobox-toggle-btn:hover {
+  color: var(--app-text);
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.group-combobox-toggle-btn.is-open {
+  transform: rotate(180deg);
+}
+
+/* 下拉浮层 */
+.group-combobox-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 100;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--app-card-border, rgba(148, 163, 184, 0.3));
+  border-radius: 10px;
+  background: var(--app-overlay-bg);
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.14), 0 4px 12px rgba(15, 23, 42, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 自定义路径即时创建提示卡片 */
+.group-combobox-custom-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  border-radius: 8px;
+  border: 1px dashed var(--app-control-accent, #4f46e5);
+  background: var(--app-active-bg);
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.group-combobox-custom-item:hover {
+  background: rgba(224, 231, 255, 0.6);
+}
+
+.group-custom-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--app-control-accent, #4f46e5);
+}
+
+.group-custom-path-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding-left: 20px;
+}
+
+.group-preview-divider {
+  font-size: 0.75rem;
+  color: var(--app-muted);
+}
+
+.group-preview-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.76rem;
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--app-text);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+/* 树列表容器与行 */
+.group-combobox-tree-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.group-tree-branch {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.group-tree-children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.group-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  user-select: none;
+  color: var(--app-text);
+  font-size: 0.86rem;
+  transition: background-color 0.12s ease;
+}
+
+.group-tree-row:hover {
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.group-tree-row.is-selected {
+  background: var(--app-active-bg);
+  border-color: var(--app-active-border);
+  color: var(--app-active-text);
+  font-weight: 500;
+}
+
+.group-tree-row-ungrouped {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+  margin-bottom: 2px;
+  padding-bottom: 7px;
+}
+
+.group-tree-icon {
+  flex-shrink: 0;
+  color: var(--app-muted);
+}
+
+.group-tree-row.is-selected .group-tree-icon {
+  color: var(--app-control-accent, #4f46e5);
+}
+
+.group-tree-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-tree-check {
+  flex-shrink: 0;
+  color: var(--app-control-accent, #4f46e5);
+  margin-left: 4px;
+}
+
+/* ==========================================================================
+   连接管理器侧边栏：现代化新建分组面板 & 原位内联重命名/新建
+   ========================================================================== */
+.modern-group-creator-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--app-card-border, rgba(148, 163, 184, 0.28));
+  border-radius: 10px;
+  background: var(--app-panel-bg);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+  animation: fadeInDown 0.18s ease-out;
+}
+
+@keyframes fadeInDown {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.creator-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.creator-card-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--app-text);
+}
+
+.creator-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.creator-field-label {
+  font-size: 0.74rem;
+  color: var(--app-muted);
+}
+
+.creator-select,
+.creator-input {
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 6px;
+  background: var(--app-input-bg);
+  color: var(--app-text);
+  outline: none;
+  padding: 6px 8px;
+  font-size: 0.84rem;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.creator-select:focus,
+.creator-input:focus {
+  border-color: var(--app-control-accent, #4f46e5);
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.15);
+}
+
+.creator-preview {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(148, 163, 184, 0.08);
+  font-size: 0.76rem;
+}
+
+.creator-preview-label {
+  color: var(--app-muted);
+  flex-shrink: 0;
+}
+
+.creator-preview-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.creator-preview-chip-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.preview-divider {
+  color: var(--app-muted);
+}
+
+.preview-chip {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--app-chip-bg, rgba(224, 231, 255, 0.85));
+  color: var(--app-chip-text, #3730a3);
+  font-weight: 500;
+}
+
+.creator-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* 原位内联编辑与内联新建子分组行 */
+.connection-group-row.inline-editing,
+.connection-group-row.inline-creating {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--app-panel-bg);
+  border: 1px solid var(--app-control-accent, #4f46e5);
+  border-radius: 8px;
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.12);
+  animation: fadeInDown 0.15s ease-out;
+}
+
+.inline-group-input {
+  flex: 1;
+  min-width: 0;
+  border: none !important;
+  outline: none !important;
+  background: transparent !important;
+  color: var(--app-text) !important;
+  padding: 2px 4px !important;
+  font-size: 0.86rem;
+  font-family: inherit;
+}
+
+.connection-group-inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.icon-button.success-button {
+  color: #16a34a;
+}
+
+.icon-button.success-button:hover {
+  background: rgba(22, 163, 74, 0.12);
+}
+
+.group-node-icon.muted {
+  opacity: 0.6;
+}
+
+/* 兼容保留原有旧选择器规则 */
 .group-combobox {
   position: relative;
 }
@@ -483,21 +886,32 @@
     grid-template-rows: auto auto minmax(220px, 1fr);
   }
 
-  .local-terminal-history-panel {
-    grid-column: auto;
+  .local-terminal-v2-two-cols {
+    grid-template-columns: 1fr !important;
+    gap: 10px;
   }
 
-  .local-terminal-command-list {
-    max-height: 150px;
+  .local-terminal-v2-resizer {
+    display: none !important;
   }
 
-  .local-terminal-history-row {
-    grid-template-columns: minmax(0, 1fr) auto;
+  .local-terminal-v2-open-row {
+    flex-wrap: wrap;
   }
 
-  .local-terminal-history-main,
-  .local-terminal-history-command {
-    grid-column: 1 / -1;
+  .local-terminal-v2-select-group {
+    width: 100%;
+  }
+
+  .local-terminal-v2-history-row {
+    flex-direction: column;
+    align-items: stretch;
+    height: auto;
+    gap: 6px;
+  }
+
+  .local-terminal-v2-history-controls {
+    justify-content: flex-end;
   }
 }
 

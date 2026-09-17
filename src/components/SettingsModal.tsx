@@ -18,7 +18,15 @@ import {
   terminalLatinFontOptions,
 } from '../terminalFonts';
 import { UpdateModal, type UpdateDownloadProgress } from '../UpdateModal';
-import type { AgentBridgeStatus, AgentModel, AgentProvider, AppSettings, DownloadProgress, UpdateCheckResult } from '../types';
+import type {
+  AgentBridgeStatus,
+  AgentModel,
+  AgentProvider,
+  AppSettings,
+  DownloadProgress,
+  SystemFontFamily,
+  UpdateCheckResult,
+} from '../types';
 import { buildConnectionGroupTree, normalizeConnectionGroupPath } from '../app/connectionGroups';
 import { buildPreviewFontFamily } from '../app/fonts';
 import { isTauriRuntime } from '../app/runtime';
@@ -42,9 +50,11 @@ import {
 } from '../features/settings';
 import {
   buildAgentMcpConfig,
+  buildFontSelectOptions,
   findFontOption,
   mergeInstalledFontOptions,
   resourceSettingsDefaults,
+  resolveSystemFontFamilyName,
   serializeAgentProvidersForCompare,
   type SettingsTab,
 } from '../features/settings/model';
@@ -126,7 +136,7 @@ export function SettingsModal({
   const [backupList, setBackupList] = useState<string[]>([]);
   const backupSelectorResolveRef = useRef<((value: string | null) => void) | null>(null);
   // 本机已安装字体列表用于剔除不存在的推荐项，并限制英文字体下拉只展示真实等宽字体。
-  const [systemFonts, setSystemFonts] = useState<string[]>([]);
+  const [systemFonts, setSystemFonts] = useState<SystemFontFamily[]>([]);
   const [systemFontsLoaded, setSystemFontsLoaded] = useState(false);
   const [fontPackActionRunning, setFontPackActionRunning] = useState<'download' | 'import' | 'remove' | ''>('');
   const [fontPackDownloadProgress, setFontPackDownloadProgress] = useState<DownloadProgress | null>(null);
@@ -185,11 +195,17 @@ export function SettingsModal({
   // 界面版本由 Vite 从 package.json 注入，避免关于页和发布元数据出现不同版本。
   const appVersion = import.meta.env.VITE_APP_VERSION;
   const webdavPasswordToggleLabel = revealWebdavPassword ? t('hideSecret') : t('showSecret');
-  const configuredLatinFontFamily = draftSettings.shellLatinFontFamily || draftSettings.shellFontFamily.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '') || 'JetBrains Mono';
-  const configuredCjkFontFamily = draftSettings.shellCjkFontFamily || configuredLatinFontFamily;
+  const rawConfiguredLatinFontFamily = draftSettings.shellLatinFontFamily || draftSettings.shellFontFamily.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '') || 'JetBrains Mono';
+  const configuredLatinFontFamily = resolveSystemFontFamilyName(systemFonts, rawConfiguredLatinFontFamily);
+  const configuredCjkFontFamily = resolveSystemFontFamilyName(
+    systemFonts,
+    draftSettings.shellCjkFontFamily || configuredLatinFontFamily,
+  );
   const monospaceSystemFonts = useMemo(
     // 字体度量只在外观设置真正打开时执行，避免应用启动阶段为几百个系统字体做无用测量。
-    () => open ? systemFonts.filter((fontFamily) => isTerminalMonospaceFontFamily(fontFamily)) : [],
+    () => open
+      ? systemFonts.filter(({ family }) => isTerminalMonospaceFontFamily(family))
+      : [],
     [open, systemFonts],
   );
   const latinOptions = mergeInstalledFontOptions(
@@ -221,6 +237,34 @@ export function SettingsModal({
     systemFonts,
     isTerminalFontFamilyAvailable,
   );
+  // 系统字体允许比例字体，选项直接对全部系统字体做可用性筛选，不做等宽约束。
+  const uiLatinOptions = mergeInstalledFontOptions(
+    [...agentChatLatinFontOptions, draftSettings.uiLatinFontFamily].filter((item): item is string => Boolean(item)),
+    systemFonts,
+    isTerminalFontFamilyAvailable,
+  );
+  const uiCjkOptions = mergeInstalledFontOptions(
+    [...agentChatCjkFontOptions, draftSettings.uiCjkFontFamily].filter((item): item is string => Boolean(item)),
+    systemFonts,
+    isTerminalFontFamilyAvailable,
+  );
+  // 英文字段只展示规范字体族名；中文字段才使用本地化标签和别名搜索，选中值始终保持为规范名。
+  const latinSelectOptions = buildFontSelectOptions(latinOptions, systemFonts, draftSettings.uiLanguage, false);
+  const cjkSelectOptions = buildFontSelectOptions(cjkOptions, systemFonts, draftSettings.uiLanguage, true);
+  const agentChatLatinSelectOptions = buildFontSelectOptions(
+    agentChatLatinOptions,
+    systemFonts,
+    draftSettings.uiLanguage,
+    false,
+  );
+  const agentChatCjkSelectOptions = buildFontSelectOptions(
+    agentChatCjkOptions,
+    systemFonts,
+    draftSettings.uiLanguage,
+    true,
+  );
+  const uiLatinSelectOptions = buildFontSelectOptions(uiLatinOptions, systemFonts, draftSettings.uiLanguage, false);
+  const uiCjkSelectOptions = buildFontSelectOptions(uiCjkOptions, systemFonts, draftSettings.uiLanguage, true);
   // AI 执行只支持 SSH；RDP 连接保留在统一管理页，但不能进入远端命令白名单。
   const agentSshConnections = useMemo(
     () => connections.filter((connection) => connection.protocol !== 'rdp'),
@@ -234,15 +278,14 @@ export function SettingsModal({
     () => agentSshConnections.filter((connection) => !normalizeConnectionGroupPath(connection.groupPath)),
     [agentSshConnections],
   );
+  // 终端字体预览：空配置回落到终端中英文字体与字号，与 AI 对话字体预览使用相同的面板底色。
   const terminalPreviewStyle = useMemo<CSSProperties>(
     () => ({
       fontFamily: buildPreviewFontFamily(draftSettings),
       fontSize: draftSettings.shellFontSize,
       lineHeight: draftSettings.shellLineHeight ?? 1.18,
-      background: draftSettings.terminalBackground,
-      color: draftSettings.terminalForeground,
     }),
-    [draftSettings],
+    [draftSettings, fontPackStatus],
   );
   // AI 对话字体预览：空配置回落到终端中英文字体与字号，与右侧对话面板的实际渲染保持一致。
   const agentChatPreviewStyle = useMemo<CSSProperties>(
@@ -254,7 +297,18 @@ export function SettingsModal({
       fontSize: draftSettings.agentChatFontSize || draftSettings.shellFontSize,
       lineHeight: draftSettings.agentChatLineHeight ?? 1.6,
     }),
-    [configuredCjkFontFamily, configuredLatinFontFamily, draftSettings],
+    [configuredCjkFontFamily, configuredLatinFontFamily, draftSettings, fontPackStatus],
+  );
+  // 系统字体预览：空配置回落到终端中英文字体，字号固定为基准 15px；监听字体包就绪状态保证即时同步。
+  const uiPreviewStyle = useMemo<CSSProperties>(
+    () => ({
+      fontFamily: buildAgentChatFontFamily(
+        draftSettings.uiLatinFontFamily || configuredLatinFontFamily,
+        draftSettings.uiCjkFontFamily || configuredCjkFontFamily,
+      ),
+      fontSize: 15,
+    }),
+    [configuredCjkFontFamily, configuredLatinFontFamily, draftSettings, fontPackStatus],
   );
   const updateDraftSettings = (updater: (settings: AppSettings) => AppSettings) => {
     setDraftSettings((current) => updater(current));
@@ -339,7 +393,7 @@ export function SettingsModal({
     setFontPackActionRunning('remove');
     setFontPackError(null);
     try {
-      const installedFonts = await loadSystemFonts();
+      const installedFonts = (await loadSystemFonts()).map(({ family }) => family);
       await removeFontPack();
       // 只保存字体字段，不能把设置弹窗中其它尚未保存的草稿一起意外落盘。
       if (shouldPromptForFontPack(settings, installedFonts)) {
@@ -719,20 +773,43 @@ export function SettingsModal({
     if (!open || !systemFontsLoaded) {
       return;
     }
-    // 旧配置引用已卸载字体时只修正设置草稿：预览立即使用真实字体，取消仍保持原配置，保存后才正式迁移。
+    // 旧配置引用已卸载字体或保存过本地化别名时只修正设置草稿：取消仍保持原配置，保存后才正式迁移。
     setDraftSettings((current) => {
       const currentLatin = current.shellLatinFontFamily || current.shellFontFamily.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '');
       const currentCjk = current.shellCjkFontFamily || currentLatin;
-      if (currentLatin === selectedLatinFontFamily && currentCjk === selectedCjkFontFamily) {
+      const agentChatLatin = current.agentChatLatinFontFamily
+        ? resolveSystemFontFamilyName(systemFonts, current.agentChatLatinFontFamily)
+        : undefined;
+      const agentChatCjk = current.agentChatCjkFontFamily
+        ? resolveSystemFontFamilyName(systemFonts, current.agentChatCjkFontFamily)
+        : undefined;
+      const uiLatin = current.uiLatinFontFamily
+        ? resolveSystemFontFamilyName(systemFonts, current.uiLatinFontFamily)
+        : undefined;
+      const uiCjk = current.uiCjkFontFamily
+        ? resolveSystemFontFamilyName(systemFonts, current.uiCjkFontFamily)
+        : undefined;
+      if (
+        currentLatin === selectedLatinFontFamily
+        && currentCjk === selectedCjkFontFamily
+        && current.agentChatLatinFontFamily === agentChatLatin
+        && current.agentChatCjkFontFamily === agentChatCjk
+        && current.uiLatinFontFamily === uiLatin
+        && current.uiCjkFontFamily === uiCjk
+      ) {
         return current;
       }
       return {
         ...current,
         shellLatinFontFamily: selectedLatinFontFamily,
         shellCjkFontFamily: selectedCjkFontFamily,
+        agentChatLatinFontFamily: agentChatLatin,
+        agentChatCjkFontFamily: agentChatCjk,
+        uiLatinFontFamily: uiLatin,
+        uiCjkFontFamily: uiCjk,
       };
     });
-  }, [open, selectedCjkFontFamily, selectedLatinFontFamily, systemFontsLoaded]);
+  }, [open, selectedCjkFontFamily, selectedLatinFontFamily, systemFonts, systemFontsLoaded]);
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -827,17 +904,17 @@ export function SettingsModal({
           <div className="settings-content">
             {activeTab === 'appearance' ? (
               <AppearanceSettingsSection
-                agentChatCjkOptions={agentChatCjkOptions}
-                agentChatLatinOptions={agentChatLatinOptions}
+                agentChatCjkOptions={agentChatCjkSelectOptions}
+                agentChatLatinOptions={agentChatLatinSelectOptions}
                 agentChatPreviewStyle={agentChatPreviewStyle}
-                cjkOptions={cjkOptions}
+                cjkOptions={cjkSelectOptions}
                 draftSettings={draftSettings}
                 hasSettingsChanges={hasSettingsChanges}
                 fontPackActionRunning={fontPackActionRunning}
                 fontPackError={fontPackError}
                 fontPackProgress={fontPackDownloadProgress}
                 fontPackStatus={fontPackStatus}
-                latinOptions={latinOptions}
+                latinOptions={latinSelectOptions}
                 onChooseLocalBackgroundImage={handleLocalBackgroundImage}
                 onLoadSystemFonts={loadSystemFontsOnce}
                 onDownloadFontPack={() => void handleDownloadFontPack()}
@@ -849,6 +926,9 @@ export function SettingsModal({
                 selectedLatinFontFamily={selectedLatinFontFamily}
                 t={t}
                 terminalPreviewStyle={terminalPreviewStyle}
+                uiCjkOptions={uiCjkSelectOptions}
+                uiLatinOptions={uiLatinSelectOptions}
+                uiPreviewStyle={uiPreviewStyle}
               />
             ) : null}
 

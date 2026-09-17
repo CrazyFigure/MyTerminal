@@ -282,15 +282,26 @@ impl StorageService {
             runtime_resource_refresh_interval_sec: stored.runtime_resource_refresh_interval_sec,
             runtime_resource_source: stored.runtime_resource_source,
             ssh_keepalive_interval_sec: stored.ssh_keepalive_interval_sec,
-            shell_latin_font_family: stored.shell_latin_font_family,
+            shell_latin_font_family: if stored.shell_latin_font_family == "JetBrains Mono Light" {
+                "JetBrains Mono".to_string()
+            } else {
+                stored.shell_latin_font_family
+            },
             shell_cjk_font_family: stored.shell_cjk_font_family,
-            shell_font_family: stored.shell_font_family,
+            shell_font_family: if stored.shell_font_family == "JetBrains Mono Light" {
+                "JetBrains Mono".to_string()
+            } else {
+                stored.shell_font_family
+            },
             shell_font_size: stored.shell_font_size,
             shell_line_height: stored.shell_line_height,
             agent_chat_latin_font_family: stored.agent_chat_latin_font_family,
             agent_chat_cjk_font_family: stored.agent_chat_cjk_font_family,
             agent_chat_font_size: stored.agent_chat_font_size,
             agent_chat_line_height: stored.agent_chat_line_height,
+            ui_latin_font_family: stored.ui_latin_font_family,
+            ui_cjk_font_family: stored.ui_cjk_font_family,
+            ui_font_size: stored.ui_font_size,
             terminal_background: stored.terminal_background,
             terminal_foreground: stored.terminal_foreground,
             accent_color: stored.accent_color,
@@ -349,6 +360,9 @@ impl StorageService {
             agent_chat_cjk_font_family: settings.agent_chat_cjk_font_family.clone(),
             agent_chat_font_size: settings.agent_chat_font_size,
             agent_chat_line_height: settings.agent_chat_line_height,
+            ui_latin_font_family: settings.ui_latin_font_family.clone(),
+            ui_cjk_font_family: settings.ui_cjk_font_family.clone(),
+            ui_font_size: settings.ui_font_size,
             terminal_background: settings.terminal_background.clone(),
             terminal_foreground: settings.terminal_foreground.clone(),
             accent_color: settings.accent_color.clone(),
@@ -642,6 +656,7 @@ fn normalize_local_terminal_settings(settings: LocalTerminalSettings) -> LocalTe
             id: "shell".into(),
             name: "本地终端".into(),
             command: String::new(),
+            icon: None,
             built_in: true,
         }
     ];
@@ -665,6 +680,7 @@ fn normalize_local_terminal_settings(settings: LocalTerminalSettings) -> LocalTe
                 id,
                 name: name.to_string(),
                 command: command_text.to_string(),
+                icon: command.icon,
                 built_in: command.built_in,
             });
         }
@@ -709,6 +725,7 @@ fn normalize_local_terminal_settings(settings: LocalTerminalSettings) -> LocalTe
 
     LocalTerminalSettings {
         shell_path: settings.shell_path.trim().to_string(),
+        shells: settings.shells,
         commands,
         profiles,
     }

@@ -2,7 +2,7 @@ import type { CSSProperties } from "react";
 import { Download, PackageCheck, RotateCcw, Save, Trash2, Upload } from "lucide-react";
 
 import { clamp } from "../../app/layout";
-import { CustomSelect } from "../../CustomSelect";
+import { CustomSelect, type CustomSelectOption } from "../../CustomSelect";
 import { Tooltip } from "../../components/Tooltip";
 import type { TranslationKey } from "../../i18n";
 import type { AppSettings, DownloadProgress, FontPackStatus, UiLanguage } from "../../types";
@@ -12,17 +12,17 @@ import {
 } from "./model";
 
 type Props = {
-  agentChatCjkOptions: string[];
-  agentChatLatinOptions: string[];
+  agentChatCjkOptions: CustomSelectOption[];
+  agentChatLatinOptions: CustomSelectOption[];
   agentChatPreviewStyle: CSSProperties;
-  cjkOptions: string[];
+  cjkOptions: CustomSelectOption[];
   draftSettings: AppSettings;
   fontPackActionRunning: "download" | "import" | "remove" | "";
   fontPackError: string | null;
   fontPackProgress: DownloadProgress | null;
   fontPackStatus: FontPackStatus | null;
   hasSettingsChanges: boolean;
-  latinOptions: string[];
+  latinOptions: CustomSelectOption[];
   onChooseLocalBackgroundImage: () => void | Promise<unknown>;
   onDownloadFontPack: () => void;
   onImportFontPack: () => void;
@@ -37,6 +37,9 @@ type Props = {
     replacements?: Record<string, string | number>,
   ) => string;
   terminalPreviewStyle: CSSProperties;
+  uiCjkOptions: CustomSelectOption[];
+  uiLatinOptions: CustomSelectOption[];
+  uiPreviewStyle: CSSProperties;
 };
 
 const formatFontPackBytes = (value?: number) => {
@@ -70,6 +73,9 @@ export function AppearanceSettingsSection({
   selectedLatinFontFamily,
   t,
   terminalPreviewStyle,
+  uiCjkOptions,
+  uiLatinOptions,
+  uiPreviewStyle,
 }: Props) {
   const fontPackBusy = Boolean(fontPackActionRunning);
   const fontPackReady = fontPackStatus?.state === "ready";
@@ -208,10 +214,7 @@ export function AppearanceSettingsSection({
                 }))
               }
               onOpen={onLoadSystemFonts}
-              options={latinOptions.map((fontFamily) => ({
-                value: fontFamily,
-                label: fontFamily,
-              }))}
+              options={latinOptions}
               searchable
               searchPlaceholder={t("fontSearchPlaceholder")}
             />
@@ -226,10 +229,7 @@ export function AppearanceSettingsSection({
                 onUpdate((current) => ({ ...current, shellCjkFontFamily: val }))
               }
               onOpen={onLoadSystemFonts}
-              options={cjkOptions.map((fontFamily) => ({
-                value: fontFamily,
-                label: fontFamily,
-              }))}
+              options={cjkOptions}
               searchable
               searchPlaceholder={t("fontSearchPlaceholder")}
             />
@@ -317,7 +317,7 @@ export function AppearanceSettingsSection({
             style={terminalPreviewStyle}
           >
             <span>0123456789 abcdefghABCDEFGH</span>
-            <strong>终端中文字体预览</strong>
+            <strong>{t("terminalFontPreviewText")}</strong>
           </div>
         </div>
       </section>
@@ -343,10 +343,7 @@ export function AppearanceSettingsSection({
               onOpen={onLoadSystemFonts}
               options={[
                 { value: "", label: t("agentChatFontFollowTerminal") },
-                ...agentChatLatinOptions.map((fontFamily) => ({
-                  value: fontFamily,
-                  label: fontFamily,
-                })),
+                ...agentChatLatinOptions,
               ]}
               searchable
               searchPlaceholder={t("fontSearchPlaceholder")}
@@ -367,10 +364,7 @@ export function AppearanceSettingsSection({
               onOpen={onLoadSystemFonts}
               options={[
                 { value: "", label: t("agentChatFontFollowTerminal") },
-                ...agentChatCjkOptions.map((fontFamily) => ({
-                  value: fontFamily,
-                  label: fontFamily,
-                })),
+                ...agentChatCjkOptions,
               ]}
               searchable
               searchPlaceholder={t("fontSearchPlaceholder")}
@@ -464,14 +458,77 @@ export function AppearanceSettingsSection({
               </Tooltip>
             </div>
           </label>
-          {/* 空字体与 0 字号都表示跟随终端设置，老配置升级后对话区观感保持不变。 */}
-          <p className="field-hint">{t("agentChatFontSizeHint")}</p>
+          {/* 空字体与 0 字号都表示跟随终端设置，老配置升级后对话区观感保持不变；扩展到整行避免挤在左半列。 */}
+          <p className="field-hint span-2">{t("agentChatFontSizeHint")}</p>
           <div
             className="font-preview-panel span-2"
             style={agentChatPreviewStyle}
           >
             <span>0123456789 abcdefghABCDEFGH</span>
-            <strong>AI 对话字体预览</strong>
+            <strong>{t("agentChatFontPreviewText")}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-section-block">
+        <div>
+          <h3>{t("appearanceUiFontTitle")}</h3>
+        </div>
+
+        <div className="form-grid">
+          <div className="form-field">
+            <span>{t("fieldLatinFontFamily")}</span>
+            <CustomSelect
+              aria-label={t("fieldLatinFontFamily")}
+              emptyText={t("fontSearchEmpty")}
+              value={draftSettings.uiLatinFontFamily ?? ""}
+              onChange={(val) =>
+                onUpdate((current) => ({
+                  ...current,
+                  uiLatinFontFamily: val || undefined,
+                }))
+              }
+              onOpen={onLoadSystemFonts}
+              options={[
+                { value: "", label: t("uiFontFollowTerminal") },
+                ...uiLatinOptions,
+              ]}
+              searchable
+              searchPlaceholder={t("fontSearchPlaceholder")}
+            />
+          </div>
+          <div className="form-field">
+            <span>{t("fieldCjkFontFamily")}</span>
+            <CustomSelect
+              aria-label={t("fieldCjkFontFamily")}
+              emptyText={t("fontSearchEmpty")}
+              value={draftSettings.uiCjkFontFamily ?? ""}
+              onChange={(val) =>
+                onUpdate((current) => ({
+                  ...current,
+                  uiCjkFontFamily: val || undefined,
+                }))
+              }
+              onOpen={onLoadSystemFonts}
+              options={[
+                { value: "", label: t("uiFontFollowTerminal") },
+                ...uiCjkOptions,
+              ]}
+              searchable
+              searchPlaceholder={t("fontSearchPlaceholder")}
+            />
+          </div>
+          {/* 系统字体字号固定为基准 15px，保持与 UI 排版高度和图标比例严格协调，此处仅提供中西文字体族定制 */}
+          <p className="field-hint span-2">
+            {t("uiFontFollowTerminalHint")}
+          </p>
+          <div
+            className="font-preview-panel span-2"
+            style={uiPreviewStyle}
+          >
+            {/* 系统字体预览文本：与终端和 AI 对话保持一致的示例字符 */}
+            <span>0123456789 abcdefghABCDEFGH</span>
+            <strong>{t("uiFontPreviewText")}</strong>
           </div>
         </div>
       </section>
