@@ -543,8 +543,8 @@
 
 .agent-provider-hint {
   color: var(--app-muted);
-  font-size: 0.76rem;
-  line-height: 1.45;
+  font-size: 0.82rem;
+  line-height: 1.5;
 }
 
 /* AI 端点标题区保留紧凑按钮宽度，同时稍微增加高度，提升两个快捷操作的点击手感。 */
@@ -558,21 +558,25 @@
   transform: translateY(1px);
 }
 
-/* 实际请求地址预览：等宽显示，长地址允许折行而不撑破卡片。 */
+/* 实际请求地址预览：等宽显示，长地址允许折行而不撑破卡片；去掉深色背景色并加大字号以提升可读性。 */
 .agent-provider-url-preview {
   display: block;
-  margin-top: 2px;
+  margin-top: 4px;
   color: var(--app-muted);
-  font-size: 0.76rem;
-  line-height: 1.45;
+  font-size: 0.82rem;
+  line-height: 1.5;
 }
 
 .agent-provider-url-preview code {
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--app-surface-2, rgba(127, 127, 127, 0.12));
-  font-size: 0.74rem;
+  margin-left: 2px;
+  background: transparent;
+  color: var(--app-text);
+  font-size: 0.84rem;
+  font-weight: 500;
+  font-family: var(--app-font-family-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
   overflow-wrap: anywhere;
+  word-break: break-all;
+  user-select: all;
 }
 
 /* 设置页里的端点卡片，与连接表单同一视觉语言。 */
@@ -613,7 +617,7 @@
 }
 
 .agent-model-row-header {
-  font-size: 0.72rem;
+  font-size: 0.8rem;
   color: var(--app-muted);
   padding-bottom: 2px;
 }
