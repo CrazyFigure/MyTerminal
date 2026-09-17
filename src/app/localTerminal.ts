@@ -52,8 +52,9 @@ export const cleanShellName = (name: string): string => {
   if (trimmed === '命令提示符 CMD' || trimmed === '命令提示符') {
     return 'CMD';
   }
-  if (trimmed === 'Windows PowerShell') {
-    return 'PowerShell';
+  // Windows PowerShell 规范简写为 PowerShell 5，与 PowerShell 7 形成清晰版本对比
+  if (trimmed === 'Windows PowerShell' || trimmed === 'PowerShell') {
+    return 'PowerShell 5';
   }
   if (trimmed.startsWith('WSL · ') || trimmed.startsWith('WSL ·')) {
     return 'WSL';
@@ -88,7 +89,7 @@ export const AI_COMMAND_ICONS: CommandIconItem[] = [
 // 系统终端 Shell 预设图标列表
 export const SHELL_COMMAND_ICONS: CommandIconItem[] = [
   { id: 'pwsh-7', name: 'PowerShell 7', path: '/icons/powershell7.svg', category: 'shell' },
-  { id: 'powershell', name: 'PowerShell', path: '/icons/powershell.svg', category: 'shell' },
+  { id: 'powershell', name: 'PowerShell 5', path: '/icons/powershell.svg', category: 'shell' },
   { id: 'cmd', name: 'CMD', path: '/icons/cmd.svg', category: 'shell' },
   { id: 'git', name: 'Git Bash', path: '/icons/git.svg', category: 'shell' },
   { id: 'ubuntu', name: 'Ubuntu', path: '/icons/ubuntu.svg', category: 'shell' },
@@ -156,18 +157,18 @@ export const getSystemShellIcon = (shell: {
     return '/icons/git.svg';
   }
 
-  // 5. WSL 发行版 (优先匹配 Ubuntu、Debian 或通用 WSL)
+  // 5. WSL 发行版 (若名称为通用的 WSL 则统一展示官方通用 WSL 企鹅图标；明确指定 Ubuntu/Debian 时展示对应发行版图标)
   if (lowerId.startsWith('wsl') || lowerName.includes('wsl') || lowerCmd.includes('wsl.exe')) {
-    if (lowerId.includes('ubuntu') || lowerName.includes('ubuntu') || argsStr.includes('ubuntu')) {
+    if (lowerName === 'wsl') {
+      return '/icons/wsl.svg';
+    }
+    if (lowerName.includes('ubuntu') || argsStr.includes('ubuntu')) {
       return '/icons/ubuntu.svg';
     }
-    if (lowerId.includes('debian') || lowerName.includes('debian') || argsStr.includes('debian')) {
+    if (lowerName.includes('debian') || argsStr.includes('debian')) {
       return '/icons/debian.svg';
     }
-    if (shell.icon && shell.icon.includes('ubuntu')) {
-      return '/icons/ubuntu.svg';
-    }
-    return '/icons/ubuntu.svg';
+    return '/icons/wsl.svg';
   }
 
   // 6. Nushell
@@ -212,8 +213,8 @@ export const getLocalTerminalIcon = (name: string, command: string, customIcon?:
   if (lowerName.includes('debian')) {
     return '/icons/debian.svg';
   }
-  if (lowerName.includes('wsl')) {
-    return '/icons/ubuntu.svg';
+  if (lowerName.includes('wsl') || lowerCmd.includes('wsl.exe')) {
+    return '/icons/wsl.svg';
   }
   if (lowerName.includes('powershell') || lowerCmd.includes('powershell')) {
     return '/icons/powershell.svg';

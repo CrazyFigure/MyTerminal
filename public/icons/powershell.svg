@@ -1,11 +1,27 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
   <defs>
-    <linearGradient id="ps-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0284c7" />
-      <stop offset="100%" stop-color="#0369a1" />
+    <!-- Windows PowerShell 经典蓝色微质感渐变 -->
+    <linearGradient id="winps-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2D7AE9" />
+      <stop offset="100%" stop-color="#1A5DC2" />
     </linearGradient>
+    <filter id="winps-shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="1.2" stdDeviation="1.2" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
   </defs>
-  <rect width="48" height="48" rx="10" fill="url(#ps-grad)" stroke="#38bdf8" stroke-width="1.5"/>
-  <path d="M14 16 L22 24 L14 32" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-  <line x1="26" y1="32" x2="36" y2="32" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- 经典 Windows PowerShell 倾斜平行四边形底板（向右倾斜，微圆角） -->
+  <path d="M 15.5 7.5 L 40.5 7.5 C 42 7.5 43 8.8 42.6 10.2 L 34.5 39.5 C 34.2 40.7 33.1 41.5 31.8 41.5 L 7.5 41.5 C 6 41.5 5 40.2 5.4 38.8 L 13.5 9.5 C 13.8 8.3 14.9 7.5 15.5 7.5 Z"
+        fill="url(#winps-grad)"
+        stroke="#478EF5"
+        stroke-width="1.2"
+        filter="url(#winps-shadow)" />
+
+  <!-- 内部纯白命令提示符 >_ -->
+  <g fill="none" stroke="#ffffff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round">
+    <!-- 大于号提示符 > -->
+    <path d="M 17.5 16.5 L 25.5 24 L 17.5 31.5" />
+    <!-- 闪烁下划线光标 _ -->
+    <line x1="28" y1="31.5" x2="35.5" y2="31.5" />
+  </g>
 </svg>

@@ -153,7 +153,7 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
       .filter((s) => s.enabled !== false)
       .map((shell) => {
         const cleanedName = cleanShellName(shell.name);
-        const rawIcon = getSystemShellIcon(shell);
+        const rawIcon = getSystemShellIcon({ ...shell, name: cleanedName });
         const iconPath = resolveIconDisplayUrl(rawIcon);
         return {
           value: `shell:${shell.id}`,
@@ -587,7 +587,7 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
                   {draft.shells && draft.shells.length > 0 ? (
                     draft.shells.map((shell) => {
                       const cleanedName = cleanShellName(shell.name);
-                      const rawIcon = getSystemShellIcon(shell);
+                      const rawIcon = getSystemShellIcon({ ...shell, name: cleanedName });
                       const iconPath = resolveIconDisplayUrl(rawIcon);
                       return (
                         <div key={shell.id} className="local-terminal-shell-item">
