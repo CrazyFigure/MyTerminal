@@ -479,10 +479,20 @@ export interface DownloadProgress {
   percent?: number;
 }
 
+export interface LocalTerminalShellConfig {
+  id: string;
+  name: string;
+  command: string;
+  args?: string[];
+  icon?: string;
+  enabled: boolean;
+}
+
 export interface LocalTerminalCommand {
   id: string;
   name: string;
   command: string;
+  icon?: string;
   /** 内置命令固定包含 claude/codex/opencode，允许排序但不允许删除。 */
   builtIn: boolean;
 }
@@ -497,6 +507,7 @@ export interface LocalTerminalProfile {
 
 export interface LocalTerminalSettings {
   shellPath: string;
+  shells?: LocalTerminalShellConfig[];
   commands: LocalTerminalCommand[];
   profiles: LocalTerminalProfile[];
 }

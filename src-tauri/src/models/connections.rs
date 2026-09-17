@@ -176,9 +176,32 @@ pub struct LocalTerminalCommand {
     pub name: String,
     #[serde(default)]
     pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     /// 内置命令由应用兜底提供，前端允许排序但不允许删除。
     #[serde(default)]
     pub built_in: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalTerminalShellConfig {
+    #[serde(default = "new_id")]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default = "default_shell_config_enabled")]
+    pub enabled: bool,
+}
+
+fn default_shell_config_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -201,6 +224,9 @@ pub struct LocalTerminalProfile {
 pub struct LocalTerminalSettings {
     #[serde(default)]
     pub shell_path: String,
+    /// 系统检测或用户配置的终端 Shell 列表（带展示开关）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shells: Vec<LocalTerminalShellConfig>,
     /// 命令顺序来自本地终端管理页，内置命令缺失时加载阶段会自动补齐。
     #[serde(default = "default_local_terminal_commands")]
     pub commands: Vec<LocalTerminalCommand>,
@@ -212,6 +238,7 @@ impl Default for LocalTerminalSettings {
     fn default() -> Self {
         Self {
             shell_path: String::new(),
+            shells: Vec::new(),
             commands: default_local_terminal_commands(),
             profiles: Vec::new(),
         }

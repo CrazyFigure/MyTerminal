@@ -367,6 +367,11 @@ pub fn save_local_terminal_settings(
 }
 
 #[tauri::command(async)]
+pub fn detect_system_shells() -> Vec<crate::models::LocalTerminalShellConfig> {
+    shell_detector::detect_available_system_shells()
+}
+
+#[tauri::command(async)]
 pub fn list_system_fonts() -> Result<Vec<String>, String> {
     // 字体设置下拉需要覆盖本机已安装的全部字体，交由平台原生方式枚举，失败时返回空列表由前端补齐推荐字体。
     Ok(enumerate_system_fonts()?)
@@ -1011,6 +1016,9 @@ use connections::validate_connection_profile;
 // 本地 PTY 生命周期由独立适配器维护。
 mod local_terminal;
 use local_terminal::spawn_local_terminal_thread;
+
+// 系统已安装终端动态探测器。
+pub mod shell_detector;
 
 // SSH 传输适配器统一处理认证、代理、跳板与隧道连接池。
 mod ssh_transport;

@@ -886,21 +886,32 @@
     grid-template-rows: auto auto minmax(220px, 1fr);
   }
 
-  .local-terminal-history-panel {
-    grid-column: auto;
+  .local-terminal-v2-two-cols {
+    grid-template-columns: 1fr !important;
+    gap: 10px;
   }
 
-  .local-terminal-command-list {
-    max-height: 150px;
+  .local-terminal-v2-resizer {
+    display: none !important;
   }
 
-  .local-terminal-history-row {
-    grid-template-columns: minmax(0, 1fr) auto;
+  .local-terminal-v2-open-row {
+    flex-wrap: wrap;
   }
 
-  .local-terminal-history-main,
-  .local-terminal-history-command {
-    grid-column: 1 / -1;
+  .local-terminal-v2-select-group {
+    width: 100%;
+  }
+
+  .local-terminal-v2-history-row {
+    flex-direction: column;
+    align-items: stretch;
+    height: auto;
+    gap: 6px;
+  }
+
+  .local-terminal-v2-history-controls {
+    justify-content: flex-end;
   }
 }
 

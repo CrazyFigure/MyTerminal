@@ -138,6 +138,23 @@
   font-size: 12px;
 }
 
+/* 分组标题 */
+.custom-select-group-header {
+  padding: 8px 10px 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--app-subtle-text);
+  user-select: none;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  margin-top: 4px;
+}
+
+.custom-select-group-header:first-child {
+  border-top: none;
+  margin-top: 0;
+  padding-top: 4px;
+}
+
 /* 选项条目 */
 .custom-select-item {
   display: flex;

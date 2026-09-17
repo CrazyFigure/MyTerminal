@@ -656,6 +656,7 @@ fn normalize_local_terminal_settings(settings: LocalTerminalSettings) -> LocalTe
             id: "shell".into(),
             name: "本地终端".into(),
             command: String::new(),
+            icon: None,
             built_in: true,
         }
     ];
@@ -679,6 +680,7 @@ fn normalize_local_terminal_settings(settings: LocalTerminalSettings) -> LocalTe
                 id,
                 name: name.to_string(),
                 command: command_text.to_string(),
+                icon: command.icon,
                 built_in: command.built_in,
             });
         }
@@ -723,6 +725,7 @@ fn normalize_local_terminal_settings(settings: LocalTerminalSettings) -> LocalTe
 
     LocalTerminalSettings {
         shell_path: settings.shell_path.trim().to_string(),
+        shells: settings.shells,
         commands,
         profiles,
     }
