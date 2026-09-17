@@ -23,6 +23,8 @@ import type {
 } from './types';
 
 let remoteHistoryRefreshSeq = 0;
+// 启动初始化互斥锁标志：防止并发调用或 StrictMode 双重挂载导致多次并发 bootstrap 与重复注册字体
+let isBootstrapping = false;
 
 export const useAppStore = create<StoreState>((set, get) => ({
   bootstrapped: false,
@@ -54,41 +56,50 @@ export const useAppStore = create<StoreState>((set, get) => ({
   updateCheckResult: null,
   fontPackStatus: null,
 
+  // 启动初始化互斥锁：防止并发调用或 StrictMode 双重挂载导致多次并发 bootstrap 与重复注册字体
   bootstrap: async () => {
-    set({ loading: true, statusMessage: statusText(get().settings, 'statusLoadingWorkspace') });
-    // 工作区数据与字体包状态并行读取；只有字体完成本地注册后才挂载终端，避免先按 fallback 测量再跳格。
-    const [state, fontPackStatus] = await Promise.all([
-      backend.bootstrap(),
-      backend.getFontPackStatus(),
-    ]);
-    let activeFontPackStatus = fontPackStatus;
-    try {
-      await activateFontPack(fontPackStatus);
-    } catch {
-      // 字体文件虽通过后端校验但 WebView 拒绝解析时继续启动，并把资源标记为待修复。
-      activeFontPackStatus = { ...fontPackStatus, state: 'invalid', faces: [] };
-      await activateFontPack(activeFontPackStatus);
+    if (isBootstrapping || get().bootstrapped) {
+      return;
     }
-    const activeSessionId = state.sessions[0]?.id;
-    const activeConnectionId = state.sessions[0]?.kind === 'local' ? undefined : state.sessions[0]?.connectionId;
-    set({
-      bootstrapped: true,
-      loading: false,
-      statusMessage: statusText(state.settings, 'statusWorkspaceLoaded'),
-      settings: state.settings,
-      fontPackStatus: activeFontPackStatus,
-      localTerminals: state.localTerminals,
-      connections: state.connections.map((connection) => normalizeLoadedConnection(connection)),
-      history: state.history,
-      sessions: state.sessions,
-      tunnels: state.tunnels,
-      activeConnectionId,
-      activeSessionId,
-      // 启动恢复出的首个会话进入唯一那一格；侧栏与下栏跟随当前聚焦的标签。
-      splitLayout: createSplitLayout(activeSessionId),
-      files: [],
-      currentRemotePath: activeConnectionId ? '~' : '',
-    });
+    isBootstrapping = true;
+    try {
+      set({ loading: true, statusMessage: statusText(get().settings, 'statusLoadingWorkspace') });
+      // 工作区数据与字体包状态并行读取；只有字体完成本地注册后才挂载终端，避免先按 fallback 测量再跳格。
+      const [state, fontPackStatus] = await Promise.all([
+        backend.bootstrap(),
+        backend.getFontPackStatus(),
+      ]);
+      let activeFontPackStatus = fontPackStatus;
+      try {
+        await activateFontPack(fontPackStatus);
+      } catch {
+        // 字体文件虽通过后端校验但 WebView 拒绝解析时继续启动，并把资源标记为待修复。
+        activeFontPackStatus = { ...fontPackStatus, state: 'invalid', faces: [] };
+        await activateFontPack(activeFontPackStatus);
+      }
+      const activeSessionId = state.sessions[0]?.id;
+      const activeConnectionId = state.sessions[0]?.kind === 'local' ? undefined : state.sessions[0]?.connectionId;
+      set({
+        bootstrapped: true,
+        loading: false,
+        statusMessage: statusText(state.settings, 'statusWorkspaceLoaded'),
+        settings: state.settings,
+        fontPackStatus: activeFontPackStatus,
+        localTerminals: state.localTerminals,
+        connections: state.connections.map((connection) => normalizeLoadedConnection(connection)),
+        history: state.history,
+        sessions: state.sessions,
+        tunnels: state.tunnels,
+        activeConnectionId,
+        activeSessionId,
+        // 启动恢复出的首个会话进入唯一那一格；侧栏与下栏跟随当前聚焦的标签。
+        splitLayout: createSplitLayout(activeSessionId),
+        files: [],
+        currentRemotePath: activeConnectionId ? '~' : '',
+      });
+    } finally {
+      isBootstrapping = false;
+    }
   },
 
   setStatusMessage: (statusMessage) => set({ statusMessage }),
