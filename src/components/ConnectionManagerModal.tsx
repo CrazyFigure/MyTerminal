@@ -1,6 +1,6 @@
 /* 本模块由 App 入口按功能域拆出，保留原组件行为与状态订阅方式。 */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { Copy, Folder, FolderTree, GripVertical, Pencil, Play, Plus, Save, Trash2, X } from 'lucide-react';
+import { Copy, Folder, FolderMinus, GripVertical, Pencil, Play, Plus, Save, Trash2, X } from 'lucide-react';
 import { ProtocolIcon } from './ProtocolIcon';
 import { useShallow } from 'zustand/react/shallow';
 import { translate, type TranslationKey } from '../i18n';
@@ -580,12 +580,13 @@ export function ConnectionManagerModal({ open, onClose }: { open: boolean; onClo
               className={`connection-group-row connection-group-row-ungrouped ${selectedGroupPath === ungroupedGroupPath ? 'is-selected' : ''} ${dropTarget?.type === 'connection-ungrouped' ? 'is-drop-target' : ''} ${dropTarget?.type === 'group-end' ? 'is-drop-before' : ''}`}
             >
               <span className="drag-handle drag-handle-placeholder" aria-hidden="true" />
+              {/* 未分组连接：采用带横杠减号的 FolderMinus 图标，表明无所属自定义分组，与树状管理连接解耦 */}
               <button
                 className="connection-group-button"
                 onClick={() => setSelectedGroupPath(ungroupedGroupPath)}
                 type="button"
               >
-                <FolderTree size={14} />
+                <FolderMinus size={14} />
                 <span>{t('ungroupedConnections')}</span>
               </button>
             </div>

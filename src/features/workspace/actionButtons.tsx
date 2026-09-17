@@ -1,15 +1,16 @@
 /* 功能域展示规则：不持有 React 页面状态，只把输入转换成稳定的显示结果。 */
 import type { CSSProperties } from 'react';
-import { Cable, History, TerminalSquare } from 'lucide-react';
+import { History, Route, TerminalSquare } from 'lucide-react';
 import type { TranslationKey } from '../../i18n';
 
 export type BottomPanelTab = 'commands' | 'tunnels' | 'history';
 
 
 
+// 底部功能栏页签配置：命令使用终端方框，SSH 隧道采用端到端路由路径（Route），远端历史使用时钟回旋
 export const bottomTabs: Array<{ id: BottomPanelTab; labelKey: TranslationKey; icon: typeof TerminalSquare }> = [
   { id: 'commands', labelKey: 'panelCommands', icon: TerminalSquare },
-  { id: 'tunnels', labelKey: 'panelTunnels', icon: Cable },
+  { id: 'tunnels', labelKey: 'panelTunnels', icon: Route },
   { id: 'history', labelKey: 'panelHistory', icon: History },
 ];
 
