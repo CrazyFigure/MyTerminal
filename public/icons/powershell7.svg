@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <defs>
+    <!-- 背景金属斜切质感渐变 -->
+    <linearGradient id="pwsh7-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#243447" />
+      <stop offset="50%" stop-color="#162332" />
+      <stop offset="100%" stop-color="#0c141d" />
+    </linearGradient>
+    <linearGradient id="pwsh7-stroke" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#557599" />
+      <stop offset="100%" stop-color="#182736" />
+    </linearGradient>
+    <filter id="pwsh7-glow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="1" stdDeviation="1.5" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <!-- 现代倾斜平行四边形深色外壳 -->
+  <g transform="skewX(-11) translate(4.5, 0)">
+    <rect x="7" y="5" width="34" height="38" rx="5" fill="url(#pwsh7-bg)" stroke="url(#pwsh7-stroke)" stroke-width="1.6" filter="url(#pwsh7-glow)" />
+  </g>
+  <!-- 白色命令行提示符 > -->
+  <path d="M 15 15 L 26 24 L 15 33" fill="none" stroke="#ffffff" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round" />
+  <!-- 白色横杠提示符 _ -->
+  <line x1="24" y1="33" x2="33" y2="33" stroke="#ffffff" stroke-width="4.2" stroke-linecap="round" />
+</svg>

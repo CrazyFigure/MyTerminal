@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <defs>
+    <!-- 深色终端外壳质感渐变 -->
+    <linearGradient id="cmd-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#243447" />
+      <stop offset="50%" stop-color="#162332" />
+      <stop offset="100%" stop-color="#0c141d" />
+    </linearGradient>
+    <linearGradient id="cmd-stroke" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#557599" />
+      <stop offset="100%" stop-color="#182736" />
+    </linearGradient>
+    <filter id="cmd-glow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="1" stdDeviation="1.5" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <!-- 深色圆角矩形外壳，与 PowerShell 7 风格统一 -->
+  <rect x="5" y="5" width="38" height="38" rx="8" fill="url(#cmd-bg)" stroke="url(#cmd-stroke)" stroke-width="1.6" filter="url(#cmd-glow)" />
+
+  <!-- Windows 官方经典四格徽标 (微透视风格) -->
+  <g fill="#ffffff">
+    <!-- 左上 -->
+    <path d="M 13 16.5 L 22.5 15.2 L 22.5 22.8 L 13 22.8 Z" />
+    <!-- 右上 -->
+    <path d="M 24.5 14.9 L 35 13.5 L 35 22.8 L 24.5 22.8 Z" />
+    <!-- 左下 -->
+    <path d="M 13 24.8 L 22.5 24.8 L 22.5 32.5 L 13 31.2 Z" />
+    <!-- 右下 -->
+    <path d="M 24.5 24.8 L 35 24.8 L 35 34.2 L 24.5 32.8 Z" />
+  </g>
+</svg>

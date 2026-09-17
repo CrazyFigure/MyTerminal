@@ -64,6 +64,7 @@ export const mockSettings: AppSettings = {
 
 export const mockLocalTerminals: LocalTerminalSettings = {
   shellPath: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+  shells: [],
   commands: [
     { id: "shell", name: "本地终端", command: "", builtIn: true },
     { id: "claude", name: "claude", command: "claude", builtIn: true },

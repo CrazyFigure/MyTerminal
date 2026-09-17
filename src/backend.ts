@@ -16,6 +16,7 @@ import type {
   HistoryEntry,
   LocalTerminalProfile,
   LocalTerminalSettings,
+  LocalTerminalShellConfig,
   RemoteFileEntry,
   RuntimeConnectionList,
   RuntimeOverviewEvent,
@@ -89,6 +90,8 @@ export const backend = {
     const normalized = normalizeLocalTerminalSettings(settings);
     return call<LocalTerminalSettings>('save_local_terminal_settings', { settings: normalized }, normalized);
   },
+  detectSystemShells: () =>
+    call<LocalTerminalShellConfig[]>('detect_system_shells', undefined, []),
   // 枚举本机已安装字体，供字体设置下拉全量选择；Web 预览或后端失败时返回空列表由前端补齐推荐字体。
   listSystemFonts: () => call<string[]>('list_system_fonts', undefined, []),
   // 字体资源包只写入 MyTerminal 应用数据目录；下载地址固定在后端，前端不能注入任意远程 URL。

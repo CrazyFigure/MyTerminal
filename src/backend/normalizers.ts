@@ -350,9 +350,26 @@ export const normalizeLocalTerminalSettings = (
     }
     const id = item.id.trim() || command || "shell";
     if (!commandMap.has(id)) {
-      commandMap.set(id, { id, name, command, builtIn: Boolean(item.builtIn) });
+      commandMap.set(id, {
+        id,
+        name,
+        command,
+        icon: item.icon?.trim() || undefined,
+        builtIn: Boolean(item.builtIn),
+      });
     }
   });
+
+  const shells = (settings.shells ?? [])
+    .map((shell) => ({
+      id: shell.id.trim(),
+      name: shell.name.trim() || shell.id,
+      command: shell.command.trim(),
+      args: Array.isArray(shell.args) ? shell.args.map((arg) => String(arg)) : [],
+      icon: shell.icon?.trim() || undefined,
+      enabled: shell.enabled !== false,
+    }))
+    .filter((shell) => shell.id && shell.command);
 
   // 历史目录只要求目录有效；命令允许为空，空命令由后端解释为直接打开本地 shell。
   const profiles = (settings.profiles ?? [])
@@ -373,6 +390,7 @@ export const normalizeLocalTerminalSettings = (
 
   return {
     shellPath: settings.shellPath?.trim() ?? "",
+    shells,
     commands: Array.from(commandMap.values()),
     profiles,
   };
