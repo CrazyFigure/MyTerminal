@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none">
+  <defs>
+    <linearGradient id="ssh-term-bg" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1e293b"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+  </defs>
+  <!-- 终端控制台方正微章外框与深色底色 -->
+  <rect x="2" y="2" width="20" height="20" rx="4.5" fill="url(#ssh-term-bg)" stroke="#334155" stroke-width="1.2"/>
+  <!-- 终端命令行翠绿色提示符与电光青色光标 -->
+  <path d="M6 8L10.5 12L6 16" stroke="#22c55e" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="12.5" y1="16" x2="17.5" y2="16" stroke="#38bdf8" stroke-width="2.2" stroke-linecap="round"/>
+  <!-- 终端右上角金琥珀色状态微标点 -->
+  <circle cx="17" cy="7.5" r="1.5" fill="#f59e0b"/>
+</svg>

@@ -1,6 +1,7 @@
 /* 本模块由 App 入口按功能域拆出，保留原组件行为与状态订阅方式。 */
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronUp, Eye, EyeOff, Folder, Monitor, Plus, TerminalSquare, Trash2, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, Eye, EyeOff, Folder, Plus, Trash2, X } from 'lucide-react';
+import { ProtocolIcon } from './ProtocolIcon';
 import { useShallow } from 'zustand/react/shallow';
 import { translate, type TranslationKey } from '../i18n';
 import { useAppStore } from '../store';
@@ -270,7 +271,7 @@ export function ConnectionFormModal() {
                     onClick={() => selectProtocol('ssh')}
                     type="button"
                   >
-                    <TerminalSquare size={17} />
+                    <ProtocolIcon protocol="ssh" size={20} />
                     <span>{t('connectionProtocolSsh')}</span>
                   </button>
                   <button
@@ -279,7 +280,7 @@ export function ConnectionFormModal() {
                     onClick={() => selectProtocol('rdp')}
                     type="button"
                   >
-                    <Monitor size={17} />
+                    <ProtocolIcon protocol="rdp" size={20} />
                     <span>{t('connectionProtocolRdp')}</span>
                   </button>
                 </div>
@@ -350,7 +351,7 @@ export function ConnectionFormModal() {
                 </div>
               ) : (
                 <div className="connection-rdp-hint">
-                  <Monitor size={16} />
+                  <ProtocolIcon protocol="rdp" size={18} />
                   <span>{t('connectionRdpHint')}</span>
                 </div>
               )}

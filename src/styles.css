@@ -2700,8 +2700,7 @@ select:disabled {
   justify-content: center;
   box-sizing: border-box;
   width: 24px;
-  height: 22px;
-  color: var(--app-muted);
+  height: 24px;
 }
 
 /* 连接列表列宽调整沿用文件管理的窄分隔线风格，默认保持低干扰，悬停时给出明确拖拽反馈。 */
