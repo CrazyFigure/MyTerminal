@@ -3,6 +3,7 @@
 import type {
   AppSettings,
   ConnectionProfile,
+  FavoriteCommand,
   LocalTerminalSettings,
   SshJumpHost,
   SshProxyConfig,
@@ -394,4 +395,20 @@ export const normalizeLocalTerminalSettings = (
     commands: Array.from(commandMap.values()),
     profiles,
   };
+};
+
+// 规范化收藏命令列表：过滤无效命令，去除多余空白，补充唯一标识与时间戳
+export const normalizeFavoriteCommands = (items?: FavoriteCommand[]): FavoriteCommand[] => {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items
+    .map((item) => ({
+      id: item.id?.trim() || crypto.randomUUID(),
+      command: item.command?.trim() ?? '',
+      remark: item.remark?.trim() ?? '',
+      createdAt: item.createdAt || nowIso(),
+      updatedAt: item.updatedAt || nowIso(),
+    }))
+    .filter((item) => Boolean(item.command));
 };

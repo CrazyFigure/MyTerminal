@@ -11,6 +11,7 @@ import type {
   BootstrapState,
   ConnectionProfile,
   EditorDocument,
+  FavoriteCommand,
   FileTransferSummary,
   FontPackStatus,
   HistoryEntry,
@@ -38,6 +39,7 @@ import {
   clampU16,
   isTauriRuntime,
   normalizeConnection,
+  normalizeFavoriteCommands,
   normalizeLocalTerminalSettings,
   normalizeRuntimeResourceSource,
   normalizeSettings,
@@ -47,6 +49,7 @@ import {
 import {
   mockAgentBridgeStatus,
   mockConnections,
+  mockFavoriteCommands,
   mockFiles,
   mockFontPackStatus,
   mockHistory,
@@ -77,11 +80,21 @@ export const backend = {
       ...state,
       settings: normalizeSettings(state.settings),
       localTerminals: normalizeLocalTerminalSettings(state.localTerminals ?? mockLocalTerminals),
+      // 规范化收藏命令，避免后端空字段或脏数据引起渲染异常
+      favoriteCommands: normalizeFavoriteCommands(state.favoriteCommands ?? mockFavoriteCommands),
     };
   },
   saveSettings: (settings: AppSettings) => {
     const normalized = normalizeSettings(settings);
     return call<AppSettings>('save_app_settings', { settings: normalized }, normalized);
+  },
+  loadFavoriteCommands: async () => {
+    const items = await call<FavoriteCommand[]>('load_favorite_commands', undefined, mockFavoriteCommands);
+    return normalizeFavoriteCommands(items);
+  },
+  saveFavoriteCommands: (favorites: FavoriteCommand[]) => {
+    const normalized = normalizeFavoriteCommands(favorites);
+    return call<FavoriteCommand[]>('save_favorite_commands', { favorites: normalized }, normalized);
   },
   loadLocalTerminals: async () => {
     const settings = await call<LocalTerminalSettings>('load_local_terminal_settings', undefined, mockLocalTerminals);

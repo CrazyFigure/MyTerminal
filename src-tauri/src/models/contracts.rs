@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{connections::*, settings::*};
+use super::{connections::*, favorites::*, settings::*};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +44,8 @@ pub struct BootstrapState {
     pub history: Vec<HistoryEntry>,
     pub sessions: Vec<TerminalSession>,
     pub tunnels: Vec<TunnelRecord>,
+    #[serde(default)]
+    pub favorite_commands: Vec<FavoriteCommand>,
 }
 
 #[derive(Debug, Clone, Serialize)]

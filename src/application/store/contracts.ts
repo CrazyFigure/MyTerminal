@@ -1,9 +1,11 @@
 import type { SplitDropTarget, SplitLayout } from '../../features/terminal/splitLayout';
+import type { InsertPlacement } from '../../app/connectionGroups';
 import type {
   AppSettings,
   ConnectionDraft,
   ConnectionProfile,
   EditorDocument,
+  FavoriteCommand,
   FontPackStatus,
   HistoryEntry,
   LocalTerminalProfile,
@@ -32,6 +34,11 @@ export type StoreState = {
   history: HistoryEntry[];
   sessions: TerminalSession[];
   tunnels: TunnelRecord[];
+  favoriteCommands: FavoriteCommand[];
+  favoriteModalState: {
+    isOpen: boolean;
+    initialData?: { id?: string; command?: string; remark?: string };
+  } | null;
   commandBuffers: Record<string, string>;
   suggestions: Record<string, string[]>;
   files: RemoteFileEntry[];
@@ -137,6 +144,12 @@ export type StoreState = {
   closeTunnel: (tunnelId: string) => Promise<void>;
   deleteTunnel: (tunnelId: string) => Promise<void>;
   applyTunnelStatusChange: (tunnel: TunnelRecord) => void;
+  openFavoriteModal: (initialData?: { id?: string; command?: string; remark?: string }) => void;
+  closeFavoriteModal: () => void;
+  saveFavoriteCommand: (payload: { id?: string; command: string; remark?: string }) => Promise<void>;
+  deleteFavoriteCommand: (id: string) => Promise<void>;
+  reorderFavoriteCommands: (sourceId: string, targetId: string, placement: InsertPlacement) => Promise<void>;
+  reorderFavoriteCommandsToEnd: (sourceId: string) => Promise<void>;
 };
 
 export type StoreSet = {

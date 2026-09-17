@@ -40,6 +40,7 @@ import { FontPackPromptModal } from './components/FontPackPromptModal';
 import { TooltipProvider } from './components/Tooltip';
 import type { SettingsTab } from './features/settings';
 import { TunnelFormModal } from './components/TunnelFormModal';
+import { FavoriteCommandModal } from './components/FavoriteCommandModal';
 import { beginResize, clamp } from './app/layout';
 import { buildPreviewFontFamily, resolveUiFontFamily } from './app/fonts';
 import { isTauriRuntime } from './app/runtime';
@@ -233,6 +234,11 @@ export default function App() {
     stopAllTunnels,
     tunnels,
     updateCheckResult,
+    deleteFavoriteCommand,
+    favoriteCommands,
+    openFavoriteModal,
+    reorderFavoriteCommands,
+    reorderFavoriteCommandsToEnd,
     uploadLocalFiles,
     uploadLocalPaths,
   } = useAppStore(
@@ -290,6 +296,11 @@ export default function App() {
       stopAllTunnels: state.stopAllTunnels,
       tunnels: state.tunnels,
       updateCheckResult: state.updateCheckResult,
+      deleteFavoriteCommand: state.deleteFavoriteCommand,
+      favoriteCommands: state.favoriteCommands,
+      openFavoriteModal: state.openFavoriteModal,
+      reorderFavoriteCommands: state.reorderFavoriteCommands,
+      reorderFavoriteCommandsToEnd: state.reorderFavoriteCommandsToEnd,
       uploadLocalFiles: state.uploadLocalFiles,
       uploadLocalPaths: state.uploadLocalPaths,
     })),
@@ -1970,6 +1981,7 @@ export default function App() {
             compactActions={bottomPanelNeedsCompactActions}
             connectionHistory={connectionHistory}
             connectionTunnels={connectionTunnels}
+            favoriteCommands={favoriteCommands}
             hasActiveRemoteSession={hasActiveRemoteSession}
             height={bottomHeight}
             historyLoading={historyLoading}
@@ -1985,11 +1997,28 @@ export default function App() {
               }
             }}
             onCloseTunnel={closeTunnel}
+            onDeleteFavorite={deleteFavoriteCommand}
             onDeleteTunnel={deleteTunnel}
             onDuplicateTunnel={duplicateTunnel}
             onEditTunnel={editTunnel}
+            onOpenFavoriteModal={openFavoriteModal}
             onOpenTunnel={openTunnel}
             onRefreshHistory={() => activeRemoteConnectionId ? refreshRemoteHistory(activeRemoteConnectionId) : undefined}
+            onReorderFavorites={reorderFavoriteCommands}
+            onReorderFavoritesToEnd={reorderFavoriteCommandsToEnd}
+            // 单击收藏项：写入命令草稿并自动切换至「命令」Tab
+            onSelectFavorite={(command) => {
+              if (activeSessionId) {
+                setCommandBuffer(activeSessionId, command);
+              }
+              setGlobalBottomTab('commands');
+              if (activeRemoteConnectionId) {
+                setBottomTabByConnection((current) => ({ ...current, [activeRemoteConnectionId]: 'commands' }));
+              }
+              if (bottomDockCollapsed) {
+                setBottomDockCollapsed(false);
+              }
+            }}
             onSelectHistory={(command) => {
               if (!activeSessionId) {
                 return;
@@ -2086,6 +2115,8 @@ export default function App() {
       <EditorModal onSaveWithProgress={saveRemoteFileWithProgress} />
       <ConnectionFormModal />
       <TunnelFormModal />
+      {/* 收藏命令新建/编辑弹窗 */}
+      <FavoriteCommandModal />
       <TransferProgressStack
         cancel={cancelTransferProgress}
         cancelLabel={t('cancelTransfer')}

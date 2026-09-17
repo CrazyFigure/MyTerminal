@@ -5,6 +5,7 @@ import type {
   AppSettings,
   BootstrapState,
   ConnectionProfile,
+  FavoriteCommand,
   FontPackStatus,
   HistoryEntry,
   LocalTerminalSettings,
@@ -257,6 +258,31 @@ export const mockTunnels: TunnelRecord[] = [
   },
 ];
 
+// 浏览器离线/预览环境默认收藏命令模拟数据
+export const mockFavoriteCommands: FavoriteCommand[] = [
+  {
+    id: "fav-1",
+    command: "docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'",
+    remark: "查看所有 Docker 容器简要状态",
+    createdAt: "2026-03-01T00:00:00.000Z",
+    updatedAt: "2026-03-01T00:00:00.000Z",
+  },
+  {
+    id: "fav-2",
+    command: "df -h",
+    remark: "查看磁盘空间占用",
+    createdAt: "2026-03-01T00:00:00.000Z",
+    updatedAt: "2026-03-01T00:00:00.000Z",
+  },
+  {
+    id: "fav-3",
+    command: "git status",
+    remark: "查看当前仓库改动",
+    createdAt: "2026-03-01T00:00:00.000Z",
+    updatedAt: "2026-03-01T00:00:00.000Z",
+  },
+];
+
 export const mockState: BootstrapState = {
   settings: mockSettings,
   localTerminals: mockLocalTerminals,
@@ -264,6 +290,7 @@ export const mockState: BootstrapState = {
   history: mockHistory,
   sessions: [],
   tunnels: mockTunnels,
+  favoriteCommands: mockFavoriteCommands,
 };
 
 export const mockAgentBridgeStatus: AgentBridgeStatus = {

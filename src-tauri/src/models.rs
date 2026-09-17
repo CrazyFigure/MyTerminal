@@ -2,10 +2,12 @@
 
 mod connections;
 mod contracts;
+mod favorites;
 mod runtime;
 mod settings;
 
 pub use connections::*;
 pub use contracts::*;
+pub use favorites::*;
 pub use runtime::*;
 pub use settings::*;

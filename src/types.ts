@@ -518,6 +518,15 @@ export interface LocalTerminalSettings {
   profiles: LocalTerminalProfile[];
 }
 
+// 收藏命令项定义
+export interface FavoriteCommand {
+  id: string;
+  command: string;
+  remark?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface BootstrapState {
   settings: AppSettings;
   localTerminals: LocalTerminalSettings;
@@ -525,6 +534,7 @@ export interface BootstrapState {
   history: HistoryEntry[];
   sessions: TerminalSession[];
   tunnels: TunnelRecord[];
+  favoriteCommands?: FavoriteCommand[];
 }
 
 export interface AgentBridgeStatus {

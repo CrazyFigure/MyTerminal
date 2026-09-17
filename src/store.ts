@@ -9,6 +9,7 @@ import { createTunnelActions } from './application/store/tunnelActions';
 import { createRemoteFileActions } from './application/store/remoteFileActions';
 import { createSettingsActions } from './application/store/settingsActions';
 import { createConnectionActions } from './application/store/connectionActions';
+import { createFavoriteActions } from './application/store/favoriteActions';
 import { createSessionActions } from './application/store/sessionActions';
 import {
   emptyConnectionDraft,
@@ -36,6 +37,8 @@ export const useAppStore = create<StoreState>((set, get) => ({
   history: [],
   sessions: [],
   tunnels: [],
+  favoriteCommands: [],
+  favoriteModalState: null,
   commandBuffers: {},
   suggestions: {},
   files: [],
@@ -90,6 +93,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
         history: state.history,
         sessions: state.sessions,
         tunnels: state.tunnels,
+        favoriteCommands: state.favoriteCommands ?? [],
         activeConnectionId,
         activeSessionId,
         // 启动恢复出的首个会话进入唯一那一格；侧栏与下栏跟随当前聚焦的标签。
@@ -204,4 +208,5 @@ export const useAppStore = create<StoreState>((set, get) => ({
   ...createRemoteFileActions(set, get),
   ...createSettingsActions(set, get),
   ...createTunnelActions(set, get),
+  ...createFavoriteActions(set, get),
 }));
