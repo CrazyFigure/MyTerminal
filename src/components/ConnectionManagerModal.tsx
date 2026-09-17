@@ -100,7 +100,8 @@ export function ConnectionGroupTree({
             {isEditingThis ? (
               <div
                 className="connection-group-row inline-editing"
-                style={{ paddingLeft: `${10 + depth * 14}px` }}
+                // 收紧分组编辑行左侧内边距，减少水平空白占用
+                style={{ paddingLeft: `${2 + depth * 12}px` }}
               >
                 <Folder size={14} className="group-node-icon" />
                 <input
@@ -145,7 +146,8 @@ export function ConnectionGroupTree({
               <div
                 data-group-path={node.path}
                 className={`connection-group-row ${selectedPath === node.path ? 'is-selected' : ''} ${dragState?.type === 'group' && dragState.path === node.path ? 'is-dragging' : ''} ${dropTarget?.type === 'connection-group' && dropTarget.groupPath === node.path ? 'is-drop-target' : ''} ${dropTarget?.type === 'group-insert' && dropTarget.groupPath === node.path ? `is-drop-${dropTarget.placement}` : ''}`}
-                style={{ paddingLeft: `${10 + depth * 14}px` }}
+                // 收紧分组项左侧内边距，减少抓手左侧空白，为分组名预留更多显示宽度
+                style={{ paddingLeft: `${2 + depth * 12}px` }}
               >
                 <Tooltip content={`拖动分组 ${node.path}`} side="right">
                   <button
@@ -206,7 +208,8 @@ export function ConnectionGroupTree({
             {inlineCreatingParentPath === node.path && (
               <div
                 className="connection-group-row inline-creating"
-                style={{ paddingLeft: `${10 + (depth + 1) * 14}px` }}
+                // 收紧内联新建子分组行左侧内边距
+                style={{ paddingLeft: `${2 + (depth + 1) * 12}px` }}
               >
                 <Folder size={14} className="group-node-icon muted" />
                 <input
@@ -890,6 +893,8 @@ export function ConnectionManagerModal({ open, onClose }: { open: boolean; onClo
             <div
               data-ungrouped-drop-target="true"
               className={`connection-group-row connection-group-row-ungrouped ${selectedGroupPath === ungroupedGroupPath ? 'is-selected' : ''} ${dropTarget?.type === 'connection-ungrouped' ? 'is-drop-target' : ''} ${dropTarget?.type === 'group-end' ? 'is-drop-before' : ''}`}
+              // 未分组行与根级分组保持相同的 2px 紧凑左内边距
+              style={{ paddingLeft: '2px' }}
             >
               <span className="drag-handle drag-handle-placeholder" aria-hidden="true" />
               {/* 未分组连接：采用带横杠减号的 FolderMinus 图标，表明无所属自定义分组，与树状管理连接解耦 */}

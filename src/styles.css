@@ -2708,14 +2708,16 @@ select:disabled {
 .connection-table-header,
 .connection-table-row {
   display: grid;
-  gap: 8px;
+  /* 优化连接表格列间距，使拖拽抓手与内容排版更紧凑 */
+  gap: 6px;
   align-items: center;
 }
 
 .connection-table-header {
   color: var(--app-muted);
   font-size: 0.78rem;
-  padding: 0 6px;
+  /* 收紧表头左侧内边距，与数据行抓手对齐 */
+  padding: 0 6px 0 2px;
 }
 
 .connection-table-body {
@@ -2726,7 +2728,8 @@ select:disabled {
 }
 
 .connection-table-row {
-  padding: 8px 6px;
+  /* 收紧行左侧内边距，减少抓手左侧冗余留白 */
+  padding: 8px 6px 8px 2px;
   border-radius: 10px;
   background: var(--app-panel-bg);
 }
@@ -3804,7 +3807,8 @@ select:disabled {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 4px;
+  /* 收紧拖拽抓手与文字区域之间的水平网格间距 */
+  gap: 2px;
   border: 1px solid transparent;
   border-radius: 8px;
 }
@@ -3818,14 +3822,15 @@ select:disabled {
 .connection-group-button {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
   min-width: 0;
   text-align: left;
   border: 0;
   background: transparent;
   border-radius: 8px;
-  padding: 6px 8px;
+  /* 收缩分组按钮左右内边距，减少抓手与文件夹图标之间的空隙，给分组名留出更多显示空间 */
+  padding: 6px 4px 6px 2px;
   color: inherit;
 }
 
@@ -3897,14 +3902,16 @@ select:disabled {
 .connection-table-header,
 .connection-table-row {
   display: grid;
-  gap: 8px;
+  /* 优化连接表格列间距，使拖拽抓手与第二列协议图标排版更紧凑 */
+  gap: 6px;
   align-items: center;
 }
 
 .connection-table-header {
   color: var(--app-muted);
   font-size: 0.78rem;
-  padding: 0 6px;
+  /* 收紧表头左侧内边距，与数据行抓手对齐 */
+  padding: 0 6px 0 2px;
 }
 
 .connection-table-body {
@@ -3915,7 +3922,8 @@ select:disabled {
 }
 
 .connection-table-row {
-  padding: 8px 6px;
+  /* 收紧行左侧内边距，减少抓手左侧冗余留白 */
+  padding: 8px 6px 8px 2px;
   border-radius: 10px;
   background: var(--app-panel-bg);
 }
@@ -4932,7 +4940,9 @@ select:disabled {
 }
 
 .connection-group-row {
+  /* 首列容纳完整 22px 拖拽抓手，列间距保持 2px 紧凑间距 */
   grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 2px;
 }
 
 .connection-group-row-ungrouped {
@@ -4951,13 +4961,16 @@ select:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* 恢复抓手原有 22px 宽与 26px 高，清除内边距以防两列点阵图标被挤压裁切 */
   width: 22px;
   height: 26px;
+  padding: 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--app-muted);
   cursor: grab;
+  flex-shrink: 0;
 }
 
 .drag-handle:hover {
@@ -4992,8 +5005,9 @@ select:disabled {
   content: "";
   position: absolute;
   z-index: 2;
-  left: 8px;
-  right: 8px;
+  /* 指示线左右边距由 8px 收紧至 4px，与收紧后的左侧内边距更贴合 */
+  left: 4px;
+  right: 4px;
   height: 2px;
   border-radius: 999px;
   background: #2563eb;
