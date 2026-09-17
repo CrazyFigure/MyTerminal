@@ -8,6 +8,8 @@ export interface CustomSelectOption {
   value: string;
   label: string | React.ReactNode;
   group?: string;
+  /** 搜索辅助文本只参与匹配、不直接展示，适合字体本地化别名等同义名称。 */
+  searchText?: string;
 }
 
 // 下拉框组件属性接口
@@ -67,7 +69,7 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
       .map((option, index) => {
         const label = typeof option.label === 'string' ? option.label : '';
         // 标签和值分别评分，禁止相同文本拼接后让子序列跨越边界产生伪匹配。
-        const scores = [label, option.value]
+        const scores = [label, option.value, option.searchText ?? '']
           .map((candidate) => scoreFuzzyText(candidate, searchQuery))
           .filter((score): score is number => score !== undefined);
         const score = scores.length ? Math.min(...scores) : undefined;

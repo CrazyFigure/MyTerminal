@@ -2,7 +2,7 @@ import type { CSSProperties } from "react";
 import { Download, PackageCheck, RotateCcw, Save, Trash2, Upload } from "lucide-react";
 
 import { clamp } from "../../app/layout";
-import { CustomSelect } from "../../CustomSelect";
+import { CustomSelect, type CustomSelectOption } from "../../CustomSelect";
 import { Tooltip } from "../../components/Tooltip";
 import type { TranslationKey } from "../../i18n";
 import type { AppSettings, DownloadProgress, FontPackStatus, UiLanguage } from "../../types";
@@ -12,17 +12,17 @@ import {
 } from "./model";
 
 type Props = {
-  agentChatCjkOptions: string[];
-  agentChatLatinOptions: string[];
+  agentChatCjkOptions: CustomSelectOption[];
+  agentChatLatinOptions: CustomSelectOption[];
   agentChatPreviewStyle: CSSProperties;
-  cjkOptions: string[];
+  cjkOptions: CustomSelectOption[];
   draftSettings: AppSettings;
   fontPackActionRunning: "download" | "import" | "remove" | "";
   fontPackError: string | null;
   fontPackProgress: DownloadProgress | null;
   fontPackStatus: FontPackStatus | null;
   hasSettingsChanges: boolean;
-  latinOptions: string[];
+  latinOptions: CustomSelectOption[];
   onChooseLocalBackgroundImage: () => void | Promise<unknown>;
   onDownloadFontPack: () => void;
   onImportFontPack: () => void;
@@ -37,8 +37,8 @@ type Props = {
     replacements?: Record<string, string | number>,
   ) => string;
   terminalPreviewStyle: CSSProperties;
-  uiCjkOptions: string[];
-  uiLatinOptions: string[];
+  uiCjkOptions: CustomSelectOption[];
+  uiLatinOptions: CustomSelectOption[];
   uiPreviewStyle: CSSProperties;
 };
 
@@ -214,10 +214,7 @@ export function AppearanceSettingsSection({
                 }))
               }
               onOpen={onLoadSystemFonts}
-              options={latinOptions.map((fontFamily) => ({
-                value: fontFamily,
-                label: fontFamily,
-              }))}
+              options={latinOptions}
               searchable
               searchPlaceholder={t("fontSearchPlaceholder")}
             />
@@ -232,10 +229,7 @@ export function AppearanceSettingsSection({
                 onUpdate((current) => ({ ...current, shellCjkFontFamily: val }))
               }
               onOpen={onLoadSystemFonts}
-              options={cjkOptions.map((fontFamily) => ({
-                value: fontFamily,
-                label: fontFamily,
-              }))}
+              options={cjkOptions}
               searchable
               searchPlaceholder={t("fontSearchPlaceholder")}
             />
@@ -349,10 +343,7 @@ export function AppearanceSettingsSection({
               onOpen={onLoadSystemFonts}
               options={[
                 { value: "", label: t("agentChatFontFollowTerminal") },
-                ...agentChatLatinOptions.map((fontFamily) => ({
-                  value: fontFamily,
-                  label: fontFamily,
-                })),
+                ...agentChatLatinOptions,
               ]}
               searchable
               searchPlaceholder={t("fontSearchPlaceholder")}
@@ -373,10 +364,7 @@ export function AppearanceSettingsSection({
               onOpen={onLoadSystemFonts}
               options={[
                 { value: "", label: t("agentChatFontFollowTerminal") },
-                ...agentChatCjkOptions.map((fontFamily) => ({
-                  value: fontFamily,
-                  label: fontFamily,
-                })),
+                ...agentChatCjkOptions,
               ]}
               searchable
               searchPlaceholder={t("fontSearchPlaceholder")}
@@ -503,10 +491,7 @@ export function AppearanceSettingsSection({
               onOpen={onLoadSystemFonts}
               options={[
                 { value: "", label: t("uiFontFollowTerminal") },
-                ...uiLatinOptions.map((fontFamily) => ({
-                  value: fontFamily,
-                  label: fontFamily,
-                })),
+                ...uiLatinOptions,
               ]}
               searchable
               searchPlaceholder={t("fontSearchPlaceholder")}
@@ -527,10 +512,7 @@ export function AppearanceSettingsSection({
               onOpen={onLoadSystemFonts}
               options={[
                 { value: "", label: t("uiFontFollowTerminal") },
-                ...uiCjkOptions.map((fontFamily) => ({
-                  value: fontFamily,
-                  label: fontFamily,
-                })),
+                ...uiCjkOptions,
               ]}
               searchable
               searchPlaceholder={t("fontSearchPlaceholder")}

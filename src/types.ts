@@ -472,6 +472,12 @@ export interface FontPackStatus {
   faces: FontPackFace[];
 }
 
+/** 系统字体目录项；family 用于保存和渲染，本地化名称只用于设置页展示和搜索。 */
+export interface SystemFontFamily {
+  family: string;
+  localizedNames: Record<string, string>;
+}
+
 /** 大文件下载进度由 Rust 节流后推送，避免每个网络分片都触发 React 更新。 */
 export interface DownloadProgress {
   downloadedBytes: number;

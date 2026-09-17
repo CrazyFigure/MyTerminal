@@ -403,7 +403,7 @@ export default function App() {
     try {
       const installedFonts = fontPackPromptSystemFonts.length
         ? fontPackPromptSystemFonts
-        : await backend.listSystemFonts();
+        : (await backend.listSystemFonts()).map(({ family }) => family);
       const fallback = resolveSystemFontFallback(installedFonts);
       await persistSettings({
         ...settings,
@@ -731,8 +731,9 @@ export default function App() {
     fontPackPromptEvaluatedRef.current = true;
     // 系统已安装同名字体或用户使用自定义字体时无需下载；枚举失败则按“字体缺失”保守提示一次。
     void backend.listSystemFonts()
-      .catch(() => [] as string[])
-      .then((installedFonts) => {
+      .catch(() => [])
+      .then((fontCatalog) => {
+        const installedFonts = fontCatalog.map(({ family }) => family);
         setFontPackPromptSystemFonts(installedFonts);
         if (shouldPromptForFontPack(settings, installedFonts)) {
           setFontPackPromptOpen(true);

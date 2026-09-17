@@ -85,6 +85,14 @@ pub struct FontPackStatus {
     pub faces: Vec<FontPackFace>,
 }
 
+/// 系统字体目录项：family 是 CSS 与配置使用的稳定族名，本地化名称只用于设置页展示和搜索。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemFontFamily {
+    pub family: String,
+    pub localized_names: std::collections::HashMap<String, String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalConfigBundle {
