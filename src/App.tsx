@@ -14,7 +14,6 @@ import {
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import {
   Activity,
-  Cable,
   ChevronLeft,
   ChevronRight,
   HardDrive,
@@ -42,6 +41,7 @@ import { TooltipProvider } from './components/Tooltip';
 import type { SettingsTab } from './features/settings';
 import { TunnelFormModal } from './components/TunnelFormModal';
 import { beginResize, clamp } from './app/layout';
+import { buildPreviewFontFamily, resolveUiFontFamily } from './app/fonts';
 import { isTauriRuntime } from './app/runtime';
 import { translateUpdateCheckError } from './app/updates';
 import {
@@ -403,7 +403,7 @@ export default function App() {
     try {
       const installedFonts = fontPackPromptSystemFonts.length
         ? fontPackPromptSystemFonts
-        : await backend.listSystemFonts();
+        : (await backend.listSystemFonts()).map(({ family }) => family);
       const fallback = resolveSystemFontFallback(installedFonts);
       await persistSettings({
         ...settings,
@@ -731,8 +731,9 @@ export default function App() {
     fontPackPromptEvaluatedRef.current = true;
     // 系统已安装同名字体或用户使用自定义字体时无需下载；枚举失败则按“字体缺失”保守提示一次。
     void backend.listSystemFonts()
-      .catch(() => [] as string[])
-      .then((installedFonts) => {
+      .catch(() => [])
+      .then((fontCatalog) => {
+        const installedFonts = fontCatalog.map(({ family }) => family);
         setFontPackPromptSystemFonts(installedFonts);
         if (shouldPromptForFontPack(settings, installedFonts)) {
           setFontPackPromptOpen(true);
@@ -1722,10 +1723,42 @@ export default function App() {
     return () => resizeObserver.disconnect();
   }, [activeBottomTab, agentSidebarCollapsed, sidebarCollapsed]);
 
+  // 终端中英文字体栈：优先按设置中的英文字体 + 中文字体构建，字体包激活后同步刷新
+  const terminalFontFamily = useMemo(
+    () => buildPreviewFontFamily(settings),
+    [settings.shellFontFamily, settings.shellLatinFontFamily, settings.shellCjkFontFamily, fontPackStatus],
+  );
+
+  // 全局系统 UI 字体栈：未设置时默认跟随终端设置，并监听字体包状态防止停留在无衬线回退字体
+  const uiFontFamily = useMemo(
+    () => resolveUiFontFamily(settings),
+    [
+      settings.uiLatinFontFamily,
+      settings.uiCjkFontFamily,
+      settings.shellFontFamily,
+      settings.shellLatinFontFamily,
+      settings.shellCjkFontFamily,
+      fontPackStatus,
+    ],
+  );
+
+  // 全局系统 UI 基础字号固定为 15px，保持与组件高度、内边距和图标尺寸严格协调
+  const uiFontSize = '15px';
+
+  // 全局系统字体同步至根文档变量，确保主界面、Portal 挂载的下拉菜单及 Tooltip 统一生效
+  useEffect(() => {
+    document.documentElement.style.setProperty('--app-ui-font-family', uiFontFamily);
+    document.documentElement.style.setProperty('--app-ui-font-size', uiFontSize);
+    document.documentElement.style.removeProperty('--app-ui-letter-spacing');
+  }, [uiFontFamily]);
+
   const appShellStyle = {
     // 主窗口列结构由左右侧栏折叠状态驱动，保证右侧 AI 栏展开时不会挤乱左侧栏和终端主体的顺序。
     '--app-grid-columns': `${sidebarCollapsed ? '' : 'auto 4px '}minmax(0, 1fr)${agentSidebarCollapsed ? '' : ' 4px auto'}`,
     '--main-workspace-min-width': `${mainWorkspaceMinWidth}px`,
+    '--app-terminal-font-family': terminalFontFamily,
+    '--app-ui-font-family': uiFontFamily,
+    '--app-ui-font-size': uiFontSize,
   } as CSSProperties;
   // 审批视图通过功能组件复用；App 只提供排序结果和审批用例。
   const agentRequestPanel = (
@@ -1933,6 +1966,7 @@ export default function App() {
             activeRemoteConnectionId={activeRemoteConnectionId}
             activeSessionId={activeSessionId}
             collapsed={bottomDockCollapsed}
+            commandFontFamily={terminalFontFamily}
             compactActions={bottomPanelNeedsCompactActions}
             connectionHistory={connectionHistory}
             connectionTunnels={connectionTunnels}

@@ -1,15 +1,17 @@
 /* 本模块由 App 入口按功能域拆出，保留原组件行为与状态订阅方式。 */
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronUp, Eye, EyeOff, Folder, Monitor, Plus, TerminalSquare, Trash2, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, Eye, EyeOff, Folder, Plus, Trash2, X } from 'lucide-react';
+import { ProtocolIcon } from './ProtocolIcon';
 import { useShallow } from 'zustand/react/shallow';
 import { translate, type TranslationKey } from '../i18n';
 import { useAppStore } from '../store';
 import type { ConnectionDraft, SshJumpHost } from '../types';
 import { CustomSelect } from '../CustomSelect';
-import { collectOrderedGroupPaths, normalizeConnectionGroupPath } from '../app/connectionGroups';
+import { collectOrderedGroupPaths } from '../app/connectionGroups';
 import { portTextInputProps } from '../app/formControls';
 import { FloatingToast } from '../shared/ui/FloatingToast';
 import { Tooltip } from './Tooltip';
+import { ConnectionGroupCombobox } from './ConnectionGroupCombobox';
 
 export type ConnectionFormTab = 'basic' | 'jumpHosts' | 'proxy';
 
@@ -93,7 +95,6 @@ export const createEmptyJumpHost = (): SshJumpHost => ({
 export function ConnectionFormModal() {
   const [revealPassword, setRevealPassword] = useState(false);
   const [revealPassphrase, setRevealPassphrase] = useState(false);
-  const [groupPickerOpen, setGroupPickerOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<ConnectionFormTab>('basic');
   const {
     showConnectionForm,
@@ -189,26 +190,8 @@ export function ConnectionFormModal() {
     // 代理开关和认证信息都保留在同一个对象里，关闭代理时不清空已填地址，便于临时切换。
     updateConnectionDraft('proxy', { ...connectionDraft.proxy, ...patch });
   };
-  // 分组输入使用自定义下拉，避免浏览器 datalist 在输入前缀时把可选父分组直接过滤掉。
+  // 分组层级与全部候选选项集合
   const groupOptions = useMemo(() => collectOrderedGroupPaths(settings.connectionGroups, connections), [connections, settings.connectionGroups]);
-  const sortedGroupOptions = useMemo(() => {
-    const keyword = normalizeConnectionGroupPath(connectionDraft.groupPath).toLowerCase();
-    if (!keyword) {
-      return groupOptions;
-    }
-
-    // 输入内容只影响排序，不隐藏任何已有分组；用户输入 ology- 时仍能看到 ology 这类父级候选。
-    return [...groupOptions].sort((left, right) => {
-      const leftLower = left.toLowerCase();
-      const rightLower = right.toLowerCase();
-      const leftMatched = leftLower.includes(keyword) || keyword.includes(leftLower);
-      const rightMatched = rightLower.includes(keyword) || keyword.includes(rightLower);
-      if (leftMatched !== rightMatched) {
-        return leftMatched ? -1 : 1;
-      }
-      return groupOptions.indexOf(left) - groupOptions.indexOf(right);
-    });
-  }, [connectionDraft.groupPath, groupOptions]);
   useEffect(() => {
     if (!showConnectionForm) {
       return;
@@ -216,7 +199,6 @@ export function ConnectionFormModal() {
 
     // 每次打开新增/编辑弹窗都回到基础页，避免上一次停留在跳板机或代理页造成误以为基础信息丢失。
     setActiveTab('basic');
-    setGroupPickerOpen(false);
     setRevealPassword(false);
     setRevealPassphrase(false);
   }, [showConnectionForm]);
@@ -270,7 +252,7 @@ export function ConnectionFormModal() {
                     onClick={() => selectProtocol('ssh')}
                     type="button"
                   >
-                    <TerminalSquare size={17} />
+                    <ProtocolIcon protocol="ssh" size={20} />
                     <span>{t('connectionProtocolSsh')}</span>
                   </button>
                   <button
@@ -279,7 +261,7 @@ export function ConnectionFormModal() {
                     onClick={() => selectProtocol('rdp')}
                     type="button"
                   >
-                    <Monitor size={17} />
+                    <ProtocolIcon protocol="rdp" size={20} />
                     <span>{t('connectionProtocolRdp')}</span>
                   </button>
                 </div>
@@ -290,38 +272,15 @@ export function ConnectionFormModal() {
               </label>
               <label>
                 <span>{t('fieldGroupPath')}</span>
-                <div className="group-combobox">
-                  <input
-                    aria-expanded={groupPickerOpen}
-                    placeholder={t('groupPathPlaceholder')}
-                    value={connectionDraft.groupPath}
-                    onBlur={() => window.setTimeout(() => setGroupPickerOpen(false), 120)}
-                    onChange={(event) => {
-                      updateConnectionDraft('groupPath', event.target.value);
-                      setGroupPickerOpen(true);
-                    }}
-                    onFocus={() => setGroupPickerOpen(true)}
-                  />
-                  {groupPickerOpen && sortedGroupOptions.length ? (
-                    <div className="group-options-menu">
-                      {sortedGroupOptions.map((groupPath) => (
-                        <button
-                          key={groupPath}
-                          className="group-option-button"
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => {
-                            updateConnectionDraft('groupPath', groupPath);
-                            setGroupPickerOpen(false);
-                          }}
-                          type="button"
-                        >
-                          <Folder size={14} />
-                          <span>{groupPath}</span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
+                {/* 现代化树形级联分组选择器：支持树形浏览、即时检索与无约束自定义目录 */}
+                <ConnectionGroupCombobox
+                  value={connectionDraft.groupPath}
+                  onChange={(nextPath) => updateConnectionDraft('groupPath', nextPath)}
+                  groupOptions={groupOptions}
+                  connections={connections}
+                  placeholder={t('groupPathPlaceholder')}
+                  t={t}
+                />
               </label>
               <label>
                 <span>{t('fieldHost')}</span>
@@ -350,7 +309,7 @@ export function ConnectionFormModal() {
                 </div>
               ) : (
                 <div className="connection-rdp-hint">
-                  <Monitor size={16} />
+                  <ProtocolIcon protocol="rdp" size={18} />
                   <span>{t('connectionRdpHint')}</span>
                 </div>
               )}
@@ -421,7 +380,7 @@ export function ConnectionFormModal() {
               )}
               <label className="span-2">
                 <span>{t('fieldNote')}</span>
-                <textarea value={connectionDraft.note ?? ''} onChange={(event) => updateConnectionDraft('note', event.target.value)} rows={2} />
+                <input value={connectionDraft.note ?? ''} onChange={(event) => updateConnectionDraft('note', event.target.value)} />
               </label>
             </div>
           </div>

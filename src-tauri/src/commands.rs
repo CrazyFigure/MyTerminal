@@ -28,8 +28,8 @@ use crate::{
         AppSettings, BootstrapState,
         ConnectionProfile, HistoryEntry,
         HistoryEntryInput, LocalTerminalProfile, LocalTerminalSettings,
-        SshProxyConfig,
-        TerminalOutputChunk, TerminalSession, TunnelOpenRequest, TunnelRecord, TunnelUpdateRequest,
+        SshProxyConfig, SystemFontFamily, TerminalOutputChunk, TerminalSession, TunnelOpenRequest,
+        TunnelRecord, TunnelUpdateRequest,
     },
     state::{
         AgentPtyPhase, AgentPtyState, AppState, AuxiliarySshSession, RuntimeSession,
@@ -367,15 +367,22 @@ pub fn save_local_terminal_settings(
 }
 
 #[tauri::command(async)]
-pub fn list_system_fonts() -> Result<Vec<String>, String> {
+pub fn detect_system_shells() -> Vec<crate::models::LocalTerminalShellConfig> {
+    shell_detector::detect_available_system_shells()
+}
+
+#[tauri::command(async)]
+pub fn list_system_fonts() -> Result<Vec<SystemFontFamily>, String> {
     // 字体设置下拉需要覆盖本机已安装的全部字体，交由平台原生方式枚举，失败时返回空列表由前端补齐推荐字体。
     Ok(enumerate_system_fonts()?)
 }
 
 #[cfg(windows)]
-fn enumerate_system_fonts() -> Result<Vec<String>, AppError> {
+fn enumerate_system_fonts() -> Result<Vec<SystemFontFamily>, AppError> {
     // 字体名取自 WPF SystemFontFamilies（DirectWrite），得到 WebView2 前端真正用于匹配的完整 typographic
     // 族名，不受 GDI 32 字符 LF_FACESIZE 截断（如 "Maple Mono Normal NF CN" 这类超长 Nerd 字体名）。
+    // FamilyNames 中的本地化名称作为同一字体的展示元数据返回，不能展开成独立字体项；
+    // 否则“宋体/楷体”等中文别名会混入英文字体下拉，并可能被错误保存成字体族配置。
     // 再用 GDI EnumFontFamiliesEx 读取字符集，识别"只有符号字符集（SYMBOL_CHARSET）"的纯图标字体
     // （Wingdings/Marlett 等，在终端只会显示成方块）并从列表剔除；Nerd 等含正常字符集的字体全部保留。
     // 强制 UTF-8 输出，保证中文字体名不乱码。
@@ -423,38 +430,73 @@ public class FontSym {
 }
 '@
 $symbol = [FontSym]::SymbolOnly()
-[System.Windows.Media.Fonts]::SystemFontFamilies | ForEach-Object { $_.Source } | Where-Object { -not $symbol.Contains($_) }"#;
+$fonts = @([System.Windows.Media.Fonts]::SystemFontFamilies |
+    Where-Object { -not $symbol.Contains($_.Source) } |
+    ForEach-Object {
+        $source = $_.Source
+        $localizedNames = @{}
+        $_.FamilyNames.GetEnumerator() | ForEach-Object {
+            $language = $_.Key.IetfLanguageTag.ToLowerInvariant()
+            $name = [string]$_.Value
+            if ($name -and $name -ne $source) { $localizedNames[$language] = $name }
+        }
+        [PSCustomObject]@{ family = $source; localizedNames = $localizedNames }
+    })
+ConvertTo-Json -InputObject $fonts -Depth 4 -Compress"#;
     let output = Command::new("powershell")
         .creation_flags(WINDOWS_CREATE_NO_WINDOW)
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
         .output()
         .map_err(AppError::from)?;
     let text = String::from_utf8_lossy(&output.stdout);
-    Ok(dedupe_font_names(text.lines().map(str::to_string)))
+    let fonts = serde_json::from_str::<Vec<SystemFontFamily>>(text.trim())?;
+    Ok(normalize_system_fonts(fonts.into_iter()))
 }
 
 #[cfg(not(windows))]
-fn enumerate_system_fonts() -> Result<Vec<String>, AppError> {
+fn enumerate_system_fonts() -> Result<Vec<SystemFontFamily>, AppError> {
     // 非 Windows 平台使用 fontconfig 的 fc-list 读取字体族名；不可用时回退空列表由前端补齐推荐字体。
     let Ok(output) = Command::new("fc-list").args([":", "family"]).output() else {
         return Ok(Vec::new());
     };
     let text = String::from_utf8_lossy(&output.stdout);
-    // fc-list 每行形如 "Family A,Family B"，取首个别名即可。
-    Ok(dedupe_font_names(
-        text.lines()
-            .filter_map(|line| line.split(',').next().map(str::to_string)),
-    ))
+    // fc-list 每行形如 "Family A,Family B"；首个名称作为规范族名，平台未提供语言标签时不伪造本地化元数据。
+    Ok(normalize_system_fonts(text.lines().filter_map(|line| {
+        line.split(',').next().map(|family| SystemFontFamily {
+            family: family.to_string(),
+            localized_names: Default::default(),
+        })
+    })))
 }
 
-// 统一去除空白、按小写去重并按字母排序，得到稳定可展示的字体族列表。
-fn dedupe_font_names(names: impl Iterator<Item = String>) -> Vec<String> {
+// 统一清理规范名和本地化名称，按规范名去重、排序，保证字体目录稳定且不产生重复选项。
+fn normalize_system_fonts(
+    fonts: impl Iterator<Item = SystemFontFamily>,
+) -> Vec<SystemFontFamily> {
     let mut seen = HashSet::new();
-    let mut result: Vec<String> = names
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty() && seen.insert(name.to_lowercase()))
+    let mut result: Vec<SystemFontFamily> = fonts
+        .filter_map(|mut font| {
+            font.family = font.family.trim().to_string();
+            if font.family.is_empty() || !seen.insert(font.family.to_lowercase()) {
+                return None;
+            }
+            let canonical_name = font.family.to_lowercase();
+            font.localized_names = font
+                .localized_names
+                .into_iter()
+                .filter_map(|(language, name)| {
+                    let language = language.trim().to_lowercase();
+                    let name = name.trim().to_string();
+                    (!language.is_empty()
+                        && !name.is_empty()
+                        && name.to_lowercase() != canonical_name)
+                        .then_some((language, name))
+                })
+                .collect();
+            Some(font)
+        })
         .collect();
-    result.sort_by_key(|name| name.to_lowercase());
+    result.sort_by_key(|font| font.family.to_lowercase());
     result
 }
 
@@ -1011,6 +1053,9 @@ use connections::validate_connection_profile;
 // 本地 PTY 生命周期由独立适配器维护。
 mod local_terminal;
 use local_terminal::spawn_local_terminal_thread;
+
+// 系统已安装终端动态探测器。
+pub mod shell_detector;
 
 // SSH 传输适配器统一处理认证、代理、跳板与隧道连接池。
 mod ssh_transport;

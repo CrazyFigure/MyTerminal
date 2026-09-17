@@ -69,10 +69,14 @@ const runtimeResourceSources = new Set<AppSettings["runtimeResourceSource"]>([
 
 const normalizeSingleFontFamily = (value: string) => {
   // 旧配置可能保存过一整串 fallback 字体；设置页只展示和保存用户明确选择的单个字体。
-  const firstFont = value
+  let firstFont = value
     .split(",")
     .map((item) => item.trim().replace(/^['"]|['"]$/g, ""))
     .find(Boolean);
+  // 历史默认细体自动升级为标准常规体
+  if (firstFont === "JetBrains Mono Light") {
+    firstFont = "JetBrains Mono";
+  }
   return firstFont ?? "JetBrains Mono";
 };
 
@@ -173,6 +177,16 @@ export const normalizeSettings = (settings: AppSettings): AppSettings => ({
   // AI 对话字体为空表示跟随终端字体，字号 0 表示跟随终端字号；避免升级后对话区观感突变。
   agentChatLatinFontFamily: trimToUndefined(settings.agentChatLatinFontFamily),
   agentChatCjkFontFamily: trimToUndefined(settings.agentChatCjkFontFamily),
+  // 全局界面 UI 字体为空表示跟随终端字体；缺省直接回落到终端中英文字体。
+  uiLatinFontFamily: trimToUndefined(settings.uiLatinFontFamily),
+  uiCjkFontFamily: trimToUndefined(settings.uiCjkFontFamily),
+  uiFontSize: (() => {
+    const value = Math.round(Number(settings.uiFontSize));
+    if (!Number.isFinite(value) || value <= 0) {
+      return 0;
+    }
+    return Math.min(24, Math.max(10, value));
+  })(),
   // 对话行高与终端行高相互独立，没有“0 表示跟随”的语义，缺省直接回落到正文默认值。
   agentChatLineHeight: clampLineHeight(settings.agentChatLineHeight, 1.6),
   agentChatFontSize: (() => {
@@ -336,9 +350,26 @@ export const normalizeLocalTerminalSettings = (
     }
     const id = item.id.trim() || command || "shell";
     if (!commandMap.has(id)) {
-      commandMap.set(id, { id, name, command, builtIn: Boolean(item.builtIn) });
+      commandMap.set(id, {
+        id,
+        name,
+        command,
+        icon: item.icon?.trim() || undefined,
+        builtIn: Boolean(item.builtIn),
+      });
     }
   });
+
+  const shells = (settings.shells ?? [])
+    .map((shell) => ({
+      id: shell.id.trim(),
+      name: shell.name.trim() || shell.id,
+      command: shell.command.trim(),
+      args: Array.isArray(shell.args) ? shell.args.map((arg) => String(arg)) : [],
+      icon: shell.icon?.trim() || undefined,
+      enabled: shell.enabled !== false,
+    }))
+    .filter((shell) => shell.id && shell.command);
 
   // 历史目录只要求目录有效；命令允许为空，空命令由后端解释为直接打开本地 shell。
   const profiles = (settings.profiles ?? [])
@@ -359,6 +390,7 @@ export const normalizeLocalTerminalSettings = (
 
   return {
     shellPath: settings.shellPath?.trim() ?? "",
+    shells,
     commands: Array.from(commandMap.values()),
     profiles,
   };

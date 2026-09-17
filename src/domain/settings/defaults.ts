@@ -8,12 +8,14 @@ export const defaultSettings: AppSettings = {
   runtimeResourceRefreshIntervalSec: 3,
   runtimeResourceSource: 'system',
   sshKeepaliveIntervalSec: 30,
-  // 默认终端西文字体：内置 JetBrains Mono Light
-  shellLatinFontFamily: 'JetBrains Mono Light',
-  // 默认终端中文字体：内置 Maple Mono Normal NF CN Light
-  shellCjkFontFamily: 'Maple Mono Normal NF CN Light',
-  shellFontFamily: 'JetBrains Mono Light',
+  // 默认终端西文字体：内置 JetBrains Mono
+  shellLatinFontFamily: 'JetBrains Mono',
+  // 默认终端中文字体：内置 Maple Mono Normal NF CN
+  shellCjkFontFamily: 'Maple Mono Normal NF CN',
+  shellFontFamily: 'JetBrains Mono',
   shellFontSize: 15,
+  // 系统界面默认字号 15px。
+  uiFontSize: 15,
   // 终端行高沿用历史硬编码值，升级后画面密度保持不变。
   shellLineHeight: 1.18,
   terminalBackground: '#f7f7f7',
@@ -57,6 +59,7 @@ export const defaultSettings: AppSettings = {
 // 本地终端默认提供“纯 shell”和常见 AI CLI，空命令由后端解释为打开系统 shell。
 export const defaultLocalTerminals: LocalTerminalSettings = {
   shellPath: '',
+  shells: [],
   commands: [
     { id: 'shell', name: '本地终端', command: '', builtIn: true },
     { id: 'claude', name: 'claude', command: 'claude', builtIn: true },

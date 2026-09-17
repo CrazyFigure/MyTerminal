@@ -35,6 +35,20 @@ fn resolve_local_shell_path(settings: &LocalTerminalSettings) -> String {
         .to_string()
 }
 
+fn resolve_local_target(
+    settings: &LocalTerminalSettings,
+    profile_command: &str,
+) -> (String, Vec<String>, String) {
+    let trimmed = profile_command.trim();
+    if let Some(shell_id) = trimmed.strip_prefix("shell:") {
+        if let Some(shell) = settings.shells.iter().find(|s| s.id == shell_id) {
+            return (shell.command.clone(), shell.args.clone(), String::new());
+        }
+    }
+    let default_shell = resolve_local_shell_path(settings);
+    (default_shell, Vec::new(), trimmed.to_string())
+}
+
 /// 从本地终端启动命令中提取首个可执行文件名，供宿主按目标 TUI 注入兼容环境变量。
 /// 这里只解析直接执行形式：兼容 PowerShell 调用运算符、单双引号路径、Windows/Unix 路径和常见脚本后缀；
 /// `npx claude` 等二次分发命令不猜测最终子进程，避免把 Claude 专用行为误施加给普通命令。
@@ -87,13 +101,20 @@ pub(super) fn should_force_qwen_synchronized_output(command: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn build_local_terminal_command(shell_path: &str, command: &str) -> CommandBuilder {
+fn build_local_terminal_command(
+    shell_path: &str,
+    shell_args: &[String],
+    command: &str,
+) -> CommandBuilder {
     let shell_name = Path::new(shell_path)
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or(shell_path)
         .to_ascii_lowercase();
     let mut builder = CommandBuilder::new(shell_path);
+    if !shell_args.is_empty() {
+        builder.args(shell_args);
+    }
     let trimmed_command = command.trim();
     if trimmed_command.is_empty() {
         return builder;
@@ -109,8 +130,15 @@ fn build_local_terminal_command(shell_path: &str, command: &str) -> CommandBuild
 }
 
 #[cfg(not(windows))]
-fn build_local_terminal_command(shell_path: &str, command: &str) -> CommandBuilder {
+fn build_local_terminal_command(
+    shell_path: &str,
+    shell_args: &[String],
+    command: &str,
+) -> CommandBuilder {
     let mut builder = CommandBuilder::new(shell_path);
+    if !shell_args.is_empty() {
+        builder.args(shell_args);
+    }
     let trimmed_command = command.trim();
     if !trimmed_command.is_empty() {
         builder.args(["-lc", trimmed_command]);
@@ -129,7 +157,7 @@ pub(super) fn spawn_local_terminal_thread(
     app_handle: tauri::AppHandle,
 ) {
     thread::spawn(move || {
-        let shell_path = resolve_local_shell_path(&settings);
+        let (shell_path, shell_args, run_cmd) = resolve_local_target(&settings, &profile.command);
         let pty_system = portable_pty::native_pty_system();
         let pair = match pty_system.openpty(PtySize {
             rows,
@@ -153,7 +181,7 @@ pub(super) fn spawn_local_terminal_thread(
         // 本地 PTY 同样先登记初始几何，避免启动输出在首次前端 resize 前被按当前窗口宽度错误重放。
         queue_terminal_size(&output_queue, &app_handle, &session_id, cols, rows);
 
-        let mut command = build_local_terminal_command(&shell_path, &profile.command);
+        let mut command = build_local_terminal_command(&shell_path, &shell_args, &run_cmd);
         command.cwd(&profile.cwd);
         // AI CLI 通常会根据 TERM/COLORTERM 决定颜色和交互 UI，显式声明现代终端能力。
         command.env("TERM", "xterm-256color");

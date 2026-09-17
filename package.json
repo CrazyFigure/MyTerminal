@@ -1,7 +1,7 @@
 {
   "name": "myterminal",
   "private": true,
-  "version": "0.8.6",
+  "version": "0.8.7",
   "description": "A modern Rust + Tauri 2 remote terminal manager inspired by FinalShell.",
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
     "sync:version": "node scripts/sync-version.mjs",
+    "sync:ossl-pdb": "node scripts/sync-ossl-pdb.mjs",
     "generate:star-history": "node scripts/generate-star-history.mjs",
     "check:bundle": "node scripts/check-bundle-memory.mjs",
     "check:web": "npm run build && npm run check:bundle",
@@ -21,7 +22,7 @@
     "preview": "vite preview",
     "pretauri": "npm run sync:version",
     "tauri": "tauri",
-    "pretauri:dev": "npm run sync:version",
+    "pretauri:dev": "npm run sync:version && npm run sync:ossl-pdb",
     "tauri:dev": "node scripts/run-tauri-dev.mjs",
     "build:cli-sidecar": "node scripts/build-cli-sidecar.mjs",
     "pretauri:build": "npm run sync:version",

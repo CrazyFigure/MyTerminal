@@ -1,12 +1,14 @@
 import {
   Activity,
   Bot,
-  Cable,
   Info,
   Settings,
   ShieldCheck,
   Upload,
 } from "lucide-react";
+
+// 引入官方 MCP 矢量图标组件，替换原有的通用 Cable 线缆图标
+import { McpIcon } from "../../components/McpIcon";
 
 import type { TranslationKey } from "../../i18n";
 import type { SettingsTab } from "./model";
@@ -53,7 +55,7 @@ export function SettingsNavigation({ activeTab, onTabChange, t }: Props) {
         onClick={() => onTabChange("agent")}
         type="button"
       >
-        <Cable size={16} />
+        <McpIcon size={16} />
         {t("settingsTabAgent")}
       </button>
       <button

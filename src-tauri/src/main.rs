@@ -170,6 +170,7 @@ fn main() {
             commands::save_app_settings,
             commands::load_local_terminal_settings,
             commands::save_local_terminal_settings,
+            commands::detect_system_shells,
             commands::list_system_fonts,
             commands::font_pack::get_font_pack_status,
             commands::font_pack::download_font_pack,
