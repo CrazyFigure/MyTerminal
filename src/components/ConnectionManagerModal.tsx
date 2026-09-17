@@ -1,6 +1,7 @@
 /* 本模块由 App 入口按功能域拆出，保留原组件行为与状态订阅方式。 */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { Copy, Folder, FolderTree, GripVertical, Monitor, Pencil, Play, Plus, Save, TerminalSquare, Trash2, X } from 'lucide-react';
+import { Copy, Folder, FolderTree, GripVertical, Pencil, Play, Plus, Save, Trash2, X } from 'lucide-react';
+import { ProtocolIcon } from './ProtocolIcon';
 import { useShallow } from 'zustand/react/shallow';
 import { translate, type TranslationKey } from '../i18n';
 import { useAppStore } from '../store';
@@ -654,23 +655,14 @@ export function ConnectionManagerModal({ open, onClose }: { open: boolean; onClo
                       </Tooltip>
                       <Tooltip content={connection.name} side="bottom">
                         <div className="connection-name-cell">
-                          {connection.protocol === 'rdp' ? (
-                            <span
-                              aria-label={t('connectionProtocolRdp')}
-                              className="connection-type-icon"
-                              role="img"
-                            >
-                              <Monitor size={13} />
-                            </span>
-                          ) : (
-                            <span
-                              aria-label={t('connectionProtocolSsh')}
-                              className="connection-type-icon"
-                              role="img"
-                            >
-                              <TerminalSquare size={13} />
-                            </span>
-                          )}
+                          {/* 统一采用彩色矢量协议图标，尺寸放大至 19px，提升辨识度与列表视觉质感 */}
+                          <span
+                            aria-label={connection.protocol === 'rdp' ? t('connectionProtocolRdp') : t('connectionProtocolSsh')}
+                            className="connection-type-icon"
+                            role="img"
+                          >
+                            <ProtocolIcon protocol={connection.protocol} size={19} />
+                          </span>
                           <span>{connection.name}</span>
                         </div>
                       </Tooltip>
