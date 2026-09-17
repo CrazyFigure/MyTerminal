@@ -1,7 +1,14 @@
 /* 设置功能域内部模块；只暴露稳定的数据规则或独立视图。 */
 import type { WheelEvent as ReactWheelEvent } from 'react';
 import type { TranslationKey } from '../../i18n';
-import type { AgentBridgeStatus, AgentProtocol, AgentProvider, AppSettings } from '../../types';
+import type {
+  AgentBridgeStatus,
+  AgentProtocol,
+  AgentProvider,
+  AppSettings,
+  SystemFontFamily,
+  UiLanguage,
+} from '../../types';
 import { clamp } from '../../shared/numbers';
 
 // “执行”是内置 AI 助手与外部 MCP 的共享配置页，不能继续归属于任一接入方式。
@@ -58,12 +65,38 @@ export const appearanceFieldDefaults: Record<
 
 
 // 推荐字体与当前旧配置都必须通过真实可用性检测；系统枚举失败时也不能重新展示未安装字体。
+const buildSystemFontNameLookup = (systemFonts: SystemFontFamily[]) => {
+  const installedFonts = new Map<string, string>();
+  systemFonts.forEach(({ family, localizedNames }) => {
+    installedFonts.set(family.toLowerCase(), family);
+    Object.values(localizedNames).forEach((localizedName) => {
+      installedFonts.set(localizedName.toLowerCase(), family);
+    });
+  });
+  return installedFonts;
+};
+
+
+
+
+
+// 旧版可能把“宋体”等本地化别名保存进配置；目录加载后统一解析回稳定的规范字体族名。
+export const resolveSystemFontFamilyName = (
+  systemFonts: SystemFontFamily[],
+  fontFamily: string,
+) => buildSystemFontNameLookup(systemFonts).get(fontFamily.trim().toLowerCase()) ?? fontFamily;
+
+
+
+
+
 export const mergeInstalledFontOptions = (
   curated: string[],
-  systemFonts: string[],
+  systemFonts: SystemFontFamily[],
   isFallbackAllowed: (fontFamily: string) => boolean,
 ) => {
-  const installedFonts = new Map(systemFonts.map((fontFamily) => [fontFamily.toLowerCase(), fontFamily]));
+  // 规范名和所有本地化别名都映射到同一个真实字体族，兼容上一版可能保存下来的“宋体”等别名。
+  const installedFonts = buildSystemFontNameLookup(systemFonts);
   const seen = new Set<string>();
   const installedCurated = curated
     .map((fontFamily) => installedFonts.get(fontFamily.toLowerCase())
@@ -79,11 +112,41 @@ export const mergeInstalledFontOptions = (
       seen.add(key);
       return true;
     });
-  const extras = systemFonts.filter((fontFamily) => {
+  const extras = systemFonts.map(({ family }) => family).filter((fontFamily) => {
     const key = fontFamily.toLowerCase();
     return !seen.has(key) && seen.add(key);
   });
   return [...installedCurated, ...extras];
+};
+
+
+
+
+
+/**
+ * 构建字体下拉项：值始终使用规范族名；只有中文字体字段才展示和搜索中文别名，
+ * 英文字体字段不会再混入“宋体/楷体”等仅用于 CJK 选择的显示名称。
+ */
+export const buildFontSelectOptions = (
+  fontFamilies: string[],
+  systemFonts: SystemFontFamily[],
+  uiLanguage: UiLanguage,
+  useLocalizedNames: boolean,
+) => {
+  const catalog = new Map(systemFonts.map((font) => [font.family.toLowerCase(), font]));
+  return fontFamilies.map((fontFamily) => {
+    const font = catalog.get(fontFamily.toLowerCase());
+    const localizedName = useLocalizedNames && uiLanguage === 'zh-CN'
+      ? (font?.localizedNames['zh-cn'] ?? font?.localizedNames['zh-sg'])
+      : undefined;
+    return {
+      value: fontFamily,
+      label: localizedName ?? fontFamily,
+      searchText: useLocalizedNames && font
+        ? Object.values(font.localizedNames).join(' ')
+        : undefined,
+    };
+  });
 };
 
 
