@@ -252,7 +252,7 @@ export function SettingsModal({
       fontSize: draftSettings.shellFontSize,
       lineHeight: draftSettings.shellLineHeight ?? 1.18,
     }),
-    [draftSettings],
+    [draftSettings, fontPackStatus],
   );
   // AI 对话字体预览：空配置回落到终端中英文字体与字号，与右侧对话面板的实际渲染保持一致。
   const agentChatPreviewStyle = useMemo<CSSProperties>(
@@ -264,24 +264,18 @@ export function SettingsModal({
       fontSize: draftSettings.agentChatFontSize || draftSettings.shellFontSize,
       lineHeight: draftSettings.agentChatLineHeight ?? 1.6,
     }),
-    [configuredCjkFontFamily, configuredLatinFontFamily, draftSettings],
+    [configuredCjkFontFamily, configuredLatinFontFamily, draftSettings, fontPackStatus],
   );
-  // 系统字体预览：空配置回落到终端中英文字体，实时反映字号效果。
+  // 系统字体预览：空配置回落到终端中英文字体，字号固定为基准 15px；监听字体包就绪状态保证即时同步。
   const uiPreviewStyle = useMemo<CSSProperties>(
     () => ({
       fontFamily: buildAgentChatFontFamily(
         draftSettings.uiLatinFontFamily || configuredLatinFontFamily,
         draftSettings.uiCjkFontFamily || configuredCjkFontFamily,
       ),
-      fontSize: draftSettings.uiFontSize || 15,
+      fontSize: 15,
     }),
-    [
-      configuredCjkFontFamily,
-      configuredLatinFontFamily,
-      draftSettings.uiCjkFontFamily,
-      draftSettings.uiFontSize,
-      draftSettings.uiLatinFontFamily,
-    ],
+    [configuredCjkFontFamily, configuredLatinFontFamily, draftSettings, fontPackStatus],
   );
   const updateDraftSettings = (updater: (settings: AppSettings) => AppSettings) => {
     setDraftSettings((current) => updater(current));

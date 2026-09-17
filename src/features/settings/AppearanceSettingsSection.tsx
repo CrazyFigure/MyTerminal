@@ -470,8 +470,8 @@ export function AppearanceSettingsSection({
               </Tooltip>
             </div>
           </label>
-          {/* 空字体与 0 字号都表示跟随终端设置，老配置升级后对话区观感保持不变。 */}
-          <p className="field-hint">{t("agentChatFontSizeHint")}</p>
+          {/* 空字体与 0 字号都表示跟随终端设置，老配置升级后对话区观感保持不变；扩展到整行避免挤在左半列。 */}
+          <p className="field-hint span-2">{t("agentChatFontSizeHint")}</p>
           <div
             className="font-preview-panel span-2"
             style={agentChatPreviewStyle}
@@ -536,55 +536,16 @@ export function AppearanceSettingsSection({
               searchPlaceholder={t("fontSearchPlaceholder")}
             />
           </div>
-          <label>
-            <span>{t("fieldFontSize")}</span>
-            <div className="field-with-reset">
-              <input
-                max={24}
-                min={0}
-                onChange={(event) =>
-                  onUpdate((current) => ({
-                    ...current,
-                    uiFontSize: Number(event.target.value) || 0,
-                  }))
-                }
-                onWheel={(event) => event.currentTarget.blur()}
-                type="number"
-                value={
-                  draftSettings.uiFontSize ??
-                  appearanceFieldDefaults.uiFontSize
-                }
-              />
-              <Tooltip content={t("resetResourceSettings")} side="top">
-                <button
-                  aria-label={t("resetResourceSettings")}
-                  className="icon-button field-reset-button"
-                  disabled={
-                    (draftSettings.uiFontSize ??
-                      appearanceFieldDefaults.uiFontSize) ===
-                    appearanceFieldDefaults.uiFontSize
-                  }
-                  onClick={() =>
-                    onUpdate((current) => ({
-                      ...current,
-                      uiFontSize: appearanceFieldDefaults.uiFontSize,
-                    }))
-                  }
-                  type="button"
-                >
-                  <RotateCcw size={14} />
-                </button>
-              </Tooltip>
-            </div>
-          </label>
+          {/* 系统字体字号固定为基准 15px，保持与 UI 排版高度和图标比例严格协调，此处仅提供中西文字体族定制 */}
           <p className="field-hint span-2">
-            {t("uiFontFollowTerminalHint")} {t("uiFontSizeHint")}
+            {t("uiFontFollowTerminalHint")}
           </p>
           <div
             className="font-preview-panel span-2"
             style={uiPreviewStyle}
           >
-            <span>0123456789 abcdefghABCDEFGH (English Latin)</span>
+            {/* 系统字体预览文本：与终端和 AI 对话保持一致的示例字符 */}
+            <span>0123456789 abcdefghABCDEFGH</span>
             <strong>{t("uiFontPreviewText")}</strong>
           </div>
         </div>

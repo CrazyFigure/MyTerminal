@@ -1722,13 +1722,13 @@ export default function App() {
     return () => resizeObserver.disconnect();
   }, [activeBottomTab, agentSidebarCollapsed, sidebarCollapsed]);
 
-  // 终端中英文字体栈：优先按设置中的英文字体 + 中文字体构建，避免局部输入框/代码区域中文退化为宋体
+  // 终端中英文字体栈：优先按设置中的英文字体 + 中文字体构建，字体包激活后同步刷新
   const terminalFontFamily = useMemo(
     () => buildPreviewFontFamily(settings),
-    [settings.shellFontFamily, settings.shellLatinFontFamily, settings.shellCjkFontFamily],
+    [settings.shellFontFamily, settings.shellLatinFontFamily, settings.shellCjkFontFamily, fontPackStatus],
   );
 
-  // 全局系统 UI 字体栈：未设置时默认跟随终端设置，并结合无衬线字体栈防止回退至点阵宋体
+  // 全局系统 UI 字体栈：未设置时默认跟随终端设置，并监听字体包状态防止停留在无衬线回退字体
   const uiFontFamily = useMemo(
     () => resolveUiFontFamily(settings),
     [
@@ -1737,18 +1737,19 @@ export default function App() {
       settings.shellFontFamily,
       settings.shellLatinFontFamily,
       settings.shellCjkFontFamily,
+      fontPackStatus,
     ],
   );
 
-  // 全局系统字体大小（默认 15px）
-  const uiFontSize = settings.uiFontSize ? `${settings.uiFontSize}px` : '15px';
+  // 全局系统 UI 基础字号固定为 15px，保持与组件高度、内边距和图标尺寸严格协调
+  const uiFontSize = '15px';
 
   // 全局系统字体同步至根文档变量，确保主界面、Portal 挂载的下拉菜单及 Tooltip 统一生效
   useEffect(() => {
     document.documentElement.style.setProperty('--app-ui-font-family', uiFontFamily);
     document.documentElement.style.setProperty('--app-ui-font-size', uiFontSize);
     document.documentElement.style.removeProperty('--app-ui-letter-spacing');
-  }, [uiFontFamily, uiFontSize]);
+  }, [uiFontFamily]);
 
   const appShellStyle = {
     // 主窗口列结构由左右侧栏折叠状态驱动，保证右侧 AI 栏展开时不会挤乱左侧栏和终端主体的顺序。
