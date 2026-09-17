@@ -8,7 +8,7 @@ import type {
   RefObject,
   SetStateAction,
 } from 'react';
-import { ChevronUp, CornerDownLeft, Download, FolderTree, RefreshCw, Upload } from 'lucide-react';
+import { ArrowUp, CornerDownLeft, Download, FolderUp, RefreshCw, Upload } from 'lucide-react';
 
 import type { TranslationKey } from '../../i18n';
 import type { RemoteFileEntry } from '../../types';
@@ -130,14 +130,15 @@ export function FileExplorerPanel({
               </label>
             )}
           </Tooltip>
+          {/* 上传整个文件夹：采用专属的带向上箭头文件夹图标 FolderUp，与单文件上传 Upload 和下载 Download 统一 */}
           <Tooltip content={t('uploadFolder')} side="bottom">
             {nativeUploadPathSelection ? (
               <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={selectUploadFolder} type="button">
-                <FolderTree size={14} />
+                <FolderUp size={14} />
               </button>
             ) : (
               <label className="secondary-button slim file-upload-button">
-                <FolderTree size={14} />
+                <FolderUp size={14} />
                 <input
                   {...{ directory: '', webkitdirectory: '' }}
                   className="hidden-file-input"
@@ -170,8 +171,9 @@ export function FileExplorerPanel({
             </button>
           </Tooltip>
           <span className="explorer-toolbar-spacer" />
+          {/* 返回上一级目录：采用标准向上导航箭头 ArrowUp，与底部工作台展开/收起的折叠尖角（ChevronUp/Down）解耦 */}
           <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles(parentPath(currentRemotePath))} type="button">
-            <ChevronUp size={14} /> {t('up')}
+            <ArrowUp size={14} /> {t('up')}
           </button>
           <Tooltip content={t('refresh')} side="bottom">
             <button className="secondary-button slim" disabled={!hasActiveRemoteSession} onClick={() => void refreshFiles()} type="button">

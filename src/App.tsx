@@ -14,7 +14,6 @@ import {
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import {
   Activity,
-  Cable,
   ChevronLeft,
   ChevronRight,
   HardDrive,
