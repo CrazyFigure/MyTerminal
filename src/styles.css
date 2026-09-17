@@ -3305,8 +3305,9 @@ body.theme-dark .local-terminal-v2-subcard,
   box-sizing: border-box;
 }
 
+/* 启动项选择框收窄至 180px，为左侧目录路径输入框腾出更多横向展示空间 */
 .local-terminal-v2-select-group {
-  width: 230px;
+  width: 180px;
   flex-shrink: 0;
 }
 
@@ -3685,6 +3686,14 @@ body.theme-dark .local-terminal-history-folder-icon,
   height: 14px;
   flex-shrink: 0;
   object-fit: contain;
+}
+
+/* 选项文字超长时优雅省略，防止撑宽选择框 */
+.local-terminal-select-option span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 /* 会话 Tab 标签页左侧替代绿点的本地终端图标样式 */
