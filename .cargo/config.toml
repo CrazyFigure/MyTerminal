@@ -1,0 +1,8 @@
+# MSVC 链接器会对 vendored OpenSSL 静态库报 LNK4099（找不到 ossl_static.pdb），
+# 成因见 scripts/sync-ossl-pdb.mjs 顶部注释；该警告只表示这批 C 目标文件没有调试符号，
+# 不影响代码生成与运行。脚本会把 PDB 摆到链接器查找的位置，但冷构建首链、绕过 npm 钩子
+# 直接 cargo build、以及 openssl-src 升级后的首次链接仍可能缺失，这里统一让链接器静音，
+# 避免上千条噪音掩盖真正需要关注的警告。
+# 仅作用于 Windows MSVC 目标，不影响 macOS / Linux 构建。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/ignore:4099"]
