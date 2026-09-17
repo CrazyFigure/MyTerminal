@@ -20,6 +20,8 @@ type Props = {
   activeRemoteConnectionId?: string;
   activeSessionId?: string;
   collapsed: boolean;
+  /** 命令草稿输入框采用与终端一致的中英文字体栈，防止中文退化为宋体 */
+  commandFontFamily?: string;
   compactActions: boolean;
   connectionHistory: HistoryEntry[];
   connectionTunnels: TunnelRecord[];
@@ -53,6 +55,7 @@ export function BottomDock({
   activeRemoteConnectionId,
   activeSessionId,
   collapsed,
+  commandFontFamily,
   compactActions,
   connectionHistory,
   connectionTunnels,
@@ -156,12 +159,12 @@ export function BottomDock({
           <Tooltip content={collapsed ? t('expandBottomDock') : t('collapseBottomDock')} side="top">
             <button
               aria-label={collapsed ? t('expandBottomDock') : t('collapseBottomDock')}
-              className="secondary-button slim"
+              className="secondary-button"
               onClick={onToggleCollapsed}
               style={buildActionButtonStyle(collapsed ? t('expandBottomDock') : t('collapseBottomDock'), compactActions)}
               type="button"
             >
-              {collapsed ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              {collapsed ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
               {renderActionButtonLabel(collapsed ? t('expandBottomDock') : t('collapseBottomDock'), compactActions)}
             </button>
           </Tooltip>
@@ -209,13 +212,13 @@ export function BottomDock({
           ) : null}
           {activeBottomTab === 'history' ? (
             <button
-              className="secondary-button slim"
+              className="secondary-button"
               disabled={!activeRemoteConnectionId}
               onClick={() => void onRefreshHistory()}
               style={buildActionButtonStyle(t('refresh'), compactActions)}
               type="button"
             >
-              <RefreshCw className={historyLoading ? 'is-spinning' : ''} size={14} />
+              <RefreshCw className={historyLoading ? 'is-spinning' : ''} size={16} />
               {renderActionButtonLabel(t('refresh'), compactActions)}
             </button>
           ) : null}
@@ -231,6 +234,7 @@ export function BottomDock({
               placeholder={t('commandTextareaPlaceholder')}
               rows={8}
               spellCheck={false}
+              style={{ fontFamily: commandFontFamily }}
               value={activeCommand}
               onChange={(event) => onChangeCommand(event.target.value)}
             />

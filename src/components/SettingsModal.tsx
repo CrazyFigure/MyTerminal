@@ -221,6 +221,17 @@ export function SettingsModal({
     systemFonts,
     isTerminalFontFamilyAvailable,
   );
+  // 系统字体允许比例字体，选项直接对全部系统字体做可用性筛选，不做等宽约束。
+  const uiLatinOptions = mergeInstalledFontOptions(
+    [...agentChatLatinFontOptions, draftSettings.uiLatinFontFamily].filter((item): item is string => Boolean(item)),
+    systemFonts,
+    isTerminalFontFamilyAvailable,
+  );
+  const uiCjkOptions = mergeInstalledFontOptions(
+    [...agentChatCjkFontOptions, draftSettings.uiCjkFontFamily].filter((item): item is string => Boolean(item)),
+    systemFonts,
+    isTerminalFontFamilyAvailable,
+  );
   // AI 执行只支持 SSH；RDP 连接保留在统一管理页，但不能进入远端命令白名单。
   const agentSshConnections = useMemo(
     () => connections.filter((connection) => connection.protocol !== 'rdp'),
@@ -234,13 +245,12 @@ export function SettingsModal({
     () => agentSshConnections.filter((connection) => !normalizeConnectionGroupPath(connection.groupPath)),
     [agentSshConnections],
   );
+  // 终端字体预览：空配置回落到终端中英文字体与字号，与 AI 对话字体预览使用相同的面板底色。
   const terminalPreviewStyle = useMemo<CSSProperties>(
     () => ({
       fontFamily: buildPreviewFontFamily(draftSettings),
       fontSize: draftSettings.shellFontSize,
       lineHeight: draftSettings.shellLineHeight ?? 1.18,
-      background: draftSettings.terminalBackground,
-      color: draftSettings.terminalForeground,
     }),
     [draftSettings],
   );
@@ -255,6 +265,23 @@ export function SettingsModal({
       lineHeight: draftSettings.agentChatLineHeight ?? 1.6,
     }),
     [configuredCjkFontFamily, configuredLatinFontFamily, draftSettings],
+  );
+  // 系统字体预览：空配置回落到终端中英文字体，实时反映字号效果。
+  const uiPreviewStyle = useMemo<CSSProperties>(
+    () => ({
+      fontFamily: buildAgentChatFontFamily(
+        draftSettings.uiLatinFontFamily || configuredLatinFontFamily,
+        draftSettings.uiCjkFontFamily || configuredCjkFontFamily,
+      ),
+      fontSize: draftSettings.uiFontSize || 15,
+    }),
+    [
+      configuredCjkFontFamily,
+      configuredLatinFontFamily,
+      draftSettings.uiCjkFontFamily,
+      draftSettings.uiFontSize,
+      draftSettings.uiLatinFontFamily,
+    ],
   );
   const updateDraftSettings = (updater: (settings: AppSettings) => AppSettings) => {
     setDraftSettings((current) => updater(current));
@@ -849,6 +876,9 @@ export function SettingsModal({
                 selectedLatinFontFamily={selectedLatinFontFamily}
                 t={t}
                 terminalPreviewStyle={terminalPreviewStyle}
+                uiCjkOptions={uiCjkOptions}
+                uiLatinOptions={uiLatinOptions}
+                uiPreviewStyle={uiPreviewStyle}
               />
             ) : null}
 
