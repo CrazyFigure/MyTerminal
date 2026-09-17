@@ -1,6 +1,6 @@
 /* 本模块由 App 入口按功能域拆出，保留原组件行为与状态订阅方式。 */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { Copy, Folder, FolderMinus, GripVertical, Pencil, Play, Plus, Save, Trash2, X } from 'lucide-react';
+import { Check, Copy, Folder, FolderMinus, GripVertical, Pencil, Play, Plus, Save, Trash2, X } from 'lucide-react';
 import { ProtocolIcon } from './ProtocolIcon';
 import { useShallow } from 'zustand/react/shallow';
 import { translate, type TranslationKey } from '../i18n';
@@ -38,94 +38,251 @@ import {
 
 export function ConnectionGroupTree({
   nodes,
+  depth = 0,
   selectedPath,
   onSelect,
-  onEdit,
   onDelete,
   dragState,
   dropTarget,
   onStartGroupDrag,
   editLabel,
   deleteLabel,
+  newSubGroupLabel,
+  inlineEditingPath,
+  inlineEditDraft,
+  onInlineEditDraftChange,
+  onStartInlineEdit,
+  onSaveInlineEdit,
+  onCancelInlineEdit,
+  inlineCreatingParentPath,
+  inlineCreateDraft,
+  onInlineCreateDraftChange,
+  onStartInlineCreateSubgroup,
+  onSaveInlineCreateSubgroup,
+  onCancelInlineCreateSubgroup,
+  saveGroupLabel,
+  cancelGroupLabel,
+  groupNamePlaceholder,
 }: {
   nodes: ConnectionGroupNode[];
+  depth?: number;
   selectedPath: string;
   onSelect: (path: string) => void;
-  onEdit: (path: string) => void;
   onDelete: (path: string) => void;
   dragState: ConnectionManagerDragState;
   dropTarget: ConnectionManagerDropTarget;
   onStartGroupDrag: (event: ReactPointerEvent<HTMLButtonElement>, path: string, label: string) => void;
   editLabel: string;
   deleteLabel: string;
+  newSubGroupLabel: string;
+  inlineEditingPath: string | null;
+  inlineEditDraft: string;
+  onInlineEditDraftChange: (val: string) => void;
+  onStartInlineEdit: (node: ConnectionGroupNode) => void;
+  onSaveInlineEdit: () => void;
+  onCancelInlineEdit: () => void;
+  inlineCreatingParentPath: string | null;
+  inlineCreateDraft: string;
+  onInlineCreateDraftChange: (val: string) => void;
+  onStartInlineCreateSubgroup: (parentPath: string) => void;
+  onSaveInlineCreateSubgroup: () => void;
+  onCancelInlineCreateSubgroup: () => void;
+  saveGroupLabel: string;
+  cancelGroupLabel: string;
+  groupNamePlaceholder: string;
 }) {
   return (
     <div className="connection-group-children">
-      {nodes.map((node) => (
-        <div key={node.path} className="connection-group-node">
-          <div
-            data-group-path={node.path}
-            className={`connection-group-row ${selectedPath === node.path ? 'is-selected' : ''} ${dragState?.type === 'group' && dragState.path === node.path ? 'is-dragging' : ''} ${dropTarget?.type === 'connection-group' && dropTarget.groupPath === node.path ? 'is-drop-target' : ''} ${dropTarget?.type === 'group-insert' && dropTarget.groupPath === node.path ? `is-drop-${dropTarget.placement}` : ''}`}
-          >
-            <Tooltip content={`拖动分组 ${node.path}`} side="right">
-              <button
-                aria-label={`拖动分组 ${node.path}`}
-                className="drag-handle"
-                onPointerDown={(event) => onStartGroupDrag(event, node.path, node.name)}
-                type="button"
+      {nodes.map((node) => {
+        const isEditingThis = inlineEditingPath === node.path;
+        return (
+          <div key={node.path} className="connection-group-node">
+            {isEditingThis ? (
+              <div
+                className="connection-group-row inline-editing"
+                style={{ paddingLeft: `${10 + depth * 14}px` }}
               >
-                <GripVertical size={14} />
-              </button>
-            </Tooltip>
-            <Tooltip content={node.path} side="right">
-              <button
-                className="connection-group-button"
-                onClick={() => onSelect(node.path)}
-                type="button"
+                <Folder size={14} className="group-node-icon" />
+                <input
+                  autoFocus
+                  className="inline-group-input"
+                  value={inlineEditDraft}
+                  onChange={(e) => onInlineEditDraftChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      onSaveInlineEdit();
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault();
+                      onCancelInlineEdit();
+                    }
+                  }}
+                />
+                <div className="connection-group-inline-actions">
+                  <Tooltip content={saveGroupLabel} side="top">
+                    <button
+                      type="button"
+                      className="icon-button tiny success-button"
+                      onClick={onSaveInlineEdit}
+                      aria-label={saveGroupLabel}
+                    >
+                      <Check size={13} />
+                    </button>
+                  </Tooltip>
+                  <Tooltip content={cancelGroupLabel} side="top">
+                    <button
+                      type="button"
+                      className="icon-button tiny"
+                      onClick={onCancelInlineEdit}
+                      aria-label={cancelGroupLabel}
+                    >
+                      <X size={13} />
+                    </button>
+                  </Tooltip>
+                </div>
+              </div>
+            ) : (
+              <div
+                data-group-path={node.path}
+                className={`connection-group-row ${selectedPath === node.path ? 'is-selected' : ''} ${dragState?.type === 'group' && dragState.path === node.path ? 'is-dragging' : ''} ${dropTarget?.type === 'connection-group' && dropTarget.groupPath === node.path ? 'is-drop-target' : ''} ${dropTarget?.type === 'group-insert' && dropTarget.groupPath === node.path ? `is-drop-${dropTarget.placement}` : ''}`}
+                style={{ paddingLeft: `${10 + depth * 14}px` }}
               >
-                <Folder size={14} />
-                <span>{node.name}</span>
-              </button>
-            </Tooltip>
-            <div className="connection-group-actions">
-              <Tooltip content={editLabel} side="top">
-                <button
-                  aria-label={`${editLabel}: ${node.path}`}
-                  className="icon-button tiny"
-                  onClick={() => onEdit(node.path)}
-                  type="button"
-                >
-                  <Pencil size={13} />
-                </button>
-              </Tooltip>
-              <Tooltip content={deleteLabel} side="top">
-                <button
-                  aria-label={`${deleteLabel}: ${node.path}`}
-                  className="icon-button tiny danger-button"
-                  onClick={() => onDelete(node.path)}
-                  type="button"
-                >
-                  <Trash2 size={13} />
-                </button>
-              </Tooltip>
-            </div>
+                <Tooltip content={`拖动分组 ${node.path}`} side="right">
+                  <button
+                    aria-label={`拖动分组 ${node.path}`}
+                    className="drag-handle"
+                    onPointerDown={(event) => onStartGroupDrag(event, node.path, node.name)}
+                    type="button"
+                  >
+                    <GripVertical size={14} />
+                  </button>
+                </Tooltip>
+                <Tooltip content={node.path} side="right">
+                  <button
+                    className="connection-group-button"
+                    onClick={() => onSelect(node.path)}
+                    type="button"
+                  >
+                    <Folder size={14} />
+                    <span>{node.name}</span>
+                  </button>
+                </Tooltip>
+                <div className="connection-group-actions">
+                  <Tooltip content={newSubGroupLabel} side="top">
+                    <button
+                      aria-label={`${newSubGroupLabel}: ${node.path}`}
+                      className="icon-button tiny"
+                      onClick={() => onStartInlineCreateSubgroup(node.path)}
+                      type="button"
+                    >
+                      <Plus size={13} />
+                    </button>
+                  </Tooltip>
+                  <Tooltip content={editLabel} side="top">
+                    <button
+                      aria-label={`${editLabel}: ${node.path}`}
+                      className="icon-button tiny"
+                      onClick={() => onStartInlineEdit(node)}
+                      type="button"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                  </Tooltip>
+                  <Tooltip content={deleteLabel} side="top">
+                    <button
+                      aria-label={`${deleteLabel}: ${node.path}`}
+                      className="icon-button tiny danger-button"
+                      onClick={() => onDelete(node.path)}
+                      type="button"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </Tooltip>
+                </div>
+              </div>
+            )}
+
+            {/* 内联新建子分组输入行 */}
+            {inlineCreatingParentPath === node.path && (
+              <div
+                className="connection-group-row inline-creating"
+                style={{ paddingLeft: `${10 + (depth + 1) * 14}px` }}
+              >
+                <Folder size={14} className="group-node-icon muted" />
+                <input
+                  autoFocus
+                  className="inline-group-input"
+                  placeholder={groupNamePlaceholder}
+                  value={inlineCreateDraft}
+                  onChange={(e) => onInlineCreateDraftChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      onSaveInlineCreateSubgroup();
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault();
+                      onCancelInlineCreateSubgroup();
+                    }
+                  }}
+                />
+                <div className="connection-group-inline-actions">
+                  <Tooltip content={saveGroupLabel} side="top">
+                    <button
+                      type="button"
+                      className="icon-button tiny success-button"
+                      onClick={onSaveInlineCreateSubgroup}
+                      aria-label={saveGroupLabel}
+                    >
+                      <Check size={13} />
+                    </button>
+                  </Tooltip>
+                  <Tooltip content={cancelGroupLabel} side="top">
+                    <button
+                      type="button"
+                      className="icon-button tiny"
+                      onClick={onCancelInlineCreateSubgroup}
+                      aria-label={cancelGroupLabel}
+                    >
+                      <X size={13} />
+                    </button>
+                  </Tooltip>
+                </div>
+              </div>
+            )}
+
+            {node.children.length ? (
+              <ConnectionGroupTree
+                nodes={node.children}
+                depth={depth + 1}
+                selectedPath={selectedPath}
+                onDelete={onDelete}
+                onSelect={onSelect}
+                dragState={dragState}
+                dropTarget={dropTarget}
+                onStartGroupDrag={onStartGroupDrag}
+                deleteLabel={deleteLabel}
+                editLabel={editLabel}
+                newSubGroupLabel={newSubGroupLabel}
+                inlineEditingPath={inlineEditingPath}
+                inlineEditDraft={inlineEditDraft}
+                onInlineEditDraftChange={onInlineEditDraftChange}
+                onStartInlineEdit={onStartInlineEdit}
+                onSaveInlineEdit={onSaveInlineEdit}
+                onCancelInlineEdit={onCancelInlineEdit}
+                inlineCreatingParentPath={inlineCreatingParentPath}
+                inlineCreateDraft={inlineCreateDraft}
+                onInlineCreateDraftChange={onInlineCreateDraftChange}
+                onStartInlineCreateSubgroup={onStartInlineCreateSubgroup}
+                onSaveInlineCreateSubgroup={onSaveInlineCreateSubgroup}
+                onCancelInlineCreateSubgroup={onCancelInlineCreateSubgroup}
+                saveGroupLabel={saveGroupLabel}
+                cancelGroupLabel={cancelGroupLabel}
+                groupNamePlaceholder={groupNamePlaceholder}
+              />
+            ) : null}
           </div>
-          {node.children.length ? (
-            <ConnectionGroupTree
-              nodes={node.children}
-              selectedPath={selectedPath}
-              onDelete={onDelete}
-              onEdit={onEdit}
-              onSelect={onSelect}
-              dragState={dragState}
-              dropTarget={dropTarget}
-              onStartGroupDrag={onStartGroupDrag}
-              deleteLabel={deleteLabel}
-              editLabel={editLabel}
-            />
-          ) : null}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -134,9 +291,16 @@ export function ConnectionGroupTree({
 
 export function ConnectionManagerModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [selectedGroupPath, setSelectedGroupPath] = useState(ungroupedGroupPath);
-  const [groupEditorMode, setGroupEditorMode] = useState<'create' | 'edit' | null>(null);
-  const [editingGroupPath, setEditingGroupPath] = useState('');
-  const [groupDraft, setGroupDraft] = useState('');
+  // 原位内联编辑（重命名）状态
+  const [inlineEditingNode, setInlineEditingNode] = useState<ConnectionGroupNode | null>(null);
+  const [inlineEditDraft, setInlineEditDraft] = useState('');
+  // 原位内联新建子分组状态
+  const [inlineCreatingParentPath, setInlineCreatingParentPath] = useState<string | null>(null);
+  const [inlineCreateDraft, setInlineCreateDraft] = useState('');
+  // 顶部现代化新建分组面板状态
+  const [showTopGroupCreator, setShowTopGroupCreator] = useState(false);
+  const [topCreatorParent, setTopCreatorParent] = useState('');
+  const [topCreatorDraft, setTopCreatorDraft] = useState('');
   // 连接管理拖拽状态只保存在弹窗内，用于区分连接移动、连接排序和分组排序三种放置目标。
   const [dragState, setDragState] = useState<ConnectionManagerDragState>(null);
   const [dropTarget, setDropTarget] = useState<ConnectionManagerDropTarget>(null);
@@ -248,35 +412,105 @@ export function ConnectionManagerModal({ open, onClose }: { open: boolean; onClo
   }, []);
   useFlipListAnimation(groupSidebarRef, '[data-group-path]', [orderedGroupPaths.join('|')]);
   useFlipListAnimation(connectionTableBodyRef, '[data-connection-id]', [visibleConnections.map((connection) => connection.id).join('|')]);
-  const canSaveGroup = Boolean(normalizeConnectionGroupPath(groupDraft));
+  // 顶部现代化新建分组面板计算属性
+  const topResolvedPath = useMemo(() => {
+    const full = topCreatorParent ? `${topCreatorParent}/${topCreatorDraft}` : topCreatorDraft;
+    return normalizeConnectionGroupPath(full);
+  }, [topCreatorParent, topCreatorDraft]);
+  const topResolvedSegments = useMemo(() => {
+    return topResolvedPath ? topResolvedPath.split('/').filter(Boolean) : [];
+  }, [topResolvedPath]);
+  const canSaveTopCreatedGroup = Boolean(topResolvedPath);
+
   const startCreateGroup = () => {
-    setGroupEditorMode('create');
-    setEditingGroupPath('');
-    setGroupDraft(selectedGroupPath && selectedGroupPath !== ungroupedGroupPath ? `${selectedGroupPath}/` : '');
+    setTopCreatorParent(selectedGroupPath && selectedGroupPath !== ungroupedGroupPath ? selectedGroupPath : '');
+    setTopCreatorDraft('');
+    setShowTopGroupCreator(true);
+    setInlineEditingNode(null);
+    setInlineCreatingParentPath(null);
   };
-  const startEditGroup = (path: string) => {
-    setGroupEditorMode('edit');
-    setEditingGroupPath(path);
-    setGroupDraft(path);
-  };
-  const cancelGroupEditor = () => {
-    setGroupEditorMode(null);
-    setEditingGroupPath('');
-    setGroupDraft('');
-  };
-  const saveGroup = async () => {
-    // 分组保存前先规范路径，避免用户输入反斜杠或多余斜杠导致重复分组。
-    const normalized = normalizeConnectionGroupPath(groupDraft);
-    const savedPath = groupEditorMode === 'edit'
-      ? await renameConnectionGroup(editingGroupPath, normalized)
-      : await createConnectionGroup(normalized);
+
+  const saveTopCreatedGroup = async () => {
+    if (!topResolvedPath) {
+      return;
+    }
+    const savedPath = await createConnectionGroup(topResolvedPath);
     if (!savedPath) {
       return;
     }
-
     setSelectedGroupPath(savedPath);
-    cancelGroupEditor();
+    setShowTopGroupCreator(false);
+    setTopCreatorDraft('');
   };
+
+  const startInlineEdit = (node: ConnectionGroupNode) => {
+    setInlineEditingNode(node);
+    setInlineEditDraft(node.name);
+    setInlineCreatingParentPath(null);
+    setShowTopGroupCreator(false);
+  };
+
+  const cancelInlineEdit = () => {
+    setInlineEditingNode(null);
+    setInlineEditDraft('');
+  };
+
+  const saveInlineEdit = async () => {
+    if (!inlineEditingNode) {
+      return;
+    }
+    const draft = inlineEditDraft.trim();
+    if (!draft) {
+      cancelInlineEdit();
+      return;
+    }
+    const parentPath = inlineEditingNode.path.slice(0, -inlineEditingNode.name.length).replace(/\/$/, '');
+    const targetPath = draft.startsWith('/') ? draft : (parentPath ? `${parentPath}/${draft}` : draft);
+    const normalized = normalizeConnectionGroupPath(targetPath);
+    if (!normalized || normalized === inlineEditingNode.path) {
+      cancelInlineEdit();
+      return;
+    }
+    const savedPath = await renameConnectionGroup(inlineEditingNode.path, normalized);
+    if (savedPath) {
+      setSelectedGroupPath(savedPath);
+    }
+    cancelInlineEdit();
+  };
+
+  const startInlineCreateSubgroup = (parentPath: string) => {
+    setInlineCreatingParentPath(parentPath);
+    setInlineCreateDraft('');
+    setInlineEditingNode(null);
+    setShowTopGroupCreator(false);
+  };
+
+  const cancelInlineCreateSubgroup = () => {
+    setInlineCreatingParentPath(null);
+    setInlineCreateDraft('');
+  };
+
+  const saveInlineCreateSubgroup = async () => {
+    if (!inlineCreatingParentPath) {
+      return;
+    }
+    const draft = inlineCreateDraft.trim();
+    if (!draft) {
+      cancelInlineCreateSubgroup();
+      return;
+    }
+    const fullPath = `${inlineCreatingParentPath}/${draft}`;
+    const normalized = normalizeConnectionGroupPath(fullPath);
+    if (!normalized) {
+      return;
+    }
+    const savedPath = await createConnectionGroup(normalized);
+    if (savedPath) {
+      setSelectedGroupPath(savedPath);
+    }
+    cancelInlineCreateSubgroup();
+  };
+
   const requestDeleteGroup = (path: string) => {
     // 删除确认需要明确告诉用户连接数量，因为确认后会级联删除连接而不是移动到未分组。
     const connectionCount = connections.filter((connection) => isConnectionGroupOrChildPath(connection.groupPath, path)).length;
@@ -288,8 +522,11 @@ export function ConnectionManagerModal({ open, onClose }: { open: boolean; onClo
       if (selectedGroupPath === path || selectedGroupPath.startsWith(`${path}/`)) {
         setSelectedGroupPath(ungroupedGroupPath);
       }
-      if (editingGroupPath === path || editingGroupPath.startsWith(`${path}/`)) {
-        cancelGroupEditor();
+      if (inlineEditingNode && (inlineEditingNode.path === path || inlineEditingNode.path.startsWith(`${path}/`))) {
+        cancelInlineEdit();
+      }
+      if (inlineCreatingParentPath && (inlineCreatingParentPath === path || inlineCreatingParentPath.startsWith(`${path}/`))) {
+        cancelInlineCreateSubgroup();
       }
     });
   };
@@ -534,46 +771,121 @@ export function ConnectionManagerModal({ open, onClose }: { open: boolean; onClo
               </button>
             </div>
 
-            {groupEditorMode ? (
-              <div className="connection-group-editor">
-                <span>{groupEditorMode === 'edit' ? t('editGroup') : t('newGroup')}</span>
-                <input
-                  autoFocus
-                  placeholder={t('groupNamePlaceholder')}
-                  value={groupDraft}
-                  onChange={(event) => setGroupDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      void saveGroup();
-                    }
-                    if (event.key === 'Escape') {
-                      cancelGroupEditor();
-                    }
-                  }}
-                />
-                <div className="connection-group-editor-actions">
-                  <button className="secondary-button slim" onClick={cancelGroupEditor} type="button">
+            {showTopGroupCreator && (
+              <div className="modern-group-creator-card">
+                <div className="creator-card-header">
+                  <span className="creator-card-title">{t('newGroup')}</span>
+                  <Tooltip content={t('cancelGroupEdit')} side="top">
+                    <button
+                      type="button"
+                      className="icon-button tiny"
+                      onClick={() => setShowTopGroupCreator(false)}
+                      aria-label={t('cancelGroupEdit')}
+                    >
+                      <X size={13} />
+                    </button>
+                  </Tooltip>
+                </div>
+
+                {/* 父级分组选择 */}
+                <div className="creator-field">
+                  <span className="creator-field-label">{t('parentGroup')}</span>
+                  <select
+                    className="creator-select"
+                    value={topCreatorParent}
+                    onChange={(event) => setTopCreatorParent(event.target.value)}
+                  >
+                    <option value="">{t('rootGroup')}</option>
+                    {orderedGroupPaths.map((path) => (
+                      <option key={path} value={path}>
+                        📁 {path}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 分组名称输入 */}
+                <div className="creator-field">
+                  <input
+                    autoFocus
+                    className="creator-input"
+                    placeholder={t('groupNamePlaceholder')}
+                    value={topCreatorDraft}
+                    onChange={(event) => setTopCreatorDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        void saveTopCreatedGroup();
+                      } else if (event.key === 'Escape') {
+                        event.preventDefault();
+                        setShowTopGroupCreator(false);
+                      }
+                    }}
+                  />
+                </div>
+
+                {/* 实时路径面包屑预览 */}
+                {topResolvedPath && (
+                  <div className="creator-preview">
+                    <span className="creator-preview-label">{t('groupPreview')}:</span>
+                    <div className="creator-preview-chips">
+                      {topResolvedSegments.map((segment, index) => (
+                        <span key={index} className="creator-preview-chip-group">
+                          {index > 0 && <span className="preview-divider">/</span>}
+                          <span className="preview-chip">{segment}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 操作按钮 */}
+                <div className="creator-card-actions">
+                  <button
+                    className="secondary-button slim"
+                    onClick={() => setShowTopGroupCreator(false)}
+                    type="button"
+                  >
                     {t('cancelGroupEdit')}
                   </button>
-                  <button className="primary-button slim" disabled={!canSaveGroup} onClick={() => void saveGroup()} type="button">
-                    <Save size={14} /> {t('saveGroup')}
+                  <button
+                    className="primary-button slim"
+                    disabled={!canSaveTopCreatedGroup}
+                    onClick={() => void saveTopCreatedGroup()}
+                    type="button"
+                  >
+                    <Save size={13} /> {t('saveGroup')}
                   </button>
                 </div>
               </div>
-            ) : null}
+            )}
 
             <ConnectionGroupTree
               nodes={groups}
               selectedPath={selectedGroupPath}
               onDelete={requestDeleteGroup}
-              onEdit={startEditGroup}
               onSelect={setSelectedGroupPath}
               dragState={dragState}
               dropTarget={dropTarget}
               onStartGroupDrag={(event, path, label) => startConnectionManagerDrag(event, { type: 'group', path, label })}
               deleteLabel={t('deleteGroup')}
               editLabel={t('editGroup')}
+              newSubGroupLabel={t('newSubGroup')}
+              inlineEditingPath={inlineEditingNode?.path ?? null}
+              inlineEditDraft={inlineEditDraft}
+              onInlineEditDraftChange={setInlineEditDraft}
+              onStartInlineEdit={startInlineEdit}
+              onSaveInlineEdit={() => void saveInlineEdit()}
+              onCancelInlineEdit={cancelInlineEdit}
+              inlineCreatingParentPath={inlineCreatingParentPath}
+              inlineCreateDraft={inlineCreateDraft}
+              onInlineCreateDraftChange={setInlineCreateDraft}
+              onStartInlineCreateSubgroup={startInlineCreateSubgroup}
+              onSaveInlineCreateSubgroup={() => void saveInlineCreateSubgroup()}
+              onCancelInlineCreateSubgroup={cancelInlineCreateSubgroup}
+              saveGroupLabel={t('saveGroup')}
+              cancelGroupLabel={t('cancelGroupEdit')}
+              groupNamePlaceholder={t('groupNamePlaceholder')}
             />
             <div
               data-ungrouped-drop-target="true"
