@@ -362,14 +362,26 @@ export const normalizeLocalTerminalSettings = (
   });
 
   const shells = (settings.shells ?? [])
-    .map((shell) => ({
-      id: shell.id.trim(),
-      name: shell.name.trim() || shell.id,
-      command: shell.command.trim(),
-      args: Array.isArray(shell.args) ? shell.args.map((arg) => String(arg)) : [],
-      icon: shell.icon?.trim() || undefined,
-      enabled: shell.enabled !== false,
-    }))
+    .map((shell) => {
+      const rawName = shell.name.trim() || shell.id;
+      // 历史缓存平滑升级：将旧版持久化名称 "PowerShell" 或 "Windows PowerShell" 自动转换为 "PowerShell 5"
+      const normalizedName = (rawName === 'Windows PowerShell' || rawName === 'PowerShell')
+        ? 'PowerShell 5'
+        : rawName;
+      let normalizedIcon = shell.icon?.trim() || undefined;
+      // 历史缓存纠偏：名称为 WSL 的通用系统终端项统一使用通用的 /icons/wsl.svg 图标
+      if (normalizedName === 'WSL') {
+        normalizedIcon = '/icons/wsl.svg';
+      }
+      return {
+        id: shell.id.trim(),
+        name: normalizedName,
+        command: shell.command.trim(),
+        args: Array.isArray(shell.args) ? shell.args.map((arg) => String(arg)) : [],
+        icon: normalizedIcon,
+        enabled: shell.enabled !== false,
+      };
+    })
     .filter((shell) => shell.id && shell.command);
 
   // 历史目录只要求目录有效；命令允许为空，空命令由后端解释为直接打开本地 shell。

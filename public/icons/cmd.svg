@@ -1,32 +1,49 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
   <defs>
-    <!-- 深色终端外壳质感渐变 -->
-    <linearGradient id="cmd-bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#243447" />
-      <stop offset="50%" stop-color="#162332" />
-      <stop offset="100%" stop-color="#0c141d" />
+    <!-- 标题栏经典银灰色质感渐变 -->
+    <linearGradient id="cmd-title-bar" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#E8EAEF" />
+      <stop offset="100%" stop-color="#BDC2C9" />
     </linearGradient>
-    <linearGradient id="cmd-stroke" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#557599" />
-      <stop offset="100%" stop-color="#182736" />
-    </linearGradient>
-    <filter id="cmd-glow" x="-15%" y="-15%" width="130%" height="130%">
-      <feDropShadow dx="0" dy="1" stdDeviation="1.5" flood-color="#000000" flood-opacity="0.45"/>
+    <filter id="cmd-shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1.5" flood-color="#000000" flood-opacity="0.38"/>
     </filter>
   </defs>
 
-  <!-- 深色圆角矩形外壳，与 PowerShell 7 风格统一 -->
-  <rect x="5" y="5" width="38" height="38" rx="8" fill="url(#cmd-bg)" stroke="url(#cmd-stroke)" stroke-width="1.6" filter="url(#cmd-glow)" />
+  <!-- 整体窗口剪裁外壳（39x33 区域，微圆角） -->
+  <g filter="url(#cmd-shadow)">
+    <!-- 黑色控制台客户区主体与外框描边 -->
+    <rect x="4.5" y="7.5" width="39" height="33" rx="2.5" fill="#0C0C0C" stroke="#4B4F56" stroke-width="1.2" />
 
-  <!-- Windows 官方经典四格徽标 (微透视风格) -->
-  <g fill="#ffffff">
-    <!-- 左上 -->
-    <path d="M 13 16.5 L 22.5 15.2 L 22.5 22.8 L 13 22.8 Z" />
-    <!-- 右上 -->
-    <path d="M 24.5 14.9 L 35 13.5 L 35 22.8 L 24.5 22.8 Z" />
-    <!-- 左下 -->
-    <path d="M 13 24.8 L 22.5 24.8 L 22.5 32.5 L 13 31.2 Z" />
-    <!-- 右下 -->
-    <path d="M 24.5 24.8 L 35 24.8 L 35 34.2 L 24.5 32.8 Z" />
+    <!-- 顶部银灰色标题栏 -->
+    <path d="M 4.5 10 C 4.5 8.6 5.6 7.5 7 7.5 L 41 7.5 C 42.4 7.5 43.5 8.6 43.5 10 L 43.5 14.5 L 4.5 14.5 Z" fill="url(#cmd-title-bar)" />
+    <!-- 标题栏与控制台内容区分界线 -->
+    <line x1="4.5" y1="14.5" x2="43.5" y2="14.5" stroke="#232529" stroke-width="1" />
+
+    <!-- 标题栏右上角极简三按钮图标 (最小化、最大化、关闭) -->
+    <g stroke="#3D4148" stroke-linecap="round" stroke-width="1">
+      <!-- 最小化横线 -->
+      <line x1="33" y1="11" x2="35" y2="11" />
+      <!-- 最大化小方框 -->
+      <rect x="36.5" y="9.5" width="2.6" height="2.6" fill="none" stroke="#3D4148" stroke-width="0.8" />
+      <!-- 关闭小叉 -->
+      <line x1="40.5" y1="9.5" x2="42.5" y2="11.5" stroke="#4F535B" stroke-width="0.9" />
+      <line x1="42.5" y1="9.5" x2="40.5" y2="11.5" stroke="#4F535B" stroke-width="0.9" />
+    </g>
+
+    <!-- 经典控制台纯白 C:\_ 矢量字符 -->
+    <!-- 字母 C -->
+    <path d="M 16 23.2 C 15 21.6 11.2 21.6 10.6 26.2 C 10.1 30.6 14.8 30.8 16 29.2"
+          fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+    
+    <!-- 冒号 : -->
+    <circle cx="18.5" cy="24" r="1.1" fill="#ffffff" />
+    <circle cx="18.5" cy="28.5" r="1.1" fill="#ffffff" />
+
+    <!-- 反斜杠 \ -->
+    <line x1="21.5" y1="22" x2="26.5" y2="30.5" stroke="#ffffff" stroke-width="2.3" stroke-linecap="round" />
+
+    <!-- 闪烁下划线光标 _ -->
+    <line x1="29.5" y1="30.5" x2="36" y2="30.5" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" />
   </g>
 </svg>

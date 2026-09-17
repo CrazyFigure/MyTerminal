@@ -3582,6 +3582,28 @@ body.theme-dark .local-terminal-history-folder-icon,
   font-family: var(--app-ui-font-family, sans-serif);
 }
 
+/* 深色主题下单色深色 AI 图标自适应反白高对比度展示（Codex、OpenCode、Cursor、OpenAI、Pi、Grok） */
+body.theme-dark img[src*="codex.svg"],
+body.theme-dark img[src*="opencode.svg"],
+body.theme-dark img[src*="cursor.svg"],
+body.theme-dark img[src*="openai.svg"],
+body.theme-dark img[src*="pi.svg"],
+body.theme-dark img[src*="grok.svg"],
+.app-shell.theme-dark img[src*="codex.svg"],
+.app-shell.theme-dark img[src*="opencode.svg"],
+.app-shell.theme-dark img[src*="cursor.svg"],
+.app-shell.theme-dark img[src*="openai.svg"],
+.app-shell.theme-dark img[src*="pi.svg"],
+.app-shell.theme-dark img[src*="grok.svg"] {
+  filter: brightness(0) invert(0.96);
+}
+
+/* 深色主题下 Kimi 图标自动切换为深色版（纯白 K 字母 + 亮蓝点，避免全局滤镜改变品牌蓝） */
+body.theme-dark img[src*="kimi.svg"],
+.app-shell.theme-dark img[src*="kimi.svg"] {
+  content: url('/icons/kimi-dark.svg');
+}
+
 /* 自定义图标路径输入区 */
 .local-terminal-custom-icon-section {
   display: flex;

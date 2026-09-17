@@ -1,28 +1,33 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
   <defs>
+    <!-- Ubuntu 官方标志性暖橙色质感渐变 -->
     <linearGradient id="ubuntu-bg" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#FF6332" />
       <stop offset="100%" stop-color="#E95420" />
     </linearGradient>
-    <filter id="ubuntu-shadow" x="-15%" y="-15%" width="130%" height="130%">
-      <feDropShadow dx="0" dy="1.5" stdDeviation="1.5" flood-color="#000000" flood-opacity="0.3"/>
+    <filter id="ubuntu-shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1.5" flood-color="#000000" flood-opacity="0.32"/>
     </filter>
   </defs>
 
-  <!-- Ubuntu 官方橙色底圆 -->
-  <circle cx="24" cy="24" r="20" fill="url(#ubuntu-bg)" filter="url(#ubuntu-shadow)" />
+  <!-- Ubuntu 官方圆角正方形橙色底板 (38x38 区域，圆角 8px，与参考图严格对齐) -->
+  <rect x="5" y="5" width="38" height="38" rx="8" fill="url(#ubuntu-bg)" stroke="#FF7E47" stroke-width="1" filter="url(#ubuntu-shadow)" />
 
-  <!-- Ubuntu Circle of Friends 经典三人手拉手友谊圆环 -->
-  <g fill="#ffffff">
-    <!-- 主圆环 (带三处切口断开) -->
-    <path d="M 24 9.5 A 14.5 14.5 0 0 1 36.56 16.75 L 32.8 18.92 A 10.3 10.3 0 0 0 24 13.7 A 10.3 10.3 0 0 0 15.2 18.92 L 11.44 16.75 A 14.5 14.5 0 0 1 24 9.5 Z" />
-    <path d="M 38.5 24 A 14.5 14.5 0 0 1 24 38.5 L 24 34.3 A 10.3 10.3 0 0 0 34.3 24 Z" transform="rotate(60 24 24)" />
-    <path d="M 38.5 24 A 14.5 14.5 0 0 1 24 38.5 L 24 34.3 A 10.3 10.3 0 0 0 34.3 24 Z" transform="rotate(180 24 24)" />
+  <!-- Ubuntu 经典 Circle of Friends 三人手拉手徽标 (朝向：左、右上、右下) -->
+  <g fill="#ffffff" transform="translate(24, 24)">
+    <!-- 头部圆点 1：正左方 (-13.2, 0) -->
+    <circle cx="-13.2" cy="0" r="2.8" />
+    <!-- 头部圆点 2：右上方 (6.6, -11.43) -->
+    <circle cx="6.6" cy="-11.43" r="2.8" />
+    <!-- 头部圆点 3：右下方 (6.6, 11.43) -->
+    <circle cx="6.6" cy="11.43" r="2.8" />
 
-    <!-- 三个人的圆头 (圆形) -->
-    <!-- 顶部偏右/偏左分布 -->
-    <circle cx="24" cy="6" r="3.2" />
-    <circle cx="8.4" cy="33" r="3.2" />
-    <circle cx="39.6" cy="33" r="3.2" />
+    <!-- 三段 120 度对称相拥圆弧 -->
+    <!-- 弧段 1 (右侧圆弧) -->
+    <path d="M 0 -10.5 A 10.5 10.5 0 0 1 0 10.5 L 0 6.6 A 6.6 6.6 0 0 0 0 -6.6 Z" />
+    <!-- 弧段 2 (左下圆弧，旋转 120 度) -->
+    <path d="M 0 -10.5 A 10.5 10.5 0 0 1 0 10.5 L 0 6.6 A 6.6 6.6 0 0 0 0 -6.6 Z" transform="rotate(120)" />
+    <!-- 弧段 3 (左上圆弧，旋转 240 度) -->
+    <path d="M 0 -10.5 A 10.5 10.5 0 0 1 0 10.5 L 0 6.6 A 6.6 6.6 0 0 0 0 -6.6 Z" transform="rotate(240)" />
   </g>
 </svg>

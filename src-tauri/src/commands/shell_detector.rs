@@ -132,7 +132,7 @@ pub fn detect_available_system_shells() -> Vec<LocalTerminalShellConfig> {
         if let Some(path) = winps_path {
             shells.push(LocalTerminalShellConfig {
                 id: "powershell".into(),
-                name: "PowerShell".into(),
+                name: "PowerShell 5".into(),
                 command: path.to_string_lossy().to_string(),
                 args: Vec::new(),
                 icon: Some("/icons/powershell.svg".into()),
@@ -259,7 +259,10 @@ pub fn detect_available_system_shells() -> Vec<LocalTerminalShellConfig> {
                             format!("WSL ({distro})")
                         };
                         let distro_lower = distro.to_lowercase();
-                        let icon = if distro_lower.contains("ubuntu") {
+                        // 单一发行版精简命名为 WSL 时使用官方通用 WSL 企鹅图标，与预设图标对齐
+                        let icon = if single_distro {
+                            Some("/icons/wsl.svg".into())
+                        } else if distro_lower.contains("ubuntu") {
                             Some("/icons/ubuntu.svg".into())
                         } else if distro_lower.contains("debian") {
                             Some("/icons/debian.svg".into())
