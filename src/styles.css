@@ -2829,12 +2829,16 @@ select:disabled {
   /* 本地终端同时承载环境、命令和历史列表，合理分配垂直空间 */
   --modal-fixed-height: min(680px, calc(100vh - 48px));
   width: min(880px, 100%);
+  /* 紧凑外框边距：顶部向上挪动、底部收紧贴近弹窗边缘，为历史目录释放更多展示高度 */
+  padding: 14px 18px 12px;
+  gap: 8px;
 }
 
 .local-terminal-v2-layout {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  /* 三大横块间距收窄，界面更紧凑且为历史列表留出更多高度 */
+  gap: 7px;
   min-height: 0;
   flex: 1;
   overflow: hidden;
@@ -2843,11 +2847,11 @@ select:disabled {
 .local-terminal-v2-block {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 12px;
   background: var(--app-item-bg);
-  padding: 10px 12px;
+  padding: 8px 12px;
   min-height: 0;
 }
 
@@ -2881,7 +2885,7 @@ select:disabled {
 
 .local-terminal-v2-two-cols {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) 8px minmax(0, 0.95fr);
+  grid-template-columns: minmax(0, 1.25fr) 14px minmax(0, 0.95fr);
   gap: 0;
   min-height: 0;
   align-items: stretch;
@@ -2896,41 +2900,46 @@ select:disabled {
   user-select: none;
   touch-action: none;
   z-index: 5;
-  width: 8px;
+  width: 14px;
 }
 
 .local-terminal-v2-resizer::after {
   content: '';
-  width: 2px;
-  height: 85%;
+  width: 1px;
+  height: 100%;
   background: rgba(148, 163, 184, 0.22);
-  border-radius: 2px;
-  transition: background-color 0.15s ease, width 0.15s ease, transform 0.15s ease;
+  border-radius: 1px;
+  transition: background-color 0.15s ease, width 0.15s ease;
+}
+
+body.theme-dark .local-terminal-v2-resizer::after,
+.app-shell.theme-dark .local-terminal-v2-resizer::after {
+  background: rgba(148, 163, 184, 0.18);
 }
 
 .local-terminal-v2-resizer:hover::after,
 .local-terminal-v2-resizer:active::after {
   background: var(--app-control-accent);
-  width: 3px;
-  transform: scaleY(1.05);
+  width: 2px;
 }
 
+/* 系统终端与预设命令移除外层深色背景与边框，直接由中间竖线自然分隔，更简约更潇洒，横向宽度也更大 */
 .local-terminal-v2-subcard {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 8px;
-  background: rgba(15, 23, 42, 0.03);
-  padding: 8px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
   min-height: 0;
   height: 100%;
   box-sizing: border-box;
 }
 
-:root[data-theme='dark'] .local-terminal-v2-subcard,
-.dark .local-terminal-v2-subcard {
-  background: rgba(15, 23, 42, 0.35);
+body.theme-dark .local-terminal-v2-subcard,
+.app-shell.theme-dark .local-terminal-v2-subcard {
+  background: transparent;
 }
 
 .local-terminal-v2-subcard-header {
@@ -2975,7 +2984,7 @@ select:disabled {
   gap: 5px;
   flex: 1;
   min-height: 0;
-  max-height: 200px;
+  max-height: 185px;
   overflow-y: auto;
   scrollbar-width: thin;
 }
@@ -3361,7 +3370,8 @@ select:disabled {
 /* ================= 第三横块：历史目录（单行高密度） ================= */
 .local-terminal-v2-history-block {
   flex: 1;
-  min-height: 180px;
+  min-height: 0;
+  padding: 8px 12px 10px;
 }
 
 .local-terminal-v2-history-list {
@@ -3396,21 +3406,47 @@ select:disabled {
 .local-terminal-v2-history-path {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   min-width: 0;
   flex: 1;
   font-size: 0.88rem;
-  font-weight: 500;
+  /* 目录文字字重加重，字形更扎实清晰 */
+  font-weight: 600;
   color: var(--app-text);
   font-family: var(--app-terminal-font-family, var(--app-ui-font-family, Consolas, monospace));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  letter-spacing: 0.01em;
+}
+
+/* 浅色模式下字色更浓郁饱满；深色模式下使用明亮的高对比白字 */
+body:not(.theme-dark) .local-terminal-v2-history-path {
+  color: #020617;
+}
+
+body.theme-dark .local-terminal-v2-history-path,
+.app-shell.theme-dark .local-terminal-v2-history-path {
+  color: #f8fafc;
 }
 
 .local-terminal-history-folder-icon {
   color: var(--app-subtle-text);
   flex-shrink: 0;
+  transition: color 0.15s ease;
+}
+
+body:not(.theme-dark) .local-terminal-history-folder-icon {
+  color: #475569;
+}
+
+body.theme-dark .local-terminal-history-folder-icon,
+.app-shell.theme-dark .local-terminal-history-folder-icon {
+  color: #94a3b8;
+}
+
+.local-terminal-v2-history-row:hover .local-terminal-history-folder-icon {
+  color: var(--app-control-accent, #4f46e5);
 }
 
 .local-terminal-v2-history-controls {
