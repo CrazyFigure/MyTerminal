@@ -2957,6 +2957,11 @@ body.theme-dark .local-terminal-v2-subcard,
   scrollbar-width: thin;
 }
 
+/* 预设命令列表：右侧无额外路径输入行，最大高度扩展至 230px 完美对齐左侧底部，消除多余留白 */
+.local-terminal-v2-command-list {
+  max-height: 230px;
+}
+
 .local-terminal-empty-hint {
   padding: 16px 8px;
   font-size: 0.82rem;

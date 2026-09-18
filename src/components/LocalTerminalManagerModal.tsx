@@ -673,9 +673,10 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
                   </Tooltip>
                 </div>
 
+                {/* 预设命令列表：分配独立类名以撑满右侧卡片垂直高度，与左侧自定义终端输入栏底边对齐 */}
                 <div
                   ref={commandListRef}
-                  className={`local-terminal-v2-list ${commandDropTarget?.type === 'command-end' ? 'is-drop-end' : ''}`}
+                  className={`local-terminal-v2-list local-terminal-v2-command-list ${commandDropTarget?.type === 'command-end' ? 'is-drop-end' : ''}`}
                 >
                   {displayCommands.length > 0 ? (
                     displayCommands.map((item) => {
