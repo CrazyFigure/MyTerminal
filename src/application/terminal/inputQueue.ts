@@ -227,6 +227,16 @@ export const normalizeCommandPanelTerminalInput = (rawCommand: string) => {
 
 
 
+// 本地终端没有远端 stty 的 CR 映射差异，xterm 的 Enter 本身就发送 CR，ConPTY 也只把 CR 视为回车。
+// 因此命令面板对本地会话统一把每个换行折算成 CR，与用户在终端里逐行敲回车完全等价；
+// 本地 shell 不存在 `\` 续行语义（PowerShell 用反引号），所以不做远端那套反斜杠续行特判。
+export const normalizeLocalCommandPanelTerminalInput = (rawCommand: string) => {
+  const payload = rawCommand.replace(/\r\n?/g, '\n').replace(/\n/g, '\r');
+  return payload.endsWith('\r') ? payload : `${payload}\r`;
+};
+
+
+
 export const extractCompletedTerminalInputLines = (sessionId: string, data: string) => {
   let currentLine = terminalInputLineBuffers.get(sessionId) ?? '';
   const completedLines: string[] = [];
