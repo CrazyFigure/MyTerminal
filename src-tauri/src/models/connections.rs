@@ -224,6 +224,10 @@ pub struct LocalTerminalProfile {
 pub struct LocalTerminalSettings {
     #[serde(default)]
     pub shell_path: String,
+    /// 预设命令与交互式启动默认使用的系统终端 id，引用 shells 中已开启的项。
+    /// 为空表示未显式指定，启动阶段按「已开启的第一个系统终端」自动回落。
+    #[serde(default)]
+    pub default_shell_id: String,
     /// 系统检测或用户配置的终端 Shell 列表（带展示开关）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shells: Vec<LocalTerminalShellConfig>,
@@ -238,6 +242,7 @@ impl Default for LocalTerminalSettings {
     fn default() -> Self {
         Self {
             shell_path: String::new(),
+            default_shell_id: String::new(),
             shells: Vec::new(),
             commands: default_local_terminal_commands(),
             profiles: Vec::new(),
