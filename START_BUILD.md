@@ -98,6 +98,28 @@ npm run check:perl
 npm run check
 ```
 
+#### 4.5 仅做前端类型检查
+
+改动只涉及 TypeScript 且不需要产物时，用类型检查代替完整构建：
+
+```powershell
+npm run typecheck
+```
+
+#### 4.6 脚本速查
+
+```powershell
+npm run dev          # 仅启动 Vite 前端开发服务器
+npm run typecheck    # 前端 TypeScript 类型检查
+npm run check:web    # 构建前端并检查包体内存
+npm run check:rust   # 检查 Rust/Tauri 后端
+npm run check:perl   # 检查本机 Perl 环境
+npm run check:env    # 检查 Node、npm、cargo、Perl、link.exe
+npm run check        # 前端构建 + Rust 后端检查
+npm run build        # 仅构建前端产物
+npm run package      # 打包桌面安装包
+```
+
 ### 5. 构建前端产物
 
 ```powershell
