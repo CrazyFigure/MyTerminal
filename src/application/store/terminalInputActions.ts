@@ -11,6 +11,7 @@ import {
   flushQueuedTerminalInput,
   isBulkTerminalInput,
   normalizeCommandPanelTerminalInput,
+  normalizeLocalCommandPanelTerminalInput,
   normalizeRemoteTerminalContinuationEnter,
   queueTerminalInput,
   shouldFlushTerminalInputImmediately,
@@ -96,12 +97,11 @@ export const createTerminalInputActions = (
         : undefined;
 
     await flushQueuedTerminalInput(sessionId);
-    // SSH 底栏统一按交互 PTY 语义发送：普通换行是 Enter，行尾反斜杠换行固定为 LF 续行；本地程序保持原输入协议。
+    // SSH 底栏统一按交互 PTY 语义发送：普通换行是 Enter，行尾反斜杠换行固定为 LF 续行；
+    // 本地终端（系统 Shell / AI CLI）则按 xterm 的 Enter 语义统一折算成 CR，两者都保持「点一下就是敲回车」。
     const terminalPayload = isUsableRemoteSession(session)
       ? normalizeCommandPanelTerminalInput(rawCommand)
-      : rawCommand.endsWith("\n")
-        ? rawCommand
-        : `${rawCommand}\n`;
+      : normalizeLocalCommandPanelTerminalInput(rawCommand);
     if (isUsableRemoteSession(session)) {
       // 底栏与终端本体共用同一 PTY，命令跟踪状态也必须消费完全相同的 payload，避免后续 Enter 读取到旧行。
       extractCompletedTerminalInputLines(sessionId, terminalPayload);

@@ -25,7 +25,6 @@ type Props = {
   activeCommand: string;
   activeConnectionId?: string;
   activeRemoteConnectionId?: string;
-  activeSessionId?: string;
   collapsed: boolean;
   /** 命令草稿输入框采用与终端一致的中英文字体栈，防止中文退化为宋体 */
   commandFontFamily?: string;
@@ -33,7 +32,11 @@ type Props = {
   connectionHistory: HistoryEntry[];
   connectionTunnels: TunnelRecord[];
   favoriteCommands: FavoriteCommand[];
-  hasActiveRemoteSession: boolean;
+  /**
+   * 「命令」页签是否可操作：只看当前聚焦会话能否接收输入，本地终端与 SSH 一视同仁。
+   * 不能复用 hasActiveRemoteSession —— 它专门用于远端文件/历史/隧道能力，本地终端恒为 false。
+   */
+  hasActiveTerminalSession: boolean;
   height: number;
   historyLoading: boolean;
   onChangeCommand: (command: string) => void;
@@ -66,14 +69,13 @@ export function BottomDock({
   activeCommand,
   activeConnectionId,
   activeRemoteConnectionId,
-  activeSessionId,
   collapsed,
   commandFontFamily,
   compactActions,
   connectionHistory,
   connectionTunnels,
   favoriteCommands,
-  hasActiveRemoteSession,
+  hasActiveTerminalSession,
   height,
   historyLoading,
   onChangeCommand,
@@ -377,7 +379,7 @@ export function BottomDock({
           {activeBottomTab === 'commands' ? (
             <button
               className="primary-button"
-              disabled={!hasActiveRemoteSession || !activeCommand.trim()}
+              disabled={!hasActiveTerminalSession || !activeCommand.trim()}
               onClick={() => void onSendCommand()}
               style={buildActionButtonStyle(t('sendToTerminal'), compactActions)}
               type="button"
@@ -447,7 +449,7 @@ export function BottomDock({
           <div className="stack command-panel fill-height">
             <textarea
               className="command-editor"
-              disabled={!hasActiveRemoteSession}
+              disabled={!hasActiveTerminalSession}
               placeholder={t('commandTextareaPlaceholder')}
               rows={8}
               spellCheck={false}
@@ -512,7 +514,7 @@ export function BottomDock({
                       <button
                         aria-label={t('applyToCommand')}
                         className="ghost-button action-icon-btn apply-btn"
-                        disabled={!activeSessionId}
+                        disabled={!hasActiveTerminalSession}
                         onClick={() => onSelectHistory(item.command)}
                         type="button"
                       >
@@ -593,7 +595,7 @@ export function BottomDock({
                         <button
                           aria-label={t('applyToCommand')}
                           className="ghost-button action-icon-btn apply-btn"
-                          disabled={!activeSessionId}
+                          disabled={!hasActiveTerminalSession}
                           onClick={() => onSelectFavorite(item.command)}
                           type="button"
                         >

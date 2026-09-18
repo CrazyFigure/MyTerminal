@@ -50,7 +50,7 @@ import {
   shouldPromptForFontPack,
   translateFontPackError,
 } from './app/fontPack';
-import { isUsableRemoteSession } from './domain/sessions/model';
+import { canAcceptCommandInput, isUsableRemoteSession } from './domain/sessions/model';
 import {
   AgentRequestPanel,
   AgentSidebar,
@@ -492,6 +492,9 @@ export default function App() {
     () => connections.find((item) => item.id === activeRemoteConnectionId),
     [activeRemoteConnectionId, connections],
   );
+  // 底部「命令」页签只要求当前聚焦会话能接收输入：本地终端与 SSH 走同一条 PTY 写入通道，
+  // 因此这里用「可接收命令输入的会话」而不是「可用远端会话」，否则本地终端下输入框与发送按钮会被整体禁用。
+  const hasActiveTerminalSession = canAcceptCommandInput(focusedSession);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -1975,14 +1978,13 @@ export default function App() {
             activeCommand={activeCommand}
             activeConnectionId={activeConnectionId}
             activeRemoteConnectionId={activeRemoteConnectionId}
-            activeSessionId={activeSessionId}
             collapsed={bottomDockCollapsed}
             commandFontFamily={terminalFontFamily}
             compactActions={bottomPanelNeedsCompactActions}
             connectionHistory={connectionHistory}
             connectionTunnels={connectionTunnels}
             favoriteCommands={favoriteCommands}
-            hasActiveRemoteSession={hasActiveRemoteSession}
+            hasActiveTerminalSession={hasActiveTerminalSession}
             height={bottomHeight}
             historyLoading={historyLoading}
             onChangeCommand={(command) => {
