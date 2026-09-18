@@ -10,6 +10,7 @@ import {
   Plus,
   RefreshCw,
   Save,
+  Sparkles,
   Terminal,
   Trash2,
   Upload,
@@ -58,6 +59,25 @@ interface EditingCommandState {
   icon?: string;
 }
 
+// 左右分栏之间的拖拽分隔条宽度，必须与 .local-terminal-v2-resizer 的 CSS 宽度保持一致
+const RESIZER_WIDTH = 14;
+
+// 系统终端下拉选项标签：统一图标与名称排版，供启动项与默认终端下拉复用，图标缺失时退回终端字形。
+const renderShellOptionLabel = (shell: LocalTerminalShellConfig) => {
+  const cleanedName = cleanShellName(shell.name);
+  const iconPath = resolveIconDisplayUrl(getSystemShellIcon({ ...shell, name: cleanedName }));
+  return (
+    <div className="local-terminal-select-option">
+      {iconPath ? (
+        <img src={iconPath} className="local-terminal-select-icon" alt="" />
+      ) : (
+        <Terminal size={13} className="local-terminal-select-fallback-icon" />
+      )}
+      <span>{cleanedName}</span>
+    </div>
+  );
+};
+
 export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const {
     localTerminals,
@@ -87,7 +107,7 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
   const [detectingShells, setDetectingShells] = useState(false);
   const [scanNotice, setScanNotice] = useState<string | null>(null);
 
-  // 左右分栏容器与拖动宽度调整状态（默认左侧宽度由 CSS 比例控制，拖动后以像素固定）
+  // 左右分栏容器与拖动宽度调整状态（两栏默认等宽，拖动后以像素固定）
   const twoColsRef = useRef<HTMLDivElement>(null);
   const [splitLeftWidth, setSplitLeftWidth] = useState<number | null>(null);
 
@@ -96,10 +116,11 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
     const container = twoColsRef.current;
     if (!container) return;
     const rect = container.getBoundingClientRect();
-    const currentLeft = splitLeftWidth ?? (rect.width * 0.54);
+    // 初始宽度必须等于 CSS 的等宽布局实际值（扣除中间分隔条），否则首次拖动会跳变
+    const currentLeft = splitLeftWidth ?? (rect.width - RESIZER_WIDTH) / 2;
     const startX = event.clientX;
     const minLeft = 240;
-    const maxLeft = Math.max(minLeft, rect.width - 240 - 14);
+    const maxLeft = Math.max(minLeft, rect.width - 240 - RESIZER_WIDTH);
 
     beginResize(event, (moveEvent) => {
       const delta = moveEvent.clientX - startX;
@@ -151,21 +172,11 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
     // 1. 已开启的系统终端
     ...(draft.shells ?? [])
       .filter((s) => s.enabled !== false)
-      .map((shell) => {
-        const cleanedName = cleanShellName(shell.name);
-        const rawIcon = getSystemShellIcon({ ...shell, name: cleanedName });
-        const iconPath = resolveIconDisplayUrl(rawIcon);
-        return {
-          value: `shell:${shell.id}`,
-          group: t('localTerminalSystemShells'),
-          label: (
-            <div className="local-terminal-select-option">
-              {iconPath && <img src={iconPath} className="local-terminal-select-icon" alt="" />}
-              <span>{cleanedName}</span>
-            </div>
-          ),
-        };
-      }),
+      .map((shell) => ({
+        value: `shell:${shell.id}`,
+        group: t('localTerminalSystemShells'),
+        label: renderShellOptionLabel(shell),
+      })),
     // 2. 预设命令（排除内置空的 shell）
     ...draft.commands
       .filter((item) => item.id !== 'shell' && Boolean(item.command.trim()))
@@ -184,6 +195,30 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
         };
       }),
   ], [draft.shells, draft.commands, settings.uiLanguage]);
+
+  // 默认终端下拉选项：仅列出左侧开关已打开的系统终端，首项“自动选择”用于恢复按开启顺序自动回落
+  const defaultShellOptions: CustomSelectOption[] = useMemo(() => [
+    {
+      value: '',
+      label: (
+        <div className="local-terminal-select-option">
+          <Sparkles size={13} className="local-terminal-select-fallback-icon" />
+          <span>{t('localTerminalDefaultShellAuto')}</span>
+        </div>
+      ),
+    },
+    ...(draft.shells ?? [])
+      .filter((shell) => shell.enabled !== false)
+      .map((shell) => ({
+        value: shell.id,
+        label: renderShellOptionLabel(shell),
+      })),
+  ], [draft.shells, settings.uiLanguage]);
+
+  // 切换预设命令默认使用的系统终端；选择“自动选择”即清空显式指定，交由后端按开启顺序回落
+  const handleDefaultShellChange = async (shellId: string) => {
+    await persistDraft({ ...draft, defaultShellId: shellId });
+  };
 
   useEffect(() => {
     if (!open) {
@@ -266,7 +301,14 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
     const nextShells = (draft.shells ?? []).map((s) =>
       s.id === shellId ? { ...s, enabled: !s.enabled } : s
     );
-    const nextDraft = { ...draft, shells: nextShells };
+    // 关闭的系统终端不能再作为默认终端：一旦关掉当前选中项就同步清空，避免下拉展示与启动行为不一致
+    const disabledSelectedDefault =
+      nextShells.find((s) => s.id === shellId)?.enabled === false && draft.defaultShellId === shellId;
+    const nextDraft = {
+      ...draft,
+      shells: nextShells,
+      defaultShellId: disabledSelectedDefault ? '' : draft.defaultShellId,
+    };
     await persistDraft(nextDraft);
   };
 
@@ -561,7 +603,7 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
             <div
               ref={twoColsRef}
               className="local-terminal-v2-two-cols"
-              style={splitLeftWidth ? { gridTemplateColumns: `${splitLeftWidth}px 14px 1fr` } : undefined}
+              style={splitLeftWidth ? { gridTemplateColumns: `${splitLeftWidth}px ${RESIZER_WIDTH}px 1fr` } : undefined}
             >
               {/* 左列：系统终端 Shell 列表 */}
               <div className="local-terminal-v2-subcard">
@@ -661,16 +703,31 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
                   <div className="local-terminal-v2-subcard-title">
                     <strong>{t('localTerminalPresetCommands')}</strong>
                   </div>
-                  <Tooltip content={t('localTerminalAddCommand')} delayDuration={100} side="top">
-                    <button
-                      className="primary-button slim local-terminal-subcard-btn"
-                      onClick={openNewCommandModal}
-                      type="button"
-                    >
-                      <Plus size={12} />
-                      <span>{t('localTerminalAddCommand')}</span>
-                    </button>
-                  </Tooltip>
+                  <div className="local-terminal-v2-subcard-actions">
+                    {/* 默认终端选择：决定预设命令与直接打开的本地终端使用哪个系统终端 */}
+                    <Tooltip content={t('localTerminalDefaultShellHint')} delayDuration={100} side="top">
+                      <div className="local-terminal-default-shell">
+                        <CustomSelect
+                          aria-label={t('localTerminalDefaultShell')}
+                          className="local-terminal-default-shell-select"
+                          emptyText={t('localTerminalDefaultShellEmpty')}
+                          onChange={(value) => void handleDefaultShellChange(value)}
+                          options={defaultShellOptions}
+                          value={draft.defaultShellId ?? ''}
+                        />
+                      </div>
+                    </Tooltip>
+                    <Tooltip content={t('localTerminalAddCommand')} delayDuration={100} side="top">
+                      <button
+                        className="primary-button slim local-terminal-subcard-btn"
+                        onClick={openNewCommandModal}
+                        type="button"
+                      >
+                        <Plus size={12} />
+                        <span>{t('localTerminalAddCommand')}</span>
+                      </button>
+                    </Tooltip>
+                  </div>
                 </div>
 
                 {/* 预设命令列表：分配独立类名以撑满右侧卡片垂直高度，与左侧自定义终端输入栏底边对齐 */}

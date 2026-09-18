@@ -513,6 +513,8 @@ export interface LocalTerminalProfile {
 
 export interface LocalTerminalSettings {
   shellPath: string;
+  /** 预设命令与交互式启动默认使用的系统终端 id；为空表示自动采用已开启的第一个系统终端。 */
+  defaultShellId: string;
   shells?: LocalTerminalShellConfig[];
   commands: LocalTerminalCommand[];
   profiles: LocalTerminalProfile[];

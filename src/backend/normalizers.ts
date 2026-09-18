@@ -403,6 +403,8 @@ export const normalizeLocalTerminalSettings = (
 
   return {
     shellPath: settings.shellPath?.trim() ?? "",
+    // 默认终端只保存 id 引用，是否有效（存在且已开启）交由后端启动阶段判定。
+    defaultShellId: settings.defaultShellId?.trim() ?? "",
     shells,
     commands: Array.from(commandMap.values()),
     profiles,

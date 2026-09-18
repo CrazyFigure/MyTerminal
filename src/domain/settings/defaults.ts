@@ -59,6 +59,8 @@ export const defaultSettings: AppSettings = {
 // 本地终端默认仅提供内置“纯 shell”，不再默认预填外部命令，完全由用户按需新增与管理。
 export const defaultLocalTerminals: LocalTerminalSettings = {
   shellPath: '',
+  // 默认终端不预设具体 Shell，留空由后端按已开启的系统终端自动回落。
+  defaultShellId: '',
   shells: [],
   commands: [
     { id: 'shell', name: '本地终端', command: '', builtIn: true },

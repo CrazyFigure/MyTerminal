@@ -14,8 +14,9 @@ use crate::models::LocalTerminalShellConfig;
 const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// 执行 where.exe 查找可执行文件绝对路径。
+/// 设为 pub(super) 供本地终端兜底探测复用，确保两处 PATH 查找语义一致。
 #[cfg(windows)]
-fn find_executable_in_path(executable: &str) -> Option<PathBuf> {
+pub(super) fn find_executable_in_path(executable: &str) -> Option<PathBuf> {
     let mut command = Command::new("where.exe");
     command.arg(executable);
     command.creation_flags(WINDOWS_CREATE_NO_WINDOW);

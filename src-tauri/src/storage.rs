@@ -743,6 +743,8 @@ fn normalize_local_terminal_settings(settings: LocalTerminalSettings) -> LocalTe
 
     LocalTerminalSettings {
         shell_path: settings.shell_path.trim().to_string(),
+        // 默认系统终端只保存 id 引用，路径失效或开关关闭时由启动阶段判定并回落，不做写入期清洗。
+        default_shell_id: settings.default_shell_id.trim().to_string(),
         shells: settings.shells,
         commands,
         profiles,

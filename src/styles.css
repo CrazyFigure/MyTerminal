@@ -2853,7 +2853,8 @@ select:disabled {
 
 .local-terminal-v2-two-cols {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) 14px minmax(0, 0.95fr);
+  /* 系统终端与预设命令两栏默认等宽；用户拖动分隔条后才切换为固定像素宽度 */
+  grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr);
   gap: 0;
   min-height: 0;
   align-items: stretch;
@@ -2944,6 +2945,44 @@ body.theme-dark .local-terminal-v2-subcard,
   gap: 4px;
   white-space: nowrap;
   border-radius: 6px;
+}
+
+/* 子卡片头部操作区：默认终端下拉与新增按钮并排，统一 28px 行高 */
+.local-terminal-v2-subcard-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+/* 宽度由外层容器掌握，窗口收窄时先压缩下拉、保留新增按钮完整可见 */
+.local-terminal-default-shell {
+  display: flex;
+  align-items: center;
+  width: 158px;
+  min-width: 84px;
+  flex-shrink: 1;
+}
+
+/* 默认终端下拉：高度与新增按钮对齐；配色全部沿用主题变量，深浅色模式自动适配 */
+.custom-select-trigger.local-terminal-default-shell-select {
+  height: 28px !important;
+  min-height: 28px !important;
+  max-height: 28px !important;
+  width: 100%;
+  padding: 0 8px !important;
+  border-radius: 6px !important;
+  font-size: 0.8rem !important;
+  box-sizing: border-box !important;
+}
+
+/* 图标缺失时的兜底字形：占位宽度与 .local-terminal-select-icon 一致，保持选项文字对齐 */
+.local-terminal-select-fallback-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--app-muted);
 }
 
 .local-terminal-v2-list {
