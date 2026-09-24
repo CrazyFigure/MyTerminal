@@ -98,6 +98,8 @@ export function TerminalWorkspace({
   const [terminalGutterContextMenu, setTerminalGutterContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [terminalHasHorizontalOverflow, setTerminalHasHorizontalOverflow] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // xterm 单独挂在无内边距的承载层，FitAddon 才能按实际可绘制高度计算行数。
+  const terminalHostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   // ResizeObserver、重放回调和焦点回调均可能晚于 React 渲染；通过 ref 读取标签此刻的真实可见性。
@@ -878,6 +880,7 @@ export function TerminalWorkspace({
     terminalHorizontalPostShrinkCeilingRef,
   } = useTerminalLayoutController({
     containerRef,
+    terminalHostRef,
     fitAddonRef,
     hasRecentLocalTerminalInputForCursorFollow,
     scheduleTerminalSizeSync: () => scheduleTerminalSizeSyncRef.current(),
@@ -1289,7 +1292,7 @@ export function TerminalWorkspace({
   scheduleTerminalSizeSyncRef.current = scheduleTerminalSizeSync;
 
   useEffect(() => {
-    if (!containerRef.current || terminalRef.current) {
+    if (!containerRef.current || !terminalHostRef.current || terminalRef.current) {
       return;
     }
 
@@ -1322,7 +1325,7 @@ export function TerminalWorkspace({
     // 且 CR 原地重绘时残留旧字符（如 tokens 数字与字母粘连）。注册 V11 宽度表使双方对齐。
     terminal.loadAddon(new Unicode11Addon());
     terminal.unicode.activeVersion = '11';
-    terminal.open(containerRef.current);
+    terminal.open(terminalHostRef.current);
     // 首帧输出前就隐藏 Codex 原生光标，加载画面不能先漏出一次 xterm 默认闪烁光标。
     terminal.element?.classList.toggle('is-managed-tui-cursor-active', useManagedCursorForSessionRef.current);
     // deferred 解析期需要开放 xterm 的自动协议回复，但键盘、IME、粘贴、鼠标和焦点上报都必须在捕获阶段阻断。
@@ -1664,8 +1667,9 @@ export function TerminalWorkspace({
     fitAddonRef.current = fitAddon;
     syncTerminalSizeToRemote();
 
+    // 横向滚动条出现时外层尺寸不变，但实际承载层会变矮；观察承载层才能同步正确行数。
     const observer = new ResizeObserver(scheduleTerminalSizeSync);
-    observer.observe(containerRef.current);
+    observer.observe(terminalHostRef.current);
     window.addEventListener('resize', scheduleTerminalSizeSync);
     window.addEventListener('mouseup', stopTerminalSelectionDragSync, true);
     // window 的 mouseup 只能清掉自绘覆盖层的循环，清不掉 xterm 内部挂在 document 上的拖拽监听：两者可能不同步，
@@ -2051,7 +2055,9 @@ export function TerminalWorkspace({
         onMouseLeave={hideTerminalVerticalScrollbar}
         onMouseMove={handleTerminalMouseMove}
         onWheel={handleTerminalWheel}
-      />
+      >
+        <div className="terminal-fit-host" ref={terminalHostRef} />
+      </div>
 
       {terminalContextMenu ? (
         <div
