@@ -429,6 +429,16 @@ export function SessionTabBar({
             const localTerminalIcon = session.kind === 'local'
               ? getLocalTerminalIcon(session.title, session.localCommand ?? '')
               : undefined;
+            // 完整会话/连接名称：远程连接取配置名称（超长时完整展示），本地终端取完整标题
+            const matchedConnection = connections.find((item) => item.id === session.connectionId);
+            const fullSessionName = session.kind === 'local'
+              ? (session.title || sessionLabel)
+              : (matchedConnection?.name ?? session.title);
+            const statusText = translateStatus(uiLanguage, session.status);
+            // 正常已连接状态直接展示连接名称，非已连接状态补充状态释义
+            const tabTooltipContent = session.status === 'connected'
+              ? fullSessionName
+              : `${fullSessionName} (${statusText})`;
             return (
               <div
                 key={session.id}
@@ -447,8 +457,13 @@ export function SessionTabBar({
                 }}
                 onPointerDown={(event) => startTabDrag(event, session, sessionLabel)}
               >
-                <button className="session-tab-trigger" onClick={() => onSelectSession(session.id)} type="button">
-                  <Tooltip content={translateStatus(uiLanguage, session.status)} side="bottom">
+                <Tooltip
+                  content={tabTooltipContent}
+                  delayDuration={100}
+                  disabled={Boolean(dragState)}
+                  side="bottom"
+                >
+                  <button className="session-tab-trigger" onClick={() => onSelectSession(session.id)} type="button">
                     {localTerminalIcon ? (
                       <img
                         src={localTerminalIcon}
@@ -457,14 +472,19 @@ export function SessionTabBar({
                       />
                     ) : (
                       <span
-                        aria-label={translateStatus(uiLanguage, session.status)}
+                        aria-label={statusText}
                         className={sessionStatusClassName(session.status)}
                       />
                     )}
-                  </Tooltip>
-                  <span>{sessionLabel}</span>
-                </button>
-                <Tooltip content={closeLabel} side="bottom">
+                    <span>{sessionLabel}</span>
+                  </button>
+                </Tooltip>
+                <Tooltip
+                  content={closeLabel}
+                  delayDuration={100}
+                  disabled={Boolean(dragState)}
+                  side="bottom"
+                >
                   <button
                     aria-label={closeLabel}
                     className="session-tab-close"
