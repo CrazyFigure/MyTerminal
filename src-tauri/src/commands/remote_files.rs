@@ -1,5 +1,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use std::{
+    collections::VecDeque,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -41,6 +42,55 @@ struct SftpTransferProgressEvent {
     total_bytes: u64,
     files: usize,
     directories: usize,
+    bytes_per_second: u64,
+}
+
+// 滑动窗口传输速率估算器：保留约 1 秒历史样本计算实时速率，内存占用极小（仅数十字节）且抗偶发抖动。
+#[derive(Debug, Clone)]
+struct SftpSpeedEstimator {
+    samples: VecDeque<(Instant, u64)>,
+}
+
+impl SftpSpeedEstimator {
+    fn new() -> Self {
+        Self {
+            samples: VecDeque::with_capacity(16),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.samples.clear();
+    }
+
+    fn record_and_calculate(&mut self, now: Instant, transferred_bytes: u64) -> u64 {
+        self.samples.push_back((now, transferred_bytes));
+        // 保留约 1 秒时间窗口；最老样本超过 1 秒且次老样本距今至少 500ms 时平滑淘汰最老样本
+        while self.samples.len() > 1 {
+            if let Some(front) = self.samples.front() {
+                if now.duration_since(front.0) > Duration::from_millis(1000) {
+                    if let Some(second) = self.samples.get(1) {
+                        if now.duration_since(second.0) >= Duration::from_millis(500) {
+                            self.samples.pop_front();
+                            continue;
+                        }
+                    }
+                }
+            }
+            break;
+        }
+
+        if let Some(front) = self.samples.front() {
+            let elapsed = now.duration_since(front.0).as_secs_f64();
+            let transferred = transferred_bytes.saturating_sub(front.1);
+            if elapsed >= 0.05 {
+                (transferred as f64 / elapsed).round() as u64
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+    }
 }
 
 // 命令层进度发射器每个复制分片都检查取消，但只按时间/字节阈值通知 WebView，避免高频 setState 抢占终端渲染。
@@ -52,6 +102,7 @@ struct SftpTransferProgressEmitter {
     last_phase: &'static str,
     last_emitted_bytes: u64,
     last_emitted_at: Instant,
+    speed_estimator: SftpSpeedEstimator,
 }
 
 impl SftpTransferProgressEmitter {
@@ -69,6 +120,7 @@ impl SftpTransferProgressEmitter {
             last_phase: "",
             last_emitted_bytes: 0,
             last_emitted_at: Instant::now() - SFTP_PROGRESS_EMIT_INTERVAL,
+            speed_estimator: SftpSpeedEstimator::new(),
         }
     }
 
@@ -90,6 +142,18 @@ impl SftpTransferProgressEmitter {
             return Ok(());
         }
 
+        let now = Instant::now();
+        // 仅在正式传输阶段统计实时速度，准备阶段不产生传输速率并重置样本
+        let bytes_per_second = if snapshot.phase != "transferring" {
+            self.speed_estimator.reset();
+            0
+        } else {
+            if self.last_phase != "transferring" {
+                self.speed_estimator.reset();
+            }
+            self.speed_estimator.record_and_calculate(now, snapshot.transferred_bytes)
+        };
+
         let payload = SftpTransferProgressEvent {
             transfer_id: self.transfer_id.clone(),
             direction: self.direction.clone(),
@@ -98,12 +162,13 @@ impl SftpTransferProgressEmitter {
             total_bytes: snapshot.total_bytes,
             files: snapshot.files,
             directories: snapshot.directories,
+            bytes_per_second,
         };
         // WebView 临时重载或已经关闭时不应反向中断正在进行的文件传输。
         let _ = self.app.emit(SFTP_TRANSFER_PROGRESS_EVENT, payload);
         self.last_phase = snapshot.phase;
         self.last_emitted_bytes = snapshot.transferred_bytes;
-        self.last_emitted_at = Instant::now();
+        self.last_emitted_at = now;
         Ok(())
     }
 }
@@ -354,3 +419,50 @@ pub fn save_editor_document(
     state.storage.save_editor_cache(&document)?;
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_speed_estimator_initial_state() {
+        let mut estimator = SftpSpeedEstimator::new();
+        let now = Instant::now();
+        assert_eq!(estimator.record_and_calculate(now, 0), 0);
+    }
+
+    #[test]
+    fn test_speed_estimator_steady_rate() {
+        let mut estimator = SftpSpeedEstimator::new();
+        let start = Instant::now();
+        estimator.record_and_calculate(start, 0);
+        // 500ms 后累计 500_000 字节，等效速率 1,000,000 B/s
+        let rate = estimator.record_and_calculate(start + Duration::from_millis(500), 500_000);
+        assert_eq!(rate, 1_000_000);
+        // 1000ms 后累计 1,000_000 字节，速率保持 1,000,000 B/s
+        let rate = estimator.record_and_calculate(start + Duration::from_millis(1000), 1_000_000);
+        assert_eq!(rate, 1_000_000);
+    }
+
+    #[test]
+    fn test_speed_estimator_stalled_transfer() {
+        let mut estimator = SftpSpeedEstimator::new();
+        let start = Instant::now();
+        estimator.record_and_calculate(start, 0);
+        estimator.record_and_calculate(start + Duration::from_millis(500), 1_000_000);
+        // 传输停滞超过滑动窗口后，速率归零
+        estimator.record_and_calculate(start + Duration::from_millis(1600), 1_000_000);
+        let rate = estimator.record_and_calculate(start + Duration::from_millis(2200), 1_000_000);
+        assert_eq!(rate, 0);
+    }
+
+    #[test]
+    fn test_speed_estimator_reset() {
+        let mut estimator = SftpSpeedEstimator::new();
+        let start = Instant::now();
+        estimator.record_and_calculate(start, 1_000_000);
+        estimator.reset();
+        assert_eq!(estimator.record_and_calculate(start, 0), 0);
+    }
+}
+

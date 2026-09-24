@@ -8,6 +8,7 @@ export type TransferProgressItem = {
   percent: number;
   status: 'running' | 'cancelling' | 'cancelled' | 'success' | 'error';
   message?: string;
+  speed?: string;
   indeterminate?: boolean;
   cancellable?: boolean;
 };
@@ -52,7 +53,10 @@ export function TransferProgressStack({ cancel, cancelLabel, dismiss, items }: P
           <div className={`transfer-progress-track ${item.indeterminate ? 'is-indeterminate' : ''}`}>
             <span className="transfer-progress-fill" style={{ width: `${item.percent}%` }} />
           </div>
-          <span>{item.message ?? `${item.percent.toFixed(0)}%`}</span>
+          <div className="transfer-progress-meta">
+            <span className="transfer-progress-message">{item.message ?? `${item.percent.toFixed(0)}%`}</span>
+            {item.speed ? <span className="transfer-progress-speed">{item.speed}</span> : null}
+          </div>
         </div>
       ))}
     </div>

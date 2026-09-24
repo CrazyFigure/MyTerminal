@@ -284,6 +284,8 @@ export interface SftpTransferProgress {
   totalBytes: number;
   files: number;
   directories: number;
+  /** 后端滑动窗口估算的实时传输速率（字节/秒），用于右下角悬浮条展示。 */
+  bytesPerSecond?: number;
 }
 
 export interface RuntimePercentMetric {

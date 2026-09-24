@@ -68,6 +68,7 @@ import {
   explorerOverscanRows,
   explorerRowHeight,
   formatBytes,
+  formatSpeed,
   isEditableFile,
   type FileContextMenuTarget,
   type RemoteFileClipboard,
@@ -315,7 +316,7 @@ export default function App() {
     report: reportTransferProgress,
     run: runTransferProgress,
     runTracked: runTrackedTransferProgress,
-  } = useTransferProgress(t('saved'), t('transferCancelling'), t('transferCancelled'));
+  } = useTransferProgress(t('transferCompleted'), t('transferCancelling'), t('transferCancelled'));
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let mounted = true;
@@ -338,6 +339,8 @@ export default function App() {
           transferred: formatBytes(progress.transferredBytes),
           total: formatBytes(progress.totalBytes),
         }),
+        false,
+        formatSpeed(progress.bytesPerSecond),
       );
     }).then((dispose) => {
       if (mounted) {
@@ -1342,7 +1345,7 @@ export default function App() {
       setPercent(24);
       await uploadLocalFiles(filesToUpload);
       setPercent(92);
-    });
+    }, t('transferUploaded'));
   }, [runTransferProgress, t, uploadLocalFiles]);
   const uploadFolderWithProgress = useCallback((folderFiles: File[]) => {
     const uploadFiles = folderFiles.filter((file) => file.name);
@@ -1357,7 +1360,7 @@ export default function App() {
       setPercent(18);
       await uploadLocalFiles(uploadFiles);
       setPercent(92);
-    });
+    }, t('transferUploaded'));
   }, [runTransferProgress, t, uploadLocalFiles]);
   const uploadLocalPathsWithProgress = useCallback((localPaths: string[]) => {
     const uploadPaths = Array.from(new Set(localPaths.map((path) => path.trim()).filter(Boolean)));
@@ -1372,6 +1375,7 @@ export default function App() {
       title,
       async (transferId) => uploadLocalPaths(uploadPaths, transferId),
       (transferId) => backend.cancelSftpTransfer(transferId),
+      t('transferUploaded'),
     );
   }, [runTrackedTransferProgress, t, uploadLocalPaths]);
   // 桌面文件选择器直接返回本机路径，统一走 Rust 流式上传，避免 File/base64 进入 WebView 内存。
@@ -1428,6 +1432,7 @@ export default function App() {
         title,
         async (transferId) => downloadRemotePaths(downloadPaths, localDir, transferId),
         (transferId) => backend.cancelSftpTransfer(transferId),
+        t('transferDownloaded'),
       );
     })().catch((error) => {
       setStatusMessage(error instanceof Error ? error.message : String(error));
@@ -1529,15 +1534,15 @@ export default function App() {
       setPercent(26);
       await openRemoteFile(path);
       setPercent(92);
-    });
-  }, [openRemoteFile, runTransferProgress]);
+    }, t('transferCompleted'));
+  }, [openRemoteFile, runTransferProgress, t]);
   const saveRemoteFileWithProgress = useCallback((path: string, saveTask: () => Promise<void>) => {
     const fileName = path.split('/').filter(Boolean).at(-1) ?? path;
     void runTransferProgress(`${t('saveToRemote')} ${fileName}`, async (setPercent) => {
       setPercent(28);
       await saveTask();
       setPercent(92);
-    });
+    }, t('saved'));
   }, [runTransferProgress, t]);
   const deleteSelectedRemotePaths = useCallback((paths: string[]) => {
     const normalizedPaths = Array.from(new Set(paths.filter(Boolean)));
@@ -1559,7 +1564,7 @@ export default function App() {
       setPercent(92);
       setSelectedFilePath('');
       setSelectedFilePaths([]);
-    });
+    }, t('transferDeleted'));
   }, [deleteRemotePaths, runTransferProgress, t]);
   // 复制名称：写入系统剪贴板，name 为文件名、fullPath 为从 / 起的完整路径。
   const copyFileNameToClipboard = useCallback((text: string) => {
@@ -1589,7 +1594,7 @@ export default function App() {
       setPercent(24);
       await copyRemotePaths(sources, currentRemotePath);
       setPercent(92);
-    });
+    }, t('transferCompleted'));
   }, [activeConnectionId, copyRemotePaths, currentRemotePath, fileClipboard, runTransferProgress, t]);
   const openRemoteFileEntry = useCallback((file: RemoteFileEntry) => {
     // 打开动作统一从文件条目入口走，保证单击选中、双击打开和回车打开使用同一套规则。

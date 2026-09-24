@@ -87,6 +87,15 @@ export const formatBytes = (value: number) => {
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 };
 
+// 实时速率格式化：转换为可读的 B/s、KB/s 或 MB/s，未开始或无效时不展示。
+export const formatSpeed = (bytesPerSecond?: number) => {
+  if (bytesPerSecond === undefined || !Number.isFinite(bytesPerSecond) || bytesPerSecond < 0) {
+    return undefined;
+  }
+  return `${formatBytes(bytesPerSecond)}/s`;
+};
+
+
 
 
 export const formatTimestamp = (value?: string) => {
