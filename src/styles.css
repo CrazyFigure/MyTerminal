@@ -3762,14 +3762,13 @@ body.theme-dark img[src*="kimi.svg"],
   min-width: 0;
 }
 
-/* 会话 Tab 标签页左侧替代绿点的本地终端图标样式 */
+/* 会话 Tab 标签页左侧替代绿点的本地终端图标样式：纯靠父级 gap 控制间距，避免与右侧标题缝隙过大 */
 .session-status-icon-image {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
   object-fit: contain;
   border-radius: 2px;
-  margin-right: 6px;
 }
 
 .context-menu {
