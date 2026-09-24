@@ -5688,4 +5688,96 @@ body.theme-dark img[src*="kimi.svg"],
   transform: scale(0.95);
 }
 
+/* 文件管理新建与重命名弹窗：居中展现、无冗余副标题、完全统一应用弹窗规范 */
+.file-prompt-modal {
+  width: min(440px, 92vw);
+  max-width: 440px;
+  height: auto !important;
+  min-height: auto !important;
+  max-height: min(400px, calc(100vh - 48px));
+  padding: 20px 22px;
+  border-radius: 12px;
+  box-shadow: 0 16px 36px -8px rgba(15, 23, 42, 0.25), 0 0 0 1px var(--app-modal-border);
+  background: var(--app-overlay-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: visible;
+}
+
+.file-prompt-modal .modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0;
+  padding-bottom: 2px;
+}
+
+.file-prompt-modal .modal-header h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--app-text);
+  margin: 0;
+}
+
+.file-prompt-input-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.file-prompt-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: var(--app-input-bg);
+  color: var(--app-text);
+  font-size: 13.5px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.file-prompt-input:focus {
+  border-color: var(--app-accent, #4f46e5);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.14);
+}
+
+.file-prompt-input.is-invalid {
+  border-color: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.14);
+}
+
+.file-prompt-error-text {
+  font-size: 12px;
+  color: #ef4444;
+  line-height: 1.4;
+}
+
+.file-prompt-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.file-prompt-actions .file-prompt-btn {
+  min-width: 76px;
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.file-prompt-actions .file-prompt-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
 

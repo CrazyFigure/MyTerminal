@@ -63,6 +63,7 @@ import {
 import {
   FileContextMenu,
   FileExplorerPanel,
+  FilePromptModal,
   explorerColumnLimits,
   explorerDefaultColumnWidths,
   explorerOverscanRows,
@@ -71,6 +72,7 @@ import {
   formatSpeed,
   isEditableFile,
   type FileContextMenuTarget,
+  type FilePromptTarget,
   type RemoteFileClipboard,
 } from './features/files';
 import { RuntimeSidebar } from './features/runtime';
@@ -140,6 +142,8 @@ export default function App() {
   const [agentSidebarMounted, setAgentSidebarMounted] = useState(false);
   const [pathInput, setPathInput] = useState('~');
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuTarget | null>(null);
+  // 文件管理新建目录、新建文件或重命名的居中模态弹窗目标
+  const [filePromptTarget, setFilePromptTarget] = useState<FilePromptTarget | null>(null);
   // 文件右键“复制”暂存待粘贴的远端路径；记录来源连接以便仅在同主机内启用粘贴。
   const [fileClipboard, setFileClipboard] = useState<RemoteFileClipboard | null>(null);
   const [sessionContextMenu, setSessionContextMenu] = useState<SessionContextMenuTarget | null>(null);
@@ -1888,6 +1892,12 @@ export default function App() {
           downloadFile={downloadFileWithProgress}
           downloadPaths={downloadPathsWithProgress}
           onClose={() => setFileContextMenu(null)}
+          onRequestCreate={(remoteDir, isDirectory) => {
+            setFilePromptTarget(isDirectory ? { mode: 'newDirectory', remoteDir } : { mode: 'newFile', remoteDir });
+          }}
+          onRequestRename={(path, currentName) => {
+            setFilePromptTarget({ mode: 'rename', path, currentName });
+          }}
           openEditor={openRemoteFileWithProgress}
           pasteClipboard={pasteRemoteClipboard}
           refreshFiles={refreshFiles}
@@ -1896,6 +1906,16 @@ export default function App() {
           selectedFilePaths={selectedFilePaths}
           t={t}
           target={fileContextMenu}
+        />
+      ) : null}
+
+      {filePromptTarget ? (
+        <FilePromptModal
+          createEntry={createRemoteEntry}
+          onClose={() => setFilePromptTarget(null)}
+          renamePath={renameRemotePath}
+          t={t}
+          target={filePromptTarget}
         />
       ) : null}
 

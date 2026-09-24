@@ -15,3 +15,4 @@ export {
 } from './presentation';
 export { FileExplorerPanel, type FileContextMenuTarget } from './FileExplorerPanel';
 export { FileContextMenu, type RemoteFileClipboard } from './FileContextMenu';
+export { FilePromptModal, type FilePromptTarget } from './FilePromptModal';

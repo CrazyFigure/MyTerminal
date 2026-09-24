@@ -12,15 +12,17 @@ type Props = {
   clipboard: RemoteFileClipboard | null;
   copyName: (text: string) => void;
   copySelection: (paths: string[]) => void;
-  createEntry: (remoteDir: string, name: string, isDirectory: boolean) => Promise<void>;
+  createEntry?: (remoteDir: string, name: string, isDirectory: boolean) => Promise<void>;
   deletePaths: (paths: string[]) => void;
   downloadFile: (path: string) => void;
   downloadPaths: (paths: string[]) => void;
   onClose: () => void;
+  onRequestCreate?: (remoteDir: string, isDirectory: boolean) => void;
+  onRequestRename?: (path: string, currentName: string) => void;
   openEditor: (path: string) => void;
   pasteClipboard: () => void;
   refreshFiles: (path?: string) => Promise<void>;
-  renamePath: (path: string, nextName: string) => Promise<unknown>;
+  renamePath?: (path: string, nextName: string) => Promise<unknown>;
   selectedFilePathSet: Set<string>;
   selectedFilePaths: string[];
   t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
@@ -38,6 +40,8 @@ export function FileContextMenu({
   downloadFile,
   downloadPaths,
   onClose,
+  onRequestCreate,
+  onRequestRename,
   openEditor,
   pasteClipboard,
   refreshFiles,
@@ -77,10 +81,15 @@ export function FileContextMenu({
   }, [target]);
 
   if (target.kind === 'background') {
+    // 优先唤起自定义居中模态弹窗；如未提供回调则回退为原生 prompt
     const requestCreate = (isDirectory: boolean) => {
-      const name = window.prompt(t(isDirectory ? 'newDirectoryNamePrompt' : 'newFileNamePrompt'))?.trim();
       onClose();
-      if (name) {
+      if (onRequestCreate) {
+        onRequestCreate(target.directory, isDirectory);
+        return;
+      }
+      const name = window.prompt(t(isDirectory ? 'newDirectoryNamePrompt' : 'newFileNamePrompt'))?.trim();
+      if (name && createEntry) {
         // Store 已统一落状态栏错误；这里消费 rejected Promise，避免浏览器额外产生未处理异常噪声。
         void createEntry(target.directory, name, isDirectory).catch(() => undefined);
       }
@@ -144,11 +153,15 @@ export function FileContextMenu({
       </button>
       <button className="context-menu-item" disabled={!canPaste} onClick={pasteClipboard} type="button">{t('fileMenuPaste')}</button>
       <button className="context-menu-item" onClick={() => {
+        onClose();
+        if (onRequestRename) {
+          onRequestRename(file.path, file.name);
+          return;
+        }
         const nextName = window.prompt(t('rename'), file.name);
-        if (nextName) {
+        if (nextName && renamePath) {
           void renamePath(file.path, nextName);
         }
-        onClose();
       }} type="button">{t('fileMenuRename')}</button>
       <button className="context-menu-item danger" onClick={() => deletePaths(menuPaths)} type="button">{t('fileMenuDelete')}</button>
     </div>
