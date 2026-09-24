@@ -17,6 +17,7 @@ import {
 
 type TerminalLayoutControllerOptions = {
   containerRef: RefObject<HTMLDivElement | null>;
+  terminalHostRef: RefObject<HTMLDivElement | null>;
   fitAddonRef: RefObject<FitAddon | null>;
   hasRecentLocalTerminalInputForCursorFollow: () => boolean;
   scheduleTerminalSizeSync: () => void;
@@ -32,6 +33,7 @@ type TerminalLayoutControllerOptions = {
 // 横向布局控制器只接受真实 soft-wrap 作为扩列证据，并以会话高水位抵抗动态状态行造成的尺寸正反馈。
 export function useTerminalLayoutController({
   containerRef,
+  terminalHostRef,
   fitAddonRef,
   hasRecentLocalTerminalInputForCursorFollow,
   scheduleTerminalSizeSync,
@@ -52,9 +54,10 @@ export function useTerminalLayoutController({
 
   const applyTerminalElementWidth = (targetCols: number, visibleCols: number) => {
     const container = containerRef.current;
+    const host = terminalHostRef.current;
     const terminal = terminalRef.current;
     const terminalElement = terminal?.element;
-    if (!container || !terminal || !terminalElement) {
+    if (!container || !host || !terminal || !terminalElement) {
       return;
     }
 
@@ -66,7 +69,8 @@ export function useTerminalLayoutController({
       return;
     }
 
-    const containerWidth = Number.parseFloat(window.getComputedStyle(container).width) || container.clientWidth;
+    // 宽度也按 xterm 承载层取值，避免外层 4px 内边距把横向目标宽度放大。
+    const containerWidth = Number.parseFloat(window.getComputedStyle(host).width) || host.clientWidth;
     const fallbackCellWidth = (terminal.options.fontSize ?? 15) * 0.62;
     const cellWidth = visibleCols > 0 && containerWidth > 0
       ? containerWidth / visibleCols
