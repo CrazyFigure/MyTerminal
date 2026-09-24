@@ -2292,7 +2292,8 @@ select:disabled {
   overflow: hidden;
   border-radius: 8px;
   border: 1px solid rgba(148, 163, 184, 0.16);
-  background: var(--app-input-bg);
+  /* 使用实色背景避免列表区域透出底层面板内容。 */
+  background: var(--app-overlay-bg);
 }
 
 .explorer-shell-dense {
@@ -2332,10 +2333,10 @@ select:disabled {
 .explorer-list-header,
 .explorer-row-main {
   display: grid;
-  grid-template-columns: minmax(180px, 1.8fr) 72px 66px 138px 96px 112px;
+  grid-template-columns: minmax(180px, 1.8fr) 72px 66px 160px 96px 112px;
   gap: 8px;
   align-items: center;
-  min-width: 672px;
+  min-width: 694px;
 }
 
 .explorer-list-header {
@@ -2343,7 +2344,8 @@ select:disabled {
   top: 0;
   z-index: 2;
   padding: 4px 8px;
-  background: var(--app-input-bg);
+  /* 表头使用实色背景完全遮挡下方滚动的条目内容，避免滚动时下层文字透过半透明吸顶层透出。 */
+  background: var(--app-overlay-bg);
   border-bottom: 1px solid rgba(148, 163, 184, 0.2);
   color: var(--app-muted);
   font-size: 0.78rem;
@@ -4940,9 +4942,9 @@ body.theme-dark img[src*="kimi.svg"],
 
 .explorer-list-header,
 .explorer-row-main {
-  grid-template-columns: minmax(180px, 1.8fr) 70px 62px 132px 92px 104px;
+  grid-template-columns: minmax(180px, 1.8fr) 70px 62px 160px 92px 104px;
   gap: 6px;
-  min-width: 640px;
+  min-width: 668px;
 }
 
 .explorer-list-header {

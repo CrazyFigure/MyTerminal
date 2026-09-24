@@ -3,7 +3,7 @@ import { FileCode2, FileSymlink, FileText, FolderOpen } from 'lucide-react';
 import type { RemoteFileEntry } from '../../types';
 
 // 文件管理列宽保持紧凑默认值，同时给名称列更多可扩展空间，方便长文件名场景手动拉宽。
-export const explorerDefaultColumnWidths = [220, 70, 62, 132, 92, 118];
+export const explorerDefaultColumnWidths = [220, 70, 62, 160, 92, 118];
 
 
 // 文件管理列表使用固定行高做虚拟滚动，目录文件很多时也只渲染视口附近的行。
@@ -18,7 +18,7 @@ export const explorerColumnLimits = [
   { min: 150, max: 680 },
   { min: 58, max: 140 },
   { min: 54, max: 130 },
-  { min: 112, max: 220 },
+  { min: 130, max: 260 },
   { min: 78, max: 180 },
   { min: 90, max: 220 },
 ];
@@ -95,7 +95,19 @@ export const formatTimestamp = (value?: string) => {
   }
 
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  // 格式化为 yyyy-MM-dd HH:mm:ss 本地时间格式
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 };
 
 
