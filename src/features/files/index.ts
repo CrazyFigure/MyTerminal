@@ -8,6 +8,7 @@ export {
   formatBytes,
   formatFileType,
   formatOwnerGroup,
+  formatSpeed,
   formatTimestamp,
   isEditableFile,
   parentPath,
