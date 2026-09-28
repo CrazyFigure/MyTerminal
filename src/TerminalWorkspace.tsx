@@ -40,6 +40,7 @@ import {
   resolveTerminalMinimumContrastRatio,
   shouldAnchorTerminalImeToPrompt,
   shouldHideLocalTerminalCursor,
+  shouldUseBarTerminalCursor,
   shouldUseManagedTerminalCursor,
   shouldUseNativeCtrlVPaste,
   shouldUseSoftDarkBlocks,
@@ -111,6 +112,8 @@ export function TerminalWorkspace({
   // 提示符命令行覆盖层基于 xterm 已解析缓冲区绘制，因此实时输出、标签切换和缓存重放共用同一条路径。
   const terminalContrastCursorRef = useRef<HTMLDivElement | null>(null);
   const terminalContrastCursorFrameRef = useRef<number | null>(null);
+  // Codex 输入区上下边线覆盖层。
+  const terminalManagedInputFrameRef = useRef<HTMLDivElement | null>(null);
   // Codex 托管光标只在提交和持续输出期间暂停；输出稳定后即使输入框为空也必须自动恢复。
   const terminalManagedCursorSuppressedRef = useRef(false);
   const terminalManagedCursorInputGraceUntilRef = useRef(0);
@@ -169,6 +172,10 @@ export function TerminalWorkspace({
     () => shouldUseManagedTerminalCursor(session),
     [session?.kind, session?.localCommand, session?.title],
   );
+  const useBarCursorForSession = useMemo(
+    () => shouldUseBarTerminalCursor(session),
+    [session?.kind, session?.localCommand, session?.title],
+  );
   const useSoftDarkBlocksForSession = useMemo(
     () => shouldUseSoftDarkBlocks(session),
     [session?.kind, session?.localCommand, session?.title],
@@ -192,6 +199,9 @@ export function TerminalWorkspace({
   const isAiAgentTerminalSessionRef = useRef(isAiAgentTerminalSession);
   const hideLocalCursorForSessionRef = useRef(hideLocalCursorForSession);
   const useManagedCursorForSessionRef = useRef(useManagedCursorForSession);
+  const useBarCursorForSessionRef = useRef(useBarCursorForSession);
+  // 细竖线 / Codex 托管光标上次绘制的位置；位置变化时重启闪烁动画，保证输入/移动光标期间始终先亮起。
+  const terminalBarCursorPositionKeyRef = useRef('');
   const anchorImeToPromptForSessionRef = useRef(anchorImeToPromptForSession);
   const terminalMatchSelectionRef = useRef(settings.terminalMatchSelection ?? true);
   // 命令式覆盖层从 ref 读取当前主题，避免终端实例的一次性事件回调持有挂载时的旧配色。
@@ -311,6 +321,7 @@ export function TerminalWorkspace({
   isAiAgentTerminalSessionRef.current = isAiAgentTerminalSession;
   hideLocalCursorForSessionRef.current = hideLocalCursorForSession;
   useManagedCursorForSessionRef.current = useManagedCursorForSession;
+  useBarCursorForSessionRef.current = useBarCursorForSession;
   anchorImeToPromptForSessionRef.current = anchorImeToPromptForSession;
   terminalMatchSelectionRef.current = settings.terminalMatchSelection ?? true;
   terminalPromptHighlightColorsRef.current = settings.themeMode === 'dark'
@@ -455,7 +466,7 @@ export function TerminalWorkspace({
       const cachedLine = buffer.getLine(cachedPrompt.row);
       if (
         !cachedLine
-        || cachedLine.isWrapped
+        || !isPromptLogicalLineStart(cachedPrompt.row)
         || cachedPrompt.row < firstVisibleRow
         || cachedPrompt.row > lastVisibleRow
         || isPromptBorderRow(cachedPrompt.row)
@@ -466,12 +477,22 @@ export function TerminalWorkspace({
       return cachedPrompt.row;
     };
 
+    // ConPTY 重绘时会把铺满整行的留白行（如 Codex 输入区上方的底色行）直接写满让其自动折行，
+    // 导致紧随其后的 `›` 行被标记为软换行续行。前一物理行全空白时不可能是真实输入的续行，仍视为独立行。
+    const isPromptLogicalLineStart = (row: number) => {
+      const line = buffer.getLine(row);
+      if (!line?.isWrapped) {
+        return true;
+      }
+      return !(buffer.getLine(row - 1)?.translateToString(true).trim());
+    };
+
     // 带提示符的行永远优先于无提示符兜底；两者在同一轮循环里并列时，自底向上会让更靠下的兜底行先胜出。
     const findPromptStartRow = () => {
       for (let row = lastVisibleRow; row >= promptSearchStartRow; row -= 1) {
         const line = buffer.getLine(row);
         // 边线本身不能充当输入行；多段分隔线相邻时否则可能把中间边线误判成被框住的内容。
-        if (!line || line.isWrapped || isPromptBorderRow(row)) {
+        if (!line || !isPromptLogicalLineStart(row) || isPromptBorderRow(row)) {
           continue;
         }
         const trimmedText = (line.translateToString(true) ?? '').trimStart();
@@ -500,7 +521,7 @@ export function TerminalWorkspace({
       // Claude 新版在首词提交后可能连提示符也一起擦掉；此时才退回“被上下边线框住”的结构锚点。
       for (let row = lastVisibleRow; row >= promptSearchStartRow; row -= 1) {
         const line = buffer.getLine(row);
-        if (!line || line.isWrapped || isPromptBorderRow(row)) {
+        if (!line || !isPromptLogicalLineStart(row) || isPromptBorderRow(row)) {
           continue;
         }
         // spinner、token 计数和快捷键状态栏同样被边线夹住，必须显式排除后才能作为锚点。
@@ -535,7 +556,15 @@ export function TerminalWorkspace({
 
     // 输入行的最后一个软换行物理行；无反色光标时退回这一行的行末内容列。
     let promptEndRow = promptStartRow;
-    while (promptEndRow < lastVisibleRow && buffer.getLine(promptEndRow + 1)?.isWrapped) {
+    // ConPTY 会把铺满整行底色的输入行写满后自动折行，下方的空白留白行也会被标成续行；
+    // 只有带内容、或真实光标正停在上面的续行才属于输入内容，否则输入区会被多算一行。
+    const absoluteCursorRow = buffer.baseY + buffer.cursorY;
+    const isPromptContinuationRow = (row: number) => {
+      const line = buffer.getLine(row);
+      return Boolean(line?.isWrapped)
+        && (row === absoluteCursorRow || Boolean(line?.translateToString(true).trim()));
+    };
+    while (promptEndRow < lastVisibleRow && isPromptContinuationRow(promptEndRow + 1)) {
       promptEndRow += 1;
     }
 
@@ -730,8 +759,11 @@ export function TerminalWorkspace({
       terminalBackgroundColorRef.current,
     );
     const nativeCursorColor = terminalCursorColorRef.current;
+    // 细竖线模式下原生光标已被 CSS 隐藏，宿主层必须常驻绘制，不能按对比度达标而退出。
+    const useBarCursor = useBarCursorForSessionRef.current;
     if (
       !useManagedCursor &&
+      !useBarCursor &&
       background &&
       nativeCursorColor &&
       resolveTerminalColorContrastRatio(background, nativeCursorColor) >= terminalCursorMinimumContrastRatio
@@ -769,6 +801,80 @@ export function TerminalWorkspace({
     cursor.style.height = `${cursorHeight}px`;
     cursor.style.background = cursorColor;
     cursor.style.boxShadow = `0 0 0 1px ${outlineColor}`;
+
+    // 光标换位时重置闪烁相位：连续打字或方向键移动时竖线保持常亮，停下后才恢复闪烁。
+    const positionKey = `${absoluteCursorRow}:${cursorColumn}`;
+    if ((useBarCursor || useManagedCursor) && positionKey !== terminalBarCursorPositionKeyRef.current) {
+      terminalBarCursorPositionKeyRef.current = positionKey;
+      cursor.style.animation = 'none';
+      // 读取布局强制浏览器提交 animation: none，随后清除内联值即可从第一帧重新播放。
+      void cursor.offsetWidth;
+      cursor.style.animation = '';
+    }
+  };
+
+  const hideTerminalManagedInputFrame = () => {
+    const frame = terminalManagedInputFrameRef.current;
+    if (frame) {
+      frame.style.display = 'none';
+    }
+  };
+
+  // Codex 输入区只靠极淡底色区分，叠加背景图后几乎看不出边界；宿主按提示符行组补画上下边线。
+  // 与光标不同，边框不受焦点和输出抑制影响，只要输入区在可视范围内就常驻。
+  const syncTerminalManagedInputFrame = () => {
+    const terminal = terminalRef.current;
+    const container = containerRef.current;
+    const screen = terminal?.element?.querySelector<HTMLElement>('.xterm-screen');
+    if (
+      !terminal
+      || !container
+      || !screen
+      || !useManagedCursorForSessionRef.current
+      || !canAcceptTerminalInput(sessionRef.current)
+      || terminal.cols <= 0
+      || terminal.rows <= 0
+    ) {
+      hideTerminalManagedInputFrame();
+      return;
+    }
+
+    const promptAnchor = resolveTerminalPromptAnchor();
+    const buffer = terminal.buffer.active;
+    const promptLine = promptAnchor ? buffer.getLine(promptAnchor.promptStartRow) : undefined;
+    if (!promptAnchor || !promptLine) {
+      hideTerminalManagedInputFrame();
+      return;
+    }
+    // Codex 的选项菜单同样以 `›` 开头但整行反色；只框真正的输入区，菜单高亮行不能被误判。
+    for (let column = 0; column < terminal.cols; column += 1) {
+      const cell = promptLine.getCell(column);
+      if (cell && cell.getChars().trim()) {
+        if (cell.isInverse()) {
+          hideTerminalManagedInputFrame();
+          return;
+        }
+        break;
+      }
+    }
+
+    const frame = terminalManagedInputFrameRef.current;
+    if (!frame) {
+      return;
+    }
+    const screenRect = screen.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    const { cellHeight } = promptAnchor;
+    const firstVisibleRow = buffer.viewportY;
+    // 上下各留半行，让边线落在 Codex 输入区自带的留白行里，不压住提示文字。
+    const frameTop = screenRect.top - containerRect.top + container.scrollTop
+      + (promptAnchor.promptStartRow - firstVisibleRow - 0.5) * cellHeight;
+    const frameHeight = (promptAnchor.promptEndRow - promptAnchor.promptStartRow + 2) * cellHeight;
+    frame.style.display = 'block';
+    frame.style.left = `${screenRect.left - containerRect.left + container.scrollLeft}px`;
+    frame.style.top = `${frameTop}px`;
+    frame.style.width = `${screenRect.width}px`;
+    frame.style.height = `${frameHeight}px`;
   };
 
   const scheduleTerminalContrastCursorSync = () => {
@@ -779,7 +885,18 @@ export function TerminalWorkspace({
     terminalContrastCursorFrameRef.current = window.requestAnimationFrame(() => {
       terminalContrastCursorFrameRef.current = null;
       syncTerminalContrastCursor();
+      syncTerminalManagedInputFrame();
     });
+  };
+
+  // 重放结束或重新聚焦时，若 Codex 近期没有输出（没有待结算的 idle 定时器），画面已稳定，立即恢复光标；
+  // 否则交给输出 idle 定时器结算。修复切回空闲 Codex 标签或点击终端后光标一直不出现的问题。
+  const releaseTerminalManagedCursorWhenQuiet = () => {
+    if (!useManagedCursorForSessionRef.current || terminalManagedCursorOutputIdleTimerRef.current !== null) {
+      return;
+    }
+    terminalManagedCursorSuppressedRef.current = false;
+    scheduleTerminalContrastCursorSync();
   };
 
   // 提交后立即暂停 Codex 光标；普通编辑、取消或方向键则开启短暂保护期，保证交互时光标即时可见。
@@ -902,11 +1019,17 @@ export function TerminalWorkspace({
 
     // Codex 从启动加载起就完全托管光标，避免输入框尚未出现时 xterm 原生光标在重绘位置闪烁；切出后立即恢复。
     const useManagedCursor = useManagedCursorForSessionRef.current;
+    const useBarCursor = useBarCursorForSessionRef.current;
     terminal.element?.classList.toggle('is-managed-tui-cursor-active', useManagedCursor);
+    // Claude 等标准光标协议 TUI 同样隐藏原生方块，由宿主细竖线接管；显隐仍跟随程序的 ?25h/?25l。
+    terminal.element?.classList.toggle('is-host-bar-cursor-active', useBarCursor);
     terminalContrastCursorRef.current?.classList.toggle('is-managed-tui-cursor', useManagedCursor);
+    terminalContrastCursorRef.current?.classList.toggle('is-bar-cursor', useBarCursor);
+    terminalBarCursorPositionKeyRef.current = '';
     // xterm 会动态注入光标动画，不能只靠外层 CSS 隐藏；渲染选项同步禁用 Codex 原生闪烁作为第二层兜底。
-    if (terminal.options.cursorBlink === useManagedCursor) {
-      terminal.options.cursorBlink = !useManagedCursor;
+    const nativeCursorBlink = !useManagedCursor && !useBarCursor;
+    if (terminal.options.cursorBlink !== nativeCursorBlink) {
+      terminal.options.cursorBlink = nativeCursorBlink;
     }
 
     if (terminal.options.scrollback !== terminalScrollbackRowsRef.current) {
@@ -1100,6 +1223,8 @@ export function TerminalWorkspace({
           scheduleTerminalMatchHighlightRefresh();
           scheduleTerminalPromptHighlightRefresh();
           scheduleTerminalSelectionOverlaySync();
+          // 重放只经过 xterm parser、不走实时输出状态机；切回空闲 Codex 标签时需在此结算光标抑制态。
+          releaseTerminalManagedCursorWhenQuiet();
           scheduleTerminalContrastCursorSync();
           scheduleTerminalVerticalScrollbarSync();
           scheduleTerminalGutterSync();
@@ -1305,7 +1430,7 @@ export function TerminalWorkspace({
       convertEol: false,
       // 从未显示过的恢复标签也会先在后台收取输出；初始几何必须与后端创建 PTY 的统一尺寸完全一致。
       cols: initialTerminalReplaySize.cols,
-      cursorBlink: !useManagedCursorForSessionRef.current,
+      cursorBlink: !useManagedCursorForSessionRef.current && !useBarCursorForSessionRef.current,
       disableStdin: !sessionVisibleRef.current || !canAcceptTerminalInput(sessionRef.current),
       fontFamily: terminalFontFamily,
       fontSize: settings.shellFontSize,
@@ -1328,6 +1453,7 @@ export function TerminalWorkspace({
     terminal.open(terminalHostRef.current);
     // 首帧输出前就隐藏 Codex 原生光标，加载画面不能先漏出一次 xterm 默认闪烁光标。
     terminal.element?.classList.toggle('is-managed-tui-cursor-active', useManagedCursorForSessionRef.current);
+    terminal.element?.classList.toggle('is-host-bar-cursor-active', useBarCursorForSessionRef.current);
     // deferred 解析期需要开放 xterm 的自动协议回复，但键盘、IME、粘贴、鼠标和焦点上报都必须在捕获阶段阻断。
     const replayBlockedInputEventNames = [
       'keydown',
@@ -1520,8 +1646,13 @@ export function TerminalWorkspace({
     const contrastCursor = document.createElement('div');
     contrastCursor.classList.add('terminal-contrast-cursor');
     contrastCursor.classList.toggle('is-managed-tui-cursor', useManagedCursorForSessionRef.current);
+    contrastCursor.classList.toggle('is-bar-cursor', useBarCursorForSessionRef.current);
     containerRef.current.appendChild(contrastCursor);
     terminalContrastCursorRef.current = contrastCursor;
+    const managedInputFrame = document.createElement('div');
+    managedInputFrame.classList.add('terminal-managed-input-frame');
+    containerRef.current.appendChild(managedInputFrame);
+    terminalManagedInputFrameRef.current = managedInputFrame;
     const verticalScrollbar = document.createElement('div');
     verticalScrollbar.classList.add('terminal-vertical-scrollbar');
     const verticalScrollbarThumb = document.createElement('div');
@@ -1543,9 +1674,17 @@ export function TerminalWorkspace({
     terminalGutterRef.current = gutter;
     terminal.attachCustomWheelEventHandler(handleAiAgentTerminalWheel);
     const textarea = terminal.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
-    const handleTerminalFocusVisibilityChange = () => scheduleTerminalContrastCursorSync();
+    const handleTerminalFocusVisibilityChange = (event: FocusEvent) => {
+      // 重新获得焦点时，空闲 Codex 不会再有输出去结算抑制态，必须主动恢复托管光标。
+      if (event.type === 'focusin') {
+        releaseTerminalManagedCursorWhenQuiet();
+      }
+      scheduleTerminalContrastCursorSync();
+    };
     terminal.element?.addEventListener('focusin', handleTerminalFocusVisibilityChange);
     terminal.element?.addEventListener('focusout', handleTerminalFocusVisibilityChange);
+    // 已聚焦时点击不会再触发 focusin；点击输入区同样视为“想看到光标”，画面稳定即恢复。
+    terminal.element?.addEventListener('pointerdown', releaseTerminalManagedCursorWhenQuiet);
     const handleTerminalCompositionStart = () => {
       if (terminalActiveReplayRef.current || terminalReplayInputBlockedRef.current) {
         return;
@@ -1734,6 +1873,7 @@ export function TerminalWorkspace({
       textarea?.removeEventListener('paste', handleTerminalPaste);
       terminal.element?.removeEventListener('focusin', handleTerminalFocusVisibilityChange);
       terminal.element?.removeEventListener('focusout', handleTerminalFocusVisibilityChange);
+      terminal.element?.removeEventListener('pointerdown', releaseTerminalManagedCursorWhenQuiet);
       observer.disconnect();
       window.removeEventListener('resize', scheduleTerminalSizeSync);
       window.removeEventListener('mouseup', stopTerminalSelectionDragSync, true);
@@ -1791,12 +1931,14 @@ export function TerminalWorkspace({
       matchOverlay.remove();
       selectionOverlay.remove();
       contrastCursor.remove();
+      managedInputFrame.remove();
       verticalScrollbar.remove();
       gutter.remove();
       terminalPromptHighlightOverlayRef.current = null;
       terminalMatchOverlayRef.current = null;
       terminalSelectionOverlayRef.current = null;
       terminalContrastCursorRef.current = null;
+      terminalManagedInputFrameRef.current = null;
       terminalVerticalScrollbarRef.current = null;
       terminalVerticalScrollbarThumbRef.current = null;
       terminalGutterRef.current = null;
@@ -1945,6 +2087,11 @@ export function TerminalWorkspace({
     terminal.options.lineHeight = settings.shellLineHeight ?? 1.18;
     terminal.options.letterSpacing = 0;
     terminal.options.theme = terminalTheme;
+    // 浅色 Codex 的默认色反色块（xterm-bg-257）由 CSS 软化成淡紫底，主题前景色保持真实值。
+    terminal.element?.classList.toggle(
+      'is-soft-dark-blocks-active',
+      settings.themeMode !== 'dark' && useSoftDarkBlocksForSession,
+    );
     terminalCursorColorRef.current = parseTerminalRgbColor(terminalTheme.cursor);
     terminal.clearTextureAtlas();
 
@@ -1999,6 +2146,7 @@ export function TerminalWorkspace({
       : 0;
     terminalHorizontalFullBufferMeasurePendingRef.current = false;
     hideTerminalContrastCursor();
+    hideTerminalManagedInputFrame();
     remoteTerminalSizeRef.current = null;
     // FIFO 屏障后的重放完成逻辑会按新会话 buffer 推送尺寸；屏障前不能拿上一会话画面测量并 resize 新 PTY。
     replayCurrentSessionOutput();
