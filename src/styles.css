@@ -1376,18 +1376,43 @@ select:disabled {
 }
 
 /* Codex 会话从加载首帧起完全由宿主绘制光标，隐藏重绘途中经过任意位置的 xterm 原生光标。 */
-.terminal-surface .xterm.is-managed-tui-cursor-active .xterm-cursor {
+/* Claude 等细竖线模式同样隐藏原生方块，改由宿主竖线层按真实光标位置绘制。 */
+/* xterm 6 DOM 渲染器会在更晚注入的 <style> 里用同等权重 + !important 绘制方块，这里多带 .xterm-rows 提高权重才能压住。 */
+.terminal-surface .xterm.is-managed-tui-cursor-active .xterm-rows .xterm-cursor,
+.terminal-surface .xterm.is-host-bar-cursor-active .xterm-rows .xterm-cursor {
   animation: none !important;
 }
 
-.terminal-surface .xterm.is-managed-tui-cursor-active .xterm-cursor.xterm-cursor-bar,
-.terminal-surface .xterm.is-managed-tui-cursor-active .xterm-cursor.xterm-cursor-underline {
+.terminal-surface .xterm.is-managed-tui-cursor-active .xterm-rows .xterm-cursor.xterm-cursor-bar,
+.terminal-surface .xterm.is-managed-tui-cursor-active .xterm-rows .xterm-cursor.xterm-cursor-underline,
+.terminal-surface .xterm.is-host-bar-cursor-active .xterm-rows .xterm-cursor.xterm-cursor-bar,
+.terminal-surface .xterm.is-host-bar-cursor-active .xterm-rows .xterm-cursor.xterm-cursor-underline {
   box-shadow: none !important;
 }
 
-.terminal-surface .xterm.is-managed-tui-cursor-active .xterm-cursor.xterm-cursor-block {
+/* 失焦时 xterm 改画描边方块；宿主竖线层失焦即隐藏，这里一并去掉，避免只剩一个空心框。 */
+.terminal-surface .xterm.is-host-bar-cursor-active .xterm-rows .xterm-cursor.xterm-cursor-outline {
+  outline: none !important;
+}
+
+.terminal-surface .xterm.is-managed-tui-cursor-active .xterm-rows .xterm-cursor.xterm-cursor-block,
+.terminal-surface .xterm.is-host-bar-cursor-active .xterm-rows .xterm-cursor.xterm-cursor-block {
   color: inherit !important;
   background-color: transparent !important;
+}
+
+/* 浅色 Codex 的默认色反色块（选项高亮、输入区）原本会是黑底：xterm 用 bg-257 取前景色、fg-257 取背景色。
+   这里只软化这两类单元格，主题前景色保持真实，避免牵连 dim 文字。 */
+.terminal-surface .xterm.is-soft-dark-blocks-active .xterm-rows .xterm-bg-257 {
+  background-color: #e0e7ff !important;
+}
+
+.terminal-surface .xterm.is-soft-dark-blocks-active .xterm-rows .xterm-fg-257 {
+  color: #1e1b4b !important;
+}
+
+.terminal-surface .xterm.is-soft-dark-blocks-active .xterm-rows .xterm-fg-257.xterm-dim {
+  color: rgba(30, 27, 75, 0.6) !important;
 }
 
 /* 提示符细色条、匹配和选区圆角层都放在 xterm 文字层下方，不覆盖终端字符。 */
@@ -1412,6 +1437,23 @@ select:disabled {
   z-index: 2;
 }
 
+/* Codex 输入区上下边线：与 Claude 输入框的上下分隔线同一视觉语义，并带极浅底色；位于文字层下方，不拦截鼠标。 */
+.terminal-managed-input-frame {
+  position: absolute;
+  z-index: 0;
+  display: none;
+  box-sizing: border-box;
+  pointer-events: none;
+  border-top: 1px solid rgba(71, 85, 105, 0.45);
+  border-bottom: 1px solid rgba(71, 85, 105, 0.45);
+  background: rgba(255, 255, 255, 0.35);
+}
+
+:root[style*="color-scheme: dark"] .terminal-managed-input-frame {
+  border-color: rgba(203, 213, 225, 0.35);
+  background: rgba(15, 23, 42, 0.35);
+}
+
 /* 原生光标与当前单元格对比度不足时，在完全相同的位置叠加反色细线；不接管鼠标和选区。 */
 .terminal-contrast-cursor {
   position: absolute;
@@ -1422,9 +1464,23 @@ select:disabled {
   animation: terminal-contrast-cursor-blink 1s steps(2, start) infinite;
 }
 
-/* Codex 光标由输入/提交状态驱动，不播放永久 CSS 闪烁动画。 */
-.terminal-contrast-cursor.is-managed-tui-cursor {
-  animation: none;
+/* Codex 托管光标与 Claude 细竖线统一节奏：1s 一个周期（亮约 0.55s、灭约 0.45s）；
+   输出期间的显隐仍由托管状态机控制，重新显示时 display 切换会让动画自然从“亮”开始。 */
+.terminal-contrast-cursor.is-managed-tui-cursor,
+.terminal-contrast-cursor.is-bar-cursor {
+  animation: terminal-bar-cursor-blink 1s step-end infinite;
+}
+
+@keyframes terminal-bar-cursor-blink {
+  0%,
+  55% {
+    opacity: 1;
+  }
+
+  56%,
+  100% {
+    opacity: 0;
+  }
 }
 
 @keyframes terminal-contrast-cursor-blink {

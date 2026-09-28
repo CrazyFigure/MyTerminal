@@ -133,9 +133,9 @@ export const buildTerminalTheme = (
   const cursorTheme = resolveTerminalCursorTheme(isDarkTheme);
   const shouldSoftenDarkBlocks =
     !isDarkTheme && Boolean(options.softenDarkBlocks);
-  const resolvedForeground = shouldSoftenDarkBlocks
-    ? terminalSoftDarkBlockLightBackground
-    : foreground;
+  // 默认前景色必须保持真实值：xterm 的 dim 文字直接取前景色 50% 透明度且不做对比度修正，
+  // 若改成浅色会让 Codex 的 model:/directory: 标签和边框几乎不可见；默认色反色块改由 CSS 软化。
+  const resolvedForeground = foreground;
   const resolvedAnsiBlack = shouldSoftenDarkBlocks
     ? terminalSoftDarkBlockLightBackground
     : isDarkTheme

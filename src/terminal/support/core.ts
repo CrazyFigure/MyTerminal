@@ -91,15 +91,17 @@ export const terminalNativeCtrlVPasteCommandNames = new Set([
 ]);
 
 // 仅隐藏已确认会自行绘制光标、且终端真实光标会停在状态栏的 TUI；OpenCode 等依赖标准光标协议的程序保持原样。
+// Claude Code v2.1+ 已不再绘制反色假光标，而是每帧把真实光标移回输入位置并发送 ?25h，因此不能再隐藏。
 export const terminalHideLocalCursorCommandNames = new Set([
-  "claude",
-  "claude-code",
   "qwen",
   "qwen-code",
   "gemini",
   "aider",
   "cursor-agent",
 ]);
+
+// 这些 TUI 依赖标准光标协议定位输入位置；宿主隐藏 xterm 原生方块，改绘与 Codex 一致的细竖线并匀速闪烁。
+export const terminalBarCursorCommandNames = new Set(["claude", "claude-code"]);
 
 // Codex 重绘帧会反复恢复原生光标；协议层持续隐藏它，并按真实 buffer 坐标绘制经过输入区校验的替代光标。
 export const terminalManagedCursorCommandNames = new Set(["codex"]);

@@ -6,6 +6,7 @@ import { convertFileSrc, isTauri } from "@tauri-apps/api/core";
 import type { AppSettings, TerminalSession } from "../../types";
 import {
   terminalAiAgentCommandNames,
+  terminalBarCursorCommandNames,
   terminalClaudeMinimumContrastRatio,
   terminalHideLocalCursorCommandNames,
   terminalHorizontalColumnGrowthStep,
@@ -79,6 +80,16 @@ export const shouldHideLocalTerminalCursor = (session?: TerminalSession) => {
   );
   return executableName
     ? terminalHideLocalCursorCommandNames.has(executableName)
+    : false;
+};
+
+// 使用标准光标协议的 AI TUI 由宿主绘制细竖线光标，视觉上与 Codex 托管光标保持一致。
+export const shouldUseBarTerminalCursor = (session?: TerminalSession) => {
+  const executableName = extractTerminalExecutableName(
+    resolveLocalSessionCommandText(session),
+  );
+  return executableName
+    ? terminalBarCursorCommandNames.has(executableName)
     : false;
 };
 
