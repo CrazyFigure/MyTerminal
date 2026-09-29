@@ -27,3 +27,14 @@ Rust 测试与源码同文件放在 `#[cfg(test)]` 模块中，测试名使用�
 ## 提交与 Pull Request 规范
 
 提交沿用 Conventional Commits，例如 `feat(agent): ...`、`fix(update): ...`、`refactor(terminal): ...`。每次提交聚焦单一目的，并尽量填写 scope。Pull Request 应说明行为变化、关联 Issue、验证命令；可见 UI 变化需附截图或录屏，并注明配置、安装包或安全影响。禁止提交密钥和本地运行数据；未经明确许可，不得执行 `git commit` 或 `git push`。
+
+## 发版规范
+
+推送 `v*` tag 会触发 `.github/workflows/release.yml`，由 `scripts/generate-release-notes.ps1` 生成 Release 正文，应用内“发现新版本”弹窗直接展示该正文。更新说明写给用户看，必须能从提交中解析出来：
+
+1. 修改根 `package.json` 的 `version`，运行 `npm run sync:version` 同步 Cargo、npm 锁文件和 MCP 包版本，再执行 `npm run check`。
+2. 发版提交标题固定为 `chore(release): 发布 vX.Y.Z`，正文每条改动单独一行，格式为 `- type(scope): 面向用户的描述`，条目之间空一行。
+3. 类型映射：`feat` → 新增，`fix` → 修复，`perf`/`refactor`/`style` → 优化；`docs`/`chore`/`ci`/`build`/`test`、`chore(version)` 与 `update star history` 不进入更新说明。每个版本至少要有一条用户可见条目。
+4. 未单独提交的功能也要逐条写进发版提交正文，不能只写版本号；描述写清用户能感知的行为变化，不写实现细节。
+5. 附注 tag 使用 `git tag -a vX.Y.Z`，附注标题为 `MyTerminal vX.Y.Z`，内容与发版提交正文一致。
+6. 推送 tag 前先本地预览更新说明：`pwsh -File scripts/generate-release-notes.ps1 -Ref HEAD`，确认三个分组内容正确、没有“本次暂无”误报后再推送。
