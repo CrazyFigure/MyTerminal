@@ -1041,6 +1041,8 @@ pub fn get_command_suggestions(
 // 本地配置与 WebDAV 同步独立成业务模块；命令名保持不变，仅调整 Rust 内部注册路径。
 pub mod config_sync;
 pub mod font_pack;
+// 终端粘贴的文件/图片剪贴板读取。
+pub mod clipboard;
 pub mod runtime_monitor;
 
 // Shell 输出协议作为领域对象独立维护；命令层只负责编排 PTY、队列和事件。

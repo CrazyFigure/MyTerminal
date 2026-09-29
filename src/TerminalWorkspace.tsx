@@ -4,7 +4,12 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 
 import { backend } from './backend';
-import { readClipboardText, writeClipboardText } from './clipboard';
+import {
+  formatClipboardAttachmentPaths,
+  readClipboardAttachment,
+  readClipboardText,
+  writeClipboardText,
+} from './clipboard';
 import { translate } from './i18n';
 import { useAppStore } from './store';
 import { initialTerminalReplaySize, type TerminalReplayEntry } from './terminalCache';
@@ -86,6 +91,9 @@ type Props = {
   liveSessionIds: string[];
 };
 
+// 附件粘贴去重窗口：足以合并同一次按键的重复 paste 事件，又不会吞掉用户有意的连续粘贴。
+const clipboardAttachmentPasteDedupMs = 400;
+
 export function TerminalWorkspace({
   isVisible,
   session,
@@ -99,6 +107,8 @@ export function TerminalWorkspace({
   const [terminalGutterContextMenu, setTerminalGutterContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [terminalHasHorizontalOverflow, setTerminalHasHorizontalOverflow] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // 上次粘贴剪贴板文件/图片的时间，用于合并同一次按键触发的重复 paste。
+  const lastClipboardAttachmentPasteAtRef = useRef(Number.NEGATIVE_INFINITY);
   // xterm 单独挂在无内边距的承载层，FitAddon 才能按实际可绘制高度计算行数。
   const terminalHostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -1278,6 +1288,59 @@ export function TerminalWorkspace({
     };
   }, []);
 
+  // 粘贴文本原样写入 PTY，不包 bracketed paste，使多行内容像逐行输入一样依次执行。
+  const writeRawPastedTextToTerminal = (text: string, targetSessionId: string) => {
+    // 剪贴板读取可能是异步的；期间若已切换会话或开始重放，旧粘贴必须丢弃，不能落到新标签。
+    if (
+      !text
+      || sessionRef.current?.id !== targetSessionId
+      || terminalActiveReplayRef.current
+      || terminalReplayInputBlockedRef.current
+    ) {
+      return;
+    }
+    clearTerminalSelectionSnapshot();
+    markLocalTerminalInputForCursorFollow();
+    terminalLocalInputEditingRef.current =
+      isTerminalShellInputBufferActive() && !text.includes('\r') && !text.includes('\n');
+    onTerminalDataRef.current(text);
+  };
+
+  // 剪贴板没有文本时粘贴文件或图片：文件粘贴原路径，截图等位图由后端存成临时 PNG 后粘贴其路径。
+  // 返回是否实际写入，便于调用方区分“无附件”与“已粘贴”。
+  const pasteClipboardAttachmentToTerminal = async (targetSessionId: string) => {
+    // WebView 对纯图片剪贴板的一次 Ctrl+V 可能派发多次 paste；在 await 前同步去重，短时间内只粘贴一次。
+    const now = performance.now();
+    if (now - lastClipboardAttachmentPasteAtRef.current < clipboardAttachmentPasteDedupMs) {
+      return false;
+    }
+    lastClipboardAttachmentPasteAtRef.current = now;
+    const attachment = await readClipboardAttachment();
+    const terminal = terminalRef.current;
+    // 后端读取与 PNG 编码是异步的；期间切换会话、开始重放或会话不可输入时丢弃，避免落到错误标签。
+    if (
+      !attachment
+      || !terminal
+      || sessionRef.current?.id !== targetSessionId
+      || terminalActiveReplayRef.current
+      || terminalReplayInputBlockedRef.current
+      || !canAcceptTerminalInput(sessionRef.current)
+    ) {
+      return false;
+    }
+    const text = formatClipboardAttachmentPaths(attachment);
+    if (!text) {
+      return false;
+    }
+    clearTerminalSelectionSnapshot();
+    markLocalTerminalInputForCursorFollow();
+    updateTerminalManagedCursorForInput('edit');
+    terminalLocalInputEditingRef.current = isTerminalShellInputBufferActive();
+    // 走 xterm paste：程序开启 bracketed paste 时自动包裹，Claude/Codex 等 Agent 据此把图片路径识别为图片附件。
+    terminal.paste(text);
+    return true;
+  };
+
   // 右键粘贴复用终端输入通道，并按调用场景决定是否在粘贴后把键盘焦点交回 xterm。
   const pasteClipboardToTerminal = async (restoreFocusAfterPaste = false) => {
     const targetSessionId = sessionRef.current?.id;
@@ -1296,18 +1359,11 @@ export function TerminalWorkspace({
     try {
       // 右键粘贴直接走终端输入通道，保持和键盘粘贴完全一致的后端写入路径。
       const text = await readClipboardText().catch(() => '');
-      // 系统剪贴板读取是异步的；期间若已切换会话或开始重放，旧粘贴必须丢弃，不能落到新标签。
-      if (
-        text
-        && sessionRef.current?.id === targetSessionId
-        && !terminalActiveReplayRef.current
-        && !terminalReplayInputBlockedRef.current
-      ) {
-        clearTerminalSelectionSnapshot();
-        markLocalTerminalInputForCursorFollow();
-        terminalLocalInputEditingRef.current =
-          isTerminalShellInputBufferActive() && !text.includes('\r') && !text.includes('\n');
-        onTerminalDataRef.current(text);
+      if (text) {
+        writeRawPastedTextToTerminal(text, targetSessionId);
+      } else {
+        // 剪贴板只有文件或图片时，改为粘贴其本地路径。
+        await pasteClipboardAttachmentToTerminal(targetSessionId);
       }
     } finally {
       if (restoreFocusAfterPaste) {
@@ -1593,9 +1649,31 @@ export function TerminalWorkspace({
         }
         return false;
       }
+      // xterm 对 Shift+Enter / Ctrl+Enter 都只发 CR，AI Agent 会直接提交。改为发送 Alt+Enter（ESC CR）：
+      // 实测 Claude Code 与 Codex 都把它当作输入框内换行；普通 Shell 不受影响，仍按原样发送回车。
+      const isAgentNewlineShortcut =
+        event.key === 'Enter'
+        && (event.shiftKey !== event.ctrlKey)
+        && !event.altKey
+        && !event.metaKey
+        && !event.isComposing
+        && isTerminalAiAgentSession(sessionRef.current);
+      if (isAgentNewlineShortcut) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.type === 'keydown' && canAcceptTerminalInput(sessionRef.current)) {
+          updateTerminalManagedCursorForInput('edit');
+          markLocalTerminalInputForCursorFollow();
+          terminal.input('\x1b\r');
+        }
+        // keydown/keypress/keyup 全部消费，避免 xterm 再补发一次 CR。
+        return false;
+      }
+      // EcoPaste 等剪贴板工具用 SendInput 模拟 Ctrl+V 时可能不带扫描码，event.code 为空，需要用 keyCode 兜底识别。
+      const isVKey = event.code === 'KeyV' || (!event.code && event.keyCode === 86);
       const useNativeClipboardPaste =
         event.type === 'keydown' &&
-        event.code === 'KeyV' &&
+        isVKey &&
         event.ctrlKey &&
         !event.shiftKey &&
         !event.altKey &&
@@ -1732,6 +1810,50 @@ export function TerminalWorkspace({
     textarea?.addEventListener('compositionupdate', handleTerminalCompositionUpdate);
     textarea?.addEventListener('compositionend', handleTerminalCompositionEnd);
     textarea?.addEventListener('paste', handleTerminalPaste);
+    // Shift+Insert 等原生粘贴默认由 xterm 包 bracketed paste；普通 Shell 下改为和右键粘贴一致的原样写入，
+    // 多行命令逐行执行。AI Agent 与全屏程序（vim 等）仍保留 bracketed paste，避免多行被当作多次提交。
+    const handleTerminalNativePasteCapture = (event: ClipboardEvent) => {
+      const targetSessionId = sessionRef.current?.id;
+      // 剪贴板无文本（复制的文件、截图）时 xterm 只会粘贴空内容；所有会话（含 AI Agent）统一接管为粘贴本地路径。
+      if (targetSessionId && !event.clipboardData?.getData('text/plain')) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (
+          canAcceptTerminalInput(sessionRef.current)
+          && !terminalActiveReplayRef.current
+          && !terminalReplayInputBlockedRef.current
+        ) {
+          void pasteClipboardAttachmentToTerminal(targetSessionId);
+        }
+        return;
+      }
+      if (
+        !targetSessionId
+        || terminal.buffer.active.type !== 'normal'
+        || isTerminalAiAgentSession(sessionRef.current)
+      ) {
+        return;
+      }
+      // 捕获阶段拦截，阻止 xterm 自身的 paste 处理；重放或不可输入时同样吞掉，保持与右键粘贴一致的丢弃语义。
+      event.preventDefault();
+      event.stopPropagation();
+      if (!canAcceptTerminalInput(sessionRef.current)) {
+        return;
+      }
+      updateTerminalManagedCursorForInput('edit');
+      writeRawPastedTextToTerminal(event.clipboardData?.getData('text/plain') ?? '', targetSessionId);
+    };
+    containerRef.current.addEventListener('paste', handleTerminalNativePasteCapture, true);
+    // 程序开启鼠标上报（如 Claude Code）时，xterm 会把右键转发给程序；Claude 在 Windows 收到右键会自行读剪贴板再粘贴一次，
+    // 与本应用的右键粘贴/菜单叠加成“粘贴两遍”。右键统一由本应用处理，捕获阶段拦截右键按下/抬起，不再转发。
+    const handleTerminalRightButtonCapture = (event: MouseEvent) => {
+      if (event.button !== 2 || terminal.modes.mouseTrackingMode === 'none') {
+        return;
+      }
+      event.stopPropagation();
+    };
+    containerRef.current.addEventListener('mousedown', handleTerminalRightButtonCapture, true);
+    containerRef.current.addEventListener('mouseup', handleTerminalRightButtonCapture, true);
 
     const dataDisposable = terminal.onData((data) => {
       // 缓存重放会重新解析 DA/DSR/DECRQM 等历史查询；期间产生的自动回复和偶发键盘输入都不能写进当前活 PTY。
@@ -1871,6 +1993,9 @@ export function TerminalWorkspace({
       textarea?.removeEventListener('compositionupdate', handleTerminalCompositionUpdate);
       textarea?.removeEventListener('compositionend', handleTerminalCompositionEnd);
       textarea?.removeEventListener('paste', handleTerminalPaste);
+      containerRef.current?.removeEventListener('paste', handleTerminalNativePasteCapture, true);
+      containerRef.current?.removeEventListener('mousedown', handleTerminalRightButtonCapture, true);
+      containerRef.current?.removeEventListener('mouseup', handleTerminalRightButtonCapture, true);
       terminal.element?.removeEventListener('focusin', handleTerminalFocusVisibilityChange);
       terminal.element?.removeEventListener('focusout', handleTerminalFocusVisibilityChange);
       terminal.element?.removeEventListener('pointerdown', releaseTerminalManagedCursorWhenQuiet);

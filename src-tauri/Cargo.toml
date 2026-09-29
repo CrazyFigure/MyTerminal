@@ -1,7 +1,7 @@
 [package]
 name = "myterminal"
 # Rust crate 版本由 scripts/sync-version.mjs 从根 package.json 同步，保持后端 env!("CARGO_PKG_VERSION") 和发布版本一致。
-version = "0.9.1"
+version = "0.9.2"
 description = "A modern Rust + Tauri 2 remote terminal manager inspired by FinalShell"
 authors = ["OpenAI"]
 edition = "2021"
@@ -34,6 +34,9 @@ tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-clipboard-manager = "2.3.0"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-notification = "2.3.3"
+# 终端粘贴截图：arboard/image 已由剪贴板插件间接引入，这里直接使用以读取位图并编码为 PNG 临时文件。
+arboard = "3.6"
+image = { version = "0.25", default-features = false, features = ["png"] }
 # 单实例守卫：只允许同一副本运行一个进程，第二次双击图标时聚焦已有窗口而非再开一个。
 # target_os 限定桌面平台，与官方示例一致，避免移动端目标编译该插件。
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
@@ -50,3 +53,5 @@ webview2-com = "0.38"
 # RDP 启动前直接写入当前登录会话的 Windows 凭据，避免通过命令行参数暴露密码。
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
 windows-core = "0.61"
+# 终端粘贴资源管理器复制的文件时读取 CF_HDROP 路径列表；已由 arboard 间接引入。
+clipboard-win = "5.4"

@@ -2353,12 +2353,15 @@ dependencies = [
 
 [[package]]
 name = "myterminal"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "aes-gcm",
+ "arboard",
  "base64 0.22.1",
  "chrono",
+ "clipboard-win",
  "ctrlc",
+ "image",
  "libc",
  "notify-rust",
  "portable-pty",
