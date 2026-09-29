@@ -161,6 +161,8 @@ export function TerminalWorkspace({
   const resizeFrameRef = useRef<number | null>(null);
   // 追踪远端最近一次 DECTCEM 是否把光标设为隐藏,配合空闲看门狗做悬空隐藏光标的自愈。
   const terminalRemoteCursorHiddenRef = useRef(false);
+  // 程序是否通过 ?1007h 主动要求“备用屏滚轮转方向键”（Codex 的全屏记录页依赖它翻页）。
+  const terminalAlternateScrollRequestedRef = useRef(false);
   const terminalCursorRecoveryTimerRef = useRef<number | null>(null);
   const terminalImeCompositionFrameRef = useRef<number | null>(null);
   const terminalImeComposingRef = useRef(false);
@@ -1413,9 +1415,10 @@ export function TerminalWorkspace({
     event.stopPropagation();
   };
 
-  // AI TUI 的滚轮不能直接滚 xterm 历史，也不映射方向键，避免 Claude 输入区出现双光标。
+  // AI TUI 滚轮按终端模式分流，只拦截会被 xterm 翻译成方向键的那一种情况。
   const handleAiAgentTerminalWheel = (event: WheelEvent) => {
-    if (!isAiAgentTerminalSessionRef.current) {
+    const terminal = terminalRef.current;
+    if (!isAiAgentTerminalSessionRef.current || !terminal) {
       return true;
     }
 
@@ -1423,6 +1426,25 @@ export function TerminalWorkspace({
       return true;
     }
 
+    // 程序开启了含滚轮的鼠标上报（Claude Code 备用屏模式）：滚轮必须转发给程序，由它自己翻对话记录；
+    // x10 模式只上报按键不含滚轮，仍按未开启处理。
+    const mouseTrackingMode = terminal.modes.mouseTrackingMode;
+    if (mouseTrackingMode !== 'none' && mouseTrackingMode !== 'x10') {
+      return true;
+    }
+
+    // 主缓冲区（Codex 等内联渲染模式）的历史就在 xterm scrollback 里，交给 xterm 正常滚动；
+    // 光标叠层已按 viewportY 计算，滚离底部时会自动隐藏，不会出现双光标。
+    if (terminal.buffer.active.type === 'normal') {
+      return true;
+    }
+
+    // 程序显式开启 alternate scroll（?1007h）说明它就是用方向键翻页，放行 xterm 的滚轮转方向键。
+    if (terminalAlternateScrollRequestedRef.current) {
+      return true;
+    }
+
+    // 其余备用屏场景下，xterm 会把滚轮翻译成上下方向键，在 AI 输入框里等同翻历史命令，必须拦截。
     syncLocalCursorVisibility();
     event.preventDefault();
     event.stopPropagation();
@@ -1554,8 +1576,9 @@ export function TerminalWorkspace({
     // 实时输出状态机已经按原会话回包；xterm parser 这里只消费查询，缓存重放不得再次触发任何响应。
     const xtVersionDisposable = terminal.parser.registerCsiHandler({ prefix: '>', final: 'q' }, () => true);
     // 识别远端私有模式 25（DECTCEM）；普通会话继续交给 xterm，Codex 托管模式则在解析阶段阻止原生光标被重新显示。
-    const paramsIncludeCursorMode = (params: (number | number[])[]) =>
-      params.some((value) => (Array.isArray(value) ? value.includes(25) : value === 25));
+    const paramsIncludeMode = (params: (number | number[])[], mode: number) =>
+      params.some((value) => (Array.isArray(value) ? value.includes(mode) : value === mode));
+    const paramsIncludeCursorMode = (params: (number | number[])[]) => paramsIncludeMode(params, 25);
     // 只有纯 ?25h 才能安全整条消费；组合 DECSET 还可能携带 alternate buffer 等模式，必须继续交给 xterm 完整处理。
     const paramsOnlyIncludeCursorMode = (params: (number | number[])[]) =>
       params.length > 0 && params.every((value) => (
@@ -1568,12 +1591,19 @@ export function TerminalWorkspace({
         terminalRemoteCursorHiddenRef.current = true;
         scheduleTerminalContrastCursorSync();
       }
+      // xterm 不识别 ?1007（alternate scroll），只在这里记录程序意图，序列本身照常交给 xterm。
+      if (paramsIncludeMode(params, 1007)) {
+        terminalAlternateScrollRequestedRef.current = false;
+      }
       return false;
     });
     const cursorShowObserverDisposable = terminal.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
       if (paramsIncludeCursorMode(params)) {
         terminalRemoteCursorHiddenRef.current = false;
         scheduleTerminalContrastCursorSync();
+      }
+      if (paramsIncludeMode(params, 1007)) {
+        terminalAlternateScrollRequestedRef.current = true;
       }
       // Codex 会在加载和等待回复的重绘帧反复发送 ?25h；在 xterm 绘制前消费它，彻底消除提示文字首字符上的块光标闪烁。
       return useManagedCursorForSessionRef.current && paramsOnlyIncludeCursorMode(params);

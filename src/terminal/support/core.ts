@@ -62,8 +62,8 @@ export const terminalVerticalScrollbarMinThumbHeightPx = 32;
 // 普通终端保留 xterm 默认滚屏历史，避免影响 SSH 和 Shell 的日常查看习惯。
 export const terminalDefaultScrollbackRows = 1000;
 
-// AI Agent 也保留历史，避免窗口 resize 后把启动警告等一次性输出彻底丢掉；滚轮另行拦截。
-export const terminalAiAgentScrollbackRows = terminalDefaultScrollbackRows;
+// AI Agent 内联模式（如 Codex 默认界面）的整段对话都落在 scrollback 里，默认 1000 行很快被挤掉，单独放宽。
+export const terminalAiAgentScrollbackRows = 5000;
 
 // xterm 对 CLI 自绘颜色做逐格对比度兜底，覆盖浅色主题里的浅灰字和深色输入条上的默认黑字。
 export const terminalMinimumContrastRatio = 7;
