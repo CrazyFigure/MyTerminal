@@ -36,56 +36,10 @@ jobs:
         id: release_notes
         shell: pwsh
         run: |
-          # 发布说明只统计当前 tag 相对上一个可达 tag 的提交，避免新版本复用旧版本内容。
-          $previousTag = ''
-          $previousTagOutput = git describe --tags --abbrev=0 "HEAD^" 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            $previousTag = $previousTagOutput
-          }
-
-          $range = if ($previousTag) { "$previousTag..HEAD" } else { "HEAD" }
-          $subjects = git log --format=%s $range
-
-          $groups = [ordered]@{
-            '新增' = [System.Collections.Generic.List[string]]::new()
-            '修复' = [System.Collections.Generic.List[string]]::new()
-            '优化' = [System.Collections.Generic.List[string]]::new()
-          }
-
-          foreach ($subject in $subjects) {
-            # 发布整理提交只服务版本流程，不作为用户可见变更写入 Release。
-            if ($subject -match '^(docs|chore)\(release\):') {
-              continue
-            }
-
-            $text = $subject -replace '^(feat|fix|docs|refactor|perf|style|chore|test|build|ci)(\([^)]+\))?:\s*', ''
-            if ([string]::IsNullOrWhiteSpace($text)) {
-              $text = $subject
-            }
-
-            if ($subject -match '^feat(\([^)]+\))?:') {
-              $groups['新增'].Add($text)
-            } elseif ($subject -match '^fix(\([^)]+\))?:') {
-              $groups['修复'].Add($text)
-            } else {
-              $groups['优化'].Add($text)
-            }
-          }
-
-          $lines = [System.Collections.Generic.List[string]]::new()
-          foreach ($heading in $groups.Keys) {
-            $lines.Add("${heading}：")
-            if ($groups[$heading].Count -gt 0) {
-              foreach ($item in $groups[$heading]) {
-                $lines.Add("- $item")
-              }
-            } else {
-              $lines.Add("- 本次暂无${heading}项。")
-            }
-            $lines.Add('')
-          }
-
-          $body = ($lines -join [Environment]::NewLine).TrimEnd()
+          # 发布说明只统计当前 tag 相对上一个可达 tag 的提交；解析规则见 scripts/generate-release-notes.ps1
+          # 与 AGENTS.md「发版规范」，发版提交会读取正文条目，避免更新弹窗显示“本次暂无”。
+          $body = & ./scripts/generate-release-notes.ps1 -Ref HEAD
+          $body = ($body -join [Environment]::NewLine).TrimEnd()
           'body<<__MYTERMINAL_RELEASE_BODY__' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           $body | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           '__MYTERMINAL_RELEASE_BODY__' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
