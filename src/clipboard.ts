@@ -1,5 +1,27 @@
-import { isTauri } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
+
+// 剪贴板非文本内容：资源管理器复制的文件给出原路径，截图等位图由后端落盘为临时 PNG 后给出路径。
+export type ClipboardAttachment =
+  | { kind: 'files'; paths: string[] }
+  | { kind: 'image'; path: string };
+
+// 文本为空时再读取文件/图片；浏览器预览环境无法访问系统剪贴板文件，直接视为无附件。
+export const readClipboardAttachment = async (): Promise<ClipboardAttachment | null> => {
+  if (!isTauri()) {
+    return null;
+  }
+  return invoke<ClipboardAttachment | null>('read_clipboard_attachment').catch(() => null);
+};
+
+// 把附件转成终端可粘贴的路径文本：含空白或引号敏感字符的路径加双引号，多个路径以空格分隔。
+export const formatClipboardAttachmentPaths = (attachment: ClipboardAttachment) => {
+  const paths = attachment.kind === 'files' ? attachment.paths : [attachment.path];
+  return paths
+    .filter(Boolean)
+    .map((path) => (/[\s'&()^;,]/.test(path) ? `"${path}"` : path))
+    .join(' ');
+};
 
 // 读取剪贴板优先使用 Tauri 原生插件，避免桌面端 WebView 弹出浏览器权限请求。
 export const readClipboardText = async () => {

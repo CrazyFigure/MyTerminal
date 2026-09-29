@@ -174,6 +174,7 @@ fn main() {
             commands::save_favorite_commands,
             commands::detect_system_shells,
             commands::list_system_fonts,
+            commands::clipboard::read_clipboard_attachment,
             commands::font_pack::get_font_pack_status,
             commands::font_pack::download_font_pack,
             commands::font_pack::import_font_pack,
