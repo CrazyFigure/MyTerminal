@@ -218,6 +218,18 @@ pub(super) fn should_force_qwen_synchronized_output(command: &str) -> bool {
     )
 }
 
+/// ConPTY 以 PSEUDOCONSOLE_INHERIT_CURSOR 创建时，conhost 启动先发出的光标位置查询（DSR 6）。
+const CONPTY_STARTUP_CURSOR_QUERY: &str = "\x1b[6n";
+/// 新建 PTY 屏幕为空，光标必然位于左上角，直接以 1;1 回复。
+const CONPTY_STARTUP_CURSOR_REPLY: &[u8] = b"\x1b[1;1R";
+
+/// 剥离 ConPTY 首个输出块开头的光标位置查询；命中时返回剩余正文，未命中返回 None。
+/// conhost 在收到回复前会阻塞 Shell 的全部输出，若交给前端 xterm 绕一圈回复，
+/// 会受挂载、缓存重放与 connecting 状态拦截影响而明显拖慢甚至卡住首屏，因此由后端就地应答。
+fn strip_conpty_startup_cursor_query(content: &str) -> Option<&str> {
+    content.strip_prefix(CONPTY_STARTUP_CURSOR_QUERY)
+}
+
 /// 按 Shell 主名拼装“执行一条命令字符串”的启动参数。
 /// 统一按可执行名分流而不是按构建平台分流：PowerShell 7 在 Linux/macOS 上同样存在，
 /// 名字判定覆盖面更全，也不会因为平台条件编译漏掉某个终端。
@@ -385,13 +397,24 @@ pub(super) fn spawn_local_terminal_thread(
         let reader_app_handle = app_handle.clone();
         let reader_session_id = session_id.clone();
         let (reader_done_tx, reader_done_rx) = mpsc::channel();
+        // 读线程识别到 ConPTY 启动查询后通知主循环代为回复（writer 只归主循环持有）。
+        let (startup_reply_tx, startup_reply_rx) = mpsc::channel::<()>();
         thread::spawn(move || {
             let mut buffer = [0_u8; 16384];
+            // 启动查询只会出现在首个输出块开头，之后的内容一律原样透传。
+            let mut is_first_chunk = true;
             loop {
                 match reader.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(size) => {
-                        let content = String::from_utf8_lossy(&buffer[..size]).into_owned();
+                        let mut content = String::from_utf8_lossy(&buffer[..size]).into_owned();
+                        if std::mem::take(&mut is_first_chunk) {
+                            if let Some(rest) = strip_conpty_startup_cursor_query(&content) {
+                                // 先发回复信号再剥离查询，避免前端 xterm 再回一次被当成键盘输入。
+                                let _ = startup_reply_tx.send(());
+                                content = rest.to_string();
+                            }
+                        }
                         if !content.is_empty() {
                             queue_output(
                                 &reader_queue,
@@ -413,6 +436,15 @@ pub(super) fn spawn_local_terminal_thread(
                 break;
             }
             if matches!(child.try_wait(), Ok(Some(_))) {
+                break;
+            }
+            // ConPTY 启动查询的回复优先于用户输入写入，conhost 收到后才会放行 Shell 首屏。
+            if startup_reply_rx.try_recv().is_ok()
+                && writer
+                    .write_all(CONPTY_STARTUP_CURSOR_REPLY)
+                    .and_then(|_| writer.flush())
+                    .is_err()
+            {
                 break;
             }
 
@@ -660,6 +692,19 @@ mod tests {
             .map(|arg| (*arg).to_string())
             .collect();
         assert_eq!(argv_of(&builder), expected);
+    }
+
+    #[test]
+    fn strip_conpty_startup_cursor_query_only_matches_leading_query() {
+        // 首块以查询开头：剥掉查询，保留其后同块输出。
+        assert_eq!(
+            strip_conpty_startup_cursor_query("\x1b[6n\x1b[?9001h"),
+            Some("\x1b[?9001h")
+        );
+        assert_eq!(strip_conpty_startup_cursor_query("\x1b[6n"), Some(""));
+        // 查询不在开头时不是 conhost 启动握手，必须原样透传给前端。
+        assert_eq!(strip_conpty_startup_cursor_query("PS C:\\> \x1b[6n"), None);
+        assert_eq!(strip_conpty_startup_cursor_query(""), None);
     }
 
     #[test]
