@@ -1,6 +1,7 @@
 import { ChevronLeft, ChevronRight, Copy, CopyPlus, RotateCcw, Trash2, X } from 'lucide-react';
 
 import type { TranslationKey } from '../../i18n';
+import { ViewportClampedMenu } from '../../shared/ui/ViewportClampedMenu';
 import type { TerminalSession } from '../../types';
 
 export type SessionContextMenuTarget = { sessionId: string; x: number; y: number };
@@ -34,7 +35,7 @@ export function SessionContextMenu({
   const allSessionIds = sessions.map((item) => item.id);
 
   return (
-    <div className="context-menu session-context-menu" style={{ left: target.x, top: target.y }} onClick={(event) => event.stopPropagation()}>
+    <ViewportClampedMenu className="context-menu session-context-menu" x={target.x} y={target.y}>
       <button className="context-menu-item" onClick={() => closeSessionBatch([session.id])} type="button">
         <X size={14} /> {t('closeSessionAction')}
       </button>
@@ -59,6 +60,6 @@ export function SessionContextMenu({
       <button className="context-menu-item" onClick={() => copyConnection(session)} type="button">
         <Copy size={14} /> {t('copyConnectionInfo')}
       </button>
-    </div>
+    </ViewportClampedMenu>
   );
 }
