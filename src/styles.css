@@ -1179,6 +1179,11 @@ select:disabled {
   box-shadow: inset 0 0 0 1px var(--app-active-border);
 }
 
+/* 未分屏时只有一个格子，焦点描边没有区分意义，去掉以免和外层卡片边框叠成一圈蓝框。 */
+.terminal-split-grid[data-pane-count='1'] .terminal-split-pane.is-focused {
+  box-shadow: none;
+}
+
 .terminal-split-pane.is-drop-target {
   box-shadow: inset 0 0 0 2px var(--app-active-border);
 }
