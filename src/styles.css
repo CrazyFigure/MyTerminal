@@ -123,6 +123,9 @@ select:disabled {
   --app-control-accent-hover: #4338ca;
   --app-switch-off-bg: rgba(148, 163, 184, 0.32);
   --app-switch-off-border: rgba(148, 163, 184, 0.45);
+  /* 浮层内分区卡片（如设置页分组）：只比浮层底色略深一档，靠细边框界定层级 */
+  --app-section-bg: #f8fafc;
+  --app-section-border: rgba(148, 163, 184, 0.2);
   position: relative;
   display: flex;
   flex-direction: column;
@@ -155,7 +158,8 @@ select:disabled {
   /* 深色模式画布底色，与 body 深色背景保持一致 */
   --app-canvas-bg: #0f172a;
   --app-card-bg: rgba(15, 23, 42, 0.88);
-  --app-overlay-bg: #0f172a;
+  /* 深色浮层比画布底色略亮一档，体现“浮起”层级，与浅色模式白色浮层压在浅灰画布上的关系一致 */
+  --app-overlay-bg: #131b2e;
   --app-card-border: rgba(71, 85, 105, 0.42);
   --app-modal-border: rgba(148, 163, 184, 0.56);
   --app-shadow: 0 22px 52px rgba(2, 6, 23, 0.34);
@@ -173,6 +177,18 @@ select:disabled {
   --app-control-accent-hover: #4f46e5;
   --app-switch-off-bg: rgba(71, 85, 105, 0.45);
   --app-switch-off-border: rgba(100, 116, 139, 0.52);
+  /* 深色分区不再用实色石板灰，改为极低透明度的提亮叠层，避免大面积灰蓝色块显得沉闷 */
+  --app-section-bg: rgba(148, 163, 184, 0.045);
+  --app-section-border: rgba(148, 163, 184, 0.14);
+}
+
+/* 深色弹窗内部的层级统一采用“底色 + 轻微提亮”：按钮/导航/列表项只比浮层亮一点点，
+   输入框则比分区略暗形成内嵌感，与浅色模式下的细微色阶保持同样的克制程度。
+   弹窗之外（侧栏、终端区）仍沿用全局变量，保证背景图模式下的不透明度不受影响。 */
+.app-shell.theme-dark .modal {
+  --app-panel-bg: rgba(148, 163, 184, 0.07);
+  --app-item-bg: rgba(148, 163, 184, 0.045);
+  --app-input-bg: rgba(2, 6, 23, 0.3);
 }
 
 /* ── 自定义标题栏 ─────────────────────────────────────────────── */
@@ -572,6 +588,31 @@ select:disabled {
   color: #0f172a;
 }
 
+/* 深色模式下浅灰底轨会在暗色侧栏上形成刺眼的亮条：底轨改为低透明度提亮，
+   填充色改为半透明的饱和色，数值随之改用浅色字，在底轨和填充上都保持清晰。 */
+.app-shell.theme-dark .metric-progress-track {
+  border-color: rgba(148, 163, 184, 0.18);
+  background: rgba(148, 163, 184, 0.1);
+}
+
+.app-shell.theme-dark .metric-progress-fill {
+  border-right-color: rgba(2, 6, 23, 0.3);
+  background: rgba(34, 197, 94, 0.5);
+}
+
+.app-shell.theme-dark .metric-tone-warning .metric-progress-fill {
+  background: rgba(249, 115, 22, 0.55);
+}
+
+.app-shell.theme-dark .metric-tone-danger .metric-progress-fill {
+  background: rgba(239, 68, 68, 0.58);
+}
+
+.app-shell.theme-dark .runtime-row:not(.metric-tone-neutral) .metric-value,
+.app-shell.theme-dark .runtime-core-row .metric-value {
+  color: #f1f5f9;
+}
+
 .runtime-row-group {
   min-width: 0;
 }
@@ -621,6 +662,12 @@ select:disabled {
   border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 5px;
   background: rgba(226, 232, 240, 0.45);
+}
+
+/* 深色模式分段控件底色跟随整体“轻微提亮”层级，避免浅灰底块 */
+.app-shell.theme-dark .runtime-segmented-control {
+  border-color: rgba(148, 163, 184, 0.2);
+  background: rgba(148, 163, 184, 0.06);
 }
 
 .runtime-segmented-control button {
@@ -2183,6 +2230,11 @@ select:disabled {
   color: #475569;
 }
 
+.app-shell.theme-dark .status-idle {
+  background: rgba(148, 163, 184, 0.14);
+  color: #cbd5e1;
+}
+
 .primary-button,
 .secondary-button,
 .ghost-button,
@@ -2507,7 +2559,7 @@ select:disabled {
 }
 
 .app-shell.theme-dark .explorer-row.is-odd {
-  background: rgba(30, 41, 59, 0.52);
+  background: rgba(148, 163, 184, 0.05);
 }
 
 .explorer-row.is-virtual {
@@ -4774,11 +4826,7 @@ body.theme-dark img[src*="kimi.svg"],
   width: min(980px, 100%);
   height: var(--modal-fixed-height);
   overflow: hidden;
-  background: #ffffff;
-}
-
-.app-shell.theme-dark .modal-settings {
-  background: #0f172a;
+  background: var(--app-overlay-bg);
 }
 
 .modal-settings .settings-shell {
@@ -5052,14 +5100,9 @@ body.theme-dark img[src*="kimi.svg"],
 
 .modal-settings .settings-section-block,
 .modal-settings .sync-transfer-card {
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  border: 1px solid var(--app-section-border);
   border-radius: 8px;
-  background: #f8fafc;
-}
-
-.app-shell.theme-dark .modal-settings .settings-section-block,
-.app-shell.theme-dark .modal-settings .sync-transfer-card {
-  background: #1e293b;
+  background: var(--app-section-bg);
 }
 
 .connection-group-row,
