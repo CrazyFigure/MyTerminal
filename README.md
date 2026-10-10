@@ -3,7 +3,7 @@
 [简体中文](./README.md) | [English](./README_EN.md)
 
 ![Release](https://img.shields.io/github/v/release/CrazyFigure/MyTerminal?include_prereleases&label=release)
-![License](https://img.shields.io/badge/license-MIT%20%2B%20Commons%20Clause-orange)
+![License](https://img.shields.io/badge/license-GPL--3.0--only-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111)
 ![Rust](https://img.shields.io/badge/Rust-stable-000?logo=rust&logoColor=white)
@@ -91,7 +91,6 @@ Windows 环境要求、从源码运行、检查命令与打包安装包均见 [S
 
 ## 许可证
 
-[MIT License + Commons Clause License Condition v1.0](./LICENSE) © 2026
-CrazyFigure。允许企业免费用于内部生产；未经版权所有者事先书面授权，不得销售
-MyTerminal 本身，也不得提供其价值全部或主要来源于 MyTerminal 功能的收费产品或服务。
-这是源码可用许可证，不是 OSI 认可的开源许可证。
+[GNU General Public License v3.0 only (GPL-3.0-only)](./LICENSE) © 2026
+CrazyFigure。你可以自由使用、修改和分发本项目；分发修改版或衍生作品时，必须同样以
+GPL-3.0-only 许可证提供完整源代码，并保留版权与许可证声明。

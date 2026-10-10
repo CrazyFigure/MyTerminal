@@ -5,6 +5,7 @@ version = "0.9.5"
 description = "A modern Rust + Tauri 2 remote terminal manager inspired by FinalShell"
 authors = ["OpenAI"]
 edition = "2021"
+license = "GPL-3.0-only"
 # 项目同时包含桌面主程序和 myterminal-cli；Tauri dev 默认 cargo run 时必须明确主程序。
 default-run = "myterminal"
 
