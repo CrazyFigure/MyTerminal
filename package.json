@@ -37,7 +37,7 @@
     "webdav"
   ],
   "author": "",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "GPL-3.0-only",
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@radix-ui/react-tooltip": "^1.2.16",

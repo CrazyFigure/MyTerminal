@@ -3,7 +3,7 @@
 [English](./README_EN.md) | [简体中文](./README.md)
 
 ![Release](https://img.shields.io/github/v/release/CrazyFigure/MyTerminal?include_prereleases&label=release)
-![License](https://img.shields.io/badge/license-MIT%20%2B%20Commons%20Clause-orange)
+![License](https://img.shields.io/badge/license-GPL--3.0--only-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111)
 ![Rust](https://img.shields.io/badge/Rust-stable-000?logo=rust&logoColor=white)
@@ -91,9 +91,7 @@ Environment requirements, running from source, check commands, and installer pac
 
 ## License
 
-[MIT License with Commons Clause License Condition v1.0](./LICENSE) © 2026
-CrazyFigure. Free internal production use by businesses is permitted. You may
-not sell MyTerminal itself or offer a paid product or service whose value
-derives entirely or substantially from MyTerminal without prior written
-authorization from the copyright holder. This is a source-available license,
-not an OSI-approved open-source license.
+[GNU General Public License v3.0 only (GPL-3.0-only)](./LICENSE) © 2026
+CrazyFigure. You are free to use, modify, and distribute this project. If you
+distribute modified versions or derivative works, you must provide the complete
+source code under GPL-3.0-only as well and keep the copyright and license notices.
