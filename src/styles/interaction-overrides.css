@@ -162,7 +162,8 @@
   padding: 1px 6px;
   border-radius: 4px;
   font-size: 0.76rem;
-  background: rgba(255, 255, 255, 0.85);
+  /* 跟随输入框底色，深色模式下不会出现白底浅字看不清的问题 */
+  background: var(--app-input-bg);
   color: var(--app-text);
   border: 1px solid rgba(148, 163, 184, 0.25);
 }
@@ -459,11 +460,7 @@
   width: min(1200px, 100%);
   height: var(--modal-editor-fixed-height);
   overflow: hidden;
-  background: #ffffff;
-}
-
-.app-shell.theme-dark .modal-editor {
-  background: #0f172a;
+  background: var(--app-overlay-bg);
 }
 
 .modal-editor .modal-header {
