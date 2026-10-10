@@ -1,6 +1,8 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 
+import { resolveTerminalColors } from '../../terminal/support/theme';
 import { retainTerminalSessions } from '../../terminal/terminalOutputHub';
+import { useTerminalBackgroundImageStyle } from '../../terminal/useTerminalBackgroundImageStyle';
 import type { AppSettings, ConnectionProfile, TerminalSession } from '../../types';
 import type { TranslationKey } from '../../i18n';
 import { SplitDividerHandle } from './SplitDividerHandle';
@@ -114,12 +116,24 @@ export function TerminalSplitGrid({
     retainTerminalSessions(new Set(liveSessionIds));
   }, [liveSessionIds]);
 
+  // 背景图统一画在整个网格上：不论几个分屏，所有格子的标签栏与终端共用同一张图。
+  const backgroundImageStyle = useTerminalBackgroundImageStyle(settings);
+  const hasBackgroundImage = Boolean(settings.backgroundImage?.trim());
+  // 有背景图时终端本体透明，网格自身承担终端底色，保证图片下方的颜色与原终端一致。
+  const terminalBackgroundColor = useMemo(
+    () => resolveTerminalColors(settings).background,
+    [settings.terminalBackground, settings.themeMode],
+  );
+
   return (
     <div
-      className={`terminal-split-grid ${dragActive ? 'is-tab-dragging' : ''}`}
+      className={`terminal-split-grid ${dragActive ? 'is-tab-dragging' : ''} ${hasBackgroundImage ? 'has-background-image' : ''}`}
       data-pane-count={layout.panes.length}
       ref={containerRef}
+      style={hasBackgroundImage ? { background: terminalBackgroundColor } : undefined}
     >
+      {/* 图层必须排在格子之前：同为定位元素时按文档顺序绘制，格子自然盖在图上。 */}
+      {backgroundImageStyle ? <div className="terminal-background-image" style={backgroundImageStyle} /> : null}
       {layout.panes.map((pane) => {
         // 每格渲染自己标签栏里的全部会话；未激活标签仅隐藏，保留其 xterm 状态以实时接收后台输出。
         const paneSessions = pane.sessionIds
@@ -141,7 +155,9 @@ export function TerminalSplitGrid({
               isDropTarget ? 'is-drop-target' : ''
             } ${paneSession ? '' : 'is-empty'}`}
             data-at-bottom-edge={bounds.rowEnd === 2}
+            data-at-left-edge={bounds.colStart === 0}
             data-at-right-edge={bounds.colEnd === 2}
+            data-at-top-edge={bounds.rowStart === 0}
             data-pane-id={pane.id}
             onPointerDownCapture={() => {
               // 点击格子内任意位置都视为聚焦该格，后续新开的会话会落在这里。

@@ -39,6 +39,38 @@ body.theme-dark {
   color: #e2e8f0;
 }
 
+/* 全局原生滚动条与终端区一致：10px 轨道 + 2px 透明边框 → 6px 圆角滑块，无底色轨道、无上下左右箭头。
+   各区域已有的专属滚动条样式选择器更具体，仍按原样生效。
+   注意：元素上若写了非 auto 的 scrollbar-width/scrollbar-color，Chromium 121+ 会忽略这里的 ::-webkit-scrollbar 系列。 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb,
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-color: #777777;
+  background-clip: padding-box;
+}
+
+body.theme-dark ::-webkit-scrollbar-thumb,
+body.theme-dark ::-webkit-scrollbar-thumb:hover,
+body.theme-dark ::-webkit-scrollbar-thumb:active {
+  background-color: #999999;
+}
+
 button,
 input,
 textarea,
@@ -1117,6 +1149,53 @@ select:disabled {
   background: var(--app-panel-bg);
 }
 
+/* 有背景图时标签栏与终端区域完全同底（都透明），否则叠出的浅色层在图片暗处会特别突兀；
+   也去掉标签栏与终端之间的分隔线，让标签行和终端读作同一块区域。
+   非激活标签半透明，激活标签保持原样，确保当前会话依旧醒目。 */
+.terminal-split-grid.has-background-image .split-pane-tab-bar {
+  border-bottom-color: transparent;
+  background: transparent;
+}
+
+/* 有背景图且分屏时，每个格子各自一圈圆角边框，格子之间留出缝隙露出背景图，
+   取代原先相邻格共用的分隔线。margin 只收缩格子自身，不影响网格轨道比例和分隔条定位。
+   贴外圈的一侧留 3px；内侧两格各留一半，合起来与外圈等宽，避免中间缝隙变成两倍。 */
+.terminal-split-grid.has-background-image:not([data-pane-count='1']) .terminal-split-pane,
+.terminal-split-grid.has-background-image:not([data-pane-count='1']) .terminal-split-pane[data-at-right-edge='true'],
+.terminal-split-grid.has-background-image:not([data-pane-count='1']) .terminal-split-pane[data-at-bottom-edge='true'] {
+  margin: 1.5px;
+  border: 1px solid var(--app-card-border);
+  border-radius: 8px;
+  transition: border-color 140ms ease;
+}
+
+.terminal-split-grid.has-background-image:not([data-pane-count='1']) .terminal-split-pane[data-at-top-edge='true'] {
+  margin-top: 3px;
+}
+
+.terminal-split-grid.has-background-image:not([data-pane-count='1']) .terminal-split-pane[data-at-left-edge='true'] {
+  margin-left: 3px;
+}
+
+.terminal-split-grid.has-background-image:not([data-pane-count='1']) .terminal-split-pane[data-at-right-edge='true'] {
+  margin-right: 3px;
+}
+
+.terminal-split-grid.has-background-image:not([data-pane-count='1']) .terminal-split-pane[data-at-bottom-edge='true'] {
+  margin-bottom: 3px;
+}
+
+/* 焦点格直接把边框换成激活色，不再叠内描边，避免圆角处出现两道线。 */
+.terminal-split-grid.has-background-image:not([data-pane-count='1']) .terminal-split-pane.is-focused {
+  border-color: var(--app-active-border);
+  box-shadow: none;
+}
+
+/* 排除 :hover，否则这条更高优先级的规则会吞掉标签的悬停加深反馈。 */
+.terminal-split-grid.has-background-image .session-tab:not(.is-active):not(:hover) {
+  background: color-mix(in srgb, var(--app-panel-bg) 55%, transparent);
+}
+
 .split-pane-tab-bar > .session-tab-scroll-shell {
   flex: 1 1 auto;
   min-width: 0;
@@ -1215,29 +1294,33 @@ select:disabled {
   pointer-events: none;
 }
 
+/* 握柄画成贯穿整条分隔线的长线：长度直接取分隔条自身，三分格里的半长线也随 data-span 自动变短。 */
 .split-divider-column .split-divider-grip {
   width: 3px;
-  height: 36px;
+  height: 100%;
 }
 
 .split-divider-row .split-divider-grip {
-  width: 36px;
+  width: 100%;
   height: 3px;
 }
 
+/* 中心手柄自身不画点，改为悬停/拖拽时点亮横竖两条贯穿线，组成完整十字。 */
 .split-divider-center .split-divider-grip {
-  width: 10px;
-  height: 10px;
+  display: none;
 }
 
-.split-divider.is-visible .split-divider-grip {
+.split-divider.is-visible .split-divider-grip,
+.terminal-split-grid:has(.split-divider-center.is-visible) .split-divider-column .split-divider-grip,
+.terminal-split-grid:has(.split-divider-center.is-visible) .split-divider-row .split-divider-grip {
   opacity: 0.75;
 }
 
-/* 拖拽中整条线提亮并加长，明确"正在改的是这一条"。 */
-.split-divider.is-dragging .split-divider-grip {
+/* 拖拽中整条线完全不透明，明确"正在改的是这一条"；长线不再缩放，避免超出终端区。 */
+.split-divider.is-dragging .split-divider-grip,
+.terminal-split-grid:has(.split-divider-center.is-dragging) .split-divider-column .split-divider-grip,
+.terminal-split-grid:has(.split-divider-center.is-dragging) .split-divider-row .split-divider-grip {
   opacity: 1;
-  transform: scale(1.15);
 }
 
 @media (prefers-reduced-motion: reduce) {

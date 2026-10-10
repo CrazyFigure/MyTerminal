@@ -25,12 +25,10 @@ import {
 } from './terminal/terminalOutputHub';
 
 import {
-  buildTerminalBackgroundImageStyle,
   buildTerminalTheme,
   canAcceptTerminalInput,
   detectTerminalClaudeInputFrame,
   findTerminalInverseCursorColumn,
-  isRemoteHttpImage,
   isTerminalAiAgentSession,
   isTerminalNonPromptRowText,
   isWindowsTerminalHost,
@@ -38,7 +36,6 @@ import {
   measureTerminalPromptGlyphEndColumn,
   parseTerminalOscRgbColor,
   parseTerminalRgbColor,
-  resolveTerminalBackgroundImage,
   resolveTerminalCellVisualBackgroundRgb,
   resolveTerminalColorContrastRatio,
   resolveTerminalColors,
@@ -272,52 +269,14 @@ export function TerminalWorkspace({
   const terminalThemeRef = useRef(terminalTheme);
   // 记录 xterm 当前真实光标色；TUI 可通过 OSC 12 覆盖主题值，低对比兜底必须使用协议生效后的颜色。
   const terminalCursorColorRef = useRef<TerminalRgbColor | undefined>(parseTerminalRgbColor(terminalTheme.cursor));
-  // 远程 http(s) 背景图经后端下载后缓存的 data URL；null 表示无远程图或下载失败(回退到原始行为)。
-  const [remoteBackgroundDataUrl, setRemoteBackgroundDataUrl] = useState<string | null>(null);
-  useEffect(() => {
-    const rawUrl = settings.backgroundImage?.trim();
-    // 非远程图片(本地/asset/data)无需下载，清空缓存交给下方直接解析。
-    if (!isRemoteHttpImage(rawUrl) || !rawUrl) {
-      setRemoteBackgroundDataUrl(null);
-      return;
-    }
-    let cancelled = false;
-    setRemoteBackgroundDataUrl(null);
-    backend
-      .fetchRemoteBackgroundImage(rawUrl)
-      .then((dataUrl) => {
-        if (!cancelled) {
-          setRemoteBackgroundDataUrl(dataUrl);
-        }
-      })
-      .catch(() => {
-        // 下载失败时回退为直接使用原始 URL，保持与旧行为一致(仍可能被防盗链拦截，但不影响其它功能)。
-        if (!cancelled) {
-          setRemoteBackgroundDataUrl(rawUrl);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [settings.backgroundImage]);
-  const backgroundImageStyle = useMemo(() => {
-    // 远程图片用下载得到的 data URL；本地/asset/data 走原解析逻辑。
-    const resolvedImage = isRemoteHttpImage(settings.backgroundImage)
-      ? remoteBackgroundDataUrl ?? undefined
-      : resolveTerminalBackgroundImage(settings.backgroundImage);
-    return buildTerminalBackgroundImageStyle(settings, resolvedImage);
-  }, [
-    settings.backgroundImage,
-    settings.terminalBackgroundImageFit,
-    settings.terminalBackgroundImageOpacity,
-    remoteBackgroundDataUrl,
-  ]);
   // 外层容器的实际背景色：跟随主题自动切换，xterm canvas 始终透明以便选区覆盖层透出。
   const terminalBackgroundColor = useMemo(
     () => resolveTerminalColors(settings).background,
     [settings.terminalBackground, settings.themeMode],
   );
   const terminalBackgroundColorRef = useRef(terminalBackgroundColor);
+  // 背景图由外层分屏网格统一绘制（所有格子与标签栏共用一张），终端自身在有背景图时让底色透明。
+  const hasBackgroundImage = Boolean(settings.backgroundImage?.trim());
   const terminalFontFamily = useMemo(
     () => buildTerminalFontFamily(
       settings.shellLatinFontFamily ?? settings.shellFontFamily,
@@ -2348,9 +2307,8 @@ export function TerminalWorkspace({
     <section
       aria-hidden={!isVisible}
       className={`terminal-workspace card ${isVisible ? '' : 'is-session-hidden'}`}
-      style={{ background: terminalBackgroundColor }}
+      style={{ background: hasBackgroundImage ? 'transparent' : terminalBackgroundColor }}
     >
-      {backgroundImageStyle ? <div className="terminal-background-image" style={backgroundImageStyle} /> : null}
       <div
         className={`terminal-surface ${terminalHasHorizontalOverflow && effectiveTerminalLineWrapMode === 'horizontal' ? 'is-horizontal-scroll' : 'is-wrapped'}`}
         ref={containerRef}
