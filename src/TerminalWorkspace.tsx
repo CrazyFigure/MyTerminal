@@ -11,6 +11,7 @@ import {
   writeClipboardText,
 } from './clipboard';
 import { translate } from './i18n';
+import { ViewportClampedMenu } from './shared/ui/ViewportClampedMenu';
 import { useAppStore } from './store';
 import { initialTerminalReplaySize, type TerminalReplayEntry } from './terminalCache';
 import { buildTerminalFontFamily } from './terminalFonts';
@@ -2321,11 +2322,7 @@ export function TerminalWorkspace({
       </div>
 
       {terminalContextMenu ? (
-        <div
-          className="context-menu terminal-context-menu"
-          style={{ left: terminalContextMenu.x, top: terminalContextMenu.y }}
-          onClick={(event) => event.stopPropagation()}
-        >
+        <ViewportClampedMenu className="context-menu terminal-context-menu" x={terminalContextMenu.x} y={terminalContextMenu.y}>
           <button
             className="context-menu-item"
             disabled={!terminalContextMenu.selectedText}
@@ -2367,15 +2364,11 @@ export function TerminalWorkspace({
           >
             {translate(settings.uiLanguage, 'terminalMenuFavorite')}
           </button>
-        </div>
+        </ViewportClampedMenu>
       ) : null}
 
       {terminalGutterContextMenu ? (
-        <div
-          className="context-menu terminal-gutter-context-menu"
-          style={{ left: terminalGutterContextMenu.x, top: terminalGutterContextMenu.y }}
-          onClick={(event) => event.stopPropagation()}
-        >
+        <ViewportClampedMenu className="context-menu terminal-gutter-context-menu" x={terminalGutterContextMenu.x} y={terminalGutterContextMenu.y}>
           <button
             className="context-menu-item terminal-gutter-context-item"
             onClick={() => {
@@ -2400,7 +2393,7 @@ export function TerminalWorkspace({
             <span className={`terminal-gutter-context-check ${gutterShowTimestamp ? 'is-checked' : ''}`} aria-hidden="true" />
             {translate(settings.uiLanguage, 'terminalGutterShowTimestamp')}
           </button>
-        </div>
+        </ViewportClampedMenu>
       ) : null}
 
       {!session ? (
