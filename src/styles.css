@@ -2029,6 +2029,11 @@ select:disabled {
   opacity: 1;
 }
 
+/* 仅当前展示的标签常驻关闭按钮；其他标签在悬停或键盘聚焦时才显示。 */
+.session-tab:not(.is-active):not(:hover):not(:focus-within) .session-tab-close {
+  display: none;
+}
+
 .session-tab.is-active,
 .panel-tab.is-active,
 .settings-nav-item.is-active {
