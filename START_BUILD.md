@@ -46,6 +46,8 @@ npm run tauri:dev
 
 该命令会合并 `src-tauri/tauri.dev.conf.json`，为开发版使用独立应用标识；因此已安装的 EXE 可以与开发版同时运行，同时仍分别保持单实例。
 
+开发服务首次启动时由系统分配空闲端口，并保存到 `src-tauri/target/.myterminal-dev-port`；之后优先复用，端口被占用或不可监听时重新分配。这样可以避免仅因端口变化导致 `TAURI_CONFIG` 改变、触发 Rust 主项目重新构建。删除 `target` 或端口缓存后，下次启动会重新分配。
+
 它会：
 
 1. 启动 Vite 前端开发服务器；

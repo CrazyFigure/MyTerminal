@@ -32,7 +32,7 @@ if (!packageJson.version) {
   throw new Error('package.json is missing a version field.');
 }
 
-// 标准 Tauri 开发命令会注入系统分配的空闲端口；单独启动网页时才从 1420 起自动寻找端口。
+// 标准 Tauri 开发命令会注入复用或系统新分配的空闲端口；单独启动网页时才从 1420 起自动寻找端口。
 const configuredDevPort = Number.parseInt(process.env.MYTERMINAL_DEV_PORT ?? '', 10);
 const hasAllocatedDevPort = Number.isInteger(configuredDevPort)
   && configuredDevPort > 0
