@@ -302,6 +302,9 @@ pub struct AgentModel {
     /// 上下文窗口大小（token）；用于估算何时触发自动压缩。
     #[serde(default = "default_agent_model_context_window")]
     pub context_window: u32,
+    /// 是否支持多模态（图片）输入；关闭时历史里的图片以文字占位下发，避免纯文本模型直接报 400。
+    #[serde(default)]
+    pub multimodal: bool,
 }
 
 pub(super) fn default_agent_model_max_tokens() -> u32 {
@@ -357,6 +360,10 @@ pub struct AgentProvider {
     pub protocol: String,
     /// 服务基址，例如 https://api.anthropic.com。
     pub base_url: String,
+    /// Anthropic 协议的认证头："x-api-key"（官方）或 "bearer"（多数代理与 ANTHROPIC_AUTH_TOKEN）；
+    /// 空串表示自动：先用 x-api-key，遇到 401/403 再换 Bearer 重试。其它协议固定用 Bearer，忽略该字段。
+    #[serde(default)]
+    pub auth_style: String,
     /// 明文 API Key；落盘时加密存储，下发前端与导出配置（本地/WebDAV）时为明文。
     #[serde(default)]
     pub api_key: String,
@@ -384,9 +391,13 @@ pub struct AgentConversation {
     pub model_id: String,
     /// 前端消息列表原样保存。
     pub messages: serde_json::Value,
+    /// 通过会话 ID 接续时记录的来源会话摘要；结构由前端定义，后端只透传。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continued_from: Option<serde_json::Value>,
 }
 
-/// 一轮对话的运行参数；由前端每次发送时携带，不落盘，便于随时调整。
+/// 一轮对话的运行参数。思考强度由前端每次发送时携带；
+/// 自动压缩开关与阈值属于全局设置，由命令层用 AppSettings 覆盖，前端传值不作数。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRunOptions {
@@ -420,6 +431,11 @@ pub(super) fn default_agent_auto_compact() -> bool {
     true
 }
 
+/// 500 字大约是一屏输入框的量，再长的日志、报错堆栈更适合折叠成块，避免把输入框撑满。
+pub(super) fn default_agent_chat_paste_block_threshold() -> u32 {
+    500
+}
+
 /// AgentProvider 的落盘形态：API Key 以密文保存，与连接凭据同一套加密方案。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredAgentProvider {
@@ -427,6 +443,8 @@ pub struct StoredAgentProvider {
     pub name: String,
     pub protocol: String,
     pub base_url: String,
+    #[serde(default)]
+    pub auth_style: String,
     #[serde(default)]
     pub api_key_encrypted: String,
     #[serde(default)]
@@ -475,6 +493,15 @@ pub struct AppSettings {
     /// 右侧 AI 对话正文行高倍数；与终端行高独立，没有“跟随终端”语义。
     #[serde(default = "default_agent_chat_line_height")]
     pub agent_chat_line_height: f32,
+    /// 内置 AI 对话是否在上下文吃紧时自动压缩较早历史。
+    #[serde(default = "default_agent_auto_compact")]
+    pub agent_chat_auto_compact: bool,
+    /// 自动压缩触发阈值（占模型上下文窗口的比例，0.3~0.95）。
+    #[serde(default = "default_agent_compact_threshold")]
+    pub agent_chat_compact_threshold: f32,
+    /// 粘贴文本超过该字数时折叠为文本块附件；0 表示关闭，始终原样粘贴进输入框。
+    #[serde(default = "default_agent_chat_paste_block_threshold")]
+    pub agent_chat_paste_block_threshold: u32,
     /// 全局界面英文字体；None 表示跟随终端英文字体，回落由前端解析。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_latin_font_family: Option<String>,
@@ -548,6 +575,9 @@ impl Default for AppSettings {
             agent_chat_cjk_font_family: None,
             agent_chat_font_size: 0,
             agent_chat_line_height: default_agent_chat_line_height(),
+            agent_chat_auto_compact: default_agent_auto_compact(),
+            agent_chat_compact_threshold: default_agent_compact_threshold(),
+            agent_chat_paste_block_threshold: default_agent_chat_paste_block_threshold(),
             ui_latin_font_family: None,
             ui_cjk_font_family: None,
             ui_font_size: 0,

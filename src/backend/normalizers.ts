@@ -197,6 +197,23 @@ export const normalizeSettings = (settings: AppSettings): AppSettings => ({
     }
     return clampFontSize(value);
   })(),
+  // 旧配置没有压缩字段时按默认开启；阈值钳制在设置页滑块范围内，按 1% 取整避免浮点误差让“有修改”误判。
+  agentChatAutoCompact: settings.agentChatAutoCompact !== false,
+  agentChatCompactThreshold: (() => {
+    const value = Number(settings.agentChatCompactThreshold);
+    if (!Number.isFinite(value) || value <= 0) {
+      return 0.65;
+    }
+    return Math.round(Math.min(0.95, Math.max(0.3, value)) * 100) / 100;
+  })(),
+  // 旧配置没有该字段时用默认 500；0 表示关闭，负数和非法值回落到默认。
+  agentChatPasteBlockThreshold: (() => {
+    const value = Math.round(Number(settings.agentChatPasteBlockThreshold));
+    if (!Number.isFinite(value) || value < 0) {
+      return 500;
+    }
+    return Math.min(1_000_000, value);
+  })(),
   runtimeResourceRefreshIntervalSec: clampResourceRefreshInterval(
     settings.runtimeResourceRefreshIntervalSec,
   ),

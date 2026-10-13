@@ -1,8 +1,9 @@
-import { useState, type RefObject } from "react";
+import { Fragment, useState, type RefObject } from "react";
 import {
   Bot,
   ChevronDown,
   ChevronRight,
+  CornerDownRight,
   Play,
   Terminal as TerminalIcon,
   User,
@@ -11,7 +12,13 @@ import {
 
 import { MarkdownView } from "../../MarkdownView";
 import type { TranslationKey } from "../../i18n";
-import type { AgentBridgeRequest, AgentChatMessage } from "../../types";
+import type {
+  AgentBridgeRequest,
+  AgentChatAttachment,
+  AgentChatMessage,
+  AgentConversationOrigin,
+} from "../../types";
+import { AgentMessageAttachments } from "./AgentChatAttachments";
 import {
   previewAgentChatText,
   resolveAgentChatMessageParts,
@@ -21,8 +28,13 @@ type Props = {
   activeConversationId: string;
   approvalRequests: AgentBridgeRequest[];
   bodyRef: RefObject<HTMLDivElement | null>;
+  /** 接续来源：在复制来的历史末尾画分隔线，标明此后由新模型继续。 */
+  continuedFrom?: AgentConversationOrigin;
   messages: AgentChatMessage[];
   onApproveRequest: (request: AgentBridgeRequest) => void;
+  onPreviewImage: (
+    attachment: Extract<AgentChatAttachment, { kind: "image" }>,
+  ) => void;
   onRejectRequest: (request: AgentBridgeRequest) => void;
   onStickToBottomChange: (stuck: boolean) => void;
   t: (
@@ -36,8 +48,10 @@ export function AgentChatMessages({
   activeConversationId,
   approvalRequests,
   bodyRef,
+  continuedFrom,
   messages,
   onApproveRequest,
+  onPreviewImage,
   onRejectRequest,
   onStickToBottomChange,
   t,
@@ -59,9 +73,9 @@ export function AgentChatMessages({
       ref={bodyRef}
     >
       {messages.length ? (
-        messages.map((message) => (
+        messages.map((message, messageIndex) => (
+          <Fragment key={message.id}>
           <div
-            key={message.id}
             className={`agent-chat-message is-${message.role}`}
           >
             <div className="agent-chat-message-role">
@@ -69,10 +83,19 @@ export function AgentChatMessages({
             </div>
             <div className="agent-chat-message-body">
               {message.role === "user" ? (
-                // 用户输入保持纯文本原样展示，不按 Markdown 解析。
-                message.content ? (
-                  <p className="agent-chat-user-text">{message.content}</p>
-                ) : null
+                <>
+                  {message.attachments?.length ? (
+                    <AgentMessageAttachments
+                      attachments={message.attachments}
+                      onPreview={onPreviewImage}
+                      t={t}
+                    />
+                  ) : null}
+                  {/* 用户输入保持纯文本原样展示，不按 Markdown 解析。 */}
+                  {message.content ? (
+                    <p className="agent-chat-user-text">{message.content}</p>
+                  ) : null}
+                </>
               ) : (
                 <>
                   {/* 助手回复按到达顺序渲染：文本段与工具段交替，保证「先工具、后总结」与真实执行一致。 */}
@@ -186,6 +209,29 @@ export function AgentChatMessages({
               )}
             </div>
           </div>
+          {/* 接续分隔线紧跟复制来的最后一条消息，此后的内容才属于当前模型。 */}
+          {continuedFrom && messageIndex === continuedFrom.messageCount - 1 ? (
+            <div className="agent-chat-continued-divider" role="separator">
+              <span>
+                <CornerDownRight size={12} />
+                {t("agentChatContinuedDivider", {
+                  count: continuedFrom.messageCount,
+                  title: continuedFrom.title,
+                })}
+              </span>
+              <small>
+                {continuedFrom.modelId
+                  ? t("agentChatContinuedFromModel", {
+                      model: continuedFrom.modelId,
+                    })
+                  : null}
+                {messageIndex === messages.length - 1
+                  ? `${continuedFrom.modelId ? " · " : ""}${t("agentChatContinuedNext")}`
+                  : null}
+              </small>
+            </div>
+          ) : null}
+          </Fragment>
         ))
       ) : (
         <div className="empty-state">{t("agentChatEmpty")}</div>

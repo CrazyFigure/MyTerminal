@@ -18,7 +18,7 @@ src/
 ├─ App.tsx                 # 页面组合根，只编排功能区与跨域交互
 ├─ components/             # 仍在迁移中的较大独立视图：连接、设置、编辑器、本地终端等弹窗
 ├─ features/               # 按用户功能组织的展示规则和子视图
-│  ├─ agent/               # AI 对话侧栏、审批请求面板与请求摘要规则
+│  ├─ agent/               # AI 对话侧栏、附件与会话接续、审批请求面板与请求摘要规则
 │  ├─ files/               # SFTP 浏览器、右键菜单与文件展示规则
 │  ├─ runtime/             # 运行状态侧栏、概览订阅与明细轮询
 │  ├─ sessions/            # 会话标签栏与标签右键菜单
@@ -102,7 +102,8 @@ src-tauri/src/
 │  ├─ files.rs                 # Agent 文件读写和递归传输子域
 │  ├─ requests.rs              # 审批请求生命周期状态机
 │  └─ http.rs                  # 本地 HTTP Broker 协议适配器
-├─ agent_chat.rs               # 内置对话内核：消息模型、三协议适配与工具调用循环
+├─ agent_chat.rs               # 内置对话内核：消息模型、三协议适配、会话绑定与工具调用循环
+├─ agent_attachments.rs        # 对话附件：Windows 路径规范化、格式分类与文本编码识别
 ├─ agent_tools.rs              # 内置 Agent 工具集与系统提示词
 ├─ bin/myterminal-cli.rs       # MCP stdio 桥接 CLI（Broker 客户端与进程入口）
 ├─ crypto.rs                   # 敏感字段加解密
@@ -118,6 +119,9 @@ src-tauri/src/
 - `remote_access` 采用适配器模式：隐藏辅助 SSH 会话、SFTP 递归、Linux 指标命令与解析细节。
 - `config_sync` 作为独立用例模块，恢复配置时仍复用统一的“停止运行时 → 备份 → 保存 → 重载”流程。
 - `agent_chat` 与 `agent_tools` 共同构成内置对话：三种协议（Anthropic Messages / OpenAI Chat Completions / OpenAI Responses）在内部收敛为同一套消息与工具模型，只有请求构造与 SSE 解析按协议分派，工具循环完全共用；工具实现全部复用 `agent_bridge` 能力并经同一个审批闸门，与外部 MCP 客户端不存在策略差异。API Key 只在后端内存与加密文件之间流转，永不下发到 WebView。
+- 一条对话一旦得到某个端点某个模型的回复就与之绑定，前端锁定选择、后端 `start_agent_chat` 再校验一次；换模型只能在历史对话中右键“在新对话中接续”，把历史复制进一条新对话（`continuedFrom` 记录来源），绑定关系始终一对一。
+- 附件只来自用户主动选择、粘贴或拖入的文件，模型没有读取本机文件的工具。图片仅在模型声明多模态时以原生图片块下发，否则退化为文字占位；文本文件展开成带 Windows 原始路径标注的文本块。
+- 端点参数差异按报错自适应：`max_tokens` 改名或收紧、effort 降档或移除、不支持 thinking 时去掉，结论在本轮工具循环内复用；Anthropic 的 thinking 块与兼容端点的 `reasoning_content` 只在工具循环内原样回放，不下发前端。
 - `state.rs` 持有共享状态与 PTY 控制通道，`SessionControl::Input` 与 `AgentInput` 走同一条写入路径以保证顺序，但只有后者不计入用户输入活跃度，避免 Agent 自己写入的命令被误判成用户在敲字。
 - `storage.rs`、`webdav.rs`、`crypto.rs` 分别承担本地持久化、远端同步与加解密，业务模块不直接读写文件或拼装 WebDAV 请求。
 - `bin/myterminal-cli.rs` 是面向 MCP 客户端的独立入口，只通过 discovery 文件与本地 Broker 通信；其启动路径由设置页生成的 MCP 配置决定，不依赖 GUI 进程内存。

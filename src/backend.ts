@@ -15,6 +15,7 @@ import type {
   FileTransferSummary,
   FontPackStatus,
   HistoryEntry,
+  LocalAgentAttachmentFile,
   LocalTerminalProfile,
   LocalTerminalSettings,
   LocalTerminalShellConfig,
@@ -151,6 +152,9 @@ export const backend = {
     history: { role: string; content: string; toolCalls: unknown[]; toolResults: unknown[] }[];
     options: AgentRunOptions;
   }) => call<boolean>('start_agent_chat', payload, true),
+  // 读取用户主动添加的本地附件；路径规范化与格式识别在后端完成。
+  readAgentAttachment: (path: string) =>
+    call<LocalAgentAttachmentFile>('read_agent_attachment', { path }),
   cancelAgentChat: (conversationId: string) =>
     call<boolean>('cancel_agent_chat', { conversationId }, true),
   listAgentConversations: () =>

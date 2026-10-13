@@ -80,6 +80,7 @@ export function AgentSidebar({
               lineHeight={settings.agentChatLineHeight ?? 1.6}
               onApproveRequest={onApproveRequest}
               onRejectRequest={onRejectRequest}
+              pasteBlockThreshold={settings.agentChatPasteBlockThreshold ?? 500}
               providers={providers}
               t={t}
             />

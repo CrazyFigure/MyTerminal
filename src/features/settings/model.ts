@@ -282,7 +282,8 @@ export const serializeAgentProvidersForCompare = (providers: AgentProvider[]): s
 
 /**
  * 预览最终会请求的完整 URL，规则必须与后端 join_url 保持一致：
- * 已填到完整端点则原样使用；结尾是重复版本段（如 /v1）则剥掉后再拼。
+ * 已填到完整端点（含不带 /v1 的写法）则原样使用；
+ * 基址以版本段（/v1、/v4、/v1beta）或 Gemini 兼容层 /openai 结尾时只补资源路径。
  */
 export const previewAgentRequestUrl = (baseUrl: string, protocol: AgentProtocol): string => {
   const path = agentProtocolUrlSpec[protocol].path;
@@ -293,9 +294,13 @@ export const previewAgentRequestUrl = (baseUrl: string, protocol: AgentProtocol)
   if (trimmed.endsWith(path)) {
     return trimmed;
   }
-  const version = path.split('/')[1];
-  if (version && trimmed.endsWith(`/${version}`)) {
-    return `${trimmed.slice(0, -(version.length + 1))}${path}`;
+  const resource = path.startsWith('/v1/') ? path.slice(3) : path;
+  if (resource !== path && trimmed.endsWith(resource)) {
+    return trimmed;
+  }
+  const lastSegment = trimmed.split('/').pop() ?? '';
+  if (/^v\d[a-z0-9]*$/i.test(lastSegment) || lastSegment === 'openai') {
+    return `${trimmed}${resource}`;
   }
   return `${trimmed}${path}`;
 };

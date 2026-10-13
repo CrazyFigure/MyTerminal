@@ -6,7 +6,7 @@ use std::thread;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
-    agent_bridge, agent_chat, agent_tools,
+    agent_attachments, agent_bridge, agent_chat, agent_tools,
     error::AppError,
     models::{AgentConversation, AgentProvider, AgentRunOptions},
     state::AppState,
@@ -123,8 +123,16 @@ pub fn start_agent_chat(
     if provider.api_key.trim().is_empty() {
         return Err(AppError::Validation("该端点尚未配置 API Key".into()).into());
     }
+    // 同一对话只能与一个端点的一个模型对话；界面已锁定选择，这里在后端兜底，防止旧前端或并发请求绕过。
+    let conversations = state.storage.load_agent_conversations()?;
+    let stored = conversations.iter().find(|item| item.id == conversation_id);
+    agent_chat::ensure_conversation_binding(
+        stored.and_then(agent_chat::conversation_binding),
+        &provider_id,
+        &model_id,
+    )?;
 
-    let run_options = options.unwrap_or_default();
+    let mut run_options = options.unwrap_or_default();
     let cancel_flag = state.agent_chat.register(&conversation_id);
     thread::spawn(move || {
         let app_state = app_handle.state::<AppState>();
@@ -136,6 +144,9 @@ pub fn start_agent_chat(
                 return;
             }
         };
+        // 自动压缩是全局设置，以落盘值为准；阈值钳制到设置页允许的范围，防止手改配置导致每轮都压缩。
+        run_options.auto_compact = settings.agent_chat_auto_compact;
+        run_options.compact_threshold = settings.agent_chat_compact_threshold.clamp(0.3, 0.95);
 
         let tools = agent_tools::build_tools();
         let mut messages = history;
@@ -170,6 +181,14 @@ pub fn start_agent_chat(
     });
 
     Ok(true)
+}
+
+/// 读取用户主动添加的本地附件（图片或文本文件）；路径兼容 Windows 常见写法。
+#[tauri::command]
+pub fn read_agent_attachment(
+    path: String,
+) -> Result<agent_attachments::LocalAttachmentFile, String> {
+    Ok(agent_attachments::read_local_attachment(&path)?)
 }
 
 /// 取消一轮进行中的对话；模型流与工具循环会在下一个安全点停止。

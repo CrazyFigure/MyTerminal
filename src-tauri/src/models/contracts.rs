@@ -185,6 +185,12 @@ pub struct StoredAppSettings {
     pub agent_chat_font_size: u16,
     #[serde(default = "default_agent_chat_line_height")]
     pub agent_chat_line_height: f32,
+    #[serde(default = "default_agent_auto_compact")]
+    pub agent_chat_auto_compact: bool,
+    #[serde(default = "default_agent_compact_threshold")]
+    pub agent_chat_compact_threshold: f32,
+    #[serde(default = "default_agent_chat_paste_block_threshold")]
+    pub agent_chat_paste_block_threshold: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_latin_font_family: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
