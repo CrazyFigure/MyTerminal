@@ -1,3 +1,4 @@
+pub mod agent_attachments;
 pub mod agent_bridge;
 pub mod agent_chat;
 pub mod agent_tools;

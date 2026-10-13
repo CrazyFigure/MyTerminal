@@ -324,6 +324,11 @@ export function SettingsModal({
   // 端点保存按钮只在草稿相对基线有改动（含新输入密钥）时可用；基线未拉取完成前保持禁用。
   const hasAgentProviderChanges = agentProvidersBaseline !== null
     && serializeAgentProvidersForCompare(agentProviderDrafts) !== serializeAgentProvidersForCompare(agentProvidersBaseline);
+  // AI 助手页的对话设置属于全局设置；只比较本页字段，其它页未保存的修改不会点亮这里的保存按钮。
+  const hasAgentCompactionChanges =
+    (draftSettings.agentChatAutoCompact ?? true) !== (settings.agentChatAutoCompact ?? true)
+    || (draftSettings.agentChatCompactThreshold ?? 0.65) !== (settings.agentChatCompactThreshold ?? 0.65)
+    || (draftSettings.agentChatPasteBlockThreshold ?? 500) !== (settings.agentChatPasteBlockThreshold ?? 500);
   const toggleAgentAutoConnection = (connectionId: string, checked: boolean) => {
     updateDraftSettings((current) => {
       const currentIds = current.agentBridge.allowedConnectionIds;
@@ -438,19 +443,37 @@ export function SettingsModal({
     }
   };
 
+  // 返回新端点 id，设置页据此把新卡片默认展开，方便立即填写。
   const addAgentProvider = () => {
+    const providerId = crypto.randomUUID();
     setAgentProviderDrafts((current) => [
       ...current,
       {
-        id: crypto.randomUUID(),
+        id: providerId,
         name: '',
         protocol: 'anthropic',
         baseUrl: 'https://api.anthropic.com',
+        authStyle: '',
         hasApiKey: false,
         apiKey: '',
         models: [],
       },
     ]);
+    return providerId;
+  };
+
+  // 拖拽排序：把 fromIndex 的端点插到 toIndex 之前；侧栏下拉的端点顺序与此一致。
+  const reorderAgentProviders = (fromIndex: number, toIndex: number) => {
+    setAgentProviderDrafts((current) => {
+      const insertAt = toIndex > fromIndex ? toIndex - 1 : toIndex;
+      if (fromIndex < 0 || fromIndex >= current.length || insertAt === fromIndex) {
+        return current;
+      }
+      const next = [...current];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(insertAt, 0, moved);
+      return next;
+    });
   };
 
   const updateAgentProvider = (providerId: string, patch: Partial<AgentProvider>) => {
@@ -469,8 +492,11 @@ export function SettingsModal({
         item.id === providerId
           ? {
               ...item,
+              // 设置页只编辑模型 id；改 id 时清掉旧版本遗留的展示名，否则侧栏会一直显示旧名称。
               models: item.models.map((model, idx) =>
-                idx === modelIndex ? { ...model, ...patch } : model,
+                idx === modelIndex
+                  ? { ...model, ...patch, ...(patch.id !== undefined ? { name: '' } : {}) }
+                  : model,
               ),
             }
           : item,
@@ -496,7 +522,7 @@ export function SettingsModal({
               ...item,
               models: [
                 ...item.models,
-                { id: '', name: '', contextWindow: 200000, maxTokens: 16000 },
+                { id: '', name: '', contextWindow: 200000, maxTokens: 16000, multimodal: false },
               ],
             }
           : item,
@@ -506,12 +532,18 @@ export function SettingsModal({
 
   const saveAgentProviders = async () => {
     try {
-      const saved = await backend.saveAgentProviders(agentProviderDrafts);
-      // 保存后回填后端归一化结果（含明文密钥），用户可继续查看或再次编辑。
-      setAgentProviderDrafts(saved);
-      // 基线与草稿同步后，未再次修改时保存按钮恢复禁用。
-      setAgentProvidersBaseline(saved);
-      onAgentProvidersSaved(saved);
+      // 端点与压缩设置分属两份存档：只保存实际改动的部分，避免无谓地重写另一份文件。
+      if (hasAgentProviderChanges) {
+        const saved = await backend.saveAgentProviders(agentProviderDrafts);
+        // 保存后回填后端归一化结果（含明文密钥），用户可继续查看或再次编辑。
+        setAgentProviderDrafts(saved);
+        // 基线与草稿同步后，未再次修改时保存按钮恢复禁用。
+        setAgentProvidersBaseline(saved);
+        onAgentProvidersSaved(saved);
+      }
+      if (hasAgentCompactionChanges) {
+        setDraftSettings(await persistSettings(draftSettings));
+      }
       showSettingsFeedback('success', t('statusSettingsSaved'));
     } catch (error) {
       showSettingsFeedback('error', error instanceof Error ? error.message : String(error));
@@ -977,9 +1009,13 @@ export function SettingsModal({
 
             {activeTab === 'agentChat' ? (
 <AgentProviderSettingsSection
-                hasChanges={hasAgentProviderChanges}
+                autoCompact={draftSettings.agentChatAutoCompact ?? true}
+                compactThreshold={draftSettings.agentChatCompactThreshold ?? 0.65}
+                hasChanges={hasAgentProviderChanges || hasAgentCompactionChanges}
+                pasteBlockThreshold={draftSettings.agentChatPasteBlockThreshold ?? 500}
                 onAddModel={addAgentModel}
                 onAddProvider={addAgentProvider}
+                onReorderProviders={reorderAgentProviders}
                 onOpenExecutionSettings={() => onTabChange('execution')}
                 onRemoveModel={removeAgentModel}
                 onRemoveProvider={removeAgentProvider}
@@ -988,6 +1024,18 @@ export function SettingsModal({
                   setRevealApiKeys((current) => ({
                     ...current,
                     [providerId]: !current[providerId],
+                  }))
+                }
+                onUpdateCompaction={(patch) =>
+                  updateDraftSettings((current) => ({
+                    ...current,
+                    ...(patch.autoCompact !== undefined ? { agentChatAutoCompact: patch.autoCompact } : {}),
+                    ...(patch.compactThreshold !== undefined
+                      ? { agentChatCompactThreshold: patch.compactThreshold }
+                      : {}),
+                    ...(patch.pasteBlockThreshold !== undefined
+                      ? { agentChatPasteBlockThreshold: patch.pasteBlockThreshold }
+                      : {}),
                   }))
                 }
                 onUpdateModel={updateAgentModel}

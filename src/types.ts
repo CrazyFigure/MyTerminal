@@ -98,6 +98,8 @@ export interface AgentModel {
   maxTokens: number;
   /** 上下文窗口大小（token），用于估算何时自动压缩。 */
   contextWindow: number;
+  /** 是否支持图片等多模态输入；开启后对话输入框才允许添加图片。 */
+  multimodal?: boolean;
 }
 
 /** 思考强度；default 表示不下发该参数，走模型自身默认。 */
@@ -112,21 +114,35 @@ export interface StoredAgentConversation {
   providerId: string;
   modelId: string;
   messages: AgentChatMessage[];
+  /** 通过会话 ID 接续而来时记录来源会话，用于展示分隔线与追溯。 */
+  continuedFrom?: AgentConversationOrigin;
 }
 
-/** 一轮对话的运行参数，每次发送时携带。 */
+/** 接续来源会话的摘要；消息本身已复制进新会话，来源被删除也不影响继续对话。 */
+export interface AgentConversationOrigin {
+  id: string;
+  title: string;
+  providerId?: string;
+  modelId?: string;
+  /** 新会话开头有多少条消息来自来源会话。 */
+  messageCount: number;
+}
+
+/** 一轮对话的运行参数，每次发送时携带；自动压缩属于全局设置，由后端从 AppSettings 读取。 */
 export interface AgentRunOptions {
   effort: AgentEffort;
-  /** 上下文占用超过该比例时自动压缩。 */
-  compactThreshold: number;
-  autoCompact: boolean;
 }
+
+/** Anthropic 协议的认证头；空串为自动（先 x-api-key，被拒再试 Bearer）。 */
+export type AgentAuthStyle = '' | 'x-api-key' | 'bearer';
 
 export interface AgentProvider {
   id: string;
   name: string;
   protocol: AgentProtocol;
   baseUrl: string;
+  /** 仅 Anthropic 协议使用；中转服务与 ANTHROPIC_AUTH_TOKEN 通常需要 Bearer。 */
+  authStyle?: AgentAuthStyle;
   /** 是否已配置密钥（后端按密钥串是否为空归一）。 */
   hasApiKey: boolean;
   /** 明文密钥：与 WebDAV 密码同一策略，后端明文下发，可随时查看或修改。 */
@@ -144,6 +160,46 @@ export interface AgentChatToolCall {
   isError?: boolean;
 }
 
+/** 用户消息附带的本地附件：图片以 base64 保存，文本文件保存解码后的正文。 */
+export type AgentChatAttachment =
+  | {
+      kind: 'image';
+      id: string;
+      name: string;
+      /** 来源路径（Windows 原样格式）；粘贴的截图没有路径。 */
+      path?: string;
+      mediaType: string;
+      /** 不带 data: 前缀的 base64 数据。 */
+      data: string;
+      width: number;
+      height: number;
+      size: number;
+    }
+  | {
+      kind: 'text';
+      id: string;
+      name: string;
+      path?: string;
+      content: string;
+      /** 文件过大只读取了开头部分。 */
+      truncated: boolean;
+      /** 由超长粘贴折叠而来的文本块，展示为字数而不是文件大小。 */
+      pasted?: boolean;
+      size: number;
+    };
+
+/** 后端读取本地附件的结果：可直接解码的文本给 text，图片或 GBK 等本地编码文本给 base64 data。 */
+export interface LocalAgentAttachmentFile {
+  path: string;
+  name: string;
+  size: number;
+  kind: 'image' | 'text';
+  mediaType: string;
+  text?: string;
+  data?: string;
+  truncated: boolean;
+}
+
 /** 助手消息按到达顺序保存的展示片段；文本段与工具段交替，渲染据此还原「先工具、后总结」的真实顺序。 */
 export type AgentChatPart =
   | { type: 'text'; text: string }
@@ -156,6 +212,8 @@ export interface AgentChatMessage {
   toolCalls: AgentChatToolCall[];
   /** 有序的展示片段；缺省时（旧存档）按 content 在前、toolCalls 在后兜底。 */
   parts?: AgentChatPart[];
+  /** 用户消息附带的图片与文本文件。 */
+  attachments?: AgentChatAttachment[];
 }
 
 export interface AppSettings {
@@ -184,6 +242,12 @@ export interface AppSettings {
   agentChatFontSize?: number;
   /** 右侧 AI 对话正文行高倍数；与终端行高相互独立，不跟随终端。 */
   agentChatLineHeight?: number;
+  /** 内置 AI 对话是否在上下文接近上限时自动压缩较早历史。 */
+  agentChatAutoCompact?: boolean;
+  /** 自动压缩触发阈值，占模型上下文窗口的比例（0.3~0.95）。 */
+  agentChatCompactThreshold?: number;
+  /** 粘贴文本超过该字数时折叠为文本块；0 表示关闭。 */
+  agentChatPasteBlockThreshold?: number;
   /** 全局界面英文字体；为空表示跟随终端英文字体。 */
   uiLatinFontFamily?: string;
   /** 全局界面中文字体；为空表示跟随终端中文字体。 */

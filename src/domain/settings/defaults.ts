@@ -18,6 +18,11 @@ export const defaultSettings: AppSettings = {
   uiFontSize: 15,
   // 终端行高沿用历史硬编码值，升级后画面密度保持不变。
   shellLineHeight: 1.18,
+  // 自动压缩默认开启，阈值留 35% 余量给本轮新输出与工具结果。
+  agentChatAutoCompact: true,
+  agentChatCompactThreshold: 0.65,
+  // 超过 500 字的粘贴折叠成文本块，避免长日志把输入框撑满。
+  agentChatPasteBlockThreshold: 500,
   terminalBackground: '#f7f7f7',
   terminalForeground: '#111111',
   accentColor: '#4f46e5',

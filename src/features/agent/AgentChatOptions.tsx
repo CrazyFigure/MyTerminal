@@ -1,11 +1,8 @@
-import { CustomSelect } from "../../CustomSelect";
 import type { TranslationKey } from "../../i18n";
-import type { AgentEffort, AgentProvider, AgentRunOptions } from "../../types";
-import { Tooltip } from "../../components/Tooltip";
+import type { AgentRunOptions } from "../../types";
+import { AgentEffortSlider } from "./AgentEffortSlider";
 
 type Props = {
-  activeProvider?: AgentProvider;
-  modelId: string;
   onUpdate: (updater: (current: AgentRunOptions) => AgentRunOptions) => void;
   runOptions: AgentRunOptions;
   t: (
@@ -14,83 +11,18 @@ type Props = {
   ) => string;
 };
 
-// 运行选项是受控视图；推理强度与自动压缩阈值只更新当前对话草稿，不直接触发远程调用。
-export function AgentChatOptions({
-  activeProvider,
-  modelId,
-  onUpdate,
-  runOptions,
-  t,
-}: Props) {
+// 运行选项是受控视图；推理强度只更新当前对话草稿，不直接触发远程调用。
+// 自动压缩属于全局设置，统一在“设置 → AI 助手”中调整，这里不再重复展示。
+export function AgentChatOptions({ onUpdate, runOptions, t }: Props) {
   return (
     <div className="agent-chat-options">
-      <label>
-        <span>{t("agentChatEffort")}</span>
-        <CustomSelect
-          aria-label={t("agentChatEffort")}
-          onChange={(value) =>
-            onUpdate((current) => ({
-              ...current,
-              effort: value as AgentEffort,
-            }))
-          }
-          options={[
-            { value: "default", label: t("agentChatEffortDefault") },
-            { value: "low", label: "low" },
-            { value: "medium", label: "medium" },
-            { value: "high", label: "high" },
-            { value: "xhigh", label: "xhigh" },
-            { value: "max", label: "max" },
-          ]}
-          value={runOptions.effort}
-        />
-      </label>
-      <label className="agent-chat-option-inline">
-        <input
-          checked={runOptions.autoCompact}
-          onChange={(event) =>
-            onUpdate((current) => ({
-              ...current,
-              autoCompact: event.target.checked,
-            }))
-          }
-          type="checkbox"
-        />
-        <Tooltip content={t("agentChatAutoCompactDesc")} side="right">
-          <span>
-            {t("agentChatAutoCompact")}
-          </span>
-        </Tooltip>
-      </label>
-      {runOptions.autoCompact ? (
-        <label>
-          <span>
-            {t("agentChatCompactThreshold")}（
-            {Math.round(runOptions.compactThreshold * 100)}%）
-          </span>
-          {/* 1% 步进：阈值对压缩时机影响敏感，粗调容易一次跨过头。 */}
-          <input
-            max={95}
-            min={30}
-            onChange={(event) =>
-              onUpdate((current) => ({
-                ...current,
-                compactThreshold: Number(event.target.value) / 100,
-              }))
-            }
-            step={1}
-            type="range"
-            value={Math.round(runOptions.compactThreshold * 100)}
-          />
-        </label>
-      ) : null}
-      <p className="agent-chat-option-hint">
-        {t("agentChatContextHint", {
-          window:
-            activeProvider?.models.find((item) => item.id === modelId)
-              ?.contextWindow ?? 0,
-        })}
-      </p>
+      <span className="agent-chat-options-title">{t("agentChatEffort")}</span>
+      <AgentEffortSlider
+        ariaLabel={t("agentChatEffort")}
+        defaultLabel={t("agentChatEffortDefault")}
+        onChange={(effort) => onUpdate((current) => ({ ...current, effort }))}
+        value={runOptions.effort}
+      />
     </div>
   );
 }

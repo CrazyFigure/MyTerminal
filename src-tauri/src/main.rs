@@ -191,6 +191,7 @@ fn main() {
             commands::agent::save_agent_providers,
             commands::agent::start_agent_chat,
             commands::agent::cancel_agent_chat,
+            commands::agent::read_agent_attachment,
             commands::agent::list_agent_conversations,
             commands::agent::save_agent_conversation,
             commands::agent::delete_agent_conversation,
