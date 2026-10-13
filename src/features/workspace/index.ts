@@ -17,3 +17,4 @@ export { TransferProgressStack, type TransferProgressItem } from './TransferProg
 export { BottomDock } from './BottomDock';
 export { AppTitlebar } from './AppTitlebar';
 export { useTransferProgress } from './useTransferProgress';
+export { useSidebarLayout } from './useSidebarLayout';

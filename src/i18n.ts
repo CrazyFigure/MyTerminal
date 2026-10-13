@@ -522,6 +522,8 @@ export const messages = {
     expandSidebar: '展开侧栏',
     collapseAgentSidebar: '收起 AI 执行栏',
     expandAgentSidebar: '展开 AI 执行栏',
+    // 窄窗口点击侧栏开关时解释布局限制，并给出恢复方式。
+    sidebarWindowTooNarrow: '窗口太窄，请拉宽或最大化后展开侧栏。',
     windowMinimize: '最小化',
     windowMaximize: '最大化',
     windowRestore: '向下还原',
@@ -1185,6 +1187,7 @@ export const messages = {
     expandSidebar: 'Expand sidebar',
     collapseAgentSidebar: 'Collapse AI runs sidebar',
     expandAgentSidebar: 'Expand AI runs sidebar',
+    sidebarWindowTooNarrow: 'Widen or maximize the window to open the sidebar.',
     windowMinimize: 'Minimize',
     windowMaximize: 'Maximize',
     windowRestore: 'Restore down',
