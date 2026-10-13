@@ -3,6 +3,8 @@ import { Download, ExternalLink, X } from 'lucide-react';
 import type { UpdateCheckResult } from './types';
 import type { TranslationKey } from './i18n';
 import { FloatingToast } from './shared/ui/FloatingToast';
+import { UpdateReleaseHistory } from './features/updates';
+import { Tooltip } from './components/Tooltip';
 
 export type UpdateDownloadProgress = {
   downloadedBytes: number;
@@ -54,8 +56,7 @@ export function UpdateModal({
   onErrorDismiss,
   onOpenRelease,
 }: UpdateModalProps) {
-  const releaseBody = result?.releaseBody;
-  const hasBody = Boolean(releaseBody && releaseBody.trim());
+  // 发布说明交由共享历史视图处理，检测结果和下载阶段使用同一份版本数据。
   // 是否展示“更新详情”弹窗：仅当确实检测到可用新版本时才走完整详情布局。
   const showUpdateDetail = Boolean(result?.updateAvailable);
 
@@ -100,9 +101,11 @@ export function UpdateModal({
         <div className="modal card update-result-modal">
           <div className="modal-header">
             <h3>{t('updateResultTitle')}</h3>
-            <button className="icon-button" onClick={onClose} type="button">
-              <X size={18} />
-            </button>
+            <Tooltip content={t('updateCancel')}>
+              <button aria-label={t('updateCancel')} className="icon-button" onClick={onClose} type="button">
+                <X size={18} />
+              </button>
+            </Tooltip>
           </div>
           <div className="update-result-modal-body">
             <p>{bodyText}</p>
@@ -138,9 +141,11 @@ export function UpdateModal({
               {t('currentVersion')}: {result.currentVersion} → {result.latestVersion}
             </p>
           </div>
-          <button className="icon-button" disabled={downloading} onClick={onClose} type="button">
-            <X size={18} />
-          </button>
+          <Tooltip content={t('updateCancel')}>
+            <button aria-label={t('updateCancel')} className="icon-button" disabled={downloading} onClick={onClose} type="button">
+              <X size={18} />
+            </button>
+          </Tooltip>
         </div>
 
         {error ? (
@@ -155,16 +160,8 @@ export function UpdateModal({
             <strong>{sizeText}</strong>
           </div>
 
-          <div className="update-modal-notes">
-            <h4>{t('updateReleaseNotes')}</h4>
-            <div className="update-modal-notes-content">
-              {hasBody ? (
-                <pre>{releaseBody}</pre>
-              ) : (
-                <p className="update-modal-empty-notes">{t('updateNoReleaseNotes')}</p>
-              )}
-            </div>
-          </div>
+          {/* 重新打开或切换升级目标时恢复默认折叠；下载进度变化不会重置用户展开状态。 */}
+          <UpdateReleaseHistory key={`${result.currentVersion}:${result.latestVersion}`} result={result} t={t} />
 
         </div>
 

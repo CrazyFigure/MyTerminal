@@ -14,6 +14,9 @@ use tauri::{AppHandle, Emitter};
 
 use crate::{error::AppError, models::UpdateCheckResult};
 
+// 发布历史独立处理版本筛选和分页，最新版本的安装资产仍由当前模块选择。
+mod release_history;
+
 #[derive(Debug, Deserialize)]
 struct GitHubReleaseResponse {
     tag_name: String,
@@ -21,6 +24,10 @@ struct GitHubReleaseResponse {
     html_url: String,
     published_at: Option<String>,
     body: Option<String>,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
     #[serde(default)]
     assets: Vec<GitHubReleaseAsset>,
 }
@@ -402,38 +409,32 @@ fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
-// 请求 GitHub 最新 Release 元数据；use_system_proxy 决定是否读取 Windows 系统代理。
-// 网络错误（代理不可达等）与 403（代理节点被风控）均由调用方决定是否回退直连重试。
-async fn fetch_latest_release(use_system_proxy: bool) -> Result<reqwest::Response, String> {
+// 请求 GitHub Release 元数据；use_system_proxy 决定是否读取 Windows 系统代理。
+// 最新版本与历史分页共用网络策略，避免历史请求忽略用户代理设置。
+async fn fetch_release_request(url: &str, use_system_proxy: bool) -> Result<reqwest::Response, String> {
     let client = if use_system_proxy {
         build_update_http_client(UPDATE_HTTP_READ_TIMEOUT)?
     } else {
         build_direct_http_client(UPDATE_HTTP_READ_TIMEOUT)?
     };
-    // GitHub API 要求明确 User-Agent；这里仅读取最新 Release 元数据，并挑出后续可安装的 Windows 安装包。
-    // 错误统一以 "update_error:{code}:{params}" 返回，由前端按界面语言翻译成完整文案，避免中英混杂。
+    // GitHub API 要求明确 User-Agent；这里只读取发布元数据，不提前下载安装包。
+    // 错误统一以 "update_error:{code}:{params}" 返回，由前端按界面语言翻译成完整文案。
     client
-        .get("https://api.github.com/repos/CrazyFigure/MyTerminal/releases/latest")
+        .get(url)
         .header(reqwest::header::USER_AGENT, "MyTerminal")
         .send()
         .await
         .map_err(|err| format!("update_error:network:{err}"))
 }
 
-#[tauri::command]
-pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
-    let current_version = env!("CARGO_PKG_VERSION").to_string();
-    // 更新提示返回给前端的 Release 页面地址，必须和 GitHub 仓库名保持一致。
-    let release_url = "https://github.com/CrazyFigure/MyTerminal/releases/latest".to_string();
-
-    // 首次请求走系统代理（用户代理软件常见）；代理节点 IP 常被 GitHub API 风控返回 403，
-    // 或代理不可达导致网络错误，两种情况都回退直连重试一次，避免误报限流或网络故障。
-    let mut response = match fetch_latest_release(true).await {
+// 最新版本与分页请求均先走系统代理；网络失败或 403 时回退直连一次，并统一翻译错误。
+async fn fetch_release_response(url: &str) -> Result<reqwest::Response, String> {
+    let mut response = match fetch_release_request(url, true).await {
         Ok(response) => response,
-        Err(_) => fetch_latest_release(false).await?,
+        Err(_) => fetch_release_request(url, false).await?,
     };
     if response.status() == reqwest::StatusCode::FORBIDDEN {
-        response = fetch_latest_release(false).await?;
+        response = fetch_release_request(url, false).await?;
     }
 
     // 403 需区分两种情况：响应头 X-RateLimit-Remaining 为 0 才确认是 API 配额耗尽；
@@ -463,9 +464,23 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
         return Err("update_error:forbidden".to_string());
     }
 
-    let release = response
+    response
         .error_for_status()
-        .map_err(|err| format!("update_error:http_status:{err}"))?
+        .map_err(|err| format!("update_error:http_status:{err}"))
+}
+
+/// 检测安装目标并补齐升级区间内的发布说明；历史加载失败只影响完整性提示，不阻断更新。
+#[tauri::command]
+pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    // 安装目标仍由 latest 接口决定，历史说明不改变目标版本与安装包。
+    let release_url = "https://github.com/CrazyFigure/MyTerminal/releases/latest".to_string();
+    let response = fetch_release_response(
+        "https://api.github.com/repos/CrazyFigure/MyTerminal/releases/latest",
+    )
+    .await?;
+
+    let release = response
         .json::<GitHubReleaseResponse>()
         .await
         .map_err(|err| format!("update_error:parse:{err}"))?;
@@ -473,6 +488,12 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
     let latest_version = release.tag_name.trim_start_matches(['v', 'V']).to_string();
     let update_available = is_newer_version(&release.tag_name, &current_version);
     let installer_asset = select_update_installer_asset(&release.assets);
+    // 没有更新时不额外请求历史；历史失败只标记说明不完整，不影响最新版本安装。
+    let (releases, release_history_complete) = if update_available {
+        release_history::load_release_history(&current_version, &release).await
+    } else {
+        (Vec::new(), true)
+    };
     Ok(UpdateCheckResult {
         current_version,
         latest_version,
@@ -490,6 +511,8 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
             .map(|asset| asset.browser_download_url.clone()),
         installer_size: installer_asset.and_then(|asset| asset.size),
         release_body: release.body,
+        releases,
+        release_history_complete,
     })
 }
 

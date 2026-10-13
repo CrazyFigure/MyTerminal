@@ -317,6 +317,8 @@ export const mockUpdateCheckResult: UpdateCheckResult = {
   releaseUrl: "https://github.com/CrazyFigure/MyTerminal/releases/latest",
   updateAvailable: false,
   releaseBody: "本地预览环境没有可用的更新内容。",
+  releases: [],
+  releaseHistoryComplete: true,
 };
 
 // 浏览器预览不读取本机字体资源目录，固定走系统字体回退并展示可下载状态。

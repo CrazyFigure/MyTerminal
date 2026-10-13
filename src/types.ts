@@ -506,6 +506,14 @@ export interface HistoryEntry {
   executedAt: string;
 }
 
+/** 一次升级覆盖的正式版本说明，后端按语义版本从新到旧排序。 */
+export interface UpdateReleaseNotes {
+  version: string;
+  releaseUrl: string;
+  publishedAt?: string;
+  body?: string;
+}
+
 export interface UpdateCheckResult {
   currentVersion: string;
   latestVersion: string;
@@ -517,6 +525,9 @@ export interface UpdateCheckResult {
   installerDownloadUrl?: string;
   installerSize?: number;
   releaseBody?: string;
+  // 保留最新版本的兼容字段，同时提供完整升级区间；加载失败不能阻断下载。
+  releases: UpdateReleaseNotes[];
+  releaseHistoryComplete: boolean;
 }
 
 /** 后端校验通过后返回的应用内字体字形；path 不会指向系统字体目录。 */

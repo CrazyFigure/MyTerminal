@@ -22,7 +22,8 @@
   flex-direction: column;
   gap: 14px;
   min-height: 0;
-  overflow: auto;
+  /* 元信息固定在正文顶部，只让下方版本列表滚动，下载状态与操作始终可见。 */
+  overflow: hidden;
   padding: 14px 0 6px;
 }
 
@@ -57,32 +58,168 @@
 }
 
 .update-modal-notes h4 {
-  margin: 0 0 8px;
+  margin: 0;
   font-size: 0.9rem;
   font-weight: 600;
   flex-shrink: 0;
 }
 
-.update-modal-notes-content {
-  /* 更新内容区域弹性自适应撑满剩余高度，内部按需滚动展示更新日志。 */
-  flex: 1;
-  min-height: 180px;
-  overflow: auto;
-  padding: 12px 14px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 8px;
-  background: var(--app-input-bg);
-  font-size: 0.86rem;
-  line-height: 1.6;
+.update-notes-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-shrink: 0;
 }
 
-.update-modal-notes-content pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: inherit;
-  font-size: inherit;
-  line-height: inherit;
+/* 批量展开与版本栏均提供悬停、按下和键盘焦点反馈，使用当前主题色。 */
+.update-notes-toggle-all {
+  border: none;
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: transparent;
+  color: var(--app-chip-text);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.update-notes-toggle-all:hover,
+.update-release-trigger:hover {
+  background: var(--app-item-hover-bg);
+}
+
+.update-notes-toggle-all:active,
+.update-release-trigger:active {
+  background: color-mix(in srgb, var(--app-accent, #4f46e5) 14%, transparent);
+}
+
+.update-notes-toggle-all:focus-visible,
+.update-release-trigger:focus-visible {
+  outline: 2px solid var(--app-accent, #4f46e5);
+  outline-offset: -2px;
+}
+
+.update-notes-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--app-accent, #4f46e5) 7%, transparent);
+  color: var(--app-muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  flex-shrink: 0;
+}
+
+.update-notes-warning svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.update-release-list {
+  /* 更新内容区域弹性自适应撑满剩余高度，内部按需滚动展示更新日志。 */
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-right: 4px;
+}
+
+.update-release-card {
+  border: 1px solid var(--app-card-border);
+  border-radius: 10px;
+  background: var(--app-input-bg);
+  overflow: hidden;
+}
+
+.update-release-card + .update-release-card {
+  margin-top: 8px;
+}
+
+.update-release-card.is-expanded {
+  border-color: color-mix(in srgb, var(--app-accent, #4f46e5) 30%, var(--app-card-border));
+}
+
+.update-release-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  border: none;
+  padding: 12px 14px;
+  background: transparent;
+  color: var(--app-text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.update-release-heading,
+.update-release-trailing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.update-release-heading {
+  flex-wrap: wrap;
+}
+
+.update-release-version {
+  overflow-wrap: anywhere;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.update-release-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  /* 标签使用主题内已有的徽标配色，深色模式下保持文字对比度。 */
+  background: var(--app-chip-bg);
+  color: var(--app-chip-text);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.update-release-trailing {
+  flex-shrink: 0;
+  color: var(--app-muted);
+  font-size: 0.76rem;
+}
+
+.update-release-chevron {
+  transition: transform 160ms ease;
+}
+
+.update-release-card.is-expanded .update-release-chevron {
+  transform: rotate(180deg);
+}
+
+.update-release-content {
+  /* Markdown 复用通用渲染器，但字体跟随应用界面，不受 AI 对话字号设置影响。 */
+  --agent-chat-font: var(--app-ui-font-family, inherit);
+  --agent-chat-font-size: 0.86rem;
+  --agent-chat-line-height: 1.65;
+  --agent-chat-code-font: var(--app-terminal-font-family, monospace);
+  padding: 12px 14px 16px;
+  border-top: 1px solid var(--app-card-border);
+  font-size: 0.86rem;
+  line-height: 1.65;
+}
+
+.update-release-content .md-heading {
+  /* 分组标题保留发布说明语义，不继承工具栏标题的固定字号。 */
+  margin: 4px 0 0;
+  font-size: 0.88rem;
 }
 
 .update-modal-empty-notes {
