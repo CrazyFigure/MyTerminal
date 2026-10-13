@@ -48,6 +48,16 @@ pub struct BootstrapState {
     pub favorite_commands: Vec<FavoriteCommand>,
 }
 
+/// 升级区间内单个正式版本的更新内容，不包含安装包以免重复传输资产元数据。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateReleaseNotes {
+    pub version: String,
+    pub release_url: String,
+    pub published_at: Option<String>,
+    pub body: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateCheckResult {
@@ -61,6 +71,10 @@ pub struct UpdateCheckResult {
     pub installer_download_url: Option<String>,
     pub installer_size: Option<u64>,
     pub release_body: Option<String>,
+    /// 按版本降序返回当前版本之后、目标版本以内的全部正式发布说明。
+    pub releases: Vec<UpdateReleaseNotes>,
+    /// 历史加载不完整时前端明确提示，但仍允许安装已检测到的最新版本。
+    pub release_history_complete: bool,
 }
 
 /// 应用内字体资源包中的单个可注册字形；path 只指向校验通过的应用数据目录文件。
