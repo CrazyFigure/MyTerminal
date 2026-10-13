@@ -289,6 +289,15 @@ select:disabled {
   background: rgba(255, 255, 255, 0.12) !important;
 }
 
+/* 侧栏按钮按下时比悬停更明显，即使展开受限也能立即确认点击已被接收。 */
+.app-titlebar-panels .titlebar-icon-button:active {
+  background: rgba(15, 23, 42, 0.16) !important;
+}
+
+.app-shell.theme-dark .app-titlebar-panels .titlebar-icon-button:active {
+  background: rgba(255, 255, 255, 0.22) !important;
+}
+
 .titlebar-icon-button:disabled {
   cursor: default;
   opacity: 0.7;
@@ -4417,11 +4426,64 @@ body.theme-dark img[src*="kimi.svg"],
   background: #fb7185;
 }
 
+/* 布局限制属于说明而非错误；较长提示允许换行，窄窗口也能完整读到恢复方式。 */
+.floating-toast.is-info .floating-toast-status-icon {
+  /* 信息图标沿用当前主题的强调色，不固定为浅蓝底和深色前景。 */
+  background: var(--app-active-bg);
+  color: var(--app-control-accent);
+}
+
+.floating-toast.is-info > span:last-child {
+  overflow: visible;
+  white-space: normal;
+}
+
 .app-shell.theme-dark .floating-toast {
   border-color: rgba(255, 255, 255, 0.1);
   background: rgba(24, 24, 27, 0.98);
   box-shadow: 0 9px 24px rgba(0, 0, 0, 0.38);
   color: #f8fafc;
+}
+
+/* 侧栏说明提示复用主题浮层变量；与深色通用提示同优先级，实时跟随主题切换。 */
+.app-shell .floating-toast.is-info {
+  border-color: var(--app-active-border);
+  background: var(--app-overlay-bg);
+  box-shadow: var(--app-shadow);
+  color: var(--app-text);
+}
+
+/* 侧栏点击反馈贴近左上角入口，不居中横跨终端；两侧留白保证窄窗口不溢出。 */
+.app-titlebar .floating-toast-layer {
+  top: calc(100% + 8px);
+  right: 12px;
+  left: 12px;
+  justify-content: flex-start;
+}
+
+/* 说明提示采用轻量小卡片，普通字重和中性边框避免抢占终端正文的视觉焦点。 */
+.app-shell .app-titlebar .floating-toast.is-info {
+  align-self: flex-start;
+  gap: 6px;
+  max-width: min(320px, 100%);
+  padding: 6px 10px;
+  border-color: var(--app-card-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  color: var(--app-subtle-text);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  letter-spacing: normal;
+}
+
+/* 小图标只承担说明语义，取消强调色底圈，并随主题的次级文字色切换。 */
+.app-titlebar .floating-toast.is-info .floating-toast-status-icon {
+  width: 14px;
+  height: 14px;
+  border-radius: 0;
+  background: transparent;
+  color: var(--app-muted);
 }
 
 @keyframes floating-toast-lifecycle {

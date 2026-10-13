@@ -88,6 +88,7 @@ import {
   sidePanelMinWidth,
   sidebarRuntimeMinHeight,
   TransferProgressStack,
+  useSidebarLayout,
   useTransferProgress,
 } from './features/workspace';
 import { setTerminalProtocolReplySender } from './terminal/terminalOutputHub';
@@ -102,6 +103,14 @@ export default function App() {
   const [splitDropTarget, setSplitDropTarget] = useState<SplitDropTarget | null>(null);
   // 指针是否正悬在终端区上方（决定指示器是否显示）；与具体落点分开，避免无有效落点时骨架闪烁。
   const [splitDragActive, setSplitDragActive] = useState(false);
+  // 两侧栏共用窄窗口保护后的有效状态，窗口拉宽时恢复用户原先的折叠偏好。
+  const {
+    sidebarCollapsed,
+    agentSidebarCollapsed,
+    setSidebarCollapsed,
+    setAgentSidebarCollapsed,
+    sidebarsUnavailable,
+  } = useSidebarLayout();
   // 标签栏判定落点与指示器渲染共用同一个网格矩形，必须指向同一个 DOM 节点。
   const splitGridRef = useRef<HTMLDivElement | null>(null);
   // 右侧 AI 栏分为对话与审批两个页签；默认停在对话，审批有新请求时会自动切过去。
@@ -118,7 +127,6 @@ export default function App() {
     return clamp(Math.round(window.innerHeight * 0.3), 190, Math.min(resolveRuntimePanelMaxHeight(), 300));
   });
   const [bottomHeight, setBottomHeight] = useState(180);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('appearance');
   const [connectionsOpen, setConnectionsOpen] = useState(false);
@@ -136,8 +144,6 @@ export default function App() {
     const ceiling = resolveSidePanelMaxWidth(!sidebarCollapsed, sidePanelMinWidth + 20, true);
     return clamp(preferred, 380, ceiling);
   });
-  // AI 执行默认收起，只有用户点击或 MCP 新请求到达时才占用主窗口右侧空间。
-  const [agentSidebarCollapsed, setAgentSidebarCollapsed] = useState(true);
   // 首次展开前不加载 AI 对话模块；展开过后保持挂载，收起侧栏也不能中断正在进行的流式响应。
   const [agentSidebarMounted, setAgentSidebarMounted] = useState(false);
   const [pathInput, setPathInput] = useState('~');
@@ -1817,6 +1823,7 @@ export default function App() {
         onToggleSidebar={() => setSidebarCollapsed((current) => !current)}
         onToggleTheme={handleToggleTheme}
         sidebarCollapsed={sidebarCollapsed}
+        sidebarsUnavailable={sidebarsUnavailable}
         t={t}
         themeMode={settings.themeMode}
         updateAvailable={Boolean(updateCheckResult?.updateAvailable)}

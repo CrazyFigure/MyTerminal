@@ -1,5 +1,8 @@
 /* 功能域展示规则：不持有 React 页面状态，只把输入转换成稳定的显示结果。 */
 
+// 窄窗口暂时收起两侧面板，实际可见性统一由布局 Hook 管理，不能再由 CSS 独立隐藏。
+export const sidebarAutoCollapseMaxWidth = 960;
+
 // 左右侧栏允许比旧版 320px 更窄，展开双侧栏时优先把横向空间留给终端和底部操作区。
 export const sidePanelMinWidth = 240;
 

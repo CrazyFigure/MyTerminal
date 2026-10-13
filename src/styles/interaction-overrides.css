@@ -840,22 +840,7 @@
 }
 
 @media (max-width: 960px) {
-  .app-body {
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr);
-  }
-
-  .resize-handle-main {
-    display: none;
-  }
-
-  .sidebar {
-    display: none;
-  }
-
-  .agent-sidebar {
-    display: none;
-  }
+  /* 侧栏与分隔条由布局 Hook 统一收起，避免 CSS 隐藏后标题栏仍误显示为展开。 */
 
   .workspace {
     padding-left: 0;
