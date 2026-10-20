@@ -642,9 +642,9 @@ pub fn open_local_terminal_session(
             AppError::Validation(format!("local terminal directory not found: {cwd}")).into(),
         );
     }
-    let command = profile.command.trim();
-
     let mut settings = state.storage.load_local_terminals()?;
+    // 启动入口也按当前列表校验，覆盖删除命令后仍携带旧历史值的调用。
+    let command = settings.resolve_startup_command(&profile.command);
     let now = Utc::now().to_rfc3339();
     let mut next_profile = profile.clone();
     if next_profile.id.trim().is_empty() {
@@ -653,7 +653,7 @@ pub fn open_local_terminal_session(
     next_profile.cwd = cwd.to_string();
     next_profile.command = command.to_string();
     next_profile.last_used_at = now;
-    if next_profile.title.trim().is_empty() {
+    if next_profile.title.trim().is_empty() || command != profile.command.trim() {
         next_profile.title = if next_profile.command.is_empty() {
             next_profile.cwd.clone()
         } else {

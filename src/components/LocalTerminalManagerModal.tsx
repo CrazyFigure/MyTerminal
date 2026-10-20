@@ -30,6 +30,10 @@ import { CustomSelect, type CustomSelectOption } from '../CustomSelect';
 import { Tooltip } from './Tooltip';
 import { beginResize, clamp } from '../app/layout';
 import {
+  getLocalTerminalStartupOptions,
+  resolveLocalTerminalStartupCommand,
+} from '../domain/settings/localTerminal';
+import {
   isPointInsideElement,
   moveItemToEnd,
   moveItemToInsert,
@@ -164,37 +168,35 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
 
   const persistDraft = async (nextDraft: LocalTerminalSettings) => {
     setDraft(nextDraft);
-    await saveLocalTerminals(nextDraft);
+    // 保存结果包含历史命令的自动回退，草稿同步采用该结果，避免后续操作写回旧值。
+    const saved = await saveLocalTerminals(nextDraft);
+    setDraft(saved);
   };
 
   // 聚合生成启动项下拉选项（区分系统终端与预设命令两组，不再保留冗余的「本地终端」项）
-  const startupOptions: CustomSelectOption[] = useMemo(() => [
-    // 1. 已开启的系统终端
-    ...(draft.shells ?? [])
-      .filter((s) => s.enabled !== false)
-      .map((shell) => ({
-        value: `shell:${shell.id}`,
-        group: t('localTerminalSystemShells'),
-        label: renderShellOptionLabel(shell),
-      })),
-    // 2. 预设命令（排除内置空的 shell）
-    ...draft.commands
-      .filter((item) => item.id !== 'shell' && Boolean(item.command.trim()))
-      .map((item) => {
-        const rawIcon = getLocalTerminalIcon(item.name, item.command, item.icon);
-        const iconPath = resolveIconDisplayUrl(rawIcon);
+  const startupOptions: CustomSelectOption[] = useMemo(() =>
+    getLocalTerminalStartupOptions(draft).map((option) => {
+      if (option.kind === 'shell') {
         return {
-          value: item.command,
-          group: t('localTerminalPresetCommands'),
-          label: (
-            <div className="local-terminal-select-option">
-              {iconPath && <img src={iconPath} className="local-terminal-select-icon" alt="" />}
-              <span>{item.name}</span>
-            </div>
-          ),
+          value: option.value,
+          group: t('localTerminalSystemShells'),
+          label: renderShellOptionLabel(option.shell),
         };
-      }),
-  ], [draft.shells, draft.commands, settings.uiLanguage]);
+      }
+      const item = option.command;
+      const rawIcon = getLocalTerminalIcon(item.name, item.command, item.icon);
+      const iconPath = resolveIconDisplayUrl(rawIcon);
+      return {
+        value: option.value,
+        group: t('localTerminalPresetCommands'),
+        label: (
+          <div className="local-terminal-select-option">
+            {iconPath && <img src={iconPath} className="local-terminal-select-icon" alt="" />}
+            <span>{item.name}</span>
+          </div>
+        ),
+      };
+    }), [draft.shells, draft.commands, settings.uiLanguage]);
 
   // 默认终端下拉选项：仅列出左侧开关已打开的系统终端，首项“自动选择”用于恢复按开启顺序自动回落
   const defaultShellOptions: CustomSelectOption[] = useMemo(() => [
@@ -228,9 +230,13 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
     }
     setDraft(localTerminals);
     setCwd(localTerminals.profiles[0]?.cwd ?? defaultLocalTerminalCwd);
-    const initialCmd = localTerminals.profiles[0]?.command ?? localTerminals.commands[0]?.command ?? '';
-    setCommand(initialCmd || (startupOptions[0]?.value ?? ''));
-    setProfileCommands(Object.fromEntries(localTerminals.profiles.map((profile) => [profile.id, profile.command || (startupOptions[0]?.value ?? '')])));
+    // 每次打开都按最新配置恢复选择，避免弹窗关闭期间删除的命令继续留在临时状态中。
+    const options = getLocalTerminalStartupOptions(localTerminals);
+    setCommand(resolveLocalTerminalStartupCommand(localTerminals.profiles[0]?.command ?? '', options));
+    setProfileCommands(Object.fromEntries(localTerminals.profiles.map((profile) => [
+      profile.id,
+      resolveLocalTerminalStartupCommand(profile.command, options),
+    ])));
     setEditingCommand(null);
     setCommandError(null);
     setScanNotice(null);
@@ -238,12 +244,18 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
     setCommandDropTarget(null);
   }, [open]);
 
-  // 当启动选项列表更新且当前选中的 command 为空或不在选项内时，自动校准为第一个可用项
+  // 当前选择和每条历史的临时选择一起校准；列表清空时也要清掉旧值，不能只替换下拉展示。
   useEffect(() => {
-    if (startupOptions.length > 0 && (!command || !startupOptions.some((opt) => opt.value === command))) {
-      setCommand(startupOptions[0].value);
+    // 等待打开弹窗或保存后的配置同步完成，避免用上一份草稿覆盖新配置的初始选择。
+    if (!open || draft !== localTerminals) {
+      return;
     }
-  }, [startupOptions, command]);
+    setCommand((current) => resolveLocalTerminalStartupCommand(current, startupOptions));
+    setProfileCommands((current) => Object.fromEntries(draft.profiles.map((profile) => [
+      profile.id,
+      resolveLocalTerminalStartupCommand(current[profile.id] ?? profile.command, startupOptions),
+    ])));
+  }, [open, startupOptions, draft, localTerminals]);
 
   // 目录与 Shell 路径浏览
   const browseDirectory = async () => {
@@ -315,7 +327,7 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
   // 打开终端
   const openCurrentTerminal = async () => {
     const normalizedCwd = cwd.trim();
-    const effectiveCommand = (command.trim() || startupOptions[0]?.value || '').trim();
+    const effectiveCommand = resolveLocalTerminalStartupCommand(command, startupOptions);
     if (!normalizedCwd) {
       setStatusMessage(t('validationLocalTerminalCwdRequired'));
       return;
@@ -327,7 +339,8 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
 
   // 打开历史记录终端
   const openProfile = (profile: LocalTerminalProfile, selectedCommand: string) => {
-    const effectiveCommand = (selectedCommand.trim() || startupOptions[0]?.value || '').trim();
+    // 启动时再次校验，保证选项刚删除、状态更新尚未完成时也不会执行旧命令。
+    const effectiveCommand = resolveLocalTerminalStartupCommand(selectedCommand, startupOptions);
     onClose();
     void openLocalTerminal({
       ...profile,
@@ -569,9 +582,6 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
     const nextCommands = draft.commands.filter((item) => item.id !== commandId);
     const nextDraft = { ...draft, commands: nextCommands };
     await persistDraft(nextDraft);
-    if (command === target.command) {
-      setCommand(nextCommands[0]?.command ?? '');
-    }
   };
 
   // 预设命令显示列表（排除内置空 shell）
@@ -874,7 +884,7 @@ export function LocalTerminalManagerModal({ open, onClose }: { open: boolean; on
                     <div className="local-terminal-v2-history-controls">
                       <CustomSelect
                         className="local-terminal-v2-history-select"
-                        value={profileCommands[profile.id] ?? profile.command ?? (startupOptions[0]?.value ?? '')}
+                        value={resolveLocalTerminalStartupCommand(profileCommands[profile.id] ?? profile.command, startupOptions)}
                         onChange={(val) => setProfileCommands((current) => ({ ...current, [profile.id]: val }))}
                         options={startupOptions}
                       />

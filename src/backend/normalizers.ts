@@ -9,6 +9,10 @@ import type {
   SshProxyConfig,
   TunnelOpenRequest,
 } from "../types";
+import {
+  getLocalTerminalStartupOptions,
+  resolveLocalTerminalStartupCommand,
+} from '../domain/settings/localTerminal';
 
 export const isTauriRuntime = () =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -348,7 +352,7 @@ export const normalizeTunnelRequest = (
   remotePort: clampPort(request.remotePort, 5432),
 });
 
-// 本地终端配置在 Web stub 和 Tauri 后端之间保持同一套归一化规则，空命令表示纯 shell。
+// 本地终端配置在 Web stub 和 Tauri 后端之间保持同一套归一化规则，历史启动项按可选列表回退。
 export const normalizeLocalTerminalSettings = (
   settings: LocalTerminalSettings,
 ): LocalTerminalSettings => {
@@ -401,7 +405,9 @@ export const normalizeLocalTerminalSettings = (
     })
     .filter((shell) => shell.id && shell.command);
 
-  // 历史目录只要求目录有效；命令允许为空，空命令由后端解释为直接打开本地 shell。
+  // 历史命令必须来自当前可选列表，删除预设或关闭系统终端后同步修正内部值与标题。
+  const commands = Array.from(commandMap.values());
+  const startupOptions = getLocalTerminalStartupOptions({ shells, commands });
   const profiles = (settings.profiles ?? [])
     .map((profile) => ({
       ...profile,
@@ -411,19 +417,23 @@ export const normalizeLocalTerminalSettings = (
       lastUsedAt: profile.lastUsedAt || "",
     }))
     .filter((profile) => profile.cwd)
-    .map((profile) => ({
-      ...profile,
-      title:
-        profile.title?.trim() ||
-        (profile.command ? `${profile.command} · ${profile.cwd}` : profile.cwd),
-    }));
+    .map((profile) => {
+      const command = resolveLocalTerminalStartupCommand(profile.command, startupOptions);
+      const title = command ? `${command} · ${profile.cwd}` : profile.cwd;
+      return {
+        ...profile,
+        command,
+        // 只在命令回退时替换旧标题，保留有效历史的已有标题。
+        title: command !== profile.command ? title : profile.title?.trim() || title,
+      };
+    });
 
   return {
     shellPath: settings.shellPath?.trim() ?? "",
     // 默认终端只保存 id 引用，是否有效（存在且已开启）交由后端启动阶段判定。
     defaultShellId: settings.defaultShellId?.trim() ?? "",
     shells,
-    commands: Array.from(commandMap.values()),
+    commands,
     profiles,
   };
 };

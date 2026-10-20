@@ -610,7 +610,15 @@ impl StorageService {
 
     pub fn load_local_terminals(&self) -> Result<LocalTerminalSettings, AppError> {
         let stored = self.read_json_or_default::<LocalTerminalSettings>(&self.local_terminals_path())?;
-        Ok(normalize_local_terminal_settings(stored))
+        // 兼容旧版本留下的失效历史，读取时修正并落盘，避免重启后仍保留已删除命令。
+        let stale_history = stored.profiles.iter().any(|profile| {
+            stored.resolve_startup_command(&profile.command) != profile.command.trim()
+        });
+        let normalized = normalize_local_terminal_settings(stored);
+        if stale_history {
+            self.write_json(&self.local_terminals_path(), &normalized)?;
+        }
+        Ok(normalized)
     }
 
     pub fn save_local_terminals(&self, settings: &LocalTerminalSettings) -> Result<(), AppError> {
@@ -672,6 +680,7 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// 清洗命令与历史配置，再依据当前可选列表修正失效的历史命令及标题，保留目录和使用时间。
 fn normalize_local_terminal_settings(settings: LocalTerminalSettings) -> LocalTerminalSettings {
     let mut command_ids = std::collections::HashSet::new();
     let mut commands = Vec::<LocalTerminalCommand>::new();
@@ -749,12 +758,118 @@ fn normalize_local_terminal_settings(settings: LocalTerminalSettings) -> LocalTe
         })
         .collect();
 
-    LocalTerminalSettings {
+    let mut normalized = LocalTerminalSettings {
         shell_path: settings.shell_path.trim().to_string(),
         // 默认系统终端只保存 id 引用，路径失效或开关关闭时由启动阶段判定并回落，不做写入期清洗。
         default_shell_id: settings.default_shell_id.trim().to_string(),
         shells: settings.shells,
         commands,
         profiles,
+    };
+    // 历史标题与内部命令同步回退，防止旧工具名称继续影响重新打开后的会话展示。
+    for index in 0..normalized.profiles.len() {
+        let command = normalized.resolve_startup_command(&normalized.profiles[index].command);
+        let profile = &mut normalized.profiles[index];
+        if profile.command != command {
+            profile.command = command;
+            profile.title = if profile.command.is_empty() {
+                profile.cwd.clone()
+            } else {
+                format!("{} · {}", profile.command, profile.cwd)
+            };
+        }
+    }
+    normalized
+}
+
+#[cfg(test)]
+mod local_terminal_history_tests {
+    use super::*;
+
+    /// 构造已删除 pi 预设、但历史仍保留 pi 的旧配置；默认终端刻意设为第二项。
+    fn stale_settings() -> LocalTerminalSettings {
+        serde_json::from_value(serde_json::json!({
+            "defaultShellId": "cmd",
+            "shells": [
+                { "id": "hidden", "name": "Hidden", "command": "hidden.exe", "enabled": false },
+                { "id": "invalid", "name": "Invalid", "command": " ", "enabled": true },
+                { "id": "pwsh", "name": "PowerShell 7", "command": "pwsh.exe", "enabled": true },
+                { "id": "cmd", "name": "CMD", "command": "cmd.exe", "enabled": true }
+            ],
+            "commands": [
+                { "id": "shell", "name": "本地终端", "command": "", "builtIn": true },
+                { "id": "codex", "name": "Codex", "command": "codex" }
+            ],
+            "profiles": [{
+                "id": "history", "title": "pi · C:/work", "cwd": "C:/work",
+                "command": "pi", "lastUsedAt": "2026-10-20"
+            }]
+        })).unwrap()
+    }
+
+    #[test]
+    fn removed_preset_falls_back_to_first_enabled_shell_and_updates_title() {
+        let normalized = normalize_local_terminal_settings(stale_settings());
+        let profile = &normalized.profiles[0];
+        assert_eq!(profile.command, "shell:pwsh");
+        assert_eq!(profile.title, "shell:pwsh · C:/work");
+        assert_eq!(profile.id, "history");
+        assert_eq!(profile.cwd, "C:/work");
+        assert_eq!(profile.last_used_at, "2026-10-20");
+    }
+
+    #[test]
+    fn disabled_shells_fall_back_to_first_preset() {
+        let mut settings = stale_settings();
+        for shell in &mut settings.shells {
+            shell.enabled = false;
+        }
+        let normalized = normalize_local_terminal_settings(settings);
+        assert_eq!(normalized.profiles[0].command, "codex");
+        assert_eq!(normalized.profiles[0].title, "codex · C:/work");
+    }
+
+    #[test]
+    fn empty_options_clear_stale_command() {
+        let mut settings = stale_settings();
+        settings.shells.clear();
+        settings.commands.clear();
+        let normalized = normalize_local_terminal_settings(settings);
+        assert_eq!(normalized.profiles[0].command, "");
+        assert_eq!(normalized.profiles[0].title, "C:/work");
+    }
+
+    #[test]
+    fn valid_commands_and_custom_titles_are_preserved() {
+        let mut settings = stale_settings();
+        settings.profiles[0].command = "codex".into();
+        settings.profiles[0].title = "自定义标题".into();
+        assert_eq!(settings.resolve_startup_command("shell:cmd"), "shell:cmd");
+        assert_eq!(settings.resolve_startup_command("shell:removed"), "shell:pwsh");
+        let normalized = normalize_local_terminal_settings(settings);
+        assert_eq!(normalized.profiles[0].command, "codex");
+        assert_eq!(normalized.profiles[0].title, "自定义标题");
+    }
+
+    #[test]
+    fn loading_old_history_and_saving_settings_persist_fallback() {
+        // 仅使用本次测试独占的临时目录，覆盖旧文件升级与删除后的保存，不触碰用户配置。
+        let directory = std::env::temp_dir().join(format!("myterminal-history-{}", uuid::Uuid::new_v4()));
+        let storage = StorageService::new(directory.clone()).unwrap();
+        let path = storage.local_terminals_file_path();
+        fs::write(&path, serde_json::to_vec(&stale_settings()).unwrap()).unwrap();
+        let loaded = storage.load_local_terminals().unwrap();
+        assert_eq!(loaded.profiles[0].command, "shell:pwsh");
+        let persisted: LocalTerminalSettings = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted.profiles[0].command, "shell:pwsh");
+        assert_eq!(persisted.profiles[0].title, "shell:pwsh · C:/work");
+
+        let mut settings = stale_settings();
+        settings.shells.clear();
+        storage.save_local_terminals(&settings).unwrap();
+        let persisted: LocalTerminalSettings = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted.profiles[0].command, "codex");
+        assert_eq!(storage.load_local_terminals().unwrap().profiles[0].command, "codex");
+        fs::remove_dir_all(directory).unwrap();
     }
 }

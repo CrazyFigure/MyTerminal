@@ -249,3 +249,31 @@ impl Default for LocalTerminalSettings {
         }
     }
 }
+
+impl LocalTerminalSettings {
+    /// 按可选列表校验历史启动命令；失效时依次回退到首个已开启系统终端、首个非空预设命令。
+    /// 两类列表都为空时返回空命令，交由默认终端交互式打开，不再执行已删除的命令。
+    pub fn resolve_startup_command(&self, command: &str) -> String {
+        let options = self
+            .shells
+            .iter()
+            .filter(|shell| {
+                shell.enabled && !shell.id.trim().is_empty() && !shell.command.trim().is_empty()
+            })
+            .map(|shell| format!("shell:{}", shell.id))
+            .chain(
+                self.commands
+                    .iter()
+                    .filter(|item| item.id != "shell" && !item.command.trim().is_empty())
+                    .map(|item| item.command.trim().to_string()),
+            )
+            .collect::<Vec<_>>();
+        let trimmed = command.trim();
+        options
+            .iter()
+            .find(|option| option.as_str() == trimmed)
+            .or_else(|| options.first())
+            .cloned()
+            .unwrap_or_default()
+    }
+}
