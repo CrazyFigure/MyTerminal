@@ -13,11 +13,13 @@ type Props = {
   reconnectSession: (session: TerminalSession) => void;
   session: TerminalSession;
   sessions: TerminalSession[];
+  // 左右关闭范围只取当前标签栏的显示顺序，全局会话列表不承担位置语义。
+  tabSessionIds: string[];
   t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
   target: SessionContextMenuTarget;
 };
 
-// 会话菜单集中计算相对关闭范围，保证左侧、右侧、其他和全部关闭始终使用当前标签顺序。
+// 左右关闭以当前标签栏的显示顺序为准；关闭其他和全部仍沿用全局会话范围。
 export function SessionContextMenu({
   closeSessionBatch,
   copyConnection,
@@ -25,12 +27,15 @@ export function SessionContextMenu({
   reconnectSession,
   session,
   sessions,
+  tabSessionIds,
   t,
   target,
 }: Props) {
-  const sessionIndex = sessions.findIndex((item) => item.id === session.id);
-  const leftSessionIds = sessions.slice(0, Math.max(0, sessionIndex)).map((item) => item.id);
-  const rightSessionIds = sessions.slice(sessionIndex + 1).map((item) => item.id);
+  // 过滤已关闭的标签；目标标签不在当前栏时禁用左右关闭，避免误关其他格的会话。
+  const visibleSessionIds = tabSessionIds.filter((sessionId) => sessions.some((item) => item.id === sessionId));
+  const sessionIndex = visibleSessionIds.indexOf(session.id);
+  const leftSessionIds = visibleSessionIds.slice(0, Math.max(0, sessionIndex));
+  const rightSessionIds = sessionIndex >= 0 ? visibleSessionIds.slice(sessionIndex + 1) : [];
   const otherSessionIds = sessions.filter((item) => item.id !== session.id).map((item) => item.id);
   const allSessionIds = sessions.map((item) => item.id);
 

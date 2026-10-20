@@ -94,7 +94,7 @@ import {
 import { setTerminalProtocolReplySender } from './terminal/terminalOutputHub';
 // 终端内核不是绘制应用骨架的前置条件；懒加载边界下沉到分屏容器内部，
 // 让标题栏、侧栏和操作区先进入可用状态。
-import { TerminalSplitGrid, type SplitDropTarget } from './features/terminal';
+import { findSplitPaneBySession, TerminalSplitGrid, type SplitDropTarget } from './features/terminal';
 
 export default function App() {
   // 所有业务弹窗复用标题栏拖动能力；偏移仅存在于本次打开的 DOM 节点，关闭后自动复位。
@@ -1934,6 +1934,7 @@ export default function App() {
           reconnectSession={reconnectSession}
           session={sessionContextSession}
           sessions={sessions}
+          tabSessionIds={findSplitPaneBySession(splitLayout, sessionContextSession.id)?.sessionIds ?? []}
           t={t}
           target={sessionContextMenu}
         />
