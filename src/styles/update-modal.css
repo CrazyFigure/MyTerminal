@@ -96,6 +96,10 @@
   background: color-mix(in srgb, var(--app-accent, #4f46e5) 14%, transparent);
 }
 
+.update-notes-toggle-all:active {
+  transform: scale(0.96);
+}
+
 .update-notes-toggle-all:focus-visible,
 .update-release-trigger:focus-visible {
   outline: 2px solid var(--app-accent, #4f46e5);
@@ -136,24 +140,26 @@
   border-radius: 10px;
   background: var(--app-input-bg);
   overflow: hidden;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
 .update-release-card + .update-release-card {
-  margin-top: 8px;
+  margin-top: 6px;
 }
 
 .update-release-card.is-expanded {
   border-color: color-mix(in srgb, var(--app-accent, #4f46e5) 30%, var(--app-card-border));
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--app-text) 5%, transparent);
 }
 
 .update-release-trigger {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   width: 100%;
+  min-height: 38px;
   border: none;
-  padding: 12px 14px;
+  padding: 8px 12px 8px 8px;
   background: transparent;
   color: var(--app-text);
   text-align: left;
@@ -162,58 +168,132 @@
   transition: background 120ms ease;
 }
 
-.update-release-heading,
-.update-release-trailing {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.update-release-heading {
-  flex-wrap: wrap;
-}
-
 .update-release-version {
+  flex-shrink: 0;
   overflow-wrap: anywhere;
-  font-size: 0.9rem;
+  font-size: 0.86rem;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .update-release-badge {
-  padding: 2px 7px;
-  border-radius: 999px;
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 4px;
   /* 标签使用主题内已有的徽标配色，深色模式下保持文字对比度。 */
   background: var(--app-chip-bg);
   color: var(--app-chip-text);
-  font-size: 0.7rem;
-  line-height: 1.5;
+  font-size: 0.66rem;
+  line-height: 16px;
 }
 
-.update-release-trailing {
+.update-release-date {
   flex-shrink: 0;
+  margin-left: auto;
   color: var(--app-muted);
-  font-size: 0.76rem;
+  font-size: 0.73rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .update-release-chevron {
-  transition: transform 160ms ease;
+  flex-shrink: 0;
+  color: var(--app-muted);
+  transition: transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .update-release-card.is-expanded .update-release-chevron {
-  transform: rotate(180deg);
+  transform: rotate(90deg);
+  color: var(--app-control-accent, #4f46e5);
+}
+
+/* 折叠时显示分类圆点摘要，展开后保留占位，避免标题和日期跳动。 */
+.update-release-summary {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 10px;
+  overflow: hidden;
+  color: var(--app-muted);
+  font-size: 0.73rem;
+  white-space: nowrap;
+  transition: opacity 150ms ease;
+}
+
+.update-release-card.is-expanded .update-release-summary {
+  opacity: 0;
+}
+
+.update-release-summary-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.update-release-summary-item i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--update-kind-color);
+}
+
+/* 新增绿、修复橙、优化跟随主题色；摘要与对应正文小节共用配色。 */
+.update-modal-notes .is-added { --update-kind-color: #10b981; }
+.update-modal-notes .is-fixed { --update-kind-color: #f59e0b; }
+.update-modal-notes .is-improved { --update-kind-color: var(--app-chip-text); }
+.update-modal-notes .is-other { --update-kind-color: var(--app-muted); }
+
+/* 用网格行高实现自适应折叠，不需要测量 Markdown 内容高度。 */
+.update-release-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.update-release-card.is-expanded .update-release-body {
+  grid-template-rows: 1fr;
 }
 
 .update-release-content {
   /* Markdown 复用通用渲染器，但字体跟随应用界面，不受 AI 对话字号设置影响。 */
   --agent-chat-font: var(--app-ui-font-family, inherit);
-  --agent-chat-font-size: 0.86rem;
+  --agent-chat-font-size: 0.8rem;
   --agent-chat-line-height: 1.65;
   --agent-chat-code-font: var(--app-terminal-font-family, monospace);
-  padding: 12px 14px 16px;
-  border-top: 1px solid var(--app-card-border);
-  font-size: 0.86rem;
+  min-height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  padding: 0 14px 0 32px;
+  font-size: 0.8rem;
   line-height: 1.65;
+  transition: visibility 0s linear 220ms, padding 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.update-release-card.is-expanded .update-release-content {
+  visibility: visible;
+  padding: 2px 14px 12px 32px;
+  transition: visibility 0s linear 0s, padding 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.update-release-section + .update-release-section {
+  margin-top: 10px;
+}
+
+.update-release-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+  color: var(--update-kind-color);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.update-release-section-title::before {
+  content: '';
+  width: 3px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--update-kind-color);
 }
 
 .update-release-content .md-heading {
@@ -226,6 +306,34 @@
   margin: 0;
   color: var(--app-muted);
   font-style: italic;
+}
+
+/* 窄弹窗把摘要放到第二行，优先完整展示版本号、最新标记和日期。 */
+@media (max-width: 600px) {
+  .update-release-trigger {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+
+  .update-release-summary {
+    order: 1;
+    flex-basis: 100%;
+    padding-left: 23px;
+  }
+
+  .update-release-summary:empty,
+  .update-release-card.is-expanded .update-release-summary {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-release-body,
+  .update-release-content,
+  .update-release-chevron,
+  .update-release-summary {
+    transition: none;
+  }
 }
 
 .update-modal-progress {

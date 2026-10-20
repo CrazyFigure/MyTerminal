@@ -556,6 +556,11 @@ export const messages = {
     // 发布历史操作保持简洁；加载不完整时提醒用户但不阻断下载安装。
     updateExpandAll: '全部展开',
     updateCollapseAll: '全部收起',
+    // 折叠版本栏用简短分类摘要，正文仍保留发布时的原始语言。
+    updateNotesAdded: '新增',
+    updateNotesFixed: '修复',
+    updateNotesImproved: '优化',
+    updateNotesOther: '其他',
     updateHistoryIncomplete: '部分版本说明未能加载，可重新检测或前往 Release 查看。',
     updateSize: '安装包大小',
     updateDownloadProgress: '下载进度',
@@ -1279,6 +1284,10 @@ export const messages = {
     updateNoReleaseNotes: 'No release notes available.',
     updateExpandAll: 'Expand all',
     updateCollapseAll: 'Collapse all',
+    updateNotesAdded: 'Added',
+    updateNotesFixed: 'Fixed',
+    updateNotesImproved: 'Improved',
+    updateNotesOther: 'Other',
     updateHistoryIncomplete: 'Some release notes could not be loaded. Check again or view them on the release page.',
     updateSize: 'Installer size',
     updateDownloadProgress: 'Download progress',
