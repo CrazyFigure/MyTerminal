@@ -6,7 +6,13 @@ use std::sync::atomic::Ordering;
 use myterminal::{agent_bridge, commands, state::AppState};
 use tauri::{Manager, WindowEvent};
 #[cfg(windows)]
-use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+use webview2_com::Microsoft::Web::WebView2::Win32::{
+    ICoreWebView2Settings3, COREWEBVIEW2_PROCESS_FAILED_KIND,
+    COREWEBVIEW2_PROCESS_FAILED_KIND_GPU_PROCESS_EXITED,
+    COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+};
+#[cfg(windows)]
+use webview2_com::ProcessFailedEventHandler;
 #[cfg(windows)]
 use windows_core::Interface;
 
@@ -75,6 +81,64 @@ fn disable_webview_browser_accelerators(window: &tauri::WebviewWindow) -> tauri:
     })
 }
 
+// 长时间闲置、息屏或睡眠唤醒后，部分显卡驱动（AMD 居多）会重置图形设备，WebView2 GPU 进程随之退出；
+// Chromium 会拉起新 GPU 进程，但窗口合成画面可能停留在黑屏，需要在窗口重新获得焦点时补刷一次。
+#[cfg(windows)]
+static WEBVIEW_REPAINT_PENDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+// 监听 WebView2 子进程异常：GPU 进程退出时强制重绘，渲染进程崩溃时页面已不可用则重载。
+#[cfg(windows)]
+fn watch_webview_process_failures(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    // 回调内持有窗口句柄而非 COM 控制器，避免 CoreWebView2 ↔ 控制器循环引用。
+    let handle = window.clone();
+    window.with_webview(move |webview| {
+        let register_result = unsafe {
+            webview.controller().CoreWebView2().and_then(|core| {
+                let handler = ProcessFailedEventHandler::create(Box::new(move |sender, args| {
+                    let Some(args) = args else { return Ok(()) };
+                    let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+                    args.ProcessFailedKind(&mut kind)?;
+                    if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_GPU_PROCESS_EXITED {
+                        // 新 GPU 进程可能尚未就绪，此刻重绘未必生效；标记后在切回窗口时再补一次。
+                        WEBVIEW_REPAINT_PENDING.store(true, Ordering::SeqCst);
+                        repaint_webview(&handle);
+                    } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED {
+                        // 渲染进程退出后页面已失效，重载由前端 bootstrap 重新拉取后端状态。
+                        if let Some(core) = sender {
+                            let _ = core.Reload();
+                        }
+                    } else {
+                        eprintln!("WebView2 process failed: kind={}", kind.0);
+                    }
+                    Ok(())
+                }));
+                let mut token = 0i64;
+                core.add_ProcessFailed(&handler, &mut token)
+            })
+        };
+        if let Err(error) = register_result {
+            eprintln!("failed to watch WebView2 process failures: {error}");
+        }
+    })
+}
+
+// 切换控制器可见性，让 WebView2 丢弃旧合成层并向新 GPU 进程重新提交画面。
+#[cfg(windows)]
+fn repaint_webview(window: &tauri::WebviewWindow) {
+    let _ = window.with_webview(|webview| unsafe {
+        let controller = webview.controller();
+        let mut visible = windows_core::BOOL::default();
+        // 已隐藏（最小化、托盘）的 WebView 不动，恢复显示后由焦点事件补刷。
+        if controller.IsVisible(&mut visible).is_err() || !visible.as_bool() {
+            return;
+        }
+        let _ = controller.SetIsVisible(false);
+        let _ = controller.SetIsVisible(true);
+        let _ = controller.NotifyParentWindowPositionChanged();
+    });
+}
+
 fn main() {
     let app_state = AppState::new().expect("failed to initialize app state");
 
@@ -102,6 +166,10 @@ fn main() {
             if let Some(window) = app.get_webview_window("main") {
                 // 必须在原生 WebView 创建后立即关闭浏览器加速键，覆盖左/右/底栏、设置页和所有弹窗。
                 disable_webview_browser_accelerators(&window)?;
+                // 进程异常监听失败不影响启动，仅失去黑屏自愈能力。
+                if let Err(error) = watch_webview_process_failures(&window) {
+                    eprintln!("failed to access WebView2 for process watch: {error}");
+                }
             }
             // Broker 属于后端常驻能力，必须在 Tauri setup 阶段按持久化设置启动，
             // 不能依赖 WebView 完成前端 bootstrap；窗口隐藏、页面加载失败时 MCP 仍应可用。
@@ -144,6 +212,15 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // 后台期间 GPU 进程退出过时，切回窗口补一次强制重绘，避免黑屏。
+            #[cfg(windows)]
+            if let WindowEvent::Focused(true) = event {
+                if WEBVIEW_REPAINT_PENDING.swap(false, Ordering::SeqCst) {
+                    if let Some(window) = window.app_handle().get_webview_window(window.label()) {
+                        repaint_webview(&window);
+                    }
+                }
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let app_handle = window.app_handle().clone();
                 let state = app_handle.state::<AppState>();
