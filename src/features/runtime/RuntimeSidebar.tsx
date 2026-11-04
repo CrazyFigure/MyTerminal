@@ -1,5 +1,8 @@
 /* 运行监控隔离侧边栏：封装订阅与明细自调度轮询，隔离 1 秒更新频率，避免引起全局重新渲染 */
-import React, { useState, useMemo, useCallback } from 'react';
+import React, {
+  useState, useMemo, useCallback, useEffect,
+  type Dispatch, type SetStateAction,
+} from 'react';
 import { Cpu, HardDrive, MemoryStick, Network, Globe, Clock } from 'lucide-react';
 
 import type { TranslationKey } from '../../i18n';
@@ -17,8 +20,10 @@ import { useRuntimeOverviewSubscription } from './useRuntimeOverviewSubscription
 interface RuntimeSidebarProps {
   activeRemoteConnectionId?: string;
   activeRemoteConnectionHost?: string;
+  collapsed: boolean;
   hasActiveRemoteSession: boolean;
   height: number;
+  setCollapsed: Dispatch<SetStateAction<boolean>>;
   settings: AppSettings;
   t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
 }
@@ -26,8 +31,10 @@ interface RuntimeSidebarProps {
 export const RuntimeSidebar = React.memo(function RuntimeSidebar({
   activeRemoteConnectionId,
   activeRemoteConnectionHost,
+  collapsed,
   hasActiveRemoteSession,
   height,
+  setCollapsed,
   settings,
   t,
 }: RuntimeSidebarProps) {
@@ -35,6 +42,19 @@ export const RuntimeSidebar = React.memo(function RuntimeSidebar({
   const [cpuCoresExpanded, setCpuCoresExpanded] = useState(false);
   const [memoryResourcesExpanded, setMemoryResourcesExpanded] = useState(false);
   const [connectionsExpanded, setConnectionsExpanded] = useState(false);
+
+  // 收起保留 3 秒缓冲，快速展开不会反复重建 SSH；到期后停止 worker 并释放概览与明细会话。
+  const [monitoringSuspended, setMonitoringSuspended] = useState(false);
+  useEffect(() => {
+    if (!collapsed) {
+      setMonitoringSuspended(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setMonitoringSuspended(true), 3000);
+    return () => window.clearTimeout(timer);
+  }, [collapsed]);
+  // 展开这一帧即可恢复订阅，不等待暂停状态的 effect 回写。
+  const monitoringEnabled = hasActiveRemoteSession && (!collapsed || !monitoringSuspended);
 
   // 2. 运行概览独占事件流订阅
   const {
@@ -44,7 +64,7 @@ export const RuntimeSidebar = React.memo(function RuntimeSidebar({
     refresh,
   } = useRuntimeOverviewSubscription({
     connectionId: activeRemoteConnectionId,
-    enabled: hasActiveRemoteSession,
+    enabled: monitoringEnabled,
   });
 
   // 3. 明细自调度轮询
@@ -61,8 +81,8 @@ export const RuntimeSidebar = React.memo(function RuntimeSidebar({
     setRuntimeResourceTarget,
   } = useRuntimeMonitor({
     activeRemoteConnectionId,
-    connectionsExpanded,
-    memoryResourcesExpanded,
+    connectionsExpanded: monitoringEnabled && connectionsExpanded,
+    memoryResourcesExpanded: monitoringEnabled && memoryResourcesExpanded,
     setConnectionsExpanded,
     setCpuCoresExpanded,
     setMemoryResourcesExpanded,
@@ -136,6 +156,7 @@ export const RuntimeSidebar = React.memo(function RuntimeSidebar({
   return (
     <RuntimePanel
       activeRemoteConnectionId={activeRemoteConnectionId}
+      collapsed={collapsed}
       connectionsExpanded={connectionsExpanded}
       cpuCoresExpanded={cpuCoresExpanded}
       hasActiveRemoteSession={hasActiveRemoteSession}
@@ -157,6 +178,7 @@ export const RuntimeSidebar = React.memo(function RuntimeSidebar({
       runtimeResourceTarget={runtimeResourceTarget}
       runtimeResourceUsage={runtimeResourceUsage ?? undefined}
       setConnectionsExpanded={setConnectionsExpanded}
+      setCollapsed={setCollapsed}
       setCpuCoresExpanded={setCpuCoresExpanded}
       setMemoryResourcesExpanded={setMemoryResourcesExpanded}
       setRuntimeResourceMetric={setRuntimeResourceMetric}

@@ -119,6 +119,8 @@ export default function App() {
   const [agentProviders, setAgentProviders] = useState<AgentProvider[]>([]);
   // 左侧栏初始宽度默认取最小宽度稍多一点，避免打开时占用过多空间
   const [sidebarWidth, setSidebarWidth] = useState(sidePanelMinWidth + 20);
+  // 运行状态默认展开，收起时保留用户调好的高度，文件管理接管剩余空间。
+  const [runtimeCollapsed, setRuntimeCollapsed] = useState(false);
   const [runtimePanelHeight, setRuntimePanelHeight] = useState(() => {
     if (typeof window === 'undefined') {
       return 220;
@@ -1268,7 +1270,7 @@ export default function App() {
     const observer = new ResizeObserver(updateExplorerViewport);
     observer.observe(list);
     return () => observer.disconnect();
-  }, [files.length, sidebarWidth, runtimePanelHeight, updateExplorerViewport]);
+  }, [files.length, sidebarWidth, runtimePanelHeight, runtimeCollapsed, updateExplorerViewport]);
   useEffect(() => () => {
     if (explorerScrollRafRef.current !== null) {
       window.cancelAnimationFrame(explorerScrollRafRef.current);
@@ -1831,15 +1833,18 @@ export default function App() {
 
       <div className="app-body">
       {!sidebarCollapsed ? (
-      <aside className="sidebar card" style={{ minWidth: sidePanelMinWidth, width: sidebarWidth }}>
+      <aside className={`sidebar card ${runtimeCollapsed ? 'is-runtime-collapsed' : ''}`} style={{ minWidth: sidePanelMinWidth, width: sidebarWidth }}>
         <RuntimeSidebar
           activeRemoteConnectionId={activeRemoteConnectionId}
           activeRemoteConnectionHost={activeRemoteConnection?.host}
+          collapsed={runtimeCollapsed}
           hasActiveRemoteSession={hasActiveRemoteSession}
           height={runtimePanelHeight}
+          setCollapsed={setRuntimeCollapsed}
           settings={settings}
           t={t}
-        />        <div
+        />
+        {!runtimeCollapsed ? <div
           className="resize-handle resize-handle-sidebar-horizontal"
           onPointerDown={(event) => {
             const startHeight = runtimePanelHeight;
@@ -1847,7 +1852,7 @@ export default function App() {
               setRuntimePanelHeight(clamp(startHeight + (moveEvent.clientY - startY), sidebarRuntimeMinHeight, resolveRuntimePanelMaxHeight()));
             });
           }}
-        />
+        /> : null}
 
         <FileExplorerPanel
           beginColumnResize={beginExplorerColumnResize}

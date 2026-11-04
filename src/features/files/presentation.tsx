@@ -1,5 +1,8 @@
 /* 功能域展示规则：不持有 React 页面状态，只把输入转换成稳定的显示结果。 */
-import { FileCode2, FileSymlink, FileText, FolderOpen } from 'lucide-react';
+import {
+  FileArchive, FileAudio, FileCode2, FileImage, FileSpreadsheet, FileSymlink,
+  FileText, FileVideo, Folder, Settings2, SquareTerminal, type LucideIcon,
+} from 'lucide-react';
 import type { RemoteFileEntry } from '../../types';
 
 // 文件管理列宽保持紧凑默认值，同时给名称列更多可扩展空间，方便长文件名场景手动拉宽。
@@ -147,12 +150,54 @@ export const formatOwnerGroup = (file: RemoteFileEntry) => {
 
 
 
-export const fileLabelIcon = (file: RemoteFileEntry) => {
+type FileIconAppearance = {
+  icon: LucideIcon;
+  tone: 'folder' | 'document' | 'code' | 'config' | 'sheet' | 'source' | 'archive' | 'image' | 'link';
+};
+
+// 图标与语义色统一分类，扩展名只用于展示，不改变文件能否编辑或打开的既有规则。
+const fileIconGroups: Array<FileIconAppearance & { extensions: string[] }> = [
+  { icon: FileText, tone: 'document', extensions: ['txt', 'md', 'markdown', 'log', 'doc', 'docx', 'odt', 'rtf', 'pdf'] },
+  { icon: SquareTerminal, tone: 'code', extensions: ['sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd'] },
+  { icon: Settings2, tone: 'config', extensions: ['json', 'jsonc', 'yaml', 'yml', 'toml', 'ini', 'conf', 'config', 'env', 'properties'] },
+  { icon: FileSpreadsheet, tone: 'sheet', extensions: ['xls', 'xlsx', 'xlsm', 'ods', 'csv', 'tsv', 'bitable'] },
+  {
+    icon: FileCode2,
+    tone: 'source',
+    extensions: [
+      'js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'vue', 'svelte', 'html', 'htm', 'xml',
+      'css', 'scss', 'less', 'py', 'rs', 'java', 'go', 'c', 'h', 'cpp', 'hpp', 'cs', 'php', 'rb', 'sql',
+    ],
+  },
+  { icon: FileArchive, tone: 'archive', extensions: ['zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'zst', 'jar', 'war'] },
+  { icon: FileImage, tone: 'image', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp', 'avif', 'heic'] },
+  { icon: FileAudio, tone: 'image', extensions: ['mp3', 'wav', 'flac', 'ogg', 'm4a', 'aac'] },
+  { icon: FileVideo, tone: 'image', extensions: ['mp4', 'mkv', 'mov', 'avi', 'webm'] },
+];
+
+// 表驱动映射在模块加载时建立，虚拟列表每行只做一次查询。
+const extensionIconAppearances = new Map(fileIconGroups.flatMap(({ extensions, ...appearance }) => (
+  extensions.map((extension) => [extension, appearance] as const)
+)));
+const configFileNames = new Set(['dockerfile', 'makefile', 'crontab', '.gitignore', '.gitattributes', '.editorconfig', '.dockerignore', '.npmrc', '.yarnrc']);
+const shellFileNames = new Set(['.bashrc', '.bash_profile', '.bash_logout', '.zshrc', '.zprofile', '.profile']);
+const defaultFileAppearance: FileIconAppearance = { icon: FileText, tone: 'document' };
+
+// 符号链接优先保留链接语义；无扩展名配置和 shell 隐藏文件按完整名称识别。
+export const fileLabelAppearance = (file: RemoteFileEntry): FileIconAppearance => {
   if (file.isSymlink) {
-    return FileSymlink;
+    return { icon: FileSymlink, tone: 'link' };
   }
   if (file.isDir) {
-    return FolderOpen;
+    return { icon: Folder, tone: 'folder' };
   }
-  return isEditableFile(file.path) ? FileCode2 : FileText;
+  const name = file.name.toLowerCase();
+  if (name === '.env' || name.startsWith('.env.') || name.startsWith('dockerfile.') || configFileNames.has(name)) {
+    return { icon: Settings2, tone: 'config' };
+  }
+  if (shellFileNames.has(name)) {
+    return { icon: SquareTerminal, tone: 'code' };
+  }
+  const extension = name.includes('.') ? name.split('.').pop() ?? '' : '';
+  return extensionIconAppearances.get(extension) ?? defaultFileAppearance;
 };

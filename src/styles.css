@@ -404,6 +404,15 @@ select:disabled {
   overflow: hidden;
 }
 
+/* 收起运行状态后移除分隔条占位，文件管理直接填满标题行以下的空间。 */
+.sidebar.is-runtime-collapsed {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.runtime-panel.is-collapsed {
+  gap: 0;
+}
+
 .agent-sidebar {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -459,9 +468,17 @@ select:disabled {
 }
 
 .runtime-header h3 {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.runtime-header-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
 }
 
 /* 重要逻辑：运行状态区域刷新按钮：加上圆角矩形细边框与默认背景，使其在平时有明显的按钮外观 */
@@ -479,6 +496,11 @@ select:disabled {
   color: var(--app-text) !important;
 }
 
+/* 折叠和刷新按钮共用按压反馈，延续现有的明暗主题悬浮样式。 */
+.runtime-header .icon-button:active:not(:disabled) {
+  filter: brightness(0.88);
+}
+
 /* 深色模式下运行状态刷新按钮 hover 状态加深 */
 .app-shell.theme-dark .runtime-header .icon-button:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.20) !important;
@@ -492,6 +514,10 @@ select:disabled {
   gap: 2px;
   min-height: 0;
   overflow: auto;
+}
+
+.runtime-list[hidden] {
+  display: none;
 }
 
 .runtime-row {
@@ -5261,6 +5287,32 @@ body.theme-dark img[src*="kimi.svg"],
 .explorer-name svg {
   flex: 0 0 auto;
 }
+
+/* 实心文件夹使用明亮暖黄；其他类型沿用彩色线框，选中和悬浮时保持类型辨识。 */
+.explorer-name .explorer-file-icon {
+  color: var(--file-icon-color);
+}
+
+.file-icon-folder { --file-icon-color: #f3ca59; fill: currentColor; }
+.file-icon-document { --file-icon-color: #5987b6; }
+.file-icon-code { --file-icon-color: #e37a48; }
+.file-icon-config { --file-icon-color: #2a9caa; }
+.file-icon-sheet { --file-icon-color: #329b62; }
+.file-icon-source { --file-icon-color: #dfad23; }
+.file-icon-archive { --file-icon-color: #9d67ca; }
+.file-icon-image { --file-icon-color: #bf689e; }
+.file-icon-link { --file-icon-color: #379ab9; }
+
+/* 深色主题提高图标亮度，文件夹保持相同暖黄色相。 */
+.app-shell.theme-dark .file-icon-folder { --file-icon-color: #f4d875; }
+.app-shell.theme-dark .file-icon-document { --file-icon-color: #8eb7e0; }
+.app-shell.theme-dark .file-icon-code { --file-icon-color: #f4a97d; }
+.app-shell.theme-dark .file-icon-config { --file-icon-color: #79ccd1; }
+.app-shell.theme-dark .file-icon-sheet { --file-icon-color: #7fcea1; }
+.app-shell.theme-dark .file-icon-source { --file-icon-color: #f1d66b; }
+.app-shell.theme-dark .file-icon-archive { --file-icon-color: #c3a1e4; }
+.app-shell.theme-dark .file-icon-image { --file-icon-color: #e9a4cc; }
+.app-shell.theme-dark .file-icon-link { --file-icon-color: #7fc7db; }
 
 .explorer-name strong {
   font-weight: 400;

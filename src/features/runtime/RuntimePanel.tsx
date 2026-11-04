@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { RefreshCw, type LucideIcon } from 'lucide-react';
+import { ChevronDown, ChevronUp, RefreshCw, type LucideIcon } from 'lucide-react';
 
 import type { TranslationKey } from '../../i18n';
 import { clamp } from '../../shared/numbers';
@@ -24,6 +24,7 @@ export type RuntimeSummaryItem = {
 
 type RuntimePanelProps = {
   activeRemoteConnectionId?: string;
+  collapsed: boolean;
   connectionsExpanded: boolean;
   cpuCoresExpanded: boolean;
   hasActiveRemoteSession: boolean;
@@ -46,6 +47,7 @@ type RuntimePanelProps = {
   runtimeResourceTarget: RuntimeResourceTarget;
   runtimeResourceUsage?: RuntimeResourceUsage;
   setConnectionsExpanded: Dispatch<SetStateAction<boolean>>;
+  setCollapsed: Dispatch<SetStateAction<boolean>>;
   setCpuCoresExpanded: Dispatch<SetStateAction<boolean>>;
   setMemoryResourcesExpanded: Dispatch<SetStateAction<boolean>>;
   setRuntimeResourceMetric: Dispatch<SetStateAction<RuntimeResourceMetric>>;
@@ -56,6 +58,7 @@ type RuntimePanelProps = {
 // 运行状态面板只负责展示与展开交互；概览事件和按需明细生命周期由 RuntimeSidebar 编排。
 export function RuntimePanel({
   activeRemoteConnectionId,
+  collapsed,
   connectionsExpanded,
   cpuCoresExpanded,
   hasActiveRemoteSession,
@@ -77,6 +80,7 @@ export function RuntimePanel({
   runtimeResourceTarget,
   runtimeResourceUsage,
   setConnectionsExpanded,
+  setCollapsed,
   setCpuCoresExpanded,
   setMemoryResourcesExpanded,
   setRuntimeResourceMetric,
@@ -85,17 +89,31 @@ export function RuntimePanel({
   t,
 }: RuntimePanelProps) {
   return (
-    <section className="sidebar-panel runtime-panel" style={{ height }}>
+    <section className={`sidebar-panel runtime-panel ${collapsed ? 'is-collapsed' : ''}`} style={{ height: collapsed ? undefined : height }}>
       <div className="section-row runtime-header">
         <h3>{runtimeHostLabel}</h3>
-        <Tooltip content={runtimeError || t('refresh')}>
-          <button aria-label={t('refresh')} className="icon-button" disabled={!hasActiveRemoteSession} onClick={onRefresh} type="button">
-            <RefreshCw className={runtimeLoading ? 'is-spinning' : ''} size={16} />
-          </button>
-        </Tooltip>
+        <div className="runtime-header-actions">
+          <Tooltip content={t(collapsed ? 'expandRuntime' : 'collapseRuntime')}>
+            <button
+              aria-controls="runtime-overview-content"
+              aria-expanded={!collapsed}
+              aria-label={t(collapsed ? 'expandRuntime' : 'collapseRuntime')}
+              className="icon-button"
+              onClick={() => setCollapsed((current) => !current)}
+              type="button"
+            >
+              {collapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+            </button>
+          </Tooltip>
+          <Tooltip content={collapsed ? t('expandRuntime') : runtimeError || t('refresh')}>
+            <button aria-label={t('refresh')} className="icon-button" disabled={!hasActiveRemoteSession || collapsed} onClick={onRefresh} type="button">
+              <RefreshCw className={runtimeLoading ? 'is-spinning' : ''} size={16} />
+            </button>
+          </Tooltip>
+        </div>
       </div>
 
-      <div className={`runtime-list ${runtimeLoading && !snapshot ? 'is-panel-loading' : ''}`}>
+      <div className={`runtime-list ${runtimeLoading && !snapshot ? 'is-panel-loading' : ''}`} hidden={collapsed} id="runtime-overview-content">
         {runtimeLoading && !snapshot ? (
           <div className="panel-loading-overlay">
             <RefreshCw className="is-spinning" size={18} />
@@ -103,7 +121,8 @@ export function RuntimePanel({
           </div>
         ) : null}
         {!snapshot && runtimeError ? <div className="runtime-resource-empty" role="alert">{runtimeError}</div> : null}
-        {runtimeItems.map(({ id, icon: Icon, label, percent, value }) => {
+        {/* 收起时卸载概览和明细子树，标题行与用于无障碍关联的容器保持挂载。 */}
+        {!collapsed && runtimeItems.map(({ id, icon: Icon, label, percent, value }) => {
           const isCpuMetric = id === 'cpu';
           const isMemoryMetric = id === 'memory';
           const isConnectionsMetric = id === 'connections';

@@ -4,7 +4,7 @@ export {
   explorerDefaultColumnWidths,
   explorerOverscanRows,
   explorerRowHeight,
-  fileLabelIcon,
+  fileLabelAppearance,
   formatBytes,
   formatFileType,
   formatOwnerGroup,

@@ -15,7 +15,7 @@ import type { RemoteFileEntry } from '../../types';
 import { Tooltip } from '../../components/Tooltip';
 import {
   explorerRowHeight,
-  fileLabelIcon,
+  fileLabelAppearance,
   formatBytes,
   formatFileType,
   formatOwnerGroup,
@@ -246,7 +246,7 @@ export function FileExplorerPanel({
           {files.length ? (
             <div className="explorer-virtual-body" style={{ height: files.length * explorerRowHeight, minWidth: explorerGridMinWidth }}>
               {virtualEntries.map(({ file, index }) => {
-                const Icon = fileLabelIcon(file);
+                const { icon: Icon, tone: iconTone } = fileLabelAppearance(file);
                 const isSelected = selectedFilePathSet.has(file.path);
                 const fileSizeLabel = file.isDir ? '' : formatBytes(file.size);
                 const fileTypeLabel = formatFileType(file, t('directoryLabel'), t('symlinkLabel'), t('fileLabel'));
@@ -280,7 +280,7 @@ export function FileExplorerPanel({
                       type="button"
                     >
                       <Tooltip content={file.name} side="bottom">
-                        <span className="explorer-name"><Icon size={16} /><strong>{file.name}</strong></span>
+                        <span className="explorer-name"><Icon aria-hidden="true" className={`explorer-file-icon file-icon-${iconTone}`} size={16} /><strong>{file.name}</strong></span>
                       </Tooltip>
                       <Tooltip content={fileSizeLabel || undefined} side="bottom">
                         <span>{fileSizeLabel}</span>
