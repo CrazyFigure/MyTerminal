@@ -450,10 +450,24 @@ export function SessionTabBar({
                     ? `is-drop-${dropTarget.placement}`
                     : ''
                 }`}
+                onAuxClick={(event) => {
+                  if (event.button === 1) {
+                    // 中键松开后复用关闭入口，避免按下即移除标签导致后续事件落到相邻标签。
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void onCloseSession(session.id);
+                  }
+                }}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
                   onOpenContextMenu(session.id, event.clientX, event.clientY);
+                }}
+                onMouseDown={(event) => {
+                  // WebView 在中键按下时启动自动滚动，必须在此阶段阻止默认行为。
+                  if (event.button === 1) {
+                    event.preventDefault();
+                  }
                 }}
                 onPointerDown={(event) => startTabDrag(event, session, sessionLabel)}
               >
