@@ -68,10 +68,12 @@ const resetTerminalGutterMarkers = () => {
 // 硬换行后光标已落到新的一行，为该行注册一个 marker 作为逻辑行位置锚点。
 const registerTerminalGutterLine = (nowMs = Date.now()) => {
   const terminal = terminalRef.current;
-  const sessionId = sessionRef.current?.id;
-  if (!terminal || !sessionId) {
+  const session = sessionRef.current;
+  // 本地终端始终隐藏行号栏，不维护逐行 marker 和时间线；长对话中这些 marker 的查找、裁剪会阻塞 PTY 解析。
+  if (!terminal || !session?.id || session.kind === 'local') {
     return;
   }
+  const sessionId = session.id;
 
   // 防护：若光标落到的新行是软换行续行（部分 xterm 版本自动折行也会触发 onLineFeed），则不建 marker，
   // 使 marker 仅对应逻辑行，让续行正确显示为占位符，也避免折行片段重复占用稳定行号。
