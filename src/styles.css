@@ -3817,6 +3817,12 @@ body.theme-dark .local-terminal-history-folder-icon,
   box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
 }
 
+/* 按下反馈覆盖选中态，新增图标沿用同一套交互反馈。 */
+.local-terminal-icon-card:active {
+  background: rgba(99, 102, 241, 0.24);
+  border-color: var(--app-accent-color, #4f46e5);
+}
+
 .local-terminal-icon-img-wrap {
   width: 20px;
   height: 20px;
@@ -3849,19 +3855,21 @@ body.theme-dark .local-terminal-history-folder-icon,
   font-family: var(--app-ui-font-family, sans-serif);
 }
 
-/* 深色主题下单色深色 AI 图标自适应反白高对比度展示（Codex、OpenCode、Cursor、OpenAI、Pi、Grok） */
+/* 深色主题下单色深色 AI 图标统一反白，覆盖弹窗、下拉浮层和终端标签。 */
 body.theme-dark img[src*="codex.svg"],
 body.theme-dark img[src*="opencode.svg"],
 body.theme-dark img[src*="cursor.svg"],
 body.theme-dark img[src*="openai.svg"],
 body.theme-dark img[src*="pi.svg"],
 body.theme-dark img[src*="grok.svg"],
+body.theme-dark img[src*="deepseek-harness.svg"],
 .app-shell.theme-dark img[src*="codex.svg"],
 .app-shell.theme-dark img[src*="opencode.svg"],
 .app-shell.theme-dark img[src*="cursor.svg"],
 .app-shell.theme-dark img[src*="openai.svg"],
 .app-shell.theme-dark img[src*="pi.svg"],
-.app-shell.theme-dark img[src*="grok.svg"] {
+.app-shell.theme-dark img[src*="grok.svg"],
+.app-shell.theme-dark img[src*="deepseek-harness.svg"] {
   filter: brightness(0) invert(0.96);
 }
 

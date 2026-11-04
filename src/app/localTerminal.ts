@@ -69,21 +69,23 @@ export interface CommandIconItem {
   category: 'ai' | 'shell';
 }
 
-// AI 助手预设图标列表
+// AI 助手预设图标按配置弹窗的展示顺序排列，各入口共用同一份资源。
 export const AI_COMMAND_ICONS: CommandIconItem[] = [
   { id: 'claude', name: 'Claude', path: '/icons/claude.svg', category: 'ai' },
   { id: 'codex', name: 'Codex', path: '/icons/codex.svg', category: 'ai' },
-  { id: 'qwen', name: 'Qwen', path: '/icons/qwen.svg', category: 'ai' },
   { id: 'opencode', name: 'OpenCode', path: '/icons/opencode.svg', category: 'ai' },
-  { id: 'gemini', name: 'Gemini', path: '/icons/gemini.svg', category: 'ai' },
-  { id: 'deepseek', name: 'DeepSeek', path: '/icons/deepseek.svg', category: 'ai' },
-  { id: 'copilot', name: 'Copilot', path: '/icons/copilot.svg', category: 'ai' },
-  { id: 'cursor', name: 'Cursor', path: '/icons/cursor.svg', category: 'ai' },
-  { id: 'openai', name: 'OpenAI', path: '/icons/openai.svg', category: 'ai' },
-  { id: 'pi', name: 'Pi', path: '/icons/pi.svg', category: 'ai' },
+  { id: 'pi', name: 'pi', path: '/icons/pi.svg', category: 'ai' },
+  { id: 'deepseek-harness', name: 'DeepSeek Harness', path: '/icons/deepseek-harness.svg', category: 'ai' },
   { id: 'grok', name: 'Grok', path: '/icons/grok.svg', category: 'ai' },
-  { id: 'kimi', name: 'Kimi', path: '/icons/kimi.svg', category: 'ai' },
+  { id: 'antigravity', name: 'Antigravity', path: '/icons/antigravity.svg', category: 'ai' },
+  { id: 'gemini', name: 'Gemini', path: '/icons/gemini.svg', category: 'ai' },
+  { id: 'qwen', name: 'qwen', path: '/icons/qwen.svg', category: 'ai' },
+  { id: 'kimi', name: 'kimi', path: '/icons/kimi.svg', category: 'ai' },
+  { id: 'cursor', name: 'Cursor', path: '/icons/cursor.svg', category: 'ai' },
   { id: 'mistral', name: 'Mistral', path: '/icons/mistral.svg', category: 'ai' },
+  { id: 'copilot', name: 'Copilot', path: '/icons/copilot.svg', category: 'ai' },
+  { id: 'openai', name: 'OpenAI', path: '/icons/openai.svg', category: 'ai' },
+  { id: 'deepseek', name: 'DeepSeek', path: '/icons/deepseek.svg', category: 'ai' },
 ];
 
 // 系统终端 Shell 预设图标列表
@@ -197,6 +199,19 @@ export const getLocalTerminalIcon = (name: string, command: string, customIcon?:
   if (lowerCmd.startsWith('shell:')) {
     const shellId = lowerCmd.slice(6);
     return getSystemShellIcon({ id: shellId, name, command });
+  }
+  // 短命令按独立命令词识别，兼容路径、Windows 扩展名及启动器包装，避免误匹配普通单词。
+  const antigravityCommandPattern = /(^|[\s\\/'"]+)agy(?:\.(?:exe|cmd|bat|ps1))?(?=$|[\s'"])/i;
+  if (lowerName.includes('antigravity') || lowerCmd.includes('antigravity')
+    || antigravityCommandPattern.test(name) || antigravityCommandPattern.test(command)) {
+    return '/icons/antigravity.svg';
+  }
+  // Harness 必须先于通用 DeepSeek 匹配，保持黑白 Harness 与蓝色 DeepSeek 图标独立。
+  const harnessNamePattern = /deepseek[\s_-]+harness/i;
+  const harnessCommandPattern = /(^|[\s\\/'"]+)dsh(?:\.(?:exe|cmd|bat|ps1))?(?=$|[\s'"])/i;
+  if (harnessNamePattern.test(name) || harnessNamePattern.test(command)
+    || harnessCommandPattern.test(name) || harnessCommandPattern.test(command)) {
+    return '/icons/deepseek-harness.svg';
   }
   if (lowerName.includes('pwsh') || lowerName.includes('powershell 7') || lowerCmd.includes('pwsh')) {
     return '/icons/powershell7.svg';
