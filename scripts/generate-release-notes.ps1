@@ -56,14 +56,17 @@ function Add-ReleaseItem([string]$line) {
 
 # 以记录分隔符拆分提交，git log 默认新到旧，这里反转为旧到新，使条目顺序与开发顺序一致。
 $rawLog = (git log --reverse --format='%s%x1f%b%x1e' $range) -join "`n"
-foreach ($record in ($rawLog -split [char]0x1e)) {
-  if ([string]::IsNullOrWhiteSpace($record)) {
-    continue
-  }
+$records = @($rawLog -split [char]0x1e | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+# 区间内存在发版提交时，以其正文为唯一来源：正文可合并、润色普通提交，避免与原始提交标题重复列出。
+$hasReleaseCommit = @($records | Where-Object { ($_ -split [char]0x1f, 2)[0].Trim() -match $releaseSubjectPattern }).Count -gt 0
+foreach ($record in $records) {
   $parts = $record -split [char]0x1f, 2
   $subject = $parts[0].Trim()
   $body = if ($parts.Count -gt 1) { $parts[1] } else { '' }
 
+  if ($hasReleaseCommit -and $subject -notmatch $releaseSubjectPattern) {
+    continue
+  }
   if ($subject -match $releaseSubjectPattern) {
     # 发版提交的正文逐行列出本次改动，每行形如“- feat(scope): 描述”。
     foreach ($bodyLine in ($body -split "`r?`n")) {
