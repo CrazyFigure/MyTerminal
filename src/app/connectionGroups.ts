@@ -39,8 +39,8 @@ export const ungroupedGroupPath = '__ungrouped__';
 
 
 
-// 名称列优先容纳可读机器名；拖拽抓手列设为 22px 匹配把手尺寸，操作按钮保持完整露出且不引入横向滚动条。
-export const connectionTableDefaultColumnWidths = [22, 184, 130, 54, 94];
+// 名称列优先容纳可读机器名；拖拽抓手列设为 22px，操作列收紧后节省的 40px 分给用户名，容纳更长账号。
+export const connectionTableDefaultColumnWidths = [22, 184, 130, 54, 134];
 
 
 export const connectionTableColumnLimits = [
@@ -68,7 +68,8 @@ export const connectionManagerTableMinWidth = 360;
 export const connectionManagerResizerWidth = 12;
 
 
-export const connectionTableActionMinWidth = 220;
+// 带文字的“连接”按钮（英文约 80px）加三个 28px 图标按钮与 4px 间距组成紧凑操作列，释放空间给连接信息。
+export const connectionTableActionMinWidth = 180;
 
 
 

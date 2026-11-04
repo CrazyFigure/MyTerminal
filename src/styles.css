@@ -3032,14 +3032,30 @@ select:disabled {
   justify-content: flex-end;
 }
 
-.connection-table-actions .ghost-button {
+/* 操作图标保持固定点击区域，并为按下状态补充独立反馈。 */
+.connection-table-actions .icon-button {
+  flex: 0 0 28px;
+}
+
+.connection-table-actions .icon-button:active:not(:disabled) {
+  transform: scale(0.9);
+}
+
+/* “连接”文字按钮与图标按钮等高，文字不换行，按下时同样给出缩放反馈。 */
+.connection-table-actions .connection-table-connect {
+  flex: 0 0 auto;
   min-width: 0;
-  padding: 4px 6px;
+  height: 28px;
+  padding: 4px 8px;
   white-space: nowrap;
 }
 
-.connection-table-actions .ghost-button svg {
+.connection-table-actions .connection-table-connect svg {
   margin-right: -1px;
+}
+
+.connection-table-actions .connection-table-connect:active:not(:disabled) {
+  transform: scale(0.96);
 }
 
 .modal-wide.local-terminal-modal {

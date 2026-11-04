@@ -984,24 +984,30 @@ export function ConnectionManagerModal({ open, onClose }: { open: boolean; onClo
                       <Tooltip content={connection.username} side="bottom">
                         <span>{connection.username}</span>
                       </Tooltip>
-                      {/* 连接列表操作按钮保留文字，同时补充图标帮助用户更快识别常用动作。 */}
+                      {/* 最常用的“连接”保留文字便于一眼定位，其余动作用图标按钮收紧操作区，统一提示与无障碍名称保留含义。 */}
                       <div className="connection-table-actions">
-                        <button className="ghost-button slim" onClick={() => {
+                        <button className="ghost-button slim connection-table-connect" onClick={() => {
                           // 管理弹窗先关闭，再启动会话；避免连接建立时的状态刷新和弹窗布局同时竞争渲染。
                           onClose();
                           void openSession(connection.id);
                         }} type="button">
                           <Play size={13} /> {t('connect')}
                         </button>
-                        <button className="ghost-button slim" onClick={() => openConnectionForm(connection)} type="button">
-                          <Pencil size={13} /> {t('edit')}
-                        </button>
-                        <button className="ghost-button slim" onClick={() => handleDuplicateConnection(connection.id)} type="button">
-                          <Copy size={13} /> {t('copy')}
-                        </button>
-                        <button className="ghost-button slim danger-button" onClick={() => void deleteConnection(connection.id)} type="button">
-                          {t('delete')}
-                        </button>
+                        <Tooltip content={t('edit')} side="top">
+                          <button aria-label={t('edit')} className="icon-button tiny" onClick={() => openConnectionForm(connection)} type="button">
+                            <Pencil size={14} />
+                          </button>
+                        </Tooltip>
+                        <Tooltip content={t('copy')} side="top">
+                          <button aria-label={t('copy')} className="icon-button tiny" onClick={() => handleDuplicateConnection(connection.id)} type="button">
+                            <Copy size={14} />
+                          </button>
+                        </Tooltip>
+                        <Tooltip content={t('delete')} side="top">
+                          <button aria-label={t('delete')} className="icon-button tiny danger-button" onClick={() => void deleteConnection(connection.id)} type="button">
+                            <Trash2 size={14} />
+                          </button>
+                        </Tooltip>
                       </div>
                     </div>
                   ))
