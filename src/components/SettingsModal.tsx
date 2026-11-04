@@ -31,6 +31,7 @@ import { buildConnectionGroupTree, normalizeConnectionGroupPath } from '../app/c
 import { buildPreviewFontFamily } from '../app/fonts';
 import { isTauriRuntime } from '../app/runtime';
 import { translateUpdateCheckError } from '../app/updates';
+import { updateRepositories, updateReleasePage } from '../domain/settings/updateChannel';
 import {
   resolveSystemFontFallback,
   shouldPromptForFontPack,
@@ -77,6 +78,7 @@ export function SettingsModal({
 }) {
   const {
     checkForUpdates,
+    setUpdateChannel,
     connections,
     downloadFontPack,
     fontPackStatus,
@@ -95,6 +97,7 @@ export function SettingsModal({
   } = useAppStore(
     useShallow((state) => ({
       checkForUpdates: state.checkForUpdates,
+      setUpdateChannel: state.setUpdateChannel,
       connections: state.connections,
       downloadFontPack: state.downloadFontPack,
       fontPackStatus: state.fontPackStatus,
@@ -660,7 +663,7 @@ export function SettingsModal({
     setUpdateDownloadProgress(null);
     setUpdateCheckError(null);
     try {
-      // 更新检测只读取 GitHub Release 元数据，用户确认后再通过 Release 页面下载新版安装包。
+      // 检测优先当前保存的渠道，失败后尝试另一来源，实际下载由用户点击触发。
       const result = await checkForUpdates();
       setUpdateCheckResult(result);
       // 无论是否有新版本，都弹窗展示结果；UpdateModal 内部根据 updateAvailable 决定展示详情还是简单提示。
@@ -789,17 +792,30 @@ export function SettingsModal({
 
   useEffect(() => {
     if (open) {
-      setDraftSettings(settings);
+      setDraftSettings(useAppStore.getState().settings);
       setSettingsFeedback(null);
       setSettingsActionRunning('');
       setFontPackActionRunning('');
       setFontPackDownloadProgress(null);
       setFontPackError(null);
       // 打开设置页时同步定时检测缓存的结果，避免首页已发现更新而关于页仍显示旧版本。
-      setUpdateCheckResult(storeUpdateCheckResult);
+      setUpdateCheckResult(useAppStore.getState().updateCheckResult);
       void refreshAgentBridgeStatus();
     }
-  }, [open, settings, storeUpdateCheckResult]);
+  }, [open]);
+
+  useEffect(() => {
+    if (open) {
+      // 检测只同步渠道字段，保留尚未保存的外观等草稿。
+      setDraftSettings((current) => ({ ...current, updateChannel: settings.updateChannel }));
+    }
+  }, [open, settings.updateChannel]);
+
+  useEffect(() => {
+    if (open) {
+      setUpdateCheckResult(storeUpdateCheckResult);
+    }
+  }, [open, storeUpdateCheckResult]);
 
   useEffect(() => {
     if (!open || !systemFontsLoaded) {
@@ -1071,6 +1087,12 @@ export function SettingsModal({
                 installing={updateInstalling}
                 onCheck={handleCheckForUpdates}
                 onOpenRepository={() => openExternalLink('https://github.com/CrazyFigure/MyTerminal')}
+                onOpenCnbRepository={() => openExternalLink(updateRepositories.cnb)}
+                channel={draftSettings.updateChannel}
+                channelChanged={draftSettings.updateChannel !== settings.updateChannel}
+                onChannelChange={(channel) => setDraftSettings((current) => ({ ...current, updateChannel: channel }))}
+                onSaveChannel={() => void runSettingsAction('save-update-channel', () => setUpdateChannel(draftSettings.updateChannel), t('statusSettingsSaved'))}
+                savingChannel={settingsActionRunning === 'save-update-channel'}
                 onOpenUpdateModal={() => setUpdateModalOpen(true)}
                 result={updateCheckResult}
                 t={t}
@@ -1081,6 +1103,9 @@ export function SettingsModal({
       </div>
 
       <UpdateModal
+        channel={settings.updateChannel}
+        onSelectChannel={(channel) => void runSettingsAction('save-update-channel', () => setUpdateChannel(channel), t('statusSettingsSaved'))}
+        releaseUrl={updateReleasePage(settings.updateChannel)}
         checkError={updateCheckError}
         downloading={updateInstalling}
         error={updateModalError}

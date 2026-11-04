@@ -451,6 +451,16 @@ pub struct StoredAgentProvider {
     pub models: Vec<AgentModel>,
 }
 
+/// 旧配置和未知渠道默认使用 GitHub；检测成功后持久化实际可用的来源。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateChannel {
+    Cnb,
+    #[default]
+    #[serde(other)]
+    Github,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -458,6 +468,8 @@ pub struct AppSettings {
     pub ui_language: String,
     #[serde(default = "default_theme_mode")]
     pub theme_mode: String,
+    #[serde(default)]
+    pub update_channel: UpdateChannel,
     /// 进程/线程与连接展开明细的刷新频率（秒）；概览固定每秒推送。
     #[serde(default = "default_runtime_resource_refresh_interval_sec")]
     pub runtime_resource_refresh_interval_sec: u16,
@@ -563,6 +575,7 @@ impl Default for AppSettings {
         Self {
             ui_language: "zh-CN".into(),
             theme_mode: "light".into(),
+            update_channel: UpdateChannel::default(),
             runtime_resource_refresh_interval_sec: default_runtime_resource_refresh_interval_sec(),
             runtime_resource_source: default_runtime_resource_source(),
             ssh_keepalive_interval_sec: default_ssh_keepalive_interval_sec(),

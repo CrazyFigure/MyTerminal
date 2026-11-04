@@ -34,6 +34,7 @@ import type {
   TunnelRecord,
   TunnelUpdateRequest,
   UpdateCheckResult,
+  UpdateChannel,
 } from './types';
 
 import {
@@ -379,10 +380,10 @@ export const backend = {
     const state = await call<BootstrapState>('import_local_config', { content }, mockState);
     return { ...state, settings: normalizeSettings(state.settings) };
   },
-  // 更新检测读取 GitHub Release 元数据；Web 预览环境下返回当前版本，避免误提示本地预览需要更新。
+  // 更新检测优先当前保存的渠道，失败后尝试另一来源；Web 预览返回当前版本。
   checkForUpdates: () => call<UpdateCheckResult>('check_for_updates', undefined, mockUpdateCheckResult),
   // 更新安装只接收后端检测出的 Release 安装包，桌面端下载到临时目录后启动安装器。
-  installUpdate: (result: UpdateCheckResult) =>
+  installUpdate: (result: UpdateCheckResult, channel: UpdateChannel) =>
     call<string>(
       'download_and_install_update',
       // 安装包大小来自 Release 元数据，后端用它判断本地缓存是否完整，避免复用半截文件。
@@ -390,6 +391,7 @@ export const backend = {
         downloadUrl: result.installerDownloadUrl,
         assetName: result.installerAssetName,
         installerSize: result.installerSize ?? null,
+        channel,
       },
       'C:/Software/WorkSpace/MyTerminal/.myterminal-data/updates/MyTerminal-update.exe',
     ),

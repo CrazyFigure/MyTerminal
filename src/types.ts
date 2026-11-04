@@ -216,9 +216,13 @@ export interface AgentChatMessage {
   attachments?: AgentChatAttachment[];
 }
 
+export type UpdateChannel = 'github' | 'cnb';
+
 export interface AppSettings {
   uiLanguage: UiLanguage;
   themeMode: ThemeMode;
+  /** 更新检测成功后自动保存来源，安装包与字体包沿用此渠道。 */
+  updateChannel: UpdateChannel;
   /** 进程/线程和连接展开明细的刷新频率；概览固定每秒由后端推送。 */
   runtimeResourceRefreshIntervalSec: number;
   /** 内存行展开后的资源明细默认来源，容器环境可切到 Docker/Compose、Podman 或 K8s。 */
@@ -515,6 +519,7 @@ export interface UpdateReleaseNotes {
 }
 
 export interface UpdateCheckResult {
+  channel: UpdateChannel;
   currentVersion: string;
   latestVersion: string;
   releaseName?: string;

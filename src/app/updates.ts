@@ -14,6 +14,16 @@ export const translateUpdateCheckError = (reason: string, language: UiLanguage):
   const code = sepIndex >= 0 ? rest.slice(0, sepIndex) : rest;
   const params = sepIndex >= 0 ? rest.slice(sepIndex + 1) : '';
   switch (code) {
+    case 'channels': {
+      // 双渠道失败分别翻译，保留网络、限流、解析等真实原因，供用户选择下载来源。
+      const separator = params.indexOf('|');
+      const github = separator >= 0 ? params.slice(0, separator) : params;
+      const cnb = separator >= 0 ? params.slice(separator + 1) : '';
+      return translate(language, 'statusUpdateChannelsFailed', {
+        github: translateUpdateCheckError(github, language),
+        cnb: translateUpdateCheckError(cnb, language),
+      });
+    }
     case 'rate_limited': {
       // 参数是配额重置的 Unix 秒时间戳；按当前语言格式化为本地时间。
       const resetTs = Number(params);

@@ -19,6 +19,7 @@ import type {
 import { normalizeProxyConfig, nowIso } from "./normalizers";
 
 export const mockSettings: AppSettings = {
+  updateChannel: 'github',
   uiLanguage: "zh-CN",
   themeMode: "light",
   runtimeResourceRefreshIntervalSec: 3,
@@ -310,6 +311,7 @@ export const mockAgentBridgeStatus: AgentBridgeStatus = {
 export const mockAppVersion = import.meta.env.VITE_APP_VERSION;
 
 export const mockUpdateCheckResult: UpdateCheckResult = {
+  channel: 'github',
   currentVersion: mockAppVersion,
   latestVersion: mockAppVersion,
   releaseName: "MyTerminal local preview",

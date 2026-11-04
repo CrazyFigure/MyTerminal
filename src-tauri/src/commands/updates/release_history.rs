@@ -1,12 +1,11 @@
 //! 升级区间的发布说明：完整遍历分页，并按应用语义版本筛选、去重和排序。
 
-use crate::models::UpdateReleaseNotes;
+use crate::models::{UpdateChannel, UpdateReleaseNotes};
 
 use super::{fetch_release_response, parse_version_parts, GitHubReleaseResponse};
 
 // GitHub 每页最多返回 100 条；遍历所有页而不是只读第一页，避免老版本升级时漏掉说明。
 const RELEASES_PER_PAGE: usize = 100;
-const RELEASES_API_URL: &str = "https://api.github.com/repos/CrazyFigure/MyTerminal/releases";
 
 /// 正式版本比较键忽略 v 前缀、构建元数据和末尾零；预发布及资源包标签不属于应用升级区间。
 fn stable_version_key(version: &str) -> Option<Vec<u64>> {
@@ -87,11 +86,15 @@ fn has_next_page(link: Option<&str>) -> bool {
 pub(super) async fn load_release_history(
     current: &str,
     latest: &GitHubReleaseResponse,
+    channel: UpdateChannel,
 ) -> (Vec<UpdateReleaseNotes>, bool) {
-    let mut notes = vec![release_notes(latest)];
+    // CNB 的发布记录没有 html_url，统一补齐当前渠道页面，确保历史外链也留在镜像。
+    let mut latest_notes = release_notes(latest);
+    latest_notes.release_url = channel.release_url(&latest.tag_name);
+    let mut notes = vec![latest_notes];
     let mut page_number = 1;
     loop {
-        let url = format!("{RELEASES_API_URL}?per_page={RELEASES_PER_PAGE}&page={page_number}");
+        let url = channel.releases_url(page_number, RELEASES_PER_PAGE);
         let response = match fetch_release_response(&url).await {
             Ok(response) => response,
             Err(_) => return (notes, false),
@@ -102,10 +105,18 @@ pub(super) async fn load_release_history(
                 .get(reqwest::header::LINK)
                 .and_then(|value| value.to_str().ok()),
         );
-        let page = match response.json::<Vec<GitHubReleaseResponse>>().await {
+        let mut page = match response.json::<Vec<GitHubReleaseResponse>>().await {
             Ok(page) => page,
             Err(_) => return (notes, false),
         };
+        // CNB 没有 GitHub Link 头，按整页数量继续，直到读到不足一页。
+        let has_next = match channel {
+            UpdateChannel::Github => has_next,
+            UpdateChannel::Cnb => page.len() == RELEASES_PER_PAGE,
+        };
+        for release in &mut page {
+            release.html_url = channel.release_url(&release.tag_name);
+        }
         merge_release_page(&mut notes, &page, current, &latest.tag_name);
         if !has_next {
             return (notes, true);

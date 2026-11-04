@@ -1,6 +1,25 @@
 /* 更新弹窗样式；文件顺序用于保持原有 CSS 级联优先级。 */
 /* ── Update Modal ──────────────────────────────────────────────────────── */
 
+/* 关于页的渠道标签固定单行，下拉框使用独立宽度，窄窗口只让整组控件换行。 */
+.settings-update-channel-row {
+  flex-wrap: wrap;
+}
+
+.settings-update-channel-fields {
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+.settings-update-channel-label {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.custom-select-trigger.settings-update-channel-select {
+  width: 200px;
+}
+
 .update-modal {
   /* 更新弹窗提供充足垂直高度与适度宽度，使版本日志具备舒适的可读空间，避免短小区域频繁翻滚。 */
   --modal-fixed-height: min(560px, calc(100vh - 48px));

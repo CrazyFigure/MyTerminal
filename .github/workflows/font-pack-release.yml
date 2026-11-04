@@ -86,3 +86,11 @@ jobs:
           } else {
             gh release create $tag $assetPath --prerelease --title "MyTerminal Font Pack $tag" --notes "MyTerminal 应用内字体资源包；不会安装到 Windows。普通应用更新可持续复用。"
           }
+
+  sync-cnb:
+    name: Sync font pack assets to CNB
+    needs: publish-font-pack
+    uses: ./.github/workflows/cnb-release.yml
+    with:
+      tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    secrets: inherit

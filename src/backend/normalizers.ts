@@ -176,6 +176,8 @@ export const normalizeProxyConfig = (proxy?: SshProxyConfig): SshProxyConfig => 
 
 export const normalizeSettings = (settings: AppSettings): AppSettings => ({
   ...settings,
+  // 旧配置和未知渠道均回到 GitHub，避免导入配置后失去下载来源。
+  updateChannel: settings.updateChannel === 'cnb' ? 'cnb' : 'github',
   ...normalizeFontPair(settings),
   shellFontSize: clampFontSize(settings.shellFontSize),
   shellLineHeight: clampLineHeight(settings.shellLineHeight, 1.18),

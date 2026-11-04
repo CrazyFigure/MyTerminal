@@ -15,6 +15,7 @@ import type {
   TunnelDraft,
   TunnelRecord,
   UpdateCheckResult,
+  UpdateChannel,
   WorkspacePanel,
 } from '../../types';
 
@@ -130,6 +131,7 @@ export type StoreState = {
   exportLocalConfig: (targetPath: string) => Promise<void>;
   importLocalConfig: (file: File) => Promise<void>;
   checkForUpdates: () => Promise<UpdateCheckResult>;
+  setUpdateChannel: (channel: UpdateChannel) => Promise<void>;
   installUpdate: (result: UpdateCheckResult) => Promise<string>;
   refreshFontPack: () => Promise<FontPackStatus>;
   downloadFontPack: () => Promise<FontPackStatus>;

@@ -14,7 +14,7 @@ use uuid::Uuid;
 use zip::ZipArchive;
 
 use crate::{
-    models::{FontPackFace, FontPackStatus},
+    models::{FontPackFace, FontPackStatus, UpdateChannel},
     state::AppState,
 };
 
@@ -298,6 +298,7 @@ async fn download_archive(
     app_handle: &AppHandle,
     client: &reqwest::Client,
     archive_path: &Path,
+    download_url: &str,
 ) -> Result<(), String> {
     match fs::remove_file(archive_path) {
         Ok(()) => {}
@@ -306,7 +307,7 @@ async fn download_archive(
     }
 
     let mut response = client
-        .get(FONT_PACK_DOWNLOAD_URL)
+        .get(download_url)
         .header(reqwest::header::USER_AGENT, "MyTerminal")
         .send()
         .await
@@ -475,7 +476,11 @@ pub fn get_font_pack_status(state: State<'_, AppState>) -> Result<FontPackStatus
 pub async fn download_font_pack(
     app_handle: AppHandle,
     state: State<'_, AppState>,
+    channel: Option<UpdateChannel>,
 ) -> Result<FontPackStatus, String> {
+    // 字体来源与应用下载共用设置；包内置哈希和原子安装流程保持一致。
+    let channel = channel.unwrap_or(state.storage.load_settings(&state.crypto)?.update_channel);
+    let download_url = channel.download_url(FONT_PACK_DOWNLOAD_URL);
     let root = state.storage.font_packs_dir_path();
     let current = build_status(&root);
     if current.state == "ready" {
@@ -487,11 +492,11 @@ pub async fn download_font_pack(
     // 与应用更新保持一致：先尊重系统代理，代理节点返回 403 时再直连重试。
     let client = build_update_http_client(FONT_PACK_DOWNLOAD_TIMEOUT)
         .map_err(|error| font_pack_error("download", error.to_string()))?;
-    if let Err(error) = download_archive(&app_handle, &client, &archive_path).await {
+    if let Err(error) = download_archive(&app_handle, &client, &archive_path, &download_url).await {
         if error.contains("403") {
             let direct_client = build_direct_http_client(FONT_PACK_DOWNLOAD_TIMEOUT)
                 .map_err(|direct_error| font_pack_error("download", direct_error.to_string()))?;
-            download_archive(&app_handle, &direct_client, &archive_path).await?;
+            download_archive(&app_handle, &direct_client, &archive_path, &download_url).await?;
         } else {
             return Err(error);
         }

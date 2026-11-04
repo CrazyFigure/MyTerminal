@@ -57,3 +57,11 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           # 使用 action.yml 支持的资产命名参数，让 Release 附件名称稳定可识别。
           assetNamePattern: MyTerminal_[version]_[platform]_[arch][setup][ext]
+
+  sync-cnb:
+    name: Sync release assets to CNB
+    needs: build-windows
+    uses: ./.github/workflows/cnb-release.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit

@@ -61,6 +61,7 @@ pub struct UpdateReleaseNotes {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateCheckResult {
+    pub channel: UpdateChannel,
     pub current_version: String,
     pub latest_version: String,
     pub release_name: Option<String>,
@@ -175,6 +176,8 @@ pub struct StoredAppSettings {
     pub ui_language: String,
     #[serde(default = "default_theme_mode")]
     pub theme_mode: String,
+    #[serde(default)]
+    pub update_channel: UpdateChannel,
     #[serde(default = "default_runtime_resource_refresh_interval_sec")]
     pub runtime_resource_refresh_interval_sec: u16,
     #[serde(default = "default_runtime_resource_source")]

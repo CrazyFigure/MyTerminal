@@ -4,6 +4,7 @@ import type { AppSettings, LocalTerminalSettings } from '../../types';
 export const defaultSettings: AppSettings = {
   uiLanguage: 'zh-CN',
   themeMode: 'light',
+  updateChannel: 'github',
   // 进程/线程和连接明细只在对应行展开时刷新，默认 3 秒；概览固定每秒由后端推送。
   runtimeResourceRefreshIntervalSec: 3,
   runtimeResourceSource: 'system',

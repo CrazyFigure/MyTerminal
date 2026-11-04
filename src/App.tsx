@@ -45,6 +45,7 @@ import { beginResize, clamp } from './app/layout';
 import { buildPreviewFontFamily, resolveUiFontFamily } from './app/fonts';
 import { isTauriRuntime } from './app/runtime';
 import { translateUpdateCheckError } from './app/updates';
+import { updateReleasePage } from './domain/settings/updateChannel';
 import {
   resolveSystemFontFallback,
   shouldPromptForFontPack,
@@ -2135,6 +2136,9 @@ export default function App() {
         open={settingsOpen}
       />
       <UpdateModal
+        channel={settings.updateChannel}
+        onSelectChannel={(channel) => { void useAppStore.getState().setUpdateChannel(channel).catch((error) => setAppUpdateCheckError(String(error))); }}
+        releaseUrl={updateReleasePage(settings.updateChannel)}
         checkError={appUpdateCheckError}
         downloading={appUpdateInstalling}
         error={appUpdateError}

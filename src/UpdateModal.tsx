@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Download, ExternalLink, X } from 'lucide-react';
-import type { UpdateCheckResult } from './types';
+import type { UpdateChannel, UpdateCheckResult } from './types';
 import type { TranslationKey } from './i18n';
 import { FloatingToast } from './shared/ui/FloatingToast';
 import { UpdateReleaseHistory } from './features/updates';
@@ -20,7 +20,9 @@ type UpdateModalProps = {
   error?: string | null;
   // 手动检测失败时的提示文案；非空时以“更新”结果弹窗形式展示错误，不再要求 result 存在。
   checkError?: string | null;
-  // 打开 GitHub Release 下载页地址，供“已是最新/检测失败”结果弹窗的“打开下载页”按钮使用。
+  channel: UpdateChannel;
+  onSelectChannel: (channel: UpdateChannel) => void;
+  // 当前渠道的 Release 下载页，供“已是最新/检测失败”结果弹窗打开。
   releaseUrl?: string;
   t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
   onClose: () => void;
@@ -49,6 +51,8 @@ export function UpdateModal({
   progress,
   error,
   checkError,
+  channel,
+  onSelectChannel,
   releaseUrl,
   t,
   onClose,
@@ -58,7 +62,7 @@ export function UpdateModal({
 }: UpdateModalProps) {
   // 发布说明交由共享历史视图处理，检测结果和下载阶段使用同一份版本数据。
   // 是否展示“更新详情”弹窗：仅当确实检测到可用新版本时才走完整详情布局。
-  const showUpdateDetail = Boolean(result?.updateAvailable);
+  const showUpdateDetail = !checkError && Boolean(result?.updateAvailable);
 
   const sizeText = useMemo(() => {
     const size = result?.installerSize;
@@ -109,6 +113,15 @@ export function UpdateModal({
           </div>
           <div className="update-result-modal-body">
             <p>{bodyText}</p>
+            {checkError ? (
+              <div className="section-row compact">
+                {(['github', 'cnb'] as const).map((source) => (
+                  <button className="secondary-button" disabled={source === channel} key={source} type="button" onClick={() => onSelectChannel(source)}>
+                    {t('updateSwitchChannel', { channel: source === 'github' ? 'GitHub' : t('cnbChannel') })}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
           <div className="modal-footer">
             <div className="modal-actions">

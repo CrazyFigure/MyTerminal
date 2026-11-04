@@ -10,17 +10,23 @@ use std::{
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, State};
 
-use crate::{error::AppError, models::UpdateCheckResult};
+use crate::{
+    error::AppError,
+    models::{UpdateChannel, UpdateCheckResult},
+    state::AppState,
+};
 
 // 发布历史独立处理版本筛选和分页，最新版本的安装资产仍由当前模块选择。
+mod channel;
 mod release_history;
 
 #[derive(Debug, Deserialize)]
 struct GitHubReleaseResponse {
     tag_name: String,
     name: Option<String>,
+    #[serde(default)]
     html_url: String,
     published_at: Option<String>,
     body: Option<String>,
@@ -43,6 +49,8 @@ struct GitHubReleaseAsset {
 const UPDATE_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 // 增加更新包数据读取的超时时间，提升慢速网络环境下的连接稳定性
 const UPDATE_HTTP_READ_TIMEOUT: Duration = Duration::from_secs(40);
+// 元数据请求单次最多等待 12 秒，及时进入直连重试或 CNB 回退；安装包保持原下载时限。
+const UPDATE_METADATA_TIMEOUT: Duration = Duration::from_secs(12);
 // 极大调高下载超时上限至 600 秒（10分钟），确保在慢速网络下也能完整下载安装包
 const UPDATE_INSTALLER_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 const UPDATE_DOWNLOAD_PROGRESS_EVENT: &str = "myterminal-update-download-progress";
@@ -155,7 +163,9 @@ fn is_valid_update_download_url(url: &str) -> bool {
         && !normalized.chars().any(|character| character.is_control())
 }
 
-pub(super) fn build_update_http_client(total_timeout: Duration) -> Result<reqwest::Client, AppError> {
+pub(super) fn build_update_http_client(
+    total_timeout: Duration,
+) -> Result<reqwest::Client, AppError> {
     // 更新相关请求必须尊重系统代理；Cargo 特性启用后，默认 Client 会读取 Windows 代理和代理环境变量。
     reqwest::Client::builder()
         .connect_timeout(UPDATE_HTTP_CONNECT_TIMEOUT)
@@ -167,7 +177,9 @@ pub(super) fn build_update_http_client(total_timeout: Duration) -> Result<reqwes
 
 // 直连客户端：忽略系统代理。代理节点的数据中心 IP 常被 GitHub API 风控（403），
 // 更新请求在代理失败时回退直连重试，避免把代理服务器的拒绝误报成 GitHub 限流。
-pub(super) fn build_direct_http_client(total_timeout: Duration) -> Result<reqwest::Client, AppError> {
+pub(super) fn build_direct_http_client(
+    total_timeout: Duration,
+) -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
         .no_proxy()
         .connect_timeout(UPDATE_HTTP_CONNECT_TIMEOUT)
@@ -409,19 +421,23 @@ fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
-// 请求 GitHub Release 元数据；use_system_proxy 决定是否读取 Windows 系统代理。
+// 请求官方 Release 元数据；use_system_proxy 决定是否读取 Windows 系统代理。
 // 最新版本与历史分页共用网络策略，避免历史请求忽略用户代理设置。
-async fn fetch_release_request(url: &str, use_system_proxy: bool) -> Result<reqwest::Response, String> {
+async fn fetch_release_request(
+    url: &str,
+    use_system_proxy: bool,
+) -> Result<reqwest::Response, String> {
     let client = if use_system_proxy {
-        build_update_http_client(UPDATE_HTTP_READ_TIMEOUT)?
+        build_update_http_client(UPDATE_METADATA_TIMEOUT)?
     } else {
-        build_direct_http_client(UPDATE_HTTP_READ_TIMEOUT)?
+        build_direct_http_client(UPDATE_METADATA_TIMEOUT)?
     };
     // GitHub API 要求明确 User-Agent；这里只读取发布元数据，不提前下载安装包。
     // 错误统一以 "update_error:{code}:{params}" 返回，由前端按界面语言翻译成完整文案。
     client
         .get(url)
         .header(reqwest::header::USER_AGENT, "MyTerminal")
+        .header(reqwest::header::ACCEPT, "application/json")
         .send()
         .await
         .map_err(|err| format!("update_error:network:{err}"))
@@ -469,37 +485,29 @@ async fn fetch_release_response(url: &str) -> Result<reqwest::Response, String> 
         .map_err(|err| format!("update_error:http_status:{err}"))
 }
 
-/// 检测安装目标并补齐升级区间内的发布说明；历史加载失败只影响完整性提示，不阻断更新。
+/// 检测安装目标并补齐同渠道升级说明；历史失败只标记说明不完整，不阻断安装。
 #[tauri::command]
-pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
+pub async fn check_for_updates(state: State<'_, AppState>) -> Result<UpdateCheckResult, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
-    // 安装目标仍由 latest 接口决定，历史说明不改变目标版本与安装包。
-    let release_url = "https://github.com/CrazyFigure/MyTerminal/releases/latest".to_string();
-    let response = fetch_release_response(
-        "https://api.github.com/repos/CrazyFigure/MyTerminal/releases/latest",
-    )
-    .await?;
-
-    let release = response
-        .json::<GitHubReleaseResponse>()
-        .await
-        .map_err(|err| format!("update_error:parse:{err}"))?;
+    let preferred = state.storage.load_settings(&state.crypto)?.update_channel;
+    let (channel, release) = channel::check_release(preferred).await?;
 
     let latest_version = release.tag_name.trim_start_matches(['v', 'V']).to_string();
     let update_available = is_newer_version(&release.tag_name, &current_version);
     let installer_asset = select_update_installer_asset(&release.assets);
     // 没有更新时不额外请求历史；历史失败只标记说明不完整，不影响最新版本安装。
     let (releases, release_history_complete) = if update_available {
-        release_history::load_release_history(&current_version, &release).await
+        release_history::load_release_history(&current_version, &release, channel).await
     } else {
         (Vec::new(), true)
     };
     Ok(UpdateCheckResult {
+        channel,
         current_version,
         latest_version,
         release_name: release.name,
         release_url: if release.html_url.is_empty() {
-            release_url
+            channel.release_url(&release.tag_name)
         } else {
             release.html_url
         },
@@ -508,7 +516,7 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
         installer_asset_name: installer_asset.as_ref().map(|asset| asset.name.clone()),
         installer_download_url: installer_asset
             .as_ref()
-            .map(|asset| asset.browser_download_url.clone()),
+            .map(|asset| channel.download_url(&asset.browser_download_url)),
         installer_size: installer_asset.and_then(|asset| asset.size),
         release_body: release.body,
         releases,
@@ -519,11 +527,16 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
 #[tauri::command]
 pub async fn download_and_install_update(
     app_handle: AppHandle,
+    state: State<'_, AppState>,
     download_url: String,
     asset_name: String,
     installer_size: Option<u64>,
+    channel: Option<UpdateChannel>,
 ) -> Result<String, String> {
-    let normalized_url = download_url.trim();
+    // 下载动作重新读取当前渠道，手动切换后不继续沿用旧检测结果中的地址。
+    let channel = channel.unwrap_or(state.storage.load_settings(&state.crypto)?.update_channel);
+    let download_url = channel.download_url(download_url.trim());
+    let normalized_url = download_url.as_str();
     if !is_valid_update_download_url(normalized_url) {
         return Err(AppError::Validation("invalid update installer URL".into()).into());
     }
@@ -533,14 +546,14 @@ pub async fn download_and_install_update(
     fs::create_dir_all(&update_dir).map_err(|error| AppError::from(error).to_string())?;
     let installer_path: PathBuf = update_dir.join(safe_file_name);
 
-    // 本地已有完整安装包时直接启动，避免用户重复点击时再次等待 GitHub 下载。
+    // 本地已有完整安装包时直接启动，避免用户重复点击时再次等待下载。
     if installer_path_matches_expected_size(&installer_path, installer_size)? {
         spawn_update_installer(&installer_path)
             .map_err(|error| AppError::from(error).to_string())?;
         return Ok(installer_path.to_string_lossy().to_string());
     }
 
-    // 安装包下载使用 GitHub Release 浏览器下载地址；完成写入后立即启动安装程序，交互式确认交给安装器自身处理。
+    // 安装包使用当前渠道的 Release 下载地址；完整落盘后启动安装程序，由安装器处理确认。
     // 首次走系统代理，若被代理节点风控返回 403，回退直连重试一次（与检测更新的策略保持一致）。
     let client = build_update_http_client(UPDATE_INSTALLER_DOWNLOAD_TIMEOUT)?;
     if let Err(error) = download_update_installer(
