@@ -13,8 +13,7 @@ interface ProtocolIconProps {
 }
 
 /**
- * 渲染专业彩色的 SSH 终端与 Windows 远程桌面矢量图标。
- * 针对浅色与深色主题均经过精细对比度调优，并提供极高的辨识度。
+ * 渲染 SSH 终端与 Windows 远程桌面矢量图标，统一连接列表与表单中的协议标识。
  */
 export function ProtocolIcon({
   protocol,
@@ -32,25 +31,16 @@ export function ProtocolIcon({
         fill="none"
         height={size}
         role="img"
+        style={{ flexShrink: 0 }}
         viewBox="0 0 24 24"
         width={size}
         xmlns="http://www.w3.org/2000/svg"
       >
-        <defs>
-          <linearGradient id="protocol-rdp-win-blue" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
-            <stop stopColor="#0ea5e9" />
-            <stop offset="0.4" stopColor="#0078d4" />
-            <stop offset="1" stopColor="#0052cc" />
-          </linearGradient>
-        </defs>
-        {/* 方案C微章底座：纯正微软 Windows 湛蓝渐变 */}
-        <rect fill="url(#protocol-rdp-win-blue)" height="20" rx="4.5" stroke="#38bdf8" strokeOpacity="0.4" strokeWidth="1" width="20" x="2" y="2" />
-        {/* 图标内部方正现代电脑屏幕（无老式支架） */}
-        <rect fill="#ffffff" fillOpacity="0.18" height="12" rx="1.5" stroke="#ffffff" strokeWidth="1.3" width="15" x="4.5" y="4.5" />
-        {/* 屏幕内远程控制交互箭头 */}
-        <path d="M8.5 10.5H15.5M15.5 10.5L13 8M15.5 10.5L13 13" stroke="#ffffff" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
-        {/* 现代方正一体屏微边线 */}
-        <line stroke="#ffffff" strokeLinecap="round" strokeOpacity="0.8" strokeWidth="1.2" x1="9" x2="15" y1="18.5" y2="18.5" />
+        {/* 透明底窗格以兼顾明暗背景的蓝色填充，并与 public/icons/rdp.svg 保持一致。 */}
+        <path
+          d="M2 5L10 3.9V11H2V5ZM11.5 3.7L22 2V11H11.5V3.7ZM2 12.5H10V20.1L2 19V12.5ZM11.5 12.5H22V22L11.5 20.3V12.5Z"
+          fill="#0088d9"
+        />
       </svg>
     );
   }
