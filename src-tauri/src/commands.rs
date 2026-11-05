@@ -288,6 +288,8 @@ use shell_runtime::{
 };
 
 mod runtime_daemons;
+mod tunnel_lifecycle;
+use tunnel_lifecycle::{lock_tunnel_operations, start_tunnel_by_id};
 pub use runtime_daemons::{
     shutdown_app_backends, spawn_keepalive_daemon, spawn_tunnel_monitor,
 };
@@ -789,6 +791,7 @@ pub fn open_tunnel(
     state: State<'_, AppState>,
     request: TunnelOpenRequest,
 ) -> Result<TunnelRecord, String> {
+    let _operation = lock_tunnel_operations(&state)?;
     let TunnelOpenRequest {
         connection_id,
         name,
@@ -828,6 +831,7 @@ pub fn update_tunnel(
     state: State<'_, AppState>,
     request: TunnelUpdateRequest,
 ) -> Result<TunnelRecord, String> {
+    let _operation = lock_tunnel_operations(&state)?;
     let TunnelUpdateRequest {
         id,
         connection_id,
@@ -880,61 +884,12 @@ pub fn update_tunnel(
 
 #[tauri::command]
 pub fn start_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<TunnelRecord, String> {
-    let mut tunnels = state.storage.load_tunnels()?;
-    let Some(index) = tunnels.iter().position(|item| item.id == tunnel_id) else {
-        return Err(AppError::NotFound(format!("tunnel {tunnel_id} not found")).into());
-    };
-
-    // 先把 remove 结果落到 let，让判据里的 tunnels 锁在分号处释放，
-    // 避免块内 cleanup_unused_tunnel_ssh_pool 再次 lock_tunnels() 造成同锁重入死锁。
-    let removed_runtime = lock_tunnels(&state)?.remove(&tunnel_id);
-    if let Some(runtime) = removed_runtime {
-        runtime.stop_flag.store(true, Ordering::Relaxed);
-        cleanup_unused_tunnel_ssh_pool(&state, &runtime.connection_id)?;
-    }
-
-    let mut tunnel = tunnels[index].clone();
-    let connection = ensure_connection_exists(&state, &tunnel.connection_id)?;
-    let stop_flag = Arc::new(AtomicBool::new(false));
-    let pool = get_or_create_tunnel_ssh_pool(&state, &connection)?;
-    if let Err(error) =
-        spawn_tunnel_listener(Arc::clone(&pool), tunnel.clone(), Arc::clone(&stop_flag))
-    {
-        cleanup_unused_tunnel_ssh_pool(&state, &connection.id)?;
-        return Err(error.into());
-    }
-
-    tunnel.status = "running".into();
-    tunnels[index] = tunnel.clone();
-    if let Err(error) = state.storage.save_tunnels(&tunnels) {
-        stop_flag.store(true, Ordering::Relaxed);
-        cleanup_unused_tunnel_ssh_pool(&state, &connection.id)?;
-        return Err(error.into());
-    }
-
-    let runtime = TunnelRuntime {
-        connection_id: tunnel.connection_id.clone(),
-        stop_flag: Arc::clone(&stop_flag),
-        pool,
-    };
-    match lock_tunnels(&state) {
-        Ok(mut runtimes) => {
-            runtimes.insert(tunnel.id.clone(), runtime);
-        }
-        Err(error) => {
-            stop_flag.store(true, Ordering::Relaxed);
-            cleanup_unused_tunnel_ssh_pool(&state, &connection.id)?;
-            tunnels[index].status = "stopped".into();
-            let _ = state.storage.save_tunnels(&tunnels);
-            return Err(error.into());
-        }
-    }
-
-    Ok(tunnel)
+    Ok(start_tunnel_by_id(&state, &tunnel_id)?)
 }
 
 #[tauri::command]
 pub fn close_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<bool, String> {
+    let _operation = lock_tunnel_operations(&state)?;
     // 先把 remove 结果落到 let，让判据里的 tunnels 锁在分号处释放，
     // 避免块内 cleanup_unused_tunnel_ssh_pool 再次 lock_tunnels() 造成同锁重入死锁。
     let removed_runtime = lock_tunnels(&state)?.remove(&tunnel_id);
@@ -955,6 +910,7 @@ pub fn close_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<boo
 
 #[tauri::command]
 pub fn delete_tunnel(state: State<'_, AppState>, tunnel_id: String) -> Result<bool, String> {
+    let _operation = lock_tunnel_operations(&state)?;
     // 运行中的隧道先终止后台监听并回收连接池
     let removed_runtime = lock_tunnels(&state)?.remove(&tunnel_id);
     if let Some(runtime) = removed_runtime {

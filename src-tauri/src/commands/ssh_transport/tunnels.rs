@@ -317,6 +317,9 @@ pub(in crate::commands) fn spawn_tunnel_listener(
                 Err(_) => break,
             }
         }
+        // 先释放端口再标记监听失效，后续打开 SSH 时可以识别并重建意外退出的监听。
+        drop(listener);
+        stop_flag.store(true, Ordering::Relaxed);
     });
 
     Ok(())

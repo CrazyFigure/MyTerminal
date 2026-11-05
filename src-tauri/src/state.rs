@@ -347,6 +347,8 @@ pub struct AppState {
     /// 保证 cd 状态与 shell 历史连贯。目标标签消失时在查找阶段惰性清理。
     pub agent_terminal_bindings: Mutex<HashMap<String, String>>,
     pub tunnels: Mutex<HashMap<String, TunnelRuntime>>,
+    /// 串行化隧道配置与监听的读改写，避免多个 SSH 标签或手动操作重复绑定端口、覆盖状态。
+    pub tunnel_operations: Mutex<()>,
     /// SSH 隧道专用会话池按连接配置共享，避免每个网页请求都重新握手。
     pub tunnel_ssh_pools: Mutex<HashMap<String, Arc<TunnelSshPool>>>,
     /// SSH 保活间隔（秒，0=关闭）。后台守护线程和交互终端各自克隆一份 Arc 读取；保存设置时热更新，无需重连。
@@ -356,6 +358,11 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Result<Self, AppError> {
         let storage = StorageService::new(StorageService::default_data_dir())?;
+        Self::from_storage(storage)
+    }
+
+    /// 从指定存储初始化运行时；测试使用独占临时目录，避免触碰用户配置。
+    pub(crate) fn from_storage(storage: StorageService) -> Result<Self, AppError> {
         let mut persisted_tunnels = storage.load_tunnels()?;
         let had_running_tunnels = persisted_tunnels
             .iter()
@@ -391,6 +398,7 @@ impl AppState {
             sftp_transfer_cancellations: Mutex::new(HashMap::new()),
             agent_terminal_bindings: Mutex::new(HashMap::new()),
             tunnels: Mutex::new(HashMap::new()),
+            tunnel_operations: Mutex::new(()),
             tunnel_ssh_pools: Mutex::new(HashMap::new()),
             ssh_keepalive_interval_sec: Arc::new(AtomicU64::new(keepalive_interval_sec)),
         })

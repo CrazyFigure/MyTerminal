@@ -174,8 +174,8 @@ export const createTunnelActions = (set: StoreSet, get: StoreGet): TunnelActions
   applyTunnelStatusChange: (tunnel) => {
     set((state) => {
       const existing = state.tunnels.find((item) => item.id === tunnel.id);
-      // 用户已手动停止时不接受后台迟到探测覆盖；状态相同则避免无意义重渲染。
-      if (!existing || existing.status === tunnel.status || existing.status === 'stopped') {
+      // 自动启动可从停止态进入运行/异常；用户停止后仍拒绝迟到的健康探测事件。
+      if (!existing || existing.status === tunnel.status || (existing.status === 'stopped' && !tunnel.automaticStart)) {
         return {};
       }
       return {

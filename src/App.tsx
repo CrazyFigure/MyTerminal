@@ -1019,12 +1019,12 @@ export default function App() {
     };
   }, [adoptSession]);
 
-  // 监听后台隧道健康监控线程发出的状态变化事件，实时将隧道“运行中/异常”状态同步到面板。
+  // 同步自动启动及健康监控结果；启动标记用于区分停止态恢复与迟到的健康探测。
   useEffect(() => {
     let unlistenFn: (() => void) | undefined;
     let isMounted = true;
     void import('@tauri-apps/api/event').then(({ listen }) =>
-      listen<TunnelRecord>('tunnel-status-changed', (event) => {
+      listen<TunnelRecord & { automaticStart?: boolean }>('tunnel-status-changed', (event) => {
         if (event.payload && typeof event.payload === 'object') {
           applyTunnelStatusChange(event.payload);
         }

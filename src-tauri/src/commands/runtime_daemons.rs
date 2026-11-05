@@ -18,6 +18,7 @@ pub(super) fn stop_all_runtimes(state: &AppState) -> Result<(), AppError> {
         }
     }
 
+    let _operation = lock_tunnel_operations(state)?;
     let mut tunnels = lock_tunnels(state)?;
     for runtime in tunnels.drain().map(|(_, runtime)| runtime) {
         runtime.stop_flag.store(true, Ordering::Relaxed);
@@ -233,6 +234,18 @@ fn update_and_emit_tunnel_status(
     connection_id: &str,
     next_status: &str,
 ) {
+    let Ok(_operation) = lock_tunnel_operations(state) else {
+        return;
+    };
+    // 启动失败的隧道没有监听，不能被同连接下其他隧道的健康结果误标为运行中。
+    let runtime_ids = match lock_tunnels(state) {
+        Ok(runtimes) => runtimes
+            .iter()
+            .filter(|(_, runtime)| !runtime.stop_flag.load(Ordering::Relaxed))
+            .map(|(id, _)| id.clone())
+            .collect::<HashSet<_>>(),
+        Err(_) => return,
+    };
     let mut tunnels = match state.storage.load_tunnels() {
         Ok(tunnels) => tunnels,
         Err(_) => return,
@@ -240,6 +253,7 @@ fn update_and_emit_tunnel_status(
     let mut changed: Vec<TunnelRecord> = Vec::new();
     for tunnel in &mut tunnels {
         if tunnel.connection_id == connection_id
+            && runtime_ids.contains(&tunnel.id)
             && (tunnel.status == "running" || tunnel.status == "error")
             && tunnel.status != next_status
         {
@@ -250,7 +264,9 @@ fn update_and_emit_tunnel_status(
     if changed.is_empty() {
         return;
     }
-    let _ = state.storage.save_tunnels(&tunnels);
+    if state.storage.save_tunnels(&tunnels).is_err() {
+        return;
+    }
     for tunnel in changed {
         let _ = app_handle.emit("tunnel-status-changed", tunnel);
     }

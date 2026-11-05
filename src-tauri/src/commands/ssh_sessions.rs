@@ -13,6 +13,7 @@ use std::{
 };
 
 use ssh2::{Channel, ExtendedData, Session, Sftp};
+use tauri::{Emitter, Manager};
 
 use crate::{
     error::AppError,
@@ -531,6 +532,31 @@ pub(crate) fn spawn_shell_thread(
         // 初始尺寸必须排在连接状态和首批 Shell 输出之前，缓存重放才能用创建 PTY 时的真实 120x32 解析启动内容。
         queue_terminal_size(&output_queue, &app_handle, &session_id, cols, rows);
         queue_session_status(&output_queue, &app_handle, &session_id, "connected");
+
+        // 普通打开、复制、重连及 Agent 共用 Shell 入口；成功后开启连接级隧道，已有监听直接复用。
+        let tunnel_result = super::tunnel_lifecycle::start_session_tunnels(
+            &app_handle.state::<AppState>(),
+            &session_id,
+            |tunnel| {
+                // 自动启动允许面板从“已停止”切换；健康监控事件仍保留手动停止后的迟到保护。
+                let mut event = serde_json::to_value(tunnel).expect("tunnel record is serializable");
+                event["automaticStart"] = true.into();
+                let _ = app_handle.emit("tunnel-status-changed", event);
+            },
+        );
+        let failures = match tunnel_result {
+            Ok(failures) => failures,
+            Err(error) => vec![error.to_string()],
+        };
+        if !failures.is_empty() {
+            // 隧道失败只在当前终端提示，不改变已成功建立的 SSH 会话状态。
+            queue_output(
+                &output_queue,
+                &app_handle,
+                &session_id,
+                format!("\r\n隧道自动开启失败：\r\n{}\r\n", failures.join("\r\n")),
+            );
+        }
 
         let mut buffer = [0_u8; 8192];
         // 终端输出可能把 OSC 同步标记拆成多段，过滤器负责跨分片拼接与隐藏。

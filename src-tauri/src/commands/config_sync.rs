@@ -12,7 +12,7 @@ use crate::{
     state::AppState,
 };
 
-use super::{bootstrap_from_storage, stop_all_runtimes};
+use super::{bootstrap_from_storage, lock_tunnel_operations, stop_all_runtimes};
 
 #[tauri::command]
 // 本地配置导出写入用户选择的位置；空路径用于兼容旧调用，回落到默认导出目录。
@@ -63,6 +63,9 @@ pub fn import_local_config(
     }
 
     stop_all_runtimes(&state)?;
+
+    // 旧会话已移除，再锁住配置替换，防止并发隧道操作覆盖导入结果。
+    let _operation = lock_tunnel_operations(&state)?;
 
     state.storage.backup_existing_file(
         &state.storage.settings_file_path(),
@@ -253,6 +256,8 @@ pub async fn download_config_from_webdav(
         }
 
         stop_all_runtimes(&state)?;
+
+        let _operation = lock_tunnel_operations(&state)?;
 
         state.storage.backup_existing_file(
             &state.storage.settings_file_path(),

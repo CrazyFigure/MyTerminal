@@ -332,6 +332,8 @@ pub fn create_connection(
 ) -> Result<ConnectionProfile, String> {
     normalize_connection_protocol_fields(&mut connection)?;
     validate_connection_profile(&connection)?;
+    // 配置替换与自动启动串行，确保新隧道不会使用正在失效的连接快照。
+    let _operation = lock_tunnel_operations(&state)?;
     drop_auxiliary_session(&state, &connection.id);
     // 连接配置可能被同 ID 覆盖；旧隧道必须停止，避免后台继续使用旧主机、旧代理或旧凭据。
     stop_connection_tunnel_runtimes(&state, &connection.id)?;
@@ -358,6 +360,7 @@ pub fn delete_connection(
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<bool, String> {
+    let _operation = lock_tunnel_operations(&state)?;
     drop_auxiliary_session(&state, &connection_id);
     drop_runtime_detail_session(&state, &connection_id);
 
