@@ -1,4 +1,9 @@
 /* 终端自绘滚动条、行号与时间戳样式；文件顺序用于保持原有 CSS 级联优先级。 */
+/* 竖向触摸由终端控制器处理，横向浏览和双指缩放继续交给浏览器。 */
+.terminal-surface {
+  touch-action: pan-x pinch-zoom;
+}
+
 /* ── 横向长行模式下的右侧自绘竖向滚动条 ────────────────────────────── */
 
 .terminal-vertical-scrollbar {

@@ -20,6 +20,7 @@ import { useTerminalGutterController } from './terminal/useTerminalGutterControl
 import { useTerminalHighlightController } from './terminal/useTerminalHighlightController';
 import { useTerminalLayoutController } from './terminal/useTerminalLayoutController';
 import { useTerminalVerticalScrollbarController } from './terminal/useTerminalVerticalScrollbarController';
+import { attachTerminalScrollController } from './terminal/attachTerminalScrollController';
 import {
   replayTerminalEntries,
   subscribeTerminalOutput,
@@ -1741,6 +1742,11 @@ export function TerminalWorkspace({
     containerRef.current.parentElement?.appendChild(gutter);
     terminalGutterRef.current = gutter;
     terminal.attachCustomWheelEventHandler(handleAiAgentTerminalWheel);
+    const disposeTerminalScrollController = attachTerminalScrollController({
+      container: containerRef.current,
+      terminal,
+      isInputBlocked: () => terminalReplayInputBlockedRef.current || !sessionVisibleRef.current,
+    });
     const textarea = terminal.element?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
     const handleTerminalFocusVisibilityChange = (event: FocusEvent) => {
       // 重新获得焦点时，空闲 Codex 不会再有输出去结算抑制态，必须主动恢复托管光标。
@@ -1979,6 +1985,7 @@ export function TerminalWorkspace({
       scrollDisposable.dispose();
       selectionDisposable.dispose();
       resizeDisposable.dispose();
+      disposeTerminalScrollController();
       textarea?.removeEventListener('compositionstart', handleTerminalCompositionStart);
       textarea?.removeEventListener('compositionupdate', handleTerminalCompositionUpdate);
       textarea?.removeEventListener('compositionend', handleTerminalCompositionEnd);
