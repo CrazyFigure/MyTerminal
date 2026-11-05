@@ -167,10 +167,9 @@ export const useFlipListAnimation = (containerRef: RefObject<HTMLElement | null>
       return;
     }
 
-    const elements = Array.from(container.querySelectorAll<HTMLElement>(selector));
-    const nextRects = new Map<string, DOMRect>();
-    elements.forEach((element) => {
-      const key = element.dataset.connectionId
+    const elements = Array.from(container.querySelectorAll<HTMLElement>(selector)).map((element) => ({
+      element,
+      key: element.dataset.connectionId
         ? `connection:${element.dataset.connectionId}`
         : element.dataset.groupPath
           ? `group:${element.dataset.groupPath}`
@@ -178,7 +177,14 @@ export const useFlipListAnimation = (containerRef: RefObject<HTMLElement | null>
             ? `session:${element.dataset.sessionId}`
             : element.dataset.commandId
               ? `command:${element.dataset.commandId}`
-              : '';
+              : '',
+    }));
+    // 只为同一批元素的排序播放动画；新增、关闭或替换标签时直接采用新布局，避免残留位移图层。
+    const isReorder = elements.length === previousRectsRef.current.size
+      && elements.every(({ key }) => previousRectsRef.current.has(key));
+    const animations: Animation[] = [];
+    const nextRects = new Map<string, DOMRect>();
+    elements.forEach(({ element, key }) => {
       if (!key) {
         return;
       }
@@ -186,7 +192,7 @@ export const useFlipListAnimation = (containerRef: RefObject<HTMLElement | null>
       const currentRect = element.getBoundingClientRect();
       const previousRect = previousRectsRef.current.get(key);
       nextRects.set(key, currentRect);
-      if (!previousRect) {
+      if (!isReorder || !previousRect) {
         return;
       }
 
@@ -196,7 +202,7 @@ export const useFlipListAnimation = (containerRef: RefObject<HTMLElement | null>
         return;
       }
 
-      element.animate(
+      animations.push(element.animate(
         [
           { transform: `translate(${deltaX}px, ${deltaY}px)` },
           { transform: 'translate(0, 0)' },
@@ -205,10 +211,14 @@ export const useFlipListAnimation = (containerRef: RefObject<HTMLElement | null>
           duration: 180,
           easing: 'cubic-bezier(0.2, 0, 0, 1)',
         },
-      );
+      ));
     });
 
     previousRectsRef.current = nextRects;
+    return () => {
+      // 下次测量前和卸载时都取消旧动画，防止把动画中的坐标带入下一轮并叠加位移。
+      animations.forEach((animation) => animation.cancel());
+    };
   }, deps);
 };
 
