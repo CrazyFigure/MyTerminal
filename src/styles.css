@@ -1184,7 +1184,8 @@ select:disabled {
 }
 
 .terminal-workspace.is-session-hidden {
-  visibility: hidden;
+  /* 保留会话解析器与缓冲区，零尺寸让 xterm 暂停后台标签的布局和绘制，避免与当前标签争抢主线程。 */
+  display: none;
   pointer-events: none;
 }
 

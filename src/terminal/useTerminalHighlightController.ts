@@ -133,7 +133,8 @@ export function useTerminalHighlightController({
   const clearTerminalMatchOverlay = () => {
     clearTerminalMatchDecorations();
     const overlay = terminalMatchOverlayRef.current;
-    if (!overlay) {
+    // 空覆盖层无需重复清理和测量，避免滚动时无选区也强制触发布局。
+    if (!overlay?.hasChildNodes()) {
       return;
     }
 
@@ -216,7 +217,7 @@ export function useTerminalHighlightController({
 
   const clearTerminalSelectionOverlay = () => {
     const overlay = terminalSelectionOverlayRef.current;
-    if (!overlay) {
+    if (!overlay?.hasChildNodes()) {
       return;
     }
     overlay.replaceChildren();
@@ -399,8 +400,13 @@ export function useTerminalHighlightController({
       return;
     }
 
-    const metrics = resolveTerminalHighlightMetrics();
     const selectionSnapshot = resolveTerminalSelectionSnapshot();
+    // 先检查是否存在选区；普通滚动不需要读取屏幕几何或重建空 SVG。
+    if (!selectionSnapshot && !terminal.hasSelection()) {
+      clearTerminalSelectionOverlay();
+      return;
+    }
+    const metrics = resolveTerminalHighlightMetrics();
     if (selectionSnapshot && !terminal.hasSelection()) {
       restoreTerminalSelectionFromSnapshot(selectionSnapshot);
     }
@@ -573,7 +579,7 @@ export function useTerminalHighlightController({
 
   const clearTerminalPromptHighlights = () => {
     const overlay = terminalPromptHighlightOverlayRef.current;
-    if (!overlay) {
+    if (!overlay?.hasChildNodes()) {
       return;
     }
     overlay.replaceChildren();
@@ -588,15 +594,20 @@ export function useTerminalHighlightController({
     const terminal = terminalRef.current;
     const container = containerRef.current;
     const overlay = terminalPromptHighlightOverlayRef.current;
-    const metrics = resolveTerminalHighlightMetrics();
     if (
       !terminal
       || !container
       || !overlay
-      || !metrics
       || terminal.buffer.active.type !== 'normal'
       || isAiAgentTerminalSessionRef.current
     ) {
+      clearTerminalPromptHighlights();
+      return;
+    }
+
+    // AI TUI 和备用屏不绘制 Shell 提示符，只有实际需要高亮时才测量布局。
+    const metrics = resolveTerminalHighlightMetrics();
+    if (!metrics) {
       clearTerminalPromptHighlights();
       return;
     }
@@ -658,9 +669,14 @@ export function useTerminalHighlightController({
     const terminal = terminalRef.current;
     const container = containerRef.current;
     const overlay = terminalMatchOverlayRef.current;
-    const metrics = resolveTerminalHighlightMetrics();
     const selectionSnapshot = resolveTerminalSelectionSnapshot();
-    if (!terminal || !container || !overlay || !metrics || !terminalMatchSelectionRef.current || !selectionSnapshot) {
+    if (!terminal || !container || !overlay || !terminalMatchSelectionRef.current || !selectionSnapshot) {
+      clearTerminalMatchOverlay();
+      return;
+    }
+
+    const metrics = resolveTerminalHighlightMetrics();
+    if (!metrics) {
       clearTerminalMatchOverlay();
       return;
     }
