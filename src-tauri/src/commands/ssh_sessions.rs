@@ -28,7 +28,8 @@ use super::{
     auxiliary_session_lock, connect_ssh, is_transient_transport_read_error,
     load_remote_identity_maps, lock_auxiliary_sessions, publish_agent_pty_progress, queue_cwd,
     queue_output, queue_session_status, queue_terminal_size, shell_cwd_sync_command, ssh_error,
-    track_user_input_activity, write_channel_input, ShellOutputFilter, AUXILIARY_IDLE_TTL,
+    track_user_input_activity, write_channel_input, ShellOutputFilter, TerminalUtf8Decoder,
+    AUXILIARY_IDLE_TTL,
     AUXILIARY_IO_TIMEOUT, AUXILIARY_MAX_IDLE_SESSIONS, SSH_SHELL_IDLE_WAIT,
     SSH_SHELL_MAX_CONTROL_EVENTS_PER_TICK, SSH_SHELL_MAX_READS_PER_TICK,
     SSH_SHELL_MAX_WRITE_CHUNK_BYTES, SSH_SHELL_RETRY_WAIT,
@@ -561,6 +562,8 @@ pub(crate) fn spawn_shell_thread(
         let mut buffer = [0_u8; 8192];
         // 终端输出可能把 OSC 同步标记拆成多段，过滤器负责跨分片拼接与隐藏。
         let mut output_filter = ShellOutputFilter::default();
+        // SSH 通道读块可能切在多字节字符中间；增量解码器跨块拼接，避免框线/中文变成替换符后整行错列残留。
+        let mut utf8_decoder = TerminalUtf8Decoder::default();
         // transport read 可能是短暂底层读抖动；连续超过阈值才认为会话异常，避免终端误断开。
         let mut transient_read_errors = 0_usize;
         let mut transient_error_started_at: Option<Instant> = None;
@@ -611,6 +614,14 @@ pub(crate) fn spawn_shell_thread(
                 match channel.read(&mut buffer) {
                     Ok(0) => {
                         if channel.eof() {
+                            // 通道关闭前冲刷解码器残留的不完整字节，与旧的 lossy 行为一致不静默丢弃。
+                            let tail = utf8_decoder.finish();
+                            if !tail.is_empty() {
+                                let parsed = output_filter.consume(&tail);
+                                if !parsed.visible.is_empty() {
+                                    queue_output(&output_queue, &app_handle, &session_id, parsed.visible);
+                                }
+                            }
                             queue_session_status(&output_queue, &app_handle, &session_id, "closed");
                             let _ = channel.close();
                             return;
@@ -621,7 +632,7 @@ pub(crate) fn spawn_shell_thread(
                         read_made_progress = true;
                         transient_read_errors = 0;
                         transient_error_started_at = None;
-                        let content = String::from_utf8_lossy(&buffer[..size]).into_owned();
+                        let content = utf8_decoder.decode(&buffer[..size]);
                         let parsed = output_filter.consume(&content);
                         if !parsed.visible.is_empty() {
                             queue_output(&output_queue, &app_handle, &session_id, parsed.visible);

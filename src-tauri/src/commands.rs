@@ -280,6 +280,9 @@ fn is_transient_channel_write_error(error: &std::io::Error) -> bool {
 }
 
 mod shell_runtime;
+// 本地 PTY 与 SSH 通道共用的 UTF-8 增量解码，避免多字节字符被 read 边界拆开后错列。
+mod terminal_utf8;
+use terminal_utf8::TerminalUtf8Decoder;
 pub(crate) use shell_runtime::{announce_agent_activity, announce_agent_command};
 use shell_runtime::{
     detect_language, is_transient_ssh_error, is_transient_transport_read_error,
@@ -1030,6 +1033,8 @@ use connections::validate_connection_profile;
 
 // 本地 PTY 生命周期由独立适配器维护。
 mod local_terminal;
+// ConPTY 启动握手（光标位置 / DA1 查询）的后端就地应答，兼容系统 conhost 与随包 OpenConsole。
+mod conpty_startup;
 use local_terminal::spawn_local_terminal_thread;
 
 // 系统已安装终端动态探测器。

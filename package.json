@@ -14,7 +14,7 @@
     "generate:star-history": "node scripts/generate-star-history.mjs",
     "check:bundle": "node scripts/check-bundle-memory.mjs",
     "check:web": "npm run build && npm run check:bundle",
-    "precheck:rust": "npm run sync:version",
+    "precheck:rust": "npm run sync:version && npm run prepare:conpty",
     "check:perl": "powershell -ExecutionPolicy Bypass -File ./scripts/check-perl.ps1",
     "check:rust": "powershell -ExecutionPolicy Bypass -File ./scripts/check-rust.ps1",
     "check:env": "powershell -ExecutionPolicy Bypass -File ./scripts/check-env.ps1",
@@ -25,6 +25,7 @@
     "pretauri:dev": "npm run sync:version && npm run sync:ossl-pdb",
     "tauri:dev": "node scripts/run-tauri-dev.mjs",
     "build:cli-sidecar": "node scripts/build-cli-sidecar.mjs",
+    "prepare:conpty": "node scripts/prepare-conpty.mjs",
     "pretauri:build": "npm run sync:version",
     "tauri:build": "tauri build",
     "package": "npm run tauri:build"

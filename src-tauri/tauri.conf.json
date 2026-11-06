@@ -4,8 +4,8 @@
   "version": "../package.json",
   "identifier": "com.myterminal.app",
   "build": {
-    "beforeDevCommand": "npm run build:cli-sidecar -- --stop-locked-dev-mcp && npm run dev",
-    "beforeBuildCommand": "npm run build:cli-sidecar && npm run build",
+    "beforeDevCommand": "npm run prepare:conpty && npm run build:cli-sidecar -- --stop-locked-dev-mcp && npm run dev",
+    "beforeBuildCommand": "npm run prepare:conpty && npm run build:cli-sidecar && npm run build",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },
@@ -40,6 +40,10 @@
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
     "externalBin": ["binaries/myterminal-cli"],
+    "resources": {
+      "binaries/conpty/conpty.dll": "conpty.dll",
+      "binaries/conpty/OpenConsole.exe": "x64/OpenConsole.exe"
+    },
     "windows": {
       "nsis": {
         "installerHooks": "installer-hooks.nsh"

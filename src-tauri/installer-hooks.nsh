@@ -6,9 +6,12 @@
   Push $1
 
   ; 只终止可执行路径与当前安装目录完全一致的 CLI，避免误伤开发目录或其它 MyTerminal 安装实例。
+  ; 随包附带的 x64\OpenConsole.exe（新版 ConPTY 宿主）若因主程序异常退出而残留，同样会锁住文件，按同一规则清理；
+  ; 只匹配本安装目录下的路径，绝不影响 Windows Terminal 等其它程序自带的 OpenConsole。
   ; 目标路径通过进程级环境变量传给 PowerShell，避免安装路径含空格时发生参数拆分或命令注入。
   System::Call 'Kernel32::SetEnvironmentVariable(t, t)i("MYTERMINAL_INSTALL_CLI_PATH", "$INSTDIR\myterminal-cli.exe")'
-  nsExec::ExecToStack `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$$targetPath = [System.IO.Path]::GetFullPath($$env:MYTERMINAL_INSTALL_CLI_PATH); $$lockedProcesses = @(Get-CimInstance -ClassName Win32_Process -Filter 'Name = ''myterminal-cli.exe''' | Where-Object { $$_.ExecutablePath -and ([System.IO.Path]::GetFullPath($$_.ExecutablePath) -ieq $$targetPath) }); foreach ($$lockedProcess in $$lockedProcesses) { Stop-Process -Id $$lockedProcess.ProcessId -Force -ErrorAction Stop; Wait-Process -Id $$lockedProcess.ProcessId -Timeout 5 -ErrorAction SilentlyContinue }"`
+  System::Call 'Kernel32::SetEnvironmentVariable(t, t)i("MYTERMINAL_INSTALL_CONSOLE_PATH", "$INSTDIR\x64\OpenConsole.exe")'
+  nsExec::ExecToStack `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$$targetPaths = @([System.IO.Path]::GetFullPath($$env:MYTERMINAL_INSTALL_CLI_PATH), [System.IO.Path]::GetFullPath($$env:MYTERMINAL_INSTALL_CONSOLE_PATH)); $$lockedProcesses = @(Get-CimInstance -ClassName Win32_Process -Filter 'Name = ''myterminal-cli.exe'' OR Name = ''OpenConsole.exe''' | Where-Object { $$_.ExecutablePath -and ($$targetPaths -icontains [System.IO.Path]::GetFullPath($$_.ExecutablePath)) }); foreach ($$lockedProcess in $$lockedProcesses) { Stop-Process -Id $$lockedProcess.ProcessId -Force -ErrorAction Stop; Wait-Process -Id $$lockedProcess.ProcessId -Timeout 5 -ErrorAction SilentlyContinue }"`
   Pop $0
   Pop $1
 
