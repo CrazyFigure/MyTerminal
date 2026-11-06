@@ -47,7 +47,7 @@ $linkCommand = Get-Command link.exe -ErrorAction SilentlyContinue
 if ($linkCommand) {
     Write-Host "link.exe: $($linkCommand.Source)"
 } else {
-    Write-Warning 'link.exe is not currently on PATH. If Rust OpenSSL builds fail, open a Developer PowerShell or install/load Visual Studio Build Tools 2022.'
+    Write-Warning 'link.exe is not currently on PATH. If Rust OpenSSL builds fail, open a Developer PowerShell or install/load Visual Studio Build Tools 2022 or later.'
 }
 
 Write-Host 'Environment check passed.'

@@ -9,7 +9,7 @@
 - Node.js 20.19+ 或 22.12+
 - npm 9+
 - Rust stable（MSVC toolchain）
-- Visual Studio Build Tools 2022（C++ 桌面生成工具）
+- Visual Studio Build Tools 2022 或更新版本（推荐 2026，C++ 桌面生成工具）
 - Windows 10/11 SDK
 - Strawberry Perl（`ssh2` 的 vendored OpenSSL 在 Windows 下常需要）
 
@@ -176,7 +176,7 @@ src-tauri/target/release/bundle/
 
 解决：
 
-- 安装 Visual Studio Build Tools 2022；
+- 安装 Visual Studio Build Tools 2022 或更新版本（推荐 2026）；
 - 勾选 C++ 相关工作负载；
 - 重新打开终端后重试；
 - 先执行 `npm run check:env` 看看 `link.exe` 是否已进入 PATH。
