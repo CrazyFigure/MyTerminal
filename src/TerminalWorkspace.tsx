@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
 
 import { backend } from './backend';
 import {
@@ -1485,10 +1485,13 @@ export function TerminalWorkspace({
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     // xterm 内置只有 Unicode 6 宽度表，会把 emoji（🤖 📁 ⚡ 等）判定为 1 列，而 Windows 终端与
-    // Claude Code 等 TUI 按 Unicode 11 的 2 列宽度排版；两侧列宽不一致会让状态行右侧内容被截断，
-    // 且 CR 原地重绘时残留旧字符（如 tokens 数字与字母粘连）。注册 V11 宽度表使双方对齐。
-    terminal.loadAddon(new Unicode11Addon());
-    terminal.unicode.activeVersion = '11';
+    // Claude Code 等 TUI 按新版 Unicode 的 2 列宽度排版；两侧列宽不一致会让状态行右侧内容被截断，
+    // 且 CR 原地重绘时残留旧字符（如 tokens 数字与字母粘连）。
+    // 改用 Unicode 15 + 字形簇宽度表：Claude Code（string-width）、Codex（unicode-width）与新版 ConPTY
+    // 都按字形簇计宽，`⚠️`（VS16）记 2 列、`👨‍💻`（ZWJ 组合）记 2 列；Unicode 11 表会分别算成 1 列和 4 列，
+    // 导致光标列错位并残留上一帧字符。ASCII 走快速路径，实测吞吐仍在每秒数千万字符量级。
+    terminal.loadAddon(new UnicodeGraphemesAddon());
+    terminal.unicode.activeVersion = '15-graphemes';
     terminal.open(terminalHostRef.current);
     // 首帧输出前就隐藏 Codex 原生光标，加载画面不能先漏出一次 xterm 默认闪烁光标。
     terminal.element?.classList.toggle('is-managed-tui-cursor-active', useManagedCursorForSessionRef.current);

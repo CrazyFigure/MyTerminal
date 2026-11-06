@@ -16,7 +16,7 @@ const startupDependencies = [
   '@tauri-apps/plugin-clipboard-manager',
   '@tauri-apps/plugin-dialog',
   '@xterm/addon-fit',
-  '@xterm/addon-unicode11',
+  '@xterm/addon-unicode-graphemes',
   '@xterm/xterm',
   'clsx',
   'lucide-react',
