@@ -1,8 +1,9 @@
 //! 固定的官方发布来源，统一发布页、分页接口和资源下载地址。
 
 use super::{
-    fetch_release_response, is_newer_version, parse_version_parts, select_update_installer_asset,
-    GitHubReleaseResponse,
+    fetch_release_response, is_newer_version, parse_version_parts,
+    release_history::{has_next_page, RELEASES_PER_PAGE},
+    select_update_installer_asset, GitHubReleaseResponse,
 };
 use crate::models::UpdateChannel;
 
@@ -46,53 +47,61 @@ impl UpdateChannel {
     }
 }
 
-/// GitHub 保持 latest 语义；CNB 列表按正式应用版本筛选，排除字体等独立资源发布。
+/// 两个渠道都遍历发布列表，取已发布完成的最高正式应用版本，排除字体等独立资源发布。
+/// 渠道可访问即视为“通”：新版本安装包尚未上传完成时只当作暂无更新，不触发渠道回退。
 async fn fetch_latest_release(channel: UpdateChannel) -> Result<GitHubReleaseResponse, String> {
-    let release = match channel {
-        UpdateChannel::Github => fetch_release_response(
-            "https://api.github.com/repos/CrazyFigure/MyTerminal/releases/latest",
-        )
-        .await?
-        .json::<GitHubReleaseResponse>()
-        .await
-        .map_err(|error| format!("update_error:parse:{error}"))?,
-        UpdateChannel::Cnb => {
-            let mut latest: Option<GitHubReleaseResponse> = None;
-            let mut page = 1;
-            loop {
-                let releases = fetch_release_response(&channel.releases_url(page, 100))
-                    .await?
-                    .json::<Vec<GitHubReleaseResponse>>()
-                    .await
-                    .map_err(|error| format!("update_error:parse:{error}"))?;
-                let complete = releases.len() < 100;
-                for release in releases {
-                    if is_stable_app_release(&release)
-                        && latest.as_ref().is_none_or(|previous| {
-                            is_newer_version(&release.tag_name, &previous.tag_name)
-                        })
-                    {
-                        latest = Some(release);
-                    }
-                }
-                if complete {
-                    break;
-                }
-                page += 1;
-            }
-            latest.ok_or_else(|| "update_error:parse:no stable CNB release".to_string())?
+    let current = env!("CARGO_PKG_VERSION");
+    let mut latest: Option<GitHubReleaseResponse> = None;
+    let mut page = 1;
+    loop {
+        let response =
+            fetch_release_response(&channel.releases_url(page, RELEASES_PER_PAGE)).await?;
+        let link_has_next = has_next_page(
+            response
+                .headers()
+                .get(reqwest::header::LINK)
+                .and_then(|value| value.to_str().ok()),
+        );
+        let releases = response
+            .json::<Vec<GitHubReleaseResponse>>()
+            .await
+            .map_err(|error| format!("update_error:parse:{error}"))?;
+        // GitHub 以 Link 头分页；CNB 没有该头，读到不足一页即结束。
+        let has_next = match channel {
+            UpdateChannel::Github => link_has_next,
+            UpdateChannel::Cnb => releases.len() == RELEASES_PER_PAGE,
+        };
+        merge_latest_release(&mut latest, releases, current);
+        if !has_next {
+            break;
         }
-    };
-    if !is_stable_app_release(&release) {
-        return Err("update_error:parse:invalid application release".to_string());
+        page += 1;
     }
-    // 目标缺少安装包时允许改试镜像，避免把尚未上传完成的版本当成可用更新。
-    if is_newer_version(&release.tag_name, env!("CARGO_PKG_VERSION"))
-        && select_update_installer_asset(&release.assets).is_none()
-    {
-        return Err("update_error:parse:missing update installer".to_string());
+    latest.ok_or_else(|| "update_error:parse:no published application release".to_string())
+}
+
+/// 只把安装包已上传完成的新版本当作候选；不高于当前版本的发布无需安装包，用于判定“已是最新”。
+fn is_published_release(release: &GitHubReleaseResponse, current: &str) -> bool {
+    is_stable_app_release(release)
+        && (!is_newer_version(&release.tag_name, current)
+            || select_update_installer_asset(&release.assets).is_some())
+}
+
+/// 发布列表按创建时间而非语义版本排列，需逐条比较版本号保留最高者。
+fn merge_latest_release(
+    latest: &mut Option<GitHubReleaseResponse>,
+    releases: Vec<GitHubReleaseResponse>,
+    current: &str,
+) {
+    for release in releases {
+        if is_published_release(&release, current)
+            && latest
+                .as_ref()
+                .is_none_or(|previous| is_newer_version(&release.tag_name, &previous.tag_name))
+        {
+            *latest = Some(release);
+        }
     }
-    Ok(release)
 }
 
 fn is_stable_app_release(release: &GitHubReleaseResponse) -> bool {
@@ -262,6 +271,64 @@ mod tests {
         .unwrap();
         assert_eq!(attempts, vec![UpdateChannel::Cnb, UpdateChannel::Github]);
         assert_eq!(result.0, UpdateChannel::Github);
+    }
+
+    fn release_with_installer(tag: &str, state: Option<&str>) -> GitHubReleaseResponse {
+        serde_json::from_value(serde_json::json!({
+            "tag_name": tag,
+            "assets": [{
+                "name": "MyTerminal_9.0.0_windows_x64-setup.exe",
+                "browser_download_url": format!("{GITHUB_DOWNLOAD}{tag}/MyTerminal_setup.exe"),
+                "size": 1024,
+                "state": state,
+            }],
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn release_without_uploaded_installer_is_not_offered() {
+        // 只推 tag / 刚建 Release 尚无安装包，以及安装包仍在上传，都应回落到上一个完整版本。
+        let mut latest = None;
+        merge_latest_release(
+            &mut latest,
+            vec![
+                release("v9.0.2"),
+                release_with_installer("v9.0.1", Some("open")),
+                release_with_installer("v9.0.0", Some("uploaded")),
+            ],
+            "8.0.0",
+        );
+        assert_eq!(latest.unwrap().tag_name, "v9.0.0");
+    }
+
+    #[test]
+    fn incomplete_newer_release_reports_current_as_latest() {
+        // 渠道可访问但新版本未上传完成：返回不高于当前的版本，不报错、不回退渠道。
+        let mut latest = None;
+        merge_latest_release(
+            &mut latest,
+            vec![release("v9.0.1"), release("v9.0.0"), release("fonts-v10.0.0")],
+            "9.0.0",
+        );
+        let latest = latest.unwrap();
+        assert_eq!(latest.tag_name, "v9.0.0");
+        assert!(!is_newer_version(&latest.tag_name, "9.0.0"));
+    }
+
+    #[test]
+    fn cnb_assets_without_state_and_newest_version_win() {
+        let mut latest = None;
+        merge_latest_release(
+            &mut latest,
+            vec![
+                release_with_installer("v9.0.0", None),
+                release_with_installer("v9.0.10", None),
+                release_with_installer("v9.0.9", None),
+            ],
+            "8.0.0",
+        );
+        assert_eq!(latest.unwrap().tag_name, "v9.0.10");
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crate::models::{UpdateChannel, UpdateReleaseNotes};
 use super::{fetch_release_response, parse_version_parts, GitHubReleaseResponse};
 
 // GitHub 每页最多返回 100 条；遍历所有页而不是只读第一页，避免老版本升级时漏掉说明。
-const RELEASES_PER_PAGE: usize = 100;
+pub(super) const RELEASES_PER_PAGE: usize = 100;
 
 /// 正式版本比较键忽略 v 前缀、构建元数据和末尾零；预发布及资源包标签不属于应用升级区间。
 fn stable_version_key(version: &str) -> Option<Vec<u64>> {
@@ -71,7 +71,7 @@ fn merge_release_page(
 }
 
 /// Link 头决定是否存在下一页，避免整页数据恰好填满时额外发出空页请求。
-fn has_next_page(link: Option<&str>) -> bool {
+pub(super) fn has_next_page(link: Option<&str>) -> bool {
     link.is_some_and(|value| {
         value.split(',').any(|entry| {
             entry

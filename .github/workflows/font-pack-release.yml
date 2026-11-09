@@ -79,7 +79,7 @@ jobs:
         run: |
           $tag = '${{ steps.package.outputs.tag }}'
           $assetPath = '${{ steps.package.outputs.asset_path }}'
-          # 字体 Release 标记为 prerelease，现有 /releases/latest 应用更新接口会自动忽略它。
+          # 字体 Release 标记为 prerelease，应用更新检测只认正式版本号 tag，会自动忽略它。
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag $assetPath --clobber

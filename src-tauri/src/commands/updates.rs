@@ -43,6 +43,9 @@ struct GitHubReleaseAsset {
     name: String,
     browser_download_url: String,
     size: Option<u64>,
+    // GitHub 上传中的附件为 "open"，只有 "uploaded" 才完整可下载；CNB 不返回该字段。
+    #[serde(default)]
+    state: Option<String>,
 }
 
 // 更新检查和安装包下载要快速失败，避免 GitHub 直连或代理异常时设置页长时间停在处理中。
@@ -128,8 +131,10 @@ fn installer_asset_score(asset_name: &str) -> i32 {
 
 fn select_update_installer_asset(assets: &[GitHubReleaseAsset]) -> Option<GitHubReleaseAsset> {
     // Release 里可能同时包含校验文件、压缩包和安装器，这里优先选择 Windows 可直接启动的安装包。
+    // 仍在上传的附件不能作为安装包，否则会下载到半截文件。
     assets
         .iter()
+        .filter(|asset| asset.state.as_deref().is_none_or(|state| state == "uploaded"))
         .filter_map(|asset| {
             let score = installer_asset_score(&asset.name);
             (score >= 0).then_some((score, asset))
