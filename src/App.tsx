@@ -950,31 +950,52 @@ export default function App() {
 
     pollOutputs();
 
-    // Tauri 事件驱动：后端每次 queue_output 后会 emit "terminal-output-ready"，payload 为 sessionId。
     let unlistenFn: (() => void) | undefined;
     let isMounted = true;
-    void import('@tauri-apps/api/event').then(({ listen }) =>
-      listen<string>('terminal-output-ready', (event) => {
-        pollOutputs(typeof event.payload === 'string' ? event.payload : undefined);
-      }),
-    ).then((unlisten) => {
-      if (isMounted) {
-        unlistenFn = unlisten;
-      } else {
-        unlisten();
+    let fallbackTimer: number | undefined;
+    // 仅在无法订阅后端事件时（非 Tauri 的 Web 开发模式或订阅失败）才启用定时轮询。
+    const startFallbackPolling = () => {
+      if (isMounted && fallbackTimer === undefined) {
+        fallbackTimer = window.setInterval(() => pollOutputs(), 2000);
       }
-    }).catch(() => {
-      // 非 Tauri 环境（Web 开发模式）下 fallback 到轮询
-    });
+    };
+    // 窗口重新可见或获得焦点时补拉一次全量输出，作为事件驱动的兜底；空闲时不再周期性唤醒 IPC。
+    const catchUpOutputs = () => {
+      if (document.visibilityState === 'visible') {
+        pollOutputs();
+      }
+    };
 
-    // 低频兜底定时器，仅用于处理事件丢失等极端场景，不再承担回显即时性职责。
-    const fallbackTimer = window.setInterval(() => {
-      pollOutputs();
-    }, 2000);
+    if (isTauriRuntime()) {
+      // Tauri 事件驱动：后端每次入队输出/状态/尺寸/cwd 后都会 emit "terminal-output-ready"，payload 为 sessionId。
+      void import('@tauri-apps/api/event').then(({ listen }) =>
+        listen<string>('terminal-output-ready', (event) => {
+          pollOutputs(typeof event.payload === 'string' ? event.payload : undefined);
+        }),
+      ).then((unlisten) => {
+        if (isMounted) {
+          unlistenFn = unlisten;
+          // 首次拉取与订阅生效之间存在异步空窗，订阅完成后补拉一次，避免这段时间入队的输出等到下次事件才显示。
+          pollOutputs();
+        } else {
+          unlisten();
+        }
+      }).catch(() => {
+        startFallbackPolling();
+      });
+      document.addEventListener('visibilitychange', catchUpOutputs);
+      window.addEventListener('focus', catchUpOutputs);
+    } else {
+      startFallbackPolling();
+    }
 
     return () => {
       isMounted = false;
-      window.clearInterval(fallbackTimer);
+      if (fallbackTimer !== undefined) {
+        window.clearInterval(fallbackTimer);
+      }
+      document.removeEventListener('visibilitychange', catchUpOutputs);
+      window.removeEventListener('focus', catchUpOutputs);
       unlistenFn?.();
     };
   }, [pollTerminalOutputs, sessions.length]);

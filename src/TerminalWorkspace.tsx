@@ -144,7 +144,6 @@ export function TerminalWorkspace({
   // 行号栏容器与逐行行数据、时间戳追踪状态；追踪状态随会话切换重置。
   const terminalGutterRef = useRef<HTMLDivElement | null>(null);
   const terminalGutterFrameRef = useRef<number | null>(null);
-  const terminalGutterClockTimerRef = useRef<number | null>(null);
   const terminalGutterWidthRef = useRef(0);
   // 按注册顺序保存逻辑行 marker 与稳定行号；同一 buffer 行被 ANSI 控制序列覆盖时不重复登记。
   const terminalGutterMarkersRef = useRef<TerminalGutterMarkerEntry[]>([]);
@@ -1946,23 +1945,6 @@ export function TerminalWorkspace({
     verticalScrollbar.addEventListener('mousedown', startTerminalVerticalScrollbarDrag);
     verticalScrollbar.addEventListener('mouseenter', handleTerminalVerticalScrollbarMouseEnter);
     verticalScrollbar.addEventListener('mouseleave', handleTerminalVerticalScrollbarMouseLeave);
-    // 每秒刷新一次行号栏，让最底部当前行的时间戳跟随实时时钟走动。
-    terminalGutterClockTimerRef.current = window.setInterval(() => {
-      // 页面隐藏（最小化/切后台）时跳过纯 UI 的时钟重绘，避免无谓布局与重绘开销；恢复时统一补一次。
-      if (document.visibilityState !== 'visible') {
-        return;
-      }
-      if (gutterShowTimestampRef.current) {
-        scheduleTerminalGutterSync();
-      }
-    }, 1000);
-    // 窗口从隐藏恢复可见时，合并刷新一次行号栏时钟，避免隐藏期间累积的时间偏差在下一秒才补上。
-    const handleTerminalGutterVisibilityRefresh = () => {
-      if (document.visibilityState === 'visible' && gutterShowTimestampRef.current) {
-        scheduleTerminalGutterSync();
-      }
-    };
-    document.addEventListener('visibilitychange', handleTerminalGutterVisibilityRefresh);
     scheduleTerminalGutterSync();
 
     return () => {
@@ -2034,10 +2016,6 @@ export function TerminalWorkspace({
         window.cancelAnimationFrame(terminalGutterFrameRef.current);
         terminalGutterFrameRef.current = null;
       }
-      if (terminalGutterClockTimerRef.current !== null) {
-        window.clearInterval(terminalGutterClockTimerRef.current);
-        terminalGutterClockTimerRef.current = null;
-      }
       if (terminalCursorRecoveryTimerRef.current !== null) {
         window.clearTimeout(terminalCursorRecoveryTimerRef.current);
         terminalCursorRecoveryTimerRef.current = null;
@@ -2046,7 +2024,6 @@ export function TerminalWorkspace({
         window.clearTimeout(terminalManagedCursorOutputIdleTimerRef.current);
         terminalManagedCursorOutputIdleTimerRef.current = null;
       }
-      document.removeEventListener('visibilitychange', handleTerminalGutterVisibilityRefresh);
       terminalImeComposingRef.current = false;
       clearTerminalImePromptAnchor();
       clearTerminalSelectionSnapshot();
@@ -2198,6 +2175,30 @@ export function TerminalWorkspace({
       focusPendingTerminalInput();
     });
   }, [isVisible]);
+
+  // 行号栏实时时钟只在确实可见时运行：后台标签、本地终端（无行号栏）或关闭时间戳时不创建定时器，
+  // 避免每个打开的标签都每秒唤醒一次 CPU；标签切回可见时由上方 isVisible 副作用补刷行号栏。
+  const sessionKind = session?.kind;
+  useEffect(() => {
+    if (!isVisible || !gutterShowTimestamp || !sessionKind || sessionKind === 'local') {
+      return;
+    }
+
+    const refreshGutterClock = () => {
+      // 窗口最小化/切后台时跳过纯 UI 的时钟重绘，恢复可见时由 visibilitychange 统一补一次。
+      if (document.visibilityState === 'visible') {
+        scheduleTerminalGutterSync();
+      }
+    };
+    const clockTimer = window.setInterval(refreshGutterClock, 1000);
+    document.addEventListener('visibilitychange', refreshGutterClock);
+    refreshGutterClock();
+
+    return () => {
+      window.clearInterval(clockTimer);
+      document.removeEventListener('visibilitychange', refreshGutterClock);
+    };
+  }, [gutterShowTimestamp, isVisible, sessionKind]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

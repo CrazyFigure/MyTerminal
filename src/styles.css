@@ -5578,10 +5578,11 @@ body.theme-dark img[src*="kimi.svg"],
   justify-content: flex-start;
 }
 
-/* 首页工具栏“更新”按钮用主色高亮，提示用户有新版本可下载安装。 */
+/* 首页工具栏“更新”按钮用主色高亮，提示用户有新版本可下载安装。
+   box-shadow 动画每帧都要重绘，只脉动 3 次引起注意后停在主色高亮态，避免有新版本期间界面持续逐帧重绘。 */
 .update-available-button {
   position: relative;
-  animation: update-button-pulse 2s ease-in-out infinite;
+  animation: update-button-pulse 2s ease-in-out 3;
 }
 
 @keyframes update-button-pulse {
