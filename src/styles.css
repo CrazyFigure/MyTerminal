@@ -105,6 +105,9 @@ select:disabled {
   --app-card-bg: rgba(255, 255, 255, 0.94);
   /* 弹窗、右键菜单和下拉浮层承载操作入口，必须使用实色背景避免底层终端内容透出。 */
   --app-overlay-bg: #ffffff;
+  /* 模态弹窗遮罩：中性灰压暗背后整个窗口（含标题栏），让视线集中到弹窗上；子弹窗叠加时用更淡的一档。 */
+  --app-modal-backdrop: rgba(0, 0, 0, 0.4);
+  --app-sub-modal-backdrop: rgba(0, 0, 0, 0.18);
   --app-card-border: rgba(148, 163, 184, 0.28);
   /* 弹窗边框需要比普通卡片更明确，避免实色浮层和背后面板在同色区域混在一起。 */
   --app-modal-border: rgba(100, 116, 139, 0.38);
@@ -160,6 +163,9 @@ select:disabled {
   --app-card-bg: rgba(15, 23, 42, 0.88);
   /* 深色浮层比画布底色略亮一档，体现“浮起”层级，与浅色模式白色浮层压在浅灰画布上的关系一致 */
   --app-overlay-bg: #131b2e;
+  /* 深色画布本身已很暗，遮罩需更高不透明度才能拉开与弹窗浮层的明度差。 */
+  --app-modal-backdrop: rgba(2, 6, 23, 0.62);
+  --app-sub-modal-backdrop: rgba(2, 6, 23, 0.32);
   --app-card-border: rgba(71, 85, 105, 0.42);
   --app-modal-border: rgba(148, 163, 184, 0.56);
   --app-shadow: 0 22px 52px rgba(2, 6, 23, 0.34);
@@ -3781,6 +3787,12 @@ body.theme-dark .local-terminal-history-folder-icon,
   z-index: 1100;
 }
 
+/* 子弹窗叠在父弹窗遮罩之上，只再轻压一档，避免两层叠加后整体过黑；
+   复合选择器提高权重，确保不被后文的 .modal-backdrop 背景覆盖。 */
+.modal-backdrop.sub-modal-backdrop {
+  background: var(--app-sub-modal-backdrop, rgba(0, 0, 0, 0.18));
+}
+
 .local-terminal-cmd-submodal {
   width: min(520px, 95vw);
   height: auto !important;
@@ -4387,11 +4399,26 @@ body.theme-dark img[src*="kimi.svg"],
   inset: 0;
   display: grid;
   place-items: center;
-  background: transparent;
+  /* 半透明遮罩压暗弹窗之外的区域，使弹窗成为唯一视觉焦点。 */
+  background: var(--app-modal-backdrop, rgba(0, 0, 0, 0.4));
+  /* 只渐变背景色而不是 opacity，避免弹窗本体跟着一起淡入。 */
+  animation: modal-backdrop-fade-in 0.16s ease-out;
   padding: 24px;
   z-index: 50;
   font-family: var(--app-ui-font-family, inherit);
   font-size: var(--app-ui-font-size, inherit);
+}
+
+@keyframes modal-backdrop-fade-in {
+  from {
+    background-color: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-backdrop {
+    animation: none;
+  }
 }
 
 .modal {
@@ -5125,7 +5152,6 @@ body.theme-dark img[src*="kimi.svg"],
 /* 首次启动提示由应用负责下载，默认主按钮获得焦点；安装器本身不承担网络状态和失败恢复。 */
 .font-pack-prompt-backdrop {
   z-index: 70;
-  background: rgba(15, 23, 42, 0.2);
 }
 
 .font-pack-prompt-modal {
