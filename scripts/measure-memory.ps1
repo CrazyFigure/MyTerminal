@@ -3,7 +3,7 @@
 # 输出 Working Set / Private Bytes / 线程数 / 进程类型，支持软件渲染与硬件加速自动对照。
 # 用法示例：
 #   pwsh -File scripts/measure-memory.ps1 -ExePath "C:\Path\MyTerminal.exe"
-#   pwsh -File scripts/measure-memory.ps1 -ExePath "C:\Path\MyTerminal.exe" -SoftwareRendering
+#   pwsh -File scripts/measure-memory.ps1 -ExePath "C:\Path\MyTerminal.exe" -HardwareAcceleration
 #   pwsh -File scripts/measure-memory.ps1 -ExePath "C:\Path\MyTerminal.exe" -Compare
 
 param(
@@ -11,9 +11,8 @@ param(
     [string]$ExePath,
     # 采样时刻（秒），默认覆盖启动、稳定、冷却三个阶段。
     [int[]]$SampleSeconds = @(10, 30, 60),
-    # 仅软件渲染兼容模式（关闭 WebView2 硬件加速）单次采样；LowMemory 作为旧参数别名继续兼容。
-    [Alias('LowMemory')]
-    [switch]$SoftwareRendering,
+    # 应用默认固定软件渲染；该开关以 --hardware-acceleration 启动，单次采样 GPU 模式作对照。
+    [switch]$HardwareAcceleration,
     # 同时跑硬件加速与软件渲染模式并打印对照。
     [switch]$Compare,
     # 采样结果输出目录，默认写到仓库 .memory-samples。
@@ -149,10 +148,10 @@ function Invoke-Measurement {
     param([string]$Mode, [bool]$UseSoftwareRendering)
 
     Write-Host "==== 模式：$Mode ===="
-    # 软件渲染通过命令行主参数 --software-rendering 触发；不修改系统或用户持久化设置。
+    # 应用默认即软件渲染；GPU 模式仅通过排障参数 --hardware-acceleration 临时开启，不修改用户持久化设置。
     $procArgs = @()
-    if ($UseSoftwareRendering) {
-        $procArgs += '--software-rendering'
+    if (-not $UseSoftwareRendering) {
+        $procArgs += '--hardware-acceleration'
     }
 
     $started = if ($procArgs.Count -gt 0) {
@@ -194,10 +193,10 @@ $runs = @()
 if ($Compare) {
     $runs += ,@('hardware-accelerated', $false)
     $runs += ,@('software-rendering', $true)
-} elseif ($SoftwareRendering) {
-    $runs += ,@('software-rendering', $true)
-} else {
+} elseif ($HardwareAcceleration) {
     $runs += ,@('hardware-accelerated', $false)
+} else {
+    $runs += ,@('software-rendering', $true)
 }
 
 $allRows = New-Object System.Collections.Generic.List[object]

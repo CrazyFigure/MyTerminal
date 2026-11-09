@@ -43,7 +43,6 @@ export const mockSettings: AppSettings = {
   terminalGutterShowTimestamp: true,
   compactSidebar: false,
   showCommandGhost: true,
-  hardwareAcceleration: true,
   connectionGroups: ["ology", "ology/ology-old"],
   connectionOrder: ["windows-demo-1", "local-demo-1"],
   quickCommands: ["pwd", "ls -la", "docker ps"],

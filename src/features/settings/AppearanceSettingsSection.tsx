@@ -687,31 +687,6 @@ export function AppearanceSettingsSection({
               </strong>
             </div>
           </div>
-          <div className="agent-toggle-field settings-toggle-row settings-inline-toggle settings-centered-toggle">
-            <span id="hardware-acceleration-label">
-              {t("fieldHardwareAcceleration")}
-            </span>
-            <div className="settings-inline-toggle-control">
-              <input
-                aria-label={t("fieldHardwareAcceleration")}
-                checked={draftSettings.hardwareAcceleration ?? true}
-                type="checkbox"
-                onChange={(event) =>
-                  onUpdate((current) => ({
-                    ...current,
-                    hardwareAcceleration: event.target.checked,
-                  }))
-                }
-              />
-              <strong>
-                {(draftSettings.hardwareAcceleration ?? true)
-                  ? t("hardwareAccelerationEnabled")
-                  : t("hardwareAccelerationDisabled")}
-              </strong>
-            </div>
-          </div>
-          {/* 渲染模式在 WebView2 创建前决定；提示用户重启生效，并明确软件渲染不保证更省内存。 */}
-          <p className="field-hint">{t("hardwareAccelerationHint")}</p>
         </div>
       </section>
 

@@ -26,39 +26,41 @@ fn focus_existing_main_window(app: &tauri::AppHandle) {
     }
 }
 
-// 判断是否使用软件渲染兼容模式（关闭 WebView2 硬件加速）。
-fn should_use_software_rendering(app_state: &AppState) -> bool {
-    // --software-rendering 是语义准确的主参数；继续兼容旧 --low-memory，避免已有脚本和快捷方式失效。
-    if std::env::args().any(|arg| arg == "--software-rendering" || arg == "--low-memory") {
-        return true;
-    }
-    // 开发模式默认保留 GPU，避免软件渲染干扰调试；仅 release 按持久化设置执行。
-    if cfg!(debug_assertions) {
-        return false;
-    }
-    // 读取持久化设置；读取失败时保守保留硬件加速，避免异常配置导致整机软件渲染。
-    app_state
-        .storage
-        .load_settings(&app_state.crypto)
-        .map(|settings| !settings.hardware_acceleration)
-        .unwrap_or(false)
+const WEBVIEW2_BROWSER_ARGS_ENV: &str = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+
+// 固定使用软件渲染：终端界面以文字和少量合成为主，CPU 光栅化足够流畅，
+// 且实测 WebView2 内存大头在 renderer 进程，GPU 模式并不省内存，反而要承担显卡驱动重置导致的黑屏等兼容问题。
+// 开发态与发布态保持一致，避免调试时看到的渲染效果与用户不同；仅保留 --hardware-acceleration 供排障对照。
+fn should_use_software_rendering() -> bool {
+    !std::env::args().any(|arg| arg == "--hardware-acceleration")
 }
 
-// 追加 --disable-gpu 到 WebView2 浏览器参数，切换为软件渲染兼容模式。
-fn apply_software_rendering_webview_args() {
+// 追加 --disable-gpu 到 WebView2 浏览器参数；返回修改前的环境变量，供 WebView 创建后还原。
+fn apply_software_rendering_webview_args() -> Option<Option<String>> {
     // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS 由 WebView2 加载器识别并追加到浏览器进程参数，
     // 与 Wry 自身默认参数（--disable-features=...）叠加而非覆盖，因此不必重复声明默认项。
     const DISABLE_GPU: &str = "--disable-gpu";
-    let mut args = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+    let original = std::env::var(WEBVIEW2_BROWSER_ARGS_ENV).ok();
+    let mut args = original.clone().unwrap_or_default();
     // 只匹配完整参数，不能把 --disable-gpu-compositing 等其它开关误判成已经关闭 GPU。
     if args.split_ascii_whitespace().any(|arg| arg == DISABLE_GPU) {
-        return;
+        return None;
     }
     if !args.is_empty() {
         args.push(' ');
     }
     args.push_str(DISABLE_GPU);
-    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", args);
+    std::env::set_var(WEBVIEW2_BROWSER_ARGS_ENV, args);
+    Some(original)
+}
+
+// WebView2 浏览器进程已带参启动后还原环境变量，
+// 否则本地终端、RDP 等子进程会继承 --disable-gpu，连带把用户从终端里启动的其它 WebView2 应用也切成软件渲染。
+fn restore_webview_browser_args_env(original: Option<String>) {
+    match original {
+        Some(value) => std::env::set_var(WEBVIEW2_BROWSER_ARGS_ENV, value),
+        None => std::env::remove_var(WEBVIEW2_BROWSER_ARGS_ENV),
+    }
 }
 
 // Windows WebView2 默认把 F5、Ctrl+R、打印、缩放、页面查找和开发者工具等按键当作浏览器功能；
@@ -142,10 +144,12 @@ fn repaint_webview(window: &tauri::WebviewWindow) {
 fn main() {
     let app_state = AppState::new().expect("failed to initialize app state");
 
-    // WebView2 创建前决定渲染模式；软件渲染用于兼容与本机对照，不保证一定降低总内存。
-    if should_use_software_rendering(&app_state) {
-        apply_software_rendering_webview_args();
-    }
+    // 渲染模式必须在 WebView2 创建前决定；记录原始环境变量，待主窗口 WebView 创建后还原。
+    let webview_args_env_to_restore = if should_use_software_rendering() {
+        apply_software_rendering_webview_args()
+    } else {
+        None
+    };
 
     tauri::Builder::default()
         // single-instance 必须第一个注册：第二个进程启动时其回调触发并聚焦已有窗口，随后新进程自行退出。
@@ -156,7 +160,11 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(app_state)
-        .setup(|app| {
+        .setup(move |app| {
+            // 配置中的主窗口在 setup 前已同步创建 WebView2 环境，浏览器参数已生效，此时还原不影响渲染模式。
+            if let Some(original) = webview_args_env_to_restore {
+                restore_webview_browser_args_env(original);
+            }
             #[cfg(debug_assertions)]
             if let Some(window) = app.get_webview_window("main") {
                 // 安装版与开发版可同时运行后，任务栏和窗口切换器必须明确标出开发实例，避免审批时认错窗口。

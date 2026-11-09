@@ -278,8 +278,6 @@ export interface AppSettings {
   terminalGutterShowTimestamp: boolean;
   compactSidebar: boolean;
   showCommandGhost: boolean;
-  /** Windows 硬件加速开关（重启生效）；关闭后使用软件渲染兼容模式，实际内存收益取决于本机环境。 */
-  hardwareAcceleration: boolean;
   /** 连接管理中显式维护的分组路径；即使分组下暂无连接，也需要持久保留。 */
   connectionGroups: string[];
   /** 连接列表的人工排序；旧配置没有该字段时按连接文件原顺序兜底。 */

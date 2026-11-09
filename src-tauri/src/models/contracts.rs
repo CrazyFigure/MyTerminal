@@ -240,8 +240,6 @@ pub struct StoredAppSettings {
     pub compact_sidebar: bool,
     #[serde(default = "default_show_command_ghost")]
     pub show_command_ghost: bool,
-    #[serde(default = "default_hardware_acceleration")]
-    pub hardware_acceleration: bool,
     #[serde(default = "default_connection_groups")]
     pub connection_groups: Vec<String>,
     #[serde(default = "default_connection_order")]

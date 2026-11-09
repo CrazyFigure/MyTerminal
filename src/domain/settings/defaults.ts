@@ -38,8 +38,6 @@ export const defaultSettings: AppSettings = {
   terminalGutterShowTimestamp: true,
   compactSidebar: false,
   showCommandGhost: true,
-  // Windows 硬件加速默认开启；软件渲染仅作为显卡兼容与本机对照选项，不预设其一定更省内存。
-  hardwareAcceleration: true,
   connectionGroups: [],
   connectionOrder: [],
   quickCommands: ['pwd', 'ls -la', 'docker ps'],
