@@ -1,12 +1,12 @@
 import { useRef, type RefObject } from 'react';
-import type { IDisposable, Terminal } from '@xterm/xterm';
+import type { IDecoration, IDisposable, IMarker, Terminal } from '@xterm/xterm';
 
 import type { TerminalSession } from '../types';
 import {
   buildTerminalHighlightPath,
   cloneTerminalSelectionPosition,
   collectTerminalMatchRanges,
-  collectTerminalPromptHighlightMatches,
+  collectTerminalPromptInputCellRuns,
   createTerminalHighlightPathElement,
   formatTerminalHighlightSvgNumber,
   normalizeTerminalMatchSelection,
@@ -15,6 +15,7 @@ import {
   resolveTerminalMatchHighlightColors,
   resolveTerminalMatchRange,
   resolveTerminalSelectionLength,
+  scanTerminalPromptLines,
   terminalHighlightCornerRadiusPx,
   terminalHighlightSvgNamespace,
   terminalMatchHighlightGapPx,
@@ -22,6 +23,8 @@ import {
   terminalMatchHighlightMaxVerticalGapPx,
   terminalMatchHighlightOverscanRows,
   terminalMatchHighlightVerticalGapRatio,
+  terminalPromptInputMarkWidthPx,
+  terminalPromptInputMaxDecorations,
   terminalPromptSegmentHorizontalInsetPx,
   terminalPromptSegmentUnderlineHeightPx,
   terminalSelectionHighlightBackground,
@@ -32,6 +35,7 @@ import {
   type TerminalMatchDecorationRange,
   type TerminalMatchRange,
   type TerminalPromptHighlightColors,
+  type TerminalPromptInputColors,
   type TerminalSelectionPosition,
   type TerminalSelectionSnapshot,
 } from './support';
@@ -40,6 +44,11 @@ type TerminalHighlightControllerOptions = {
   containerRef: RefObject<HTMLDivElement | null>;
   isAiAgentTerminalSessionRef: RefObject<boolean>;
   isDarkThemeRef: RefObject<boolean>;
+  // 行号栏可见时侧标交给行号栏绘制；否则由提示符覆盖层在正文左侧内边距里画竖条。
+  isTerminalGutterVisible: () => boolean;
+  // 输入行集合变化后通知行号栏重绘侧标。
+  onTerminalPromptInputRowsChange: () => void;
+  resolveTerminalPromptInputColors: () => TerminalPromptInputColors;
   sessionRef: RefObject<TerminalSession | undefined>;
   terminalMatchSelectionRef: RefObject<boolean>;
   terminalPromptHighlightColorsRef: RefObject<TerminalPromptHighlightColors>;
@@ -47,11 +56,23 @@ type TerminalHighlightControllerOptions = {
   terminalVerticalScrollbarRef: RefObject<HTMLDivElement | null>;
 };
 
+// 输入着色 decoration：marker 跟随缓冲区滚动与裁剪，列范围与颜色在创建时固定。
+type TerminalPromptInputDecorationEntry = {
+  marker: IMarker;
+  decoration: IDecoration;
+  column: number;
+  width: number;
+  color: string;
+};
+
 // 高亮控制器把选区、同词匹配和提示符三种覆盖层视为一个渲染域，共享测量、快照和销毁策略。
 export function useTerminalHighlightController({
   containerRef,
   isAiAgentTerminalSessionRef,
   isDarkThemeRef,
+  isTerminalGutterVisible,
+  onTerminalPromptInputRowsChange,
+  resolveTerminalPromptInputColors,
   sessionRef,
   terminalMatchSelectionRef,
   terminalPromptHighlightColorsRef,
@@ -60,6 +81,10 @@ export function useTerminalHighlightController({
 }: TerminalHighlightControllerOptions) {
   const terminalPromptHighlightOverlayRef = useRef<SVGSVGElement | null>(null);
   const terminalPromptHighlightFrameRef = useRef<number | null>(null);
+  // 当前可视区内属于命令输入的 buffer 行（不含空提示符），行号栏据此绘制侧标。
+  const terminalPromptInputRowsRef = useRef<Set<number>>(new Set());
+  const terminalPromptInputDecorationsRef = useRef<Map<string, TerminalPromptInputDecorationEntry>>(new Map());
+  const terminalPromptInputColsRef = useRef(0);
   const terminalMatchOverlayRef = useRef<SVGSVGElement | null>(null);
   const terminalMatchDecorationDisposablesRef = useRef<IDisposable[]>([]);
   const terminalMatchHighlightFrameRef = useRef<number | null>(null);
@@ -577,7 +602,105 @@ export function useTerminalHighlightController({
     return { metrics, strips };
   };
 
+  // 输入行集合只在内容真正变化时通知行号栏，避免每帧渲染都触发一次行号栏重建。
+  const updateTerminalPromptInputRows = (rows: Set<number>) => {
+    const previous = terminalPromptInputRowsRef.current;
+    if (previous.size === rows.size && [...rows].every((row) => previous.has(row))) {
+      return;
+    }
+    terminalPromptInputRowsRef.current = rows;
+    onTerminalPromptInputRowsChange();
+  };
+
+  const disposeTerminalPromptInputDecorations = () => {
+    for (const entry of terminalPromptInputDecorationsRef.current.values()) {
+      entry.decoration.dispose();
+      entry.marker.dispose();
+    }
+    terminalPromptInputDecorationsRef.current = new Map();
+  };
+
+  // 增量同步输入着色 decoration：xterm 每次注册/移除 decoration 都会整屏重绘，
+  // 所以只增删真正变化的段；未变化时不触碰 xterm，onRender → 刷新 → onRender 不会形成循环。
+  const syncTerminalPromptInputDecorations = (
+    terminal: Terminal,
+    runs: TerminalMatchDecorationRange[],
+    color: string,
+    firstVisibleRow: number,
+    lastVisibleRow: number,
+  ) => {
+    // 列数变化（resize / reflow）后旧 decoration 的列坐标全部失效，直接重建。
+    if (terminalPromptInputColsRef.current !== terminal.cols) {
+      disposeTerminalPromptInputDecorations();
+      terminalPromptInputColsRef.current = terminal.cols;
+    }
+
+    const desired = new Map<string, TerminalMatchDecorationRange>();
+    for (const run of runs) {
+      if (desired.size >= terminalPromptInputMaxDecorations) {
+        break;
+      }
+      desired.set(`${run.row}:${run.column}:${run.width}:${color}`, run);
+    }
+
+    const retentionStart = firstVisibleRow - terminal.rows;
+    const retentionEnd = lastVisibleRow + terminal.rows;
+    const next = new Map<string, TerminalPromptInputDecorationEntry>();
+    for (const entry of terminalPromptInputDecorationsRef.current.values()) {
+      const line = entry.marker.line;
+      const key = `${line}:${entry.column}:${entry.width}:${entry.color}`;
+      if (entry.marker.isDisposed || line < 0 || next.has(key)) {
+        entry.decoration.dispose();
+        entry.marker.dispose();
+        continue;
+      }
+      if (desired.has(key)) {
+        desired.delete(key);
+        next.set(key, entry);
+        continue;
+      }
+      // 刚滚出可视区的段暂时保留，来回滚动时不必反复重建；重新进入可视区时会再次校验。
+      const isVisibleRow = line >= firstVisibleRow && line <= lastVisibleRow;
+      if (!isVisibleRow && line >= retentionStart && line <= retentionEnd && entry.color === color) {
+        next.set(key, entry);
+        continue;
+      }
+      entry.decoration.dispose();
+      entry.marker.dispose();
+    }
+
+    const buffer = terminal.buffer.active;
+    const cursorRow = buffer.baseY + buffer.cursorY;
+    for (const [key, run] of desired) {
+      if (next.size >= terminalPromptInputMaxDecorations) {
+        break;
+      }
+      const marker = terminal.registerMarker(run.row - cursorRow);
+      if (!marker) {
+        continue;
+      }
+      // bottom 层：同词匹配等 top 层 decoration 的前景色优先生效。
+      const decoration = terminal.registerDecoration({
+        marker,
+        x: run.column,
+        width: run.width,
+        foregroundColor: color,
+        layer: 'bottom',
+      });
+      if (!decoration) {
+        marker.dispose();
+        continue;
+      }
+      next.set(key, { marker, decoration, column: run.column, width: run.width, color });
+    }
+    terminalPromptInputDecorationsRef.current = next;
+  };
+
+  // 提示符覆盖层与输入着色同生共灭：备用屏、AI TUI、会话重放前都必须一并清掉，
+  // 否则按行号挂在普通缓冲区上的 decoration 会把颜色染到 vim/top 等全屏程序的同号行上。
   const clearTerminalPromptHighlights = () => {
+    disposeTerminalPromptInputDecorations();
+    updateTerminalPromptInputRows(new Set());
     const overlay = terminalPromptHighlightOverlayRef.current;
     if (!overlay?.hasChildNodes()) {
       return;
@@ -612,7 +735,7 @@ export function useTerminalHighlightController({
       return;
     }
 
-    const matches = collectTerminalPromptHighlightMatches(
+    const { matches, inputs } = scanTerminalPromptLines(
       terminal,
       metrics.firstVisibleRow,
       metrics.lastVisibleRow + 1,
@@ -649,6 +772,66 @@ export function useTerminalHighlightController({
           elements.push(underline);
         }
       }
+    }
+
+    // 输入区：命令文字着色 + 侧标。空提示符只预着色行尾空白，保证首个键入字符立即变色，但不画侧标。
+    const inputColors = resolveTerminalPromptInputColors();
+    const inputRuns: TerminalMatchDecorationRange[] = [];
+    const inputRows = new Set<number>();
+    for (const input of inputs) {
+      inputRuns.push(...collectTerminalPromptInputCellRuns(
+        terminal,
+        input,
+        metrics.firstVisibleRow,
+        metrics.lastVisibleRow + 1,
+      ));
+      if (!input.hasCommand) {
+        continue;
+      }
+      for (let row = input.row; row < input.endRowExclusive; row += 1) {
+        if (row >= metrics.firstVisibleRow && row <= metrics.lastVisibleRow) {
+          inputRows.add(row);
+        }
+      }
+    }
+    syncTerminalPromptInputDecorations(
+      terminal,
+      inputRuns,
+      inputColors.foreground,
+      metrics.firstVisibleRow,
+      metrics.lastVisibleRow,
+    );
+    updateTerminalPromptInputRows(inputRows);
+
+    if (!isTerminalGutterVisible() && inputRows.size > 0) {
+      // 本地终端没有行号栏：在正文左侧 4px 内边距里画竖条，连续输入行合并成一段。
+      const markX = Math.max(0, metrics.leftBase - terminalPromptInputMarkWidthPx - 1.5);
+      const sortedRows = [...inputRows].sort((first, second) => first - second);
+      let groupStart = sortedRows[0];
+      let previousRow = sortedRows[0];
+      const pushMark = (startRow: number, endRow: number) => {
+        const mark = document.createElementNS(terminalHighlightSvgNamespace, 'rect');
+        mark.setAttribute('class', 'terminal-prompt-input-mark');
+        mark.setAttribute('x', formatTerminalHighlightSvgNumber(markX));
+        mark.setAttribute('y', formatTerminalHighlightSvgNumber(
+          metrics.topBase + (startRow - metrics.firstVisibleRow) * metrics.cellHeight + 1,
+        ));
+        mark.setAttribute('width', `${terminalPromptInputMarkWidthPx}`);
+        mark.setAttribute('height', formatTerminalHighlightSvgNumber(
+          Math.max(1, (endRow - startRow + 1) * metrics.cellHeight - 2),
+        ));
+        mark.setAttribute('rx', '1');
+        mark.setAttribute('fill', inputColors.mark);
+        elements.push(mark);
+      };
+      for (const row of sortedRows.slice(1)) {
+        if (row !== previousRow + 1) {
+          pushMark(groupStart, previousRow);
+          groupStart = row;
+        }
+        previousRow = row;
+      }
+      pushMark(groupStart, previousRow);
     }
 
     syncTerminalHighlightOverlaySize(overlay, container);
@@ -756,6 +939,7 @@ export function useTerminalHighlightController({
     terminalSelectionDragActiveRef.current = false;
     terminalPrimaryButtonDownRef.current = false;
     clearTerminalMatchDecorations();
+    disposeTerminalPromptInputDecorations();
   };
 
   return {
@@ -775,6 +959,7 @@ export function useTerminalHighlightController({
     syncTerminalSelectionOverlay,
     terminalMatchOverlayRef,
     terminalPromptHighlightOverlayRef,
+    terminalPromptInputRowsRef,
     terminalSelectionOverlayRef,
     terminalSelectionRestoreActiveRef,
     verifyTerminalSelectionDragPointerState,

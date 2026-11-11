@@ -34,6 +34,8 @@ type TerminalGutterControllerOptions = {
   terminalGutterReplayActiveRef: RefObject<boolean>;
   terminalGutterReplayNextLogicalNumberRef: RefObject<number>;
   terminalGutterWidthRef: RefObject<number>;
+  // 提示符扫描得到的命令输入行（buffer 行号），用于绘制输入侧标。
+  terminalPromptInputRowsRef: RefObject<Set<number>>;
   terminalRef: RefObject<Terminal | null>;
   terminalScrollbackRowsRef: RefObject<number>;
 };
@@ -54,6 +56,7 @@ export function useTerminalGutterController(options: TerminalGutterControllerOpt
     terminalGutterReplayActiveRef,
     terminalGutterReplayNextLogicalNumberRef,
     terminalGutterWidthRef,
+    terminalPromptInputRowsRef,
     terminalRef,
     terminalScrollbackRowsRef,
   } = options;
@@ -294,6 +297,10 @@ const syncTerminalGutter = (nowMs: number) => {
     rowElement.style.height = `${cellHeight}px`;
     if (isActiveLine) {
       rowElement.classList.add('is-active');
+    }
+    // 命令输入行：行号换强调色并在分隔线上叠半透明竖条；与活动行同时成立时由活动行样式覆盖竖条。
+    if (terminalPromptInputRowsRef.current.has(bufferRow)) {
+      rowElement.classList.add('is-input');
     }
 
     if (showTime) {

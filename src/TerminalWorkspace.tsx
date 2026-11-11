@@ -42,6 +42,7 @@ import {
   resolveTerminalColorContrastRatio,
   resolveTerminalColors,
   resolveTerminalMinimumContrastRatio,
+  resolveTerminalPromptInputColors,
   shouldAnchorTerminalImeToPrompt,
   shouldHideLocalTerminalCursor,
   shouldUseBarTerminalCursor,
@@ -240,10 +241,20 @@ export function TerminalWorkspace({
     terminalSelectionOverlayRef,
     terminalSelectionRestoreActiveRef,
     verifyTerminalSelectionDragPointerState,
+    terminalPromptInputRowsRef,
   } = useTerminalHighlightController({
     containerRef,
     isAiAgentTerminalSessionRef,
     isDarkThemeRef,
+    // 以下回调在帧回调中才执行，届时引用的 ref 与行号栏控制器都已初始化。
+    isTerminalGutterVisible: () => Boolean(sessionRef.current)
+      && sessionRef.current?.kind !== 'local'
+      && (gutterShowLineNumberRef.current || gutterShowTimestampRef.current),
+    onTerminalPromptInputRowsChange: () => scheduleTerminalGutterSync(),
+    resolveTerminalPromptInputColors: () => resolveTerminalPromptInputColors(
+      terminalBackgroundColorRef.current,
+      isDarkThemeRef.current,
+    ),
     sessionRef,
     terminalMatchSelectionRef,
     terminalPromptHighlightColorsRef,
@@ -939,6 +950,7 @@ export function TerminalWorkspace({
     terminalGutterReplayActiveRef,
     terminalGutterReplayNextLogicalNumberRef,
     terminalGutterWidthRef,
+    terminalPromptInputRowsRef,
     terminalRef,
     terminalScrollbackRowsRef,
   });
@@ -1878,8 +1890,16 @@ export function TerminalWorkspace({
     const renderDisposable = terminal.onRender(() => {
       scheduleTerminalImeCompositionAnchorSync();
       scheduleTerminalContrastCursorSync();
-      scheduleTerminalGutterSync();
+      // 提示符刷新先排队：同一帧内先算出输入行，行号栏再读取，侧标不会落后一帧。
       scheduleTerminalPromptHighlightRefresh();
+      scheduleTerminalGutterSync();
+    });
+    // 切到备用屏（vim、top、less 等）时立即撤掉输入着色：decoration 按行号查找，
+    // 不清理会把普通缓冲区同号行的颜色染到全屏程序上；切回后再按普通缓冲区重新识别。
+    const bufferChangeDisposable = terminal.buffer.onBufferChange(() => {
+      clearTerminalPromptHighlights();
+      scheduleTerminalPromptHighlightRefresh();
+      scheduleTerminalGutterSync();
     });
     // 每次硬换行落到新行时登记一条逻辑行 marker（仅定位）；始终登记，与开关无关，保证切换显示项后
     // 历史行仍能定位。软换行不触发，天然显示为续行占位。
@@ -1966,6 +1986,7 @@ export function TerminalWorkspace({
       dataDisposable.dispose();
       cursorMoveDisposable.dispose();
       renderDisposable.dispose();
+      bufferChangeDisposable.dispose();
       lineFeedDisposable.dispose();
       scrollDisposable.dispose();
       selectionDisposable.dispose();

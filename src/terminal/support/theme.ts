@@ -5,7 +5,10 @@ import type { IBufferCell } from "@xterm/xterm";
 import type { AppSettings, TerminalSession } from "../../types";
 import {
   terminalManagedCursorCommandNames,
+  terminalPromptInputDarkColors,
+  terminalPromptInputLightColors,
   terminalSoftDarkBlockLightBackground,
+  type TerminalPromptInputColors,
 } from "./core";
 import {
   extractTerminalExecutableName,
@@ -282,6 +285,17 @@ export const resolveTerminalRelativeLuminance = (color: TerminalRgbColor) => {
       : ((normalized + 0.055) / 1.055) ** 2.4;
   });
   return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+};
+
+// 输入区强调色按终端实际底色明暗选择；底色无法解析时退回应用主题。
+// 0.2 约等于深浅两套强调色在该底色上对比度相同的分界点。
+export const resolveTerminalPromptInputColors = (
+  background: string,
+  isDarkTheme: boolean,
+): TerminalPromptInputColors => {
+  const rgb = parseTerminalRgbColor(background);
+  const isDarkBackground = rgb ? resolveTerminalRelativeLuminance(rgb) < 0.2 : isDarkTheme;
+  return isDarkBackground ? terminalPromptInputDarkColors : terminalPromptInputLightColors;
 };
 
 // 仅对会在重绘中暴露临时原生光标位置的 TUI 启用宿主光标层，其它 TUI 保持协议原样。

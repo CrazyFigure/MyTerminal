@@ -3,6 +3,14 @@
 import type { Terminal } from "@xterm/xterm";
 
 import {
+  advanceTerminalCommandContinuation,
+  createTerminalCommandContinuationState,
+  isTerminalCommandContinuationOpen,
+  matchTerminalContinuationPrompt,
+  type TerminalCommandContinuationState,
+  type TerminalShellDialect,
+} from "../../domain/terminal/commandContinuation";
+import {
   terminalHighlightBorderWidthPx,
   terminalHighlightSvgNamespace,
   terminalMatchHighlightDarkBackground,
@@ -11,11 +19,15 @@ import {
   terminalMatchHighlightLightBackground,
   terminalMatchHighlightLightBorder,
   terminalPromptHighlightMaxScanChars,
+  terminalPromptInputLookbackRows,
   type TerminalHighlightPoint,
   type TerminalHighlightStrip,
+  type TerminalMatchDecorationRange,
   type TerminalMatchRange,
   type TerminalPromptHighlightMatch,
   type TerminalPromptHighlightSegment,
+  type TerminalPromptInputLine,
+  type TerminalPromptLineScan,
   type TerminalPromptSegmentKind,
 } from "./core";
 import {
@@ -52,8 +64,36 @@ export const buildTerminalPromptSegments = (
   return segments;
 };
 
-// 返回提示符自身的彩色分段；命令正文不做改色，只由整条命令行的透明底色负责定位。
+// 返回提示符自身的彩色分段；命令正文的着色由输入区扫描单独负责。
 export const matchTerminalPromptSegments = (
+  lineText: string,
+): TerminalPromptHighlightSegment[] | undefined =>
+  matchTerminalPromptLine(lineText)?.segments;
+
+// 识别提示符并给出 Shell 方言：续行规则（bash `> ` / pwsh `>> `）与转义字符都依赖方言。
+export const matchTerminalPromptLine = (
+  lineText: string,
+): { segments: TerminalPromptHighlightSegment[]; dialect: TerminalShellDialect } | undefined => {
+  const segments = matchTerminalPromptSegmentsByPattern(lineText);
+  if (!segments) {
+    return undefined;
+  }
+  // 与分段匹配保持相同的优先级：Unix 系提示符优先，其次 PowerShell，最后 cmd。
+  const text = lineText.slice(0, terminalPromptHighlightMaxScanChars);
+  let dialect: TerminalShellDialect = 'cmd';
+  if (
+    terminalPromptUnixPattern.test(text)
+    || terminalPromptUnixSpacePattern.test(text)
+    || terminalPromptBracketPattern.test(text)
+  ) {
+    dialect = 'posix';
+  } else if (terminalPromptPowerShellPattern.test(text)) {
+    dialect = 'powershell';
+  }
+  return { segments, dialect };
+};
+
+const matchTerminalPromptSegmentsByPattern = (
   lineText: string,
 ): TerminalPromptHighlightSegment[] | undefined => {
   const text = lineText.slice(0, terminalPromptHighlightMaxScanChars);
@@ -145,6 +185,153 @@ export const collectTerminalPromptHighlightMatches = (
     row = Math.max(row + 1, logicalLine.endRowExclusive);
   }
   return matches;
+};
+
+// 逻辑行字符串下标 → 物理行与单元格列；与 resolveTerminalMatchRange 使用相同的分段边界规则。
+export const resolveTerminalLogicalOffsetPosition = (
+  terminal: Terminal,
+  logicalStartRow: number,
+  offsets: number[],
+  index: number,
+) => {
+  let segmentIndex = 0;
+  while (segmentIndex < offsets.length - 1 && index >= offsets[segmentIndex + 1]) {
+    segmentIndex += 1;
+  }
+  const row = logicalStartRow + segmentIndex;
+  return {
+    row,
+    column: stringLengthToTerminalBufferSize(terminal, row, index - offsets[segmentIndex]),
+  };
+};
+
+// 一次扫描同时产出提示符分段与命令输入区：
+// - 提示符之后到逻辑行末为输入；只按回车的空提示符记为 hasCommand=false；
+// - 上一条命令未结束（引号/括号/heredoc/行尾续行符等）时，紧随的 `> `/`>> ` 续行也算输入；
+// - 其余行（包括 AI CLI、REPL 等自定义程序的输出）一律视为普通输出，不着色。
+// 续行判定需要上文，所以从可视区上方回看一段，但只返回与可视区相交的结果。
+export const scanTerminalPromptLines = (
+  terminal: Terminal,
+  firstRow: number,
+  lastRowExclusive: number,
+): TerminalPromptLineScan => {
+  const buffer = terminal.buffer.active;
+  const matches: TerminalPromptHighlightMatch[] = [];
+  const inputs: TerminalPromptInputLine[] = [];
+  let row = Math.max(0, firstRow - terminalPromptInputLookbackRows);
+  while (row > 0 && buffer.getLine(row)?.isWrapped) {
+    row -= 1;
+  }
+
+  let continuation: TerminalCommandContinuationState | undefined;
+  while (row < lastRowExclusive) {
+    const line = buffer.getLine(row);
+    if (!line || line.isWrapped) {
+      row += 1;
+      continue;
+    }
+    const logicalLine = translateTerminalBufferLineWithWrap(terminal, row);
+    const isVisible = logicalLine.endRowExclusive > firstRow;
+    const prompt = matchTerminalPromptLine(logicalLine.text);
+
+    if (prompt) {
+      const promptEnd = prompt.segments[prompt.segments.length - 1]?.end ?? 0;
+      const commandText = logicalLine.text.slice(promptEnd);
+      const hasCommand = commandText.trim().length > 0;
+      const inputStart = hasCommand
+        ? promptEnd + (commandText.length - commandText.trimStart().length)
+        : promptEnd;
+      if (isVisible) {
+        matches.push({ row, segments: prompt.segments });
+        const position = resolveTerminalLogicalOffsetPosition(terminal, row, logicalLine.offsets, inputStart);
+        inputs.push({
+          row,
+          endRowExclusive: logicalLine.endRowExclusive,
+          startRow: position.row,
+          startColumn: position.column,
+          hasCommand,
+        });
+      }
+      const nextState = hasCommand
+        ? advanceTerminalCommandContinuation(createTerminalCommandContinuationState(prompt.dialect), commandText)
+        : undefined;
+      continuation = nextState && isTerminalCommandContinuationOpen(nextState) ? nextState : undefined;
+    } else if (continuation) {
+      const markerLength = matchTerminalContinuationPrompt(continuation.dialect, logicalLine.text);
+      if (markerLength === undefined) {
+        // 命令已经结束，后续内容是程序输出。
+        continuation = undefined;
+      } else {
+        if (isVisible) {
+          const position = resolveTerminalLogicalOffsetPosition(
+            terminal,
+            row,
+            logicalLine.offsets,
+            Math.min(markerLength, logicalLine.text.length),
+          );
+          inputs.push({
+            row,
+            endRowExclusive: logicalLine.endRowExclusive,
+            startRow: position.row,
+            // 续行提示符被行尾裁剪时（光标停在 `> ` 后），从提示符之后的列开始。
+            startColumn: Math.max(position.column, markerLength),
+            hasCommand: true,
+          });
+        }
+        const nextState = advanceTerminalCommandContinuation(
+          continuation,
+          logicalLine.text.slice(markerLength),
+        );
+        continuation = isTerminalCommandContinuationOpen(nextState) ? nextState : undefined;
+      }
+    }
+    row = Math.max(row + 1, logicalLine.endRowExclusive);
+  }
+  return { matches, inputs };
+};
+
+// 把输入区拆成“默认前景色”的单元格连续段：Shell 自带的语法色（PSReadLine 命令名、参数等）、
+// 反色、暗淡（自动补全幽灵文字）单元格保持原样；行尾空白一并覆盖，新键入的字符无需等待重建即可着色。
+export const collectTerminalPromptInputCellRuns = (
+  terminal: Terminal,
+  input: TerminalPromptInputLine,
+  firstRow: number,
+  lastRowExclusive: number,
+) => {
+  const buffer = terminal.buffer.active;
+  const runs: TerminalMatchDecorationRange[] = [];
+  const firstRunRow = Math.max(input.startRow, firstRow);
+  const lastRunRowExclusive = Math.min(input.endRowExclusive, lastRowExclusive);
+  const reusableCell = buffer.getNullCell();
+  for (let row = firstRunRow; row < lastRunRowExclusive; row += 1) {
+    const line = buffer.getLine(row);
+    if (!line) {
+      continue;
+    }
+    let runStart = -1;
+    let previousIsPlain = false;
+    const startColumn = row === input.startRow ? input.startColumn : 0;
+    for (let column = startColumn; column < terminal.cols; column += 1) {
+      const cell = line.getCell(column, reusableCell);
+      // 宽字符的第二个单元格（宽度 0）沿用前一格的判定，避免把一个汉字拆成两段。
+      const isPlain: boolean = cell
+        ? cell.getWidth() === 0
+          ? previousIsPlain
+          : cell.isFgDefault() && !cell.isInverse() && !cell.isDim()
+        : true;
+      if (isPlain && runStart < 0) {
+        runStart = column;
+      } else if (!isPlain && runStart >= 0) {
+        runs.push({ row, column: runStart, width: column - runStart });
+        runStart = -1;
+      }
+      previousIsPlain = isPlain;
+    }
+    if (runStart >= 0 && terminal.cols > runStart) {
+      runs.push({ row, column: runStart, width: terminal.cols - runStart });
+    }
+  }
+  return runs;
 };
 
 export const resolveTerminalMatchRange = (

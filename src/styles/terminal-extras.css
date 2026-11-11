@@ -75,6 +75,8 @@
   --terminal-gutter-time: #6b7280;
   --terminal-gutter-active: #4338ca;
   --terminal-gutter-caret: #4f46e5;
+  --terminal-gutter-input: #3b44c4;
+  --terminal-gutter-input-mark: rgba(59, 68, 196, 0.55);
   position: absolute;
   z-index: 5;
   display: none;
@@ -118,6 +120,27 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* 命令输入行：行号换输入强调色加粗，分隔线上叠半透明竖条，与正文里的命令文字同色呼应。
+   必须写在活动行规则之前：同时是活动行时，活动行的实色游标刻度覆盖这条半透明竖条。 */
+.terminal-gutter-line.is-input .terminal-gutter-number {
+  color: var(--terminal-gutter-input);
+  font-weight: 700;
+}
+
+.terminal-gutter-line.is-input::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--terminal-gutter-input-mark);
+}
+
+.terminal-gutter.is-collapsed .terminal-gutter-line.is-input::after {
+  display: none;
+}
+
 /* 当前（光标所在）行：文字换强调色，并在分隔线上叠一段 2px 游标刻度，
    让这条线同时充当时间轴。比整行铺一块底色更精确，也不会盖住终端背景图。 */
 .terminal-gutter-line.is-active,
@@ -147,6 +170,8 @@
   --terminal-gutter-time: #828d9c;
   --terminal-gutter-active: #a5b4fc;
   --terminal-gutter-caret: #818cf8;
+  --terminal-gutter-input: #9aa8ff;
+  --terminal-gutter-input-mark: rgba(154, 168, 255, 0.6);
 }
 
 /* 行号栏右键菜单：显示项开关，前置勾选标记。 */

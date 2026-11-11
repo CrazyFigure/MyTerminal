@@ -266,6 +266,42 @@ export const terminalPromptHighlightDarkColors: TerminalPromptHighlightColors =
     },
   };
 
+// 输入区着色：命令文字换强调色（xterm decoration 只接受 #RRGGBB），侧标用同色半透明竖条。
+// 按终端实际底色的明暗取值，用户自定义深色底 + 浅色主题时也能保持对比度。
+export type TerminalPromptInputColors = {
+  foreground: string;
+  mark: string;
+};
+
+export const terminalPromptInputLightColors: TerminalPromptInputColors = {
+  foreground: "#3b44c4",
+  mark: "rgba(59, 68, 196, 0.55)",
+};
+
+export const terminalPromptInputDarkColors: TerminalPromptInputColors = {
+  foreground: "#9aa8ff",
+  mark: "rgba(154, 168, 255, 0.6)",
+};
+
+// 续行判定需要知道可视区上方的命令上下文；向上回看有限行数，超出部分按普通输出处理。
+export const terminalPromptInputLookbackRows = 48;
+
+// 输入着色 decoration 数量上限，防止极端长命令或超大窗口下 decoration 无界增长。
+export const terminalPromptInputMaxDecorations = 600;
+
+// 无行号栏（本地终端或两项都关闭）时，侧标画在正文左侧内边距里的细竖条宽度。
+export const terminalPromptInputMarkWidthPx = 2;
+
+// 一条逻辑行内被识别为命令输入的部分：从 (startRow, startColumn) 一直延伸到逻辑行末；
+// hasCommand=false 表示只按了回车的空提示符，此时只预着色空白单元格、不画侧标。
+export type TerminalPromptInputLine = {
+  row: number;
+  endRowExclusive: number;
+  startRow: number;
+  startColumn: number;
+  hasCommand: boolean;
+};
+
 // 提示符前缀有严格上限，避免超长日志行触发不必要的正则回溯；路径超过该长度时仍保留整行浅色标识。
 export const terminalPromptHighlightMaxScanChars = 512;
 
@@ -353,6 +389,12 @@ export type TerminalPromptHighlightSegment = {
 export type TerminalPromptHighlightMatch = {
   row: number;
   segments: TerminalPromptHighlightSegment[];
+};
+
+// 提示符逻辑行扫描结果：underline 用 segments，输入着色用 input。
+export type TerminalPromptLineScan = {
+  matches: TerminalPromptHighlightMatch[];
+  inputs: TerminalPromptInputLine[];
 };
 
 export type TerminalPromptHighlightColors = {
