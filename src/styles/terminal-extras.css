@@ -75,8 +75,8 @@
   --terminal-gutter-time: #6b7280;
   --terminal-gutter-active: #4338ca;
   --terminal-gutter-caret: #4f46e5;
-  --terminal-gutter-input: #3b44c4;
-  --terminal-gutter-input-mark: #3b44c4;
+  --terminal-gutter-input: #2f37a8;
+  --terminal-gutter-input-mark: #2f37a8;
   position: absolute;
   z-index: 5;
   display: none;

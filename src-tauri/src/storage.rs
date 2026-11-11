@@ -920,7 +920,7 @@ mod settings_upgrade_tests {
         assert!(!loaded.terminal_match_selection);
         assert!(!loaded.terminal_gutter_show_timestamp);
         assert!(loaded.terminal_command_input_highlight);
-        assert_eq!(loaded.terminal_command_input_color, "#3b44c4");
+        assert_eq!(loaded.terminal_command_input_color, "#2f37a8");
         assert!(loaded.terminal_command_input_bold);
 
         // 修改新字段后保存再读取，确保新字段本身也能持久化。

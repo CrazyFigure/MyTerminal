@@ -72,9 +72,11 @@ type TerminalPromptInputDecorationEntry = {
 // 命令文字描粗规则按标记色动态生成（标记色随设置颜色和深浅底色变化，无法写死在样式表里）。
 // 所有终端实例共用同一份设置，因此全局只维护一条规则；传 null 表示关闭描粗。
 const syncTerminalPromptInputEmphasisStyle = (markerColor: string | null) => {
-  // 用描边而不是 font-weight 加粗：不改变字形宽度，DOM 渲染器按常规字重计算的列对齐不会被破坏。
+  // 用真正的粗体字形：字体包的 JetBrains Mono / Maple Mono 各字重等宽，列对齐不受影响；
+  // 不用 -webkit-text-stroke，它会让 Chromium 把 ClearType 换成灰度抗锯齿，字反而显得更细更淡。
+  // xterm DOM 渲染器注入了同等优先级且更晚生效的 `span:not(.xterm-bold) { font-weight: normal }`，必须 !important。
   const rule = markerColor
-    ? `.terminal-surface .xterm-rows span[style*="color:${markerColor};"] { -webkit-text-stroke: 0.45px currentColor; }`
+    ? `.terminal-surface .xterm-rows span[style*="color:${markerColor};"] { font-weight: bold !important; }`
     : '';
   let style = document.getElementById('terminal-prompt-input-emphasis-style');
   if (!style) {

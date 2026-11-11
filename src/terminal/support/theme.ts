@@ -6,6 +6,7 @@ import { resolveTerminalCommandInputDisplayColor } from "../../domain/settings/c
 import type { AppSettings, TerminalSession } from "../../types";
 import {
   terminalManagedCursorCommandNames,
+  terminalMinimumContrastRatio,
   terminalSoftDarkBlockLightBackground,
   type TerminalPromptInputColors,
 } from "./core";
@@ -298,15 +299,52 @@ export const resolveTerminalPromptInputColors = (
   const isDarkBackground = backgroundRgb
     ? resolveTerminalRelativeLuminance(backgroundRgb) < 0.2
     : isDarkTheme;
-  const displayColor = resolveTerminalCommandInputDisplayColor(configuredColor, isDarkBackground);
-  const displayRgb = parseTerminalRgbColor(displayColor)!;
+  const configuredRgb = parseTerminalRgbColor(
+    resolveTerminalCommandInputDisplayColor(configuredColor, isDarkBackground),
+  )!;
+  // xterm 会把对比度不足 minimumContrastRatio（默认 7）的装饰色自动改掉，标记色随之失效、加粗规则匹配不上。
+  // 这里先按同样的方向（浅底压暗、深底提亮）调到达标，交给 xterm 的颜色就能原样保留。
+  const displayRgb = backgroundRgb
+    ? ensureTerminalColorContrast(configuredRgb, backgroundRgb, terminalMinimumContrastRatio + 0.1)
+    : configuredRgb;
+  // 标记色只微调蓝色通道 1 级，并朝提高对比度的方向调，保证微调后仍然达标。
+  const blueStep = isDarkBackground ? 1 : -1;
+  const markerBlue = displayRgb.blue + blueStep >= 0 && displayRgb.blue + blueStep <= 255
+    ? displayRgb.blue + blueStep
+    : displayRgb.blue - blueStep;
   // xterm 以小写 6 位十六进制写入内联样式，这里保持同样格式以便精确匹配。
-  const markerBlue = displayRgb.blue < 255 ? displayRgb.blue + 1 : displayRgb.blue - 1;
   const toHex = (channel: number) => channel.toString(16).padStart(2, "0");
   return {
     foreground: `#${toHex(displayRgb.red)}${toHex(displayRgb.green)}${toHex(markerBlue)}`,
-    mark: displayColor,
+    mark: `#${toHex(displayRgb.red)}${toHex(displayRgb.green)}${toHex(displayRgb.blue)}`,
   };
+};
+
+// 逐步压暗（浅底）或向白色混合（深底），直到与底色的对比度达到目标值；最多 40 步，必然收敛到黑或白。
+export const ensureTerminalColorContrast = (
+  color: TerminalRgbColor,
+  background: TerminalRgbColor,
+  targetRatio: number,
+): TerminalRgbColor => {
+  const darken = resolveTerminalRelativeLuminance(background) >= 0.5;
+  let current = color;
+  for (let step = 0; step < 40; step += 1) {
+    if (resolveTerminalColorContrastRatio(current, background) >= targetRatio) {
+      return current;
+    }
+    current = darken
+      ? {
+          red: Math.floor(current.red * 0.94),
+          green: Math.floor(current.green * 0.94),
+          blue: Math.floor(current.blue * 0.94),
+        }
+      : {
+          red: Math.ceil(current.red + (255 - current.red) * 0.06),
+          green: Math.ceil(current.green + (255 - current.green) * 0.06),
+          blue: Math.ceil(current.blue + (255 - current.blue) * 0.06),
+        };
+  }
+  return current;
 };
 
 // 仅对会在重绘中暴露临时原生光标位置的 TUI 启用宿主光标层，其它 TUI 保持协议原样。

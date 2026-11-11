@@ -100,7 +100,7 @@ pub(super) fn default_terminal_command_input_highlight() -> bool {
 
 // 旧设置文件没有命令输入颜色时使用 A 方案的靛蓝；前端会在深色主题下换成配套的浅靛蓝。
 pub(super) fn default_terminal_command_input_color() -> String {
-    "#3b44c4".into()
+    "#2f37a8".into()
 }
 
 pub(super) fn default_terminal_command_input_bold() -> bool {
