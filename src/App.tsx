@@ -777,9 +777,10 @@ export default function App() {
     }
   }, [agentSidebarCollapsed]);
 
-  // 启动后立即检测一次更新，之后每 10 分钟复检一次；网络失败时静默忽略，不打扰用户。
+  // 设置读取完成后立即检测一次更新，之后每 10 分钟复检一次；网络失败时静默忽略，不打扰用户。
+  // 必须等 bootstrapped：检测结果会回写更新渠道，过早执行会基于默认设置保存而覆盖用户配置。
   useEffect(() => {
-    if (!isTauriRuntime()) {
+    if (!isTauriRuntime() || !bootstrapped) {
       return undefined;
     }
     const runSilentCheck = () => {
@@ -790,7 +791,7 @@ export default function App() {
     runSilentCheck();
     const timer = window.setInterval(runSilentCheck, 10 * 60 * 1000);
     return () => window.clearInterval(timer);
-  }, [checkForUpdates]);
+  }, [bootstrapped, checkForUpdates]);
 
   // 下载进度事件由后端统一发出，首页和设置页弹窗共用同一个事件名，分别更新各自进度状态。
   useEffect(() => {

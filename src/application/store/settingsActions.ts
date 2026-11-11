@@ -49,6 +49,10 @@ export const createSettingsActions = (set: StoreSet, get: StoreGet): SettingsAct
   let channelSelectionRevision = 0;
   const saveSettings = (resolve: () => AppSettings, skipUnchanged = false): Promise<AppSettings> => {
     const pending = settingsSaveQueue.catch(() => undefined).then(async () => {
+      // 启动读取完成前，内存里还是默认设置；此时任何整份保存都会用默认值覆盖用户的设置文件，必须拒绝。
+      if (!get().bootstrapped) {
+        throw new Error('settings_not_loaded');
+      }
       const nextSettings = resolve();
       if (skipUnchanged && nextSettings === get().settings) {
         return nextSettings;
@@ -140,13 +144,16 @@ export const createSettingsActions = (set: StoreSet, get: StoreGet): SettingsAct
       await settingsSaveQueue.catch(() => undefined);
       const selectionRevision = channelSelectionRevision;
       const result = await backend.checkForUpdates();
-      await saveSettings(() => {
-        const current = get().settings;
-        if (selectionRevision !== channelSelectionRevision || current.updateChannel === result.channel) {
-          return current;
-        }
-        return { ...current, updateChannel: result.channel };
-      }, true);
+      // 设置尚未从磁盘读入时只展示检测结果，不回写渠道；否则会把默认设置整份写回文件。
+      if (get().bootstrapped) {
+        await saveSettings(() => {
+          const current = get().settings;
+          if (selectionRevision !== channelSelectionRevision || current.updateChannel === result.channel) {
+            return current;
+          }
+          return { ...current, updateChannel: result.channel };
+        }, true);
+      }
       set((state) => ({
         updateCheckResult: result,
         statusMessage: result.updateAvailable
