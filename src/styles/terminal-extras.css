@@ -76,7 +76,7 @@
   --terminal-gutter-active: #4338ca;
   --terminal-gutter-caret: #4f46e5;
   --terminal-gutter-input: #3b44c4;
-  --terminal-gutter-input-mark: #4f46e5;
+  --terminal-gutter-input-mark: #3b44c4;
   position: absolute;
   z-index: 5;
   display: none;
@@ -120,7 +120,8 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 命令输入行：行号换强调色加粗，分隔线上叠 3px 实色竖条，作为区分输入与输出的主要标记。
+/* 命令输入行：行号换命令文字同色并加粗，分隔线上叠 3px 实色竖条；颜色由脚本按设置写入 CSS 变量，
+   这里的变量值只是脚本写入前的兜底。
    必须写在活动行规则之前：同时是活动行时由活动行配色接管，但宽度保持 3px，避免竖条忽粗忽细。 */
 .terminal-gutter-line.is-input .terminal-gutter-number {
   color: var(--terminal-gutter-input);
@@ -175,7 +176,7 @@
   --terminal-gutter-active: #a5b4fc;
   --terminal-gutter-caret: #818cf8;
   --terminal-gutter-input: #9aa8ff;
-  --terminal-gutter-input-mark: #a5b4fc;
+  --terminal-gutter-input-mark: #9aa8ff;
 }
 
 /* 行号栏右键菜单：显示项开关，前置勾选标记。 */

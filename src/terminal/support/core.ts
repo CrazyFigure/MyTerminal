@@ -266,18 +266,13 @@ export const terminalPromptHighlightDarkColors: TerminalPromptHighlightColors =
     },
   };
 
-// 输入区区分：命令文字保持前景色、仅描粗，靠左侧实色竖条区分输入与输出。
-// foreground 是与终端前景色只差 1 个色阶的“标记色”（肉眼不可辨），xterm DOM 渲染器会把它写成
-// 内联 `color:#rrggbb;`，CSS 据此只给命令文字描粗；mark 为侧标竖条颜色。
+// 输入区区分：命令文字换成设置中的颜色（可选描粗），左侧实色竖条标记命令行。
+// foreground 是所选颜色蓝色通道微调 1 级的“标记色”（肉眼不可辨），xterm DOM 渲染器会把它写成
+// 内联 `color:#rrggbb;`，CSS 据此只给命令文字描粗；mark 为所选颜色本身，用于侧标竖条和行号。
 export type TerminalPromptInputColors = {
   foreground: string;
   mark: string;
 };
-
-// 侧标按终端实际底色明暗取值，用户自定义深色底 + 浅色主题时也能看清。
-export const terminalPromptInputLightMarkColor = "#4f46e5";
-
-export const terminalPromptInputDarkMarkColor = "#a5b4fc";
 
 // 续行判定需要知道可视区上方的命令上下文；向上回看有限行数，超出部分按普通输出处理。
 export const terminalPromptInputLookbackRows = 48;

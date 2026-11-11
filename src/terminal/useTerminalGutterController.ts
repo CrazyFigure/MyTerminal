@@ -36,6 +36,8 @@ type TerminalGutterControllerOptions = {
   terminalGutterWidthRef: RefObject<number>;
   // 提示符扫描得到的命令输入行（buffer 行号），用于绘制输入侧标。
   terminalPromptInputRowsRef: RefObject<Set<number>>;
+  // 命令输入侧标颜色（随设置颜色与深浅底色变化），行号与竖条通过 CSS 变量使用。
+  resolveTerminalPromptInputMarkColor: () => string;
   terminalRef: RefObject<Terminal | null>;
   terminalScrollbackRowsRef: RefObject<number>;
 };
@@ -57,6 +59,7 @@ export function useTerminalGutterController(options: TerminalGutterControllerOpt
     terminalGutterReplayNextLogicalNumberRef,
     terminalGutterWidthRef,
     terminalPromptInputRowsRef,
+    resolveTerminalPromptInputMarkColor,
     terminalRef,
     terminalScrollbackRowsRef,
   } = options;
@@ -227,6 +230,12 @@ const syncTerminalGutter = (nowMs: number) => {
   const width = resolveTerminalGutterWidth();
   applyTerminalGutterWidth(width);
   gutter.style.display = 'block';
+  // 侧标颜色与正文里的命令文字保持一致；只在变化时写入，避免每帧触发样式重算。
+  const inputMarkColor = resolveTerminalPromptInputMarkColor();
+  if (gutter.style.getPropertyValue('--terminal-gutter-input') !== inputMarkColor) {
+    gutter.style.setProperty('--terminal-gutter-input', inputMarkColor);
+    gutter.style.setProperty('--terminal-gutter-input-mark', inputMarkColor);
+  }
   // 两项都关时只剩右键命中区，活动行游标刻度失去参照物，交给样式隐藏。
   gutter.classList.toggle('is-collapsed', !showNumber && !showTime);
 

@@ -324,6 +324,8 @@ impl StorageService {
             terminal_line_wrap_mode: stored.terminal_line_wrap_mode,
             terminal_match_selection: stored.terminal_match_selection,
             terminal_command_input_highlight: stored.terminal_command_input_highlight,
+            terminal_command_input_color: stored.terminal_command_input_color,
+            terminal_command_input_bold: stored.terminal_command_input_bold,
             terminal_gutter_show_line_number: stored.terminal_gutter_show_line_number,
             terminal_gutter_show_timestamp: stored.terminal_gutter_show_timestamp,
             compact_sidebar: stored.compact_sidebar,
@@ -389,6 +391,8 @@ impl StorageService {
             terminal_line_wrap_mode: settings.terminal_line_wrap_mode.clone(),
             terminal_match_selection: settings.terminal_match_selection,
             terminal_command_input_highlight: settings.terminal_command_input_highlight,
+            terminal_command_input_color: settings.terminal_command_input_color.clone(),
+            terminal_command_input_bold: settings.terminal_command_input_bold,
             terminal_gutter_show_line_number: settings.terminal_gutter_show_line_number,
             terminal_gutter_show_timestamp: settings.terminal_gutter_show_timestamp,
             compact_sidebar: settings.compact_sidebar,
@@ -872,6 +876,62 @@ mod local_terminal_history_tests {
         let persisted: LocalTerminalSettings = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(persisted.profiles[0].command, "codex");
         assert_eq!(storage.load_local_terminals().unwrap().profiles[0].command, "codex");
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod settings_upgrade_tests {
+    use super::*;
+
+    #[test]
+    fn old_settings_file_keeps_user_values_and_defaults_only_new_fields() {
+        // 仅使用本次测试独占的临时目录：模拟升级前保存的设置文件（缺少命令输入相关字段），
+        // 读取后用户原有设置必须原样保留，只有新增字段取默认值。
+        let directory = std::env::temp_dir().join(format!("myterminal-settings-{}", uuid::Uuid::new_v4()));
+        let storage = StorageService::new(directory.clone()).unwrap();
+        let crypto = CryptoService::new(directory.join("master.key")).unwrap();
+
+        let mut custom = AppSettings::default();
+        custom.theme_mode = "dark".into();
+        custom.shell_font_size = 19;
+        custom.terminal_background = "#101820".into();
+        custom.terminal_match_selection = false;
+        custom.terminal_gutter_show_timestamp = false;
+        storage.save_settings(&custom, &crypto).unwrap();
+
+        // 删掉本次新增的字段，得到“旧版本”设置文件。
+        let path = storage.settings_file_path();
+        let mut raw: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let object = raw.as_object_mut().unwrap();
+        for key in [
+            "terminal_command_input_highlight",
+            "terminal_command_input_color",
+            "terminal_command_input_bold",
+        ] {
+            assert!(object.remove(key).is_some(), "新增字段应以 {key} 写入设置文件");
+        }
+        fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+
+        let loaded = storage.load_settings(&crypto).unwrap();
+        assert_eq!(loaded.theme_mode, "dark");
+        assert_eq!(loaded.shell_font_size, 19);
+        assert_eq!(loaded.terminal_background, "#101820");
+        assert!(!loaded.terminal_match_selection);
+        assert!(!loaded.terminal_gutter_show_timestamp);
+        assert!(loaded.terminal_command_input_highlight);
+        assert_eq!(loaded.terminal_command_input_color, "#3b44c4");
+        assert!(loaded.terminal_command_input_bold);
+
+        // 修改新字段后保存再读取，确保新字段本身也能持久化。
+        let mut changed = loaded;
+        changed.terminal_command_input_color = "#0f766e".into();
+        changed.terminal_command_input_bold = false;
+        storage.save_settings(&changed, &crypto).unwrap();
+        let reloaded = storage.load_settings(&crypto).unwrap();
+        assert_eq!(reloaded.terminal_command_input_color, "#0f766e");
+        assert!(!reloaded.terminal_command_input_bold);
+        assert_eq!(reloaded.shell_font_size, 19);
         fs::remove_dir_all(directory).unwrap();
     }
 }

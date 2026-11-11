@@ -98,6 +98,15 @@ pub(super) fn default_terminal_command_input_highlight() -> bool {
     true
 }
 
+// 旧设置文件没有命令输入颜色时使用 A 方案的靛蓝；前端会在深色主题下换成配套的浅靛蓝。
+pub(super) fn default_terminal_command_input_color() -> String {
+    "#3b44c4".into()
+}
+
+pub(super) fn default_terminal_command_input_bold() -> bool {
+    true
+}
+
 // 旧设置文件没有行号栏开关时默认显示行号与时间戳。
 pub(super) fn default_terminal_gutter_show_line_number() -> bool {
     true
@@ -547,6 +556,11 @@ pub struct AppSettings {
     /// 命令输入区分（命令文字着色与侧标）由前端渲染层执行，后端只负责持久化开关。
     #[serde(default = "default_terminal_command_input_highlight")]
     pub terminal_command_input_highlight: bool,
+    /// 命令输入文字颜色与加粗由前端渲染层执行，后端只负责持久化并随配置同步。
+    #[serde(default = "default_terminal_command_input_color")]
+    pub terminal_command_input_color: String,
+    #[serde(default = "default_terminal_command_input_bold")]
+    pub terminal_command_input_bold: bool,
     /// 终端左侧行号栏由前端渲染层执行，后端只负责持久化显示开关。
     #[serde(default = "default_terminal_gutter_show_line_number")]
     pub terminal_gutter_show_line_number: bool,
@@ -604,6 +618,8 @@ impl Default for AppSettings {
             terminal_line_wrap_mode: default_terminal_line_wrap_mode(),
             terminal_match_selection: default_terminal_match_selection(),
             terminal_command_input_highlight: default_terminal_command_input_highlight(),
+            terminal_command_input_color: default_terminal_command_input_color(),
+            terminal_command_input_bold: default_terminal_command_input_bold(),
             terminal_gutter_show_line_number: default_terminal_gutter_show_line_number(),
             terminal_gutter_show_timestamp: default_terminal_gutter_show_timestamp(),
             compact_sidebar: false,

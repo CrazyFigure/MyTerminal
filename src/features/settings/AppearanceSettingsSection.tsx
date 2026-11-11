@@ -4,6 +4,13 @@ import { Download, PackageCheck, RotateCcw, Save, Trash2, Upload } from "lucide-
 import { clamp } from "../../app/layout";
 import { CustomSelect, type CustomSelectOption } from "../../CustomSelect";
 import { Tooltip } from "../../components/Tooltip";
+import {
+  defaultTerminalCommandInputLightColor,
+  normalizeTerminalCommandInputColor,
+  resolveTerminalCommandInputDisplayColor,
+  resolveTerminalCommandInputPresetId,
+  terminalCommandInputColorPresets,
+} from "../../domain/settings/commandInputColor";
 import type { TranslationKey } from "../../i18n";
 import type { AppSettings, DownloadProgress, FontPackStatus, UiLanguage } from "../../types";
 import {
@@ -42,6 +49,17 @@ type Props = {
   uiPreviewStyle: CSSProperties;
 };
 
+// 命令输入预设色的界面名称。
+const terminalCommandInputColorPresetLabels: Record<
+  (typeof terminalCommandInputColorPresets)[number]["id"],
+  TranslationKey
+> = {
+  indigo: "terminalCommandInputColorIndigo",
+  teal: "terminalCommandInputColorTeal",
+  rose: "terminalCommandInputColorRose",
+  amber: "terminalCommandInputColorAmber",
+};
+
 const formatFontPackBytes = (value?: number) => {
   if (!value || !Number.isFinite(value)) {
     return "—";
@@ -77,6 +95,15 @@ export function AppearanceSettingsSection({
   uiLatinOptions,
   uiPreviewStyle,
 }: Props) {
+  // 命令输入颜色相关派生值：取色器与色值展示按草稿主题显示实际生效的颜色。
+  const commandInputHighlightEnabled = draftSettings.terminalCommandInputHighlight ?? true;
+  const selectedCommandInputPresetId = resolveTerminalCommandInputPresetId(
+    draftSettings.terminalCommandInputColor,
+  );
+  const commandInputDisplayColor = resolveTerminalCommandInputDisplayColor(
+    draftSettings.terminalCommandInputColor,
+    draftSettings.themeMode === "dark",
+  );
   const fontPackBusy = Boolean(fontPackActionRunning);
   const fontPackReady = fontPackStatus?.state === "ready";
   const fontPackStatusText = fontPackStatus?.state === "ready"
@@ -708,6 +735,107 @@ export function AppearanceSettingsSection({
               />
               <strong>
                 {(draftSettings.terminalCommandInputHighlight ?? true)
+                  ? t("enabled")
+                  : t("disabled")}
+              </strong>
+            </div>
+          </div>
+          {/* 命令输入颜色：预设色随深浅主题换配套取值，取色器用于自定义；总开关关闭时整行禁用。 */}
+          <div className="settings-command-input-color-row">
+            <Tooltip content={t("terminalCommandInputColorHint")} side="top">
+              <span id="terminal-command-input-color-label">
+                {t("fieldTerminalCommandInputColor")}
+              </span>
+            </Tooltip>
+            <div
+              aria-labelledby="terminal-command-input-color-label"
+              className="settings-command-input-color-control"
+              role="group"
+            >
+              {terminalCommandInputColorPresets.map((preset) => {
+                const isSelected = selectedCommandInputPresetId === preset.id;
+                const swatchColor = draftSettings.themeMode === "dark" ? preset.dark : preset.light;
+                return (
+                  <Tooltip
+                    content={t(terminalCommandInputColorPresetLabels[preset.id])}
+                    key={preset.id}
+                    side="top"
+                  >
+                    <button
+                      aria-label={t(terminalCommandInputColorPresetLabels[preset.id])}
+                      aria-pressed={isSelected}
+                      className={`settings-color-swatch${isSelected ? " is-selected" : ""}`}
+                      disabled={!commandInputHighlightEnabled}
+                      onClick={() =>
+                        onUpdate((current) => ({
+                          ...current,
+                          terminalCommandInputColor: preset.light,
+                        }))
+                      }
+                      style={{ background: swatchColor }}
+                      type="button"
+                    />
+                  </Tooltip>
+                );
+              })}
+              <Tooltip content={t("terminalCommandInputColorCustom")} side="top">
+                <label
+                  className={`settings-color-picker${selectedCommandInputPresetId ? "" : " is-selected"}`}
+                >
+                  <input
+                    aria-label={t("terminalCommandInputColorCustom")}
+                    disabled={!commandInputHighlightEnabled}
+                    onChange={(event) =>
+                      onUpdate((current) => ({
+                        ...current,
+                        terminalCommandInputColor: normalizeTerminalCommandInputColor(event.target.value),
+                      }))
+                    }
+                    type="color"
+                    value={commandInputDisplayColor}
+                  />
+                </label>
+              </Tooltip>
+              <code className="settings-color-value">{commandInputDisplayColor}</code>
+              <button
+                className="secondary-button settings-color-reset"
+                disabled={
+                  !commandInputHighlightEnabled
+                  || selectedCommandInputPresetId === "indigo"
+                }
+                onClick={() =>
+                  onUpdate((current) => ({
+                    ...current,
+                    terminalCommandInputColor: defaultTerminalCommandInputLightColor,
+                  }))
+                }
+                type="button"
+              >
+                {t("terminalCommandInputColorReset")}
+              </button>
+            </div>
+          </div>
+          <div className="agent-toggle-field settings-toggle-row settings-inline-toggle settings-centered-toggle">
+            <Tooltip content={t("terminalCommandInputBoldHint")} side="top">
+              <span id="terminal-command-input-bold-label">
+                {t("fieldTerminalCommandInputBold")}
+              </span>
+            </Tooltip>
+            <div className="settings-inline-toggle-control">
+              <input
+                aria-label={t("fieldTerminalCommandInputBold")}
+                checked={draftSettings.terminalCommandInputBold ?? true}
+                disabled={!commandInputHighlightEnabled}
+                type="checkbox"
+                onChange={(event) =>
+                  onUpdate((current) => ({
+                    ...current,
+                    terminalCommandInputBold: event.target.checked,
+                  }))
+                }
+              />
+              <strong>
+                {(draftSettings.terminalCommandInputBold ?? true)
                   ? t("enabled")
                   : t("disabled")}
               </strong>

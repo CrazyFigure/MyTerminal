@@ -2,11 +2,10 @@
 
 import type { IBufferCell } from "@xterm/xterm";
 
+import { resolveTerminalCommandInputDisplayColor } from "../../domain/settings/commandInputColor";
 import type { AppSettings, TerminalSession } from "../../types";
 import {
   terminalManagedCursorCommandNames,
-  terminalPromptInputDarkMarkColor,
-  terminalPromptInputLightMarkColor,
   terminalSoftDarkBlockLightBackground,
   type TerminalPromptInputColors,
 } from "./core";
@@ -287,25 +286,26 @@ export const resolveTerminalRelativeLuminance = (color: TerminalRgbColor) => {
   return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
 };
 
-// 输入区颜色：命令文字用“前景色 ±1 色阶”的标记色（视觉上与前景色一致，供 CSS 识别后描粗），
-// 侧标按终端实际底色明暗取色；颜色无法解析时退回应用主题的默认值。
+// 输入区颜色：先按终端实际底色明暗把设置颜色换成配套取值（底色无法解析时退回应用主题），
+// 再把蓝色通道微调 1 级作为命令文字的“标记色”——视觉上与所选颜色一致，但不会与程序输出的
+// 真彩色撞值，CSS 只认它来描粗。侧标竖条直接使用所选颜色。
 export const resolveTerminalPromptInputColors = (
   background: string,
-  foreground: string,
   isDarkTheme: boolean,
+  configuredColor: string,
 ): TerminalPromptInputColors => {
   const backgroundRgb = parseTerminalRgbColor(background);
   const isDarkBackground = backgroundRgb
     ? resolveTerminalRelativeLuminance(backgroundRgb) < 0.2
     : isDarkTheme;
-  const foregroundRgb = parseTerminalRgbColor(foreground)
-    ?? parseTerminalRgbColor(isDarkBackground ? defaultDarkTerminalForeground : defaultLightTerminalForeground)!;
-  // 只微调蓝色通道 1 级；xterm 以小写 6 位十六进制写入内联样式，这里保持同样格式以便精确匹配。
-  const markerBlue = foregroundRgb.blue < 255 ? foregroundRgb.blue + 1 : foregroundRgb.blue - 1;
+  const displayColor = resolveTerminalCommandInputDisplayColor(configuredColor, isDarkBackground);
+  const displayRgb = parseTerminalRgbColor(displayColor)!;
+  // xterm 以小写 6 位十六进制写入内联样式，这里保持同样格式以便精确匹配。
+  const markerBlue = displayRgb.blue < 255 ? displayRgb.blue + 1 : displayRgb.blue - 1;
   const toHex = (channel: number) => channel.toString(16).padStart(2, "0");
   return {
-    foreground: `#${toHex(foregroundRgb.red)}${toHex(foregroundRgb.green)}${toHex(markerBlue)}`,
-    mark: isDarkBackground ? terminalPromptInputDarkMarkColor : terminalPromptInputLightMarkColor,
+    foreground: `#${toHex(displayRgb.red)}${toHex(displayRgb.green)}${toHex(markerBlue)}`,
+    mark: displayColor,
   };
 };
 

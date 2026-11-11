@@ -13,6 +13,7 @@ import {
   getLocalTerminalStartupOptions,
   resolveLocalTerminalStartupCommand,
 } from '../domain/settings/localTerminal';
+import { normalizeTerminalCommandInputColor } from '../domain/settings/commandInputColor';
 
 export const isTauriRuntime = () =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -253,6 +254,9 @@ export const normalizeSettings = (settings: AppSettings): AppSettings => ({
   terminalMatchSelection: settings.terminalMatchSelection !== false,
   // 旧配置没有命令输入区分字段时默认开启。
   terminalCommandInputHighlight: settings.terminalCommandInputHighlight !== false,
+  // 旧配置或手改出的非法颜色回落到默认色，只修正这一项，不影响其它设置。
+  terminalCommandInputColor: normalizeTerminalCommandInputColor(settings.terminalCommandInputColor),
+  terminalCommandInputBold: settings.terminalCommandInputBold !== false,
   // 旧配置没有行号栏字段时默认显示，避免升级后左侧信息突然消失。
   terminalGutterShowLineNumber: settings.terminalGutterShowLineNumber !== false,
   terminalGutterShowTimestamp: settings.terminalGutterShowTimestamp !== false,

@@ -234,6 +234,10 @@ pub struct StoredAppSettings {
     pub terminal_match_selection: bool,
     #[serde(default = "default_terminal_command_input_highlight")]
     pub terminal_command_input_highlight: bool,
+    #[serde(default = "default_terminal_command_input_color")]
+    pub terminal_command_input_color: String,
+    #[serde(default = "default_terminal_command_input_bold")]
+    pub terminal_command_input_bold: bool,
     #[serde(default = "default_terminal_gutter_show_line_number")]
     pub terminal_gutter_show_line_number: bool,
     #[serde(default = "default_terminal_gutter_show_timestamp")]

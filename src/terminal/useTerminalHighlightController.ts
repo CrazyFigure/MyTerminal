@@ -50,8 +50,10 @@ type TerminalHighlightControllerOptions = {
   onTerminalPromptInputRowsChange: () => void;
   resolveTerminalPromptInputColors: () => TerminalPromptInputColors;
   sessionRef: RefObject<TerminalSession | undefined>;
-  // 设置开关：关闭时不描粗命令文字、不画侧标，提示符分段下划线照常保留。
+  // 设置开关：关闭时命令文字恢复原色、不画侧标，提示符分段下划线照常保留。
   terminalCommandInputHighlightRef: RefObject<boolean>;
+  // 命令文字是否描粗（仅在总开关开启时生效）。
+  terminalCommandInputBoldRef: RefObject<boolean>;
   terminalMatchSelectionRef: RefObject<boolean>;
   terminalPromptHighlightColorsRef: RefObject<TerminalPromptHighlightColors>;
   terminalRef: RefObject<Terminal | null>;
@@ -67,24 +69,25 @@ type TerminalPromptInputDecorationEntry = {
   color: string;
 };
 
-// 命令文字描粗规则按标记色动态生成（标记色随用户前景色变化，无法写死在样式表里）。
-// 所有终端实例共用一个 <style>，每种标记色只追加一次，数量受主题/前景色组合限制。
-const terminalPromptInputEmphasisColors = new Set<string>();
-const ensureTerminalPromptInputEmphasisStyle = (markerColor: string) => {
-  if (terminalPromptInputEmphasisColors.has(markerColor)) {
-    return;
-  }
-  terminalPromptInputEmphasisColors.add(markerColor);
+// 命令文字描粗规则按标记色动态生成（标记色随设置颜色和深浅底色变化，无法写死在样式表里）。
+// 所有终端实例共用同一份设置，因此全局只维护一条规则；传 null 表示关闭描粗。
+const syncTerminalPromptInputEmphasisStyle = (markerColor: string | null) => {
+  // 用描边而不是 font-weight 加粗：不改变字形宽度，DOM 渲染器按常规字重计算的列对齐不会被破坏。
+  const rule = markerColor
+    ? `.terminal-surface .xterm-rows span[style*="color:${markerColor};"] { -webkit-text-stroke: 0.45px currentColor; }`
+    : '';
   let style = document.getElementById('terminal-prompt-input-emphasis-style');
   if (!style) {
+    if (!rule) {
+      return;
+    }
     style = document.createElement('style');
     style.id = 'terminal-prompt-input-emphasis-style';
     document.head.appendChild(style);
   }
-  // 用描边而不是 font-weight 加粗：不改变字形宽度，DOM 渲染器按常规字重计算的列对齐不会被破坏。
-  style.textContent = [...terminalPromptInputEmphasisColors]
-    .map((color) => `.terminal-surface .xterm-rows span[style*="color:${color};"] { -webkit-text-stroke: 0.45px currentColor; }`)
-    .join('\n');
+  if (style.textContent !== rule) {
+    style.textContent = rule;
+  }
 };
 
 // 高亮控制器把选区、同词匹配和提示符三种覆盖层视为一个渲染域，共享测量、快照和销毁策略。
@@ -97,6 +100,7 @@ export function useTerminalHighlightController({
   resolveTerminalPromptInputColors,
   sessionRef,
   terminalCommandInputHighlightRef,
+  terminalCommandInputBoldRef,
   terminalMatchSelectionRef,
   terminalPromptHighlightColorsRef,
   terminalRef,
@@ -797,7 +801,7 @@ export function useTerminalHighlightController({
       }
     }
 
-    // 输入区：命令文字描粗 + 侧标。空提示符只预先覆盖行尾空白，保证首个键入字符立即生效，但不画侧标。
+    // 输入区：命令文字着色（可选描粗）+ 侧标。空提示符只预先覆盖行尾空白，保证首个键入字符立即着色，但不画侧标。
     const inputColors = resolveTerminalPromptInputColors();
     const inputRuns: TerminalMatchDecorationRange[] = [];
     const inputRows = new Set<number>();
@@ -820,7 +824,7 @@ export function useTerminalHighlightController({
       }
     }
     if (terminalCommandInputHighlightRef.current) {
-      ensureTerminalPromptInputEmphasisStyle(inputColors.foreground);
+      syncTerminalPromptInputEmphasisStyle(terminalCommandInputBoldRef.current ? inputColors.foreground : null);
       syncTerminalPromptInputDecorations(
         terminal,
         inputRuns,

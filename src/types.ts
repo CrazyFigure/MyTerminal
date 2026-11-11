@@ -274,6 +274,10 @@ export interface AppSettings {
   terminalMatchSelection: boolean;
   /** 区分命令输入与输出：提示符后的命令文字略微加粗，并在左侧用竖条标记命令行。 */
   terminalCommandInputHighlight: boolean;
+  /** 命令输入文字颜色（#rrggbb）；保持默认值时深浅主题各自使用配套的默认色。 */
+  terminalCommandInputColor: string;
+  /** 命令输入文字是否略微加粗。 */
+  terminalCommandInputBold: boolean;
   /** 终端左侧行号栏是否显示行号；软换行的续行以 - 占位。 */
   terminalGutterShowLineNumber: boolean;
   /** 终端左侧行号栏是否显示每行到达时刻的时间戳。 */

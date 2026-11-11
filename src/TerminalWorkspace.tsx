@@ -216,6 +216,14 @@ export function TerminalWorkspace({
   const anchorImeToPromptForSessionRef = useRef(anchorImeToPromptForSession);
   const terminalMatchSelectionRef = useRef(settings.terminalMatchSelection ?? true);
   const terminalCommandInputHighlightRef = useRef(settings.terminalCommandInputHighlight ?? true);
+  const terminalCommandInputBoldRef = useRef(settings.terminalCommandInputBold ?? true);
+  const terminalCommandInputColorRef = useRef(settings.terminalCommandInputColor);
+  // 命令输入颜色按终端实际底色解析；在帧回调中调用，届时各 ref 都已是最新值。
+  const resolveCurrentTerminalPromptInputColors = () => resolveTerminalPromptInputColors(
+    terminalBackgroundColorRef.current,
+    isDarkThemeRef.current,
+    terminalCommandInputColorRef.current,
+  );
   // 命令式覆盖层从 ref 读取当前主题，避免终端实例的一次性事件回调持有挂载时的旧配色。
   const terminalPromptHighlightColorsRef = useRef(
     settings.themeMode === 'dark' ? terminalPromptHighlightDarkColors : terminalPromptHighlightLightColors,
@@ -252,13 +260,10 @@ export function TerminalWorkspace({
       && sessionRef.current?.kind !== 'local'
       && (gutterShowLineNumberRef.current || gutterShowTimestampRef.current),
     onTerminalPromptInputRowsChange: () => scheduleTerminalGutterSync(),
-    resolveTerminalPromptInputColors: () => resolveTerminalPromptInputColors(
-      terminalBackgroundColorRef.current,
-      terminalThemeRef.current.foreground,
-      isDarkThemeRef.current,
-    ),
+    resolveTerminalPromptInputColors: resolveCurrentTerminalPromptInputColors,
     sessionRef,
     terminalCommandInputHighlightRef,
+    terminalCommandInputBoldRef,
     terminalMatchSelectionRef,
     terminalPromptHighlightColorsRef,
     terminalRef,
@@ -311,6 +316,8 @@ export function TerminalWorkspace({
   anchorImeToPromptForSessionRef.current = anchorImeToPromptForSession;
   terminalMatchSelectionRef.current = settings.terminalMatchSelection ?? true;
   terminalCommandInputHighlightRef.current = settings.terminalCommandInputHighlight ?? true;
+  terminalCommandInputBoldRef.current = settings.terminalCommandInputBold ?? true;
+  terminalCommandInputColorRef.current = settings.terminalCommandInputColor;
   terminalPromptHighlightColorsRef.current = settings.themeMode === 'dark'
     ? terminalPromptHighlightDarkColors
     : terminalPromptHighlightLightColors;
@@ -955,6 +962,7 @@ export function TerminalWorkspace({
     terminalGutterReplayNextLogicalNumberRef,
     terminalGutterWidthRef,
     terminalPromptInputRowsRef,
+    resolveTerminalPromptInputMarkColor: () => resolveCurrentTerminalPromptInputColors().mark,
     terminalRef,
     terminalScrollbackRowsRef,
   });
@@ -2265,11 +2273,16 @@ export function TerminalWorkspace({
     clearTerminalMatchOverlay();
   }, [settings.terminalMatchSelection]);
 
-  // 命令输入区分开关变化后立即重算：开启时重新着色，关闭时回收 decoration 并通知行号栏去掉侧标。
+  // 命令输入区分的开关、颜色或加粗变化后立即重算：颜色写在 decoration key 里，变化即重建；
+  // 关闭时回收 decoration 并通知行号栏去掉侧标。
   useEffect(() => {
     scheduleTerminalPromptHighlightRefresh();
     scheduleTerminalGutterSync();
-  }, [settings.terminalCommandInputHighlight]);
+  }, [
+    settings.terminalCommandInputHighlight,
+    settings.terminalCommandInputColor,
+    settings.terminalCommandInputBold,
+  ]);
 
   // 行号栏显示项、字号、行高或会话类型变化后重算宽度并重绘：本地会话整条左栏隐藏（宽度归零），会改变正文列宽，需重新 fit。
   useEffect(() => {

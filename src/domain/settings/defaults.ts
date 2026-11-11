@@ -1,5 +1,6 @@
 /* 本模块从 Store 中按业务边界提取；领域规则不得依赖 Zustand，应用服务只暴露稳定操作。 */
 import type { AppSettings, LocalTerminalSettings } from '../../types';
+import { defaultTerminalCommandInputLightColor } from './commandInputColor';
 
 export const defaultSettings: AppSettings = {
   uiLanguage: 'zh-CN',
@@ -34,6 +35,8 @@ export const defaultSettings: AppSettings = {
   terminalLineWrapMode: 'wrap',
   terminalMatchSelection: true,
   terminalCommandInputHighlight: true,
+  terminalCommandInputColor: defaultTerminalCommandInputLightColor,
+  terminalCommandInputBold: true,
   // 行号栏默认显示行号与时间戳，与常见远程终端习惯保持一致。
   terminalGutterShowLineNumber: true,
   terminalGutterShowTimestamp: true,

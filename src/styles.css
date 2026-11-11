@@ -5250,6 +5250,97 @@ body.theme-dark img[src*="kimi.svg"],
   width: 100%;
 }
 
+/* 命令输入颜色行：与行式开关相同的左文案 / 右控件节奏，右侧为预设色块 + 取色器 + 色值 + 恢复默认。 */
+.settings-command-input-color-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.36fr) minmax(220px, 1fr);
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 0;
+}
+
+.settings-command-input-color-control {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-color-swatch,
+.settings-color-picker {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 2px solid var(--app-section-bg, transparent);
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px var(--app-card-border);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.14s ease, opacity 0.14s ease;
+}
+
+.settings-color-swatch:hover:not(:disabled),
+.settings-color-picker:hover:not(:has(input:disabled)) {
+  transform: scale(1.1);
+  box-shadow: 0 0 0 1px var(--app-active-border);
+}
+
+.settings-color-swatch:active:not(:disabled),
+.settings-color-picker:active:not(:has(input:disabled)) {
+  transform: scale(0.92);
+}
+
+.settings-color-swatch:focus-visible,
+.settings-color-picker:has(input:focus-visible) {
+  outline: 2px solid var(--app-active-border);
+  outline-offset: 2px;
+}
+
+.settings-color-swatch.is-selected,
+.settings-color-picker.is-selected {
+  box-shadow: 0 0 0 2px var(--app-text);
+}
+
+.settings-color-swatch:disabled,
+.settings-color-picker:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* 自定义取色器：彩虹环表示“任意颜色”，原生 color input 透明覆盖整块用于唤起系统取色面板。 */
+.settings-color-picker {
+  display: inline-block;
+  overflow: hidden;
+  background: conic-gradient(#ef4444, #f59e0b, #22c55e, #06b6d4, #6366f1, #d946ef, #ef4444);
+}
+
+.settings-color-picker input[type='color'] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+.settings-color-value {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+  color: var(--app-muted);
+  user-select: all;
+}
+
+.settings-color-reset {
+  min-height: 26px;
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
 .modal-settings .settings-section-block,
 .modal-settings .sync-transfer-card {
   border: 1px solid var(--app-section-border);

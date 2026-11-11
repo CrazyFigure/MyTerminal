@@ -40,6 +40,8 @@ export const mockSettings: AppSettings = {
   terminalLineWrapMode: "wrap",
   terminalMatchSelection: true,
   terminalCommandInputHighlight: true,
+  terminalCommandInputColor: "#3b44c4",
+  terminalCommandInputBold: true,
   terminalGutterShowLineNumber: true,
   terminalGutterShowTimestamp: true,
   compactSidebar: false,
