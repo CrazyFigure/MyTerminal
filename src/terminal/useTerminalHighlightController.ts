@@ -50,7 +50,7 @@ type TerminalHighlightControllerOptions = {
   onTerminalPromptInputRowsChange: () => void;
   resolveTerminalPromptInputColors: () => TerminalPromptInputColors;
   sessionRef: RefObject<TerminalSession | undefined>;
-  // 设置开关：关闭时不着色命令文字、不画侧标，提示符分段下划线照常保留。
+  // 设置开关：关闭时不描粗命令文字、不画侧标，提示符分段下划线照常保留。
   terminalCommandInputHighlightRef: RefObject<boolean>;
   terminalMatchSelectionRef: RefObject<boolean>;
   terminalPromptHighlightColorsRef: RefObject<TerminalPromptHighlightColors>;
@@ -65,6 +65,26 @@ type TerminalPromptInputDecorationEntry = {
   column: number;
   width: number;
   color: string;
+};
+
+// 命令文字描粗规则按标记色动态生成（标记色随用户前景色变化，无法写死在样式表里）。
+// 所有终端实例共用一个 <style>，每种标记色只追加一次，数量受主题/前景色组合限制。
+const terminalPromptInputEmphasisColors = new Set<string>();
+const ensureTerminalPromptInputEmphasisStyle = (markerColor: string) => {
+  if (terminalPromptInputEmphasisColors.has(markerColor)) {
+    return;
+  }
+  terminalPromptInputEmphasisColors.add(markerColor);
+  let style = document.getElementById('terminal-prompt-input-emphasis-style');
+  if (!style) {
+    style = document.createElement('style');
+    style.id = 'terminal-prompt-input-emphasis-style';
+    document.head.appendChild(style);
+  }
+  // 用描边而不是 font-weight 加粗：不改变字形宽度，DOM 渲染器按常规字重计算的列对齐不会被破坏。
+  style.textContent = [...terminalPromptInputEmphasisColors]
+    .map((color) => `.terminal-surface .xterm-rows span[style*="color:${color};"] { -webkit-text-stroke: 0.45px currentColor; }`)
+    .join('\n');
 };
 
 // 高亮控制器把选区、同词匹配和提示符三种覆盖层视为一个渲染域，共享测量、快照和销毁策略。
@@ -777,7 +797,7 @@ export function useTerminalHighlightController({
       }
     }
 
-    // 输入区：命令文字着色 + 侧标。空提示符只预着色行尾空白，保证首个键入字符立即变色，但不画侧标。
+    // 输入区：命令文字描粗 + 侧标。空提示符只预先覆盖行尾空白，保证首个键入字符立即生效，但不画侧标。
     const inputColors = resolveTerminalPromptInputColors();
     const inputRuns: TerminalMatchDecorationRange[] = [];
     const inputRows = new Set<number>();
@@ -800,6 +820,7 @@ export function useTerminalHighlightController({
       }
     }
     if (terminalCommandInputHighlightRef.current) {
+      ensureTerminalPromptInputEmphasisStyle(inputColors.foreground);
       syncTerminalPromptInputDecorations(
         terminal,
         inputRuns,
@@ -814,8 +835,8 @@ export function useTerminalHighlightController({
     updateTerminalPromptInputRows(inputRows);
 
     if (!isTerminalGutterVisible() && inputRows.size > 0) {
-      // 本地终端没有行号栏：在正文左侧 4px 内边距里画竖条，连续输入行合并成一段。
-      const markX = Math.max(0, metrics.leftBase - terminalPromptInputMarkWidthPx - 1.5);
+      // 本地终端没有行号栏：在正文左侧 4px 内边距里画竖条（留 1px 与文字隔开），连续输入行合并成一段。
+      const markX = Math.max(0, metrics.leftBase - terminalPromptInputMarkWidthPx - 1);
       const sortedRows = [...inputRows].sort((first, second) => first - second);
       let groupStart = sortedRows[0];
       let previousRow = sortedRows[0];
@@ -824,11 +845,11 @@ export function useTerminalHighlightController({
         mark.setAttribute('class', 'terminal-prompt-input-mark');
         mark.setAttribute('x', formatTerminalHighlightSvgNumber(markX));
         mark.setAttribute('y', formatTerminalHighlightSvgNumber(
-          metrics.topBase + (startRow - metrics.firstVisibleRow) * metrics.cellHeight + 1,
+          metrics.topBase + (startRow - metrics.firstVisibleRow) * metrics.cellHeight,
         ));
         mark.setAttribute('width', `${terminalPromptInputMarkWidthPx}`);
         mark.setAttribute('height', formatTerminalHighlightSvgNumber(
-          Math.max(1, (endRow - startRow + 1) * metrics.cellHeight - 2),
+          Math.max(1, (endRow - startRow + 1) * metrics.cellHeight),
         ));
         mark.setAttribute('rx', '1');
         mark.setAttribute('fill', inputColors.mark);

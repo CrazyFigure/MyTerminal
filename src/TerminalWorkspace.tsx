@@ -254,6 +254,7 @@ export function TerminalWorkspace({
     onTerminalPromptInputRowsChange: () => scheduleTerminalGutterSync(),
     resolveTerminalPromptInputColors: () => resolveTerminalPromptInputColors(
       terminalBackgroundColorRef.current,
+      terminalThemeRef.current.foreground,
       isDarkThemeRef.current,
     ),
     sessionRef,
@@ -2274,6 +2275,9 @@ export function TerminalWorkspace({
   useEffect(() => {
     scheduleTerminalGutterSync();
     scheduleTerminalSizeSync();
+    // 侧标在“行号栏”与“正文左侧竖条”之间切换，必须同时重绘提示符覆盖层；
+    // 否则开启行号时旧竖条残留成两条，关闭行号时要等下一次输出或滚动才出现竖条。
+    scheduleTerminalPromptHighlightRefresh();
   }, [gutterShowLineNumber, gutterShowTimestamp, settings.shellFontSize, settings.shellLineHeight, session?.kind]);
 
   useEffect(() => {

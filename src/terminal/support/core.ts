@@ -266,22 +266,18 @@ export const terminalPromptHighlightDarkColors: TerminalPromptHighlightColors =
     },
   };
 
-// 输入区着色：命令文字换强调色（xterm decoration 只接受 #RRGGBB），侧标用同色半透明竖条。
-// 按终端实际底色的明暗取值，用户自定义深色底 + 浅色主题时也能保持对比度。
+// 输入区区分：命令文字保持前景色、仅描粗，靠左侧实色竖条区分输入与输出。
+// foreground 是与终端前景色只差 1 个色阶的“标记色”（肉眼不可辨），xterm DOM 渲染器会把它写成
+// 内联 `color:#rrggbb;`，CSS 据此只给命令文字描粗；mark 为侧标竖条颜色。
 export type TerminalPromptInputColors = {
   foreground: string;
   mark: string;
 };
 
-export const terminalPromptInputLightColors: TerminalPromptInputColors = {
-  foreground: "#3b44c4",
-  mark: "rgba(59, 68, 196, 0.55)",
-};
+// 侧标按终端实际底色明暗取值，用户自定义深色底 + 浅色主题时也能看清。
+export const terminalPromptInputLightMarkColor = "#4f46e5";
 
-export const terminalPromptInputDarkColors: TerminalPromptInputColors = {
-  foreground: "#9aa8ff",
-  mark: "rgba(154, 168, 255, 0.6)",
-};
+export const terminalPromptInputDarkMarkColor = "#a5b4fc";
 
 // 续行判定需要知道可视区上方的命令上下文；向上回看有限行数，超出部分按普通输出处理。
 export const terminalPromptInputLookbackRows = 48;
@@ -289,8 +285,8 @@ export const terminalPromptInputLookbackRows = 48;
 // 输入着色 decoration 数量上限，防止极端长命令或超大窗口下 decoration 无界增长。
 export const terminalPromptInputMaxDecorations = 600;
 
-// 无行号栏（本地终端或两项都关闭）时，侧标画在正文左侧内边距里的细竖条宽度。
-export const terminalPromptInputMarkWidthPx = 2;
+// 无行号栏（本地终端或两项都关闭）时，侧标画在正文左侧 4px 内边距里的竖条宽度。
+export const terminalPromptInputMarkWidthPx = 3;
 
 // 一条逻辑行内被识别为命令输入的部分：从 (startRow, startColumn) 一直延伸到逻辑行末；
 // hasCommand=false 表示只按了回车的空提示符，此时只预着色空白单元格、不画侧标。

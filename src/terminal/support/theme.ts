@@ -5,8 +5,8 @@ import type { IBufferCell } from "@xterm/xterm";
 import type { AppSettings, TerminalSession } from "../../types";
 import {
   terminalManagedCursorCommandNames,
-  terminalPromptInputDarkColors,
-  terminalPromptInputLightColors,
+  terminalPromptInputDarkMarkColor,
+  terminalPromptInputLightMarkColor,
   terminalSoftDarkBlockLightBackground,
   type TerminalPromptInputColors,
 } from "./core";
@@ -287,15 +287,26 @@ export const resolveTerminalRelativeLuminance = (color: TerminalRgbColor) => {
   return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
 };
 
-// 输入区强调色按终端实际底色明暗选择；底色无法解析时退回应用主题。
-// 0.2 约等于深浅两套强调色在该底色上对比度相同的分界点。
+// 输入区颜色：命令文字用“前景色 ±1 色阶”的标记色（视觉上与前景色一致，供 CSS 识别后描粗），
+// 侧标按终端实际底色明暗取色；颜色无法解析时退回应用主题的默认值。
 export const resolveTerminalPromptInputColors = (
   background: string,
+  foreground: string,
   isDarkTheme: boolean,
 ): TerminalPromptInputColors => {
-  const rgb = parseTerminalRgbColor(background);
-  const isDarkBackground = rgb ? resolveTerminalRelativeLuminance(rgb) < 0.2 : isDarkTheme;
-  return isDarkBackground ? terminalPromptInputDarkColors : terminalPromptInputLightColors;
+  const backgroundRgb = parseTerminalRgbColor(background);
+  const isDarkBackground = backgroundRgb
+    ? resolveTerminalRelativeLuminance(backgroundRgb) < 0.2
+    : isDarkTheme;
+  const foregroundRgb = parseTerminalRgbColor(foreground)
+    ?? parseTerminalRgbColor(isDarkBackground ? defaultDarkTerminalForeground : defaultLightTerminalForeground)!;
+  // 只微调蓝色通道 1 级；xterm 以小写 6 位十六进制写入内联样式，这里保持同样格式以便精确匹配。
+  const markerBlue = foregroundRgb.blue < 255 ? foregroundRgb.blue + 1 : foregroundRgb.blue - 1;
+  const toHex = (channel: number) => channel.toString(16).padStart(2, "0");
+  return {
+    foreground: `#${toHex(foregroundRgb.red)}${toHex(foregroundRgb.green)}${toHex(markerBlue)}`,
+    mark: isDarkBackground ? terminalPromptInputDarkMarkColor : terminalPromptInputLightMarkColor,
+  };
 };
 
 // 仅对会在重绘中暴露临时原生光标位置的 TUI 启用宿主光标层，其它 TUI 保持协议原样。
