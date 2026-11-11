@@ -272,6 +272,8 @@ export interface AppSettings {
   terminalLineWrapMode: TerminalLineWrapMode;
   /** 选中终端文本时，自动高亮可滚动缓冲区中完全一致的匹配内容。 */
   terminalMatchSelection: boolean;
+  /** 区分命令输入与输出：提示符后的命令文字换强调色，并在左侧标记命令行。 */
+  terminalCommandInputHighlight: boolean;
   /** 终端左侧行号栏是否显示行号；软换行的续行以 - 占位。 */
   terminalGutterShowLineNumber: boolean;
   /** 终端左侧行号栏是否显示每行到达时刻的时间戳。 */

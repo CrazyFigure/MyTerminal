@@ -93,6 +93,11 @@ pub(super) fn default_terminal_match_selection() -> bool {
     true
 }
 
+// 旧设置文件没有命令输入区分开关时默认开启。
+pub(super) fn default_terminal_command_input_highlight() -> bool {
+    true
+}
+
 // 旧设置文件没有行号栏开关时默认显示行号与时间戳。
 pub(super) fn default_terminal_gutter_show_line_number() -> bool {
     true
@@ -539,6 +544,9 @@ pub struct AppSettings {
     /// 选中文本匹配高亮由前端渲染层执行，后端只负责持久化开关。
     #[serde(default = "default_terminal_match_selection")]
     pub terminal_match_selection: bool,
+    /// 命令输入区分（命令文字着色与侧标）由前端渲染层执行，后端只负责持久化开关。
+    #[serde(default = "default_terminal_command_input_highlight")]
+    pub terminal_command_input_highlight: bool,
     /// 终端左侧行号栏由前端渲染层执行，后端只负责持久化显示开关。
     #[serde(default = "default_terminal_gutter_show_line_number")]
     pub terminal_gutter_show_line_number: bool,
@@ -595,6 +603,7 @@ impl Default for AppSettings {
             terminal_right_click_behavior: default_terminal_right_click_behavior(),
             terminal_line_wrap_mode: default_terminal_line_wrap_mode(),
             terminal_match_selection: default_terminal_match_selection(),
+            terminal_command_input_highlight: default_terminal_command_input_highlight(),
             terminal_gutter_show_line_number: default_terminal_gutter_show_line_number(),
             terminal_gutter_show_timestamp: default_terminal_gutter_show_timestamp(),
             compact_sidebar: false,

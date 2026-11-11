@@ -251,6 +251,8 @@ export const normalizeSettings = (settings: AppSettings): AppSettings => ({
     : "wrap",
   // 旧配置没有匹配高亮字段时默认开启，符合新版本的终端阅读体验。
   terminalMatchSelection: settings.terminalMatchSelection !== false,
+  // 旧配置没有命令输入区分字段时默认开启。
+  terminalCommandInputHighlight: settings.terminalCommandInputHighlight !== false,
   // 旧配置没有行号栏字段时默认显示，避免升级后左侧信息突然消失。
   terminalGutterShowLineNumber: settings.terminalGutterShowLineNumber !== false,
   terminalGutterShowTimestamp: settings.terminalGutterShowTimestamp !== false,

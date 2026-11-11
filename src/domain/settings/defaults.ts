@@ -33,6 +33,7 @@ export const defaultSettings: AppSettings = {
   terminalRightClickBehavior: 'paste',
   terminalLineWrapMode: 'wrap',
   terminalMatchSelection: true,
+  terminalCommandInputHighlight: true,
   // 行号栏默认显示行号与时间戳，与常见远程终端习惯保持一致。
   terminalGutterShowLineNumber: true,
   terminalGutterShowTimestamp: true,

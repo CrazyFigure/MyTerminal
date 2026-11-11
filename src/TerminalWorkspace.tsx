@@ -215,6 +215,7 @@ export function TerminalWorkspace({
   const terminalBarCursorPositionKeyRef = useRef('');
   const anchorImeToPromptForSessionRef = useRef(anchorImeToPromptForSession);
   const terminalMatchSelectionRef = useRef(settings.terminalMatchSelection ?? true);
+  const terminalCommandInputHighlightRef = useRef(settings.terminalCommandInputHighlight ?? true);
   // 命令式覆盖层从 ref 读取当前主题，避免终端实例的一次性事件回调持有挂载时的旧配色。
   const terminalPromptHighlightColorsRef = useRef(
     settings.themeMode === 'dark' ? terminalPromptHighlightDarkColors : terminalPromptHighlightLightColors,
@@ -256,6 +257,7 @@ export function TerminalWorkspace({
       isDarkThemeRef.current,
     ),
     sessionRef,
+    terminalCommandInputHighlightRef,
     terminalMatchSelectionRef,
     terminalPromptHighlightColorsRef,
     terminalRef,
@@ -307,6 +309,7 @@ export function TerminalWorkspace({
   useBarCursorForSessionRef.current = useBarCursorForSession;
   anchorImeToPromptForSessionRef.current = anchorImeToPromptForSession;
   terminalMatchSelectionRef.current = settings.terminalMatchSelection ?? true;
+  terminalCommandInputHighlightRef.current = settings.terminalCommandInputHighlight ?? true;
   terminalPromptHighlightColorsRef.current = settings.themeMode === 'dark'
     ? terminalPromptHighlightDarkColors
     : terminalPromptHighlightLightColors;
@@ -2260,6 +2263,12 @@ export function TerminalWorkspace({
 
     clearTerminalMatchOverlay();
   }, [settings.terminalMatchSelection]);
+
+  // 命令输入区分开关变化后立即重算：开启时重新着色，关闭时回收 decoration 并通知行号栏去掉侧标。
+  useEffect(() => {
+    scheduleTerminalPromptHighlightRefresh();
+    scheduleTerminalGutterSync();
+  }, [settings.terminalCommandInputHighlight]);
 
   // 行号栏显示项、字号、行高或会话类型变化后重算宽度并重绘：本地会话整条左栏隐藏（宽度归零），会改变正文列宽，需重新 fit。
   useEffect(() => {

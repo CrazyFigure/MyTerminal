@@ -50,6 +50,8 @@ type TerminalHighlightControllerOptions = {
   onTerminalPromptInputRowsChange: () => void;
   resolveTerminalPromptInputColors: () => TerminalPromptInputColors;
   sessionRef: RefObject<TerminalSession | undefined>;
+  // 设置开关：关闭时不着色命令文字、不画侧标，提示符分段下划线照常保留。
+  terminalCommandInputHighlightRef: RefObject<boolean>;
   terminalMatchSelectionRef: RefObject<boolean>;
   terminalPromptHighlightColorsRef: RefObject<TerminalPromptHighlightColors>;
   terminalRef: RefObject<Terminal | null>;
@@ -74,6 +76,7 @@ export function useTerminalHighlightController({
   onTerminalPromptInputRowsChange,
   resolveTerminalPromptInputColors,
   sessionRef,
+  terminalCommandInputHighlightRef,
   terminalMatchSelectionRef,
   terminalPromptHighlightColorsRef,
   terminalRef,
@@ -778,7 +781,9 @@ export function useTerminalHighlightController({
     const inputColors = resolveTerminalPromptInputColors();
     const inputRuns: TerminalMatchDecorationRange[] = [];
     const inputRows = new Set<number>();
-    for (const input of inputs) {
+    // 开关关闭时输入集合为空：下方同步会回收已有 decoration 并清空行号栏侧标。
+    const activeInputs = terminalCommandInputHighlightRef.current ? inputs : [];
+    for (const input of activeInputs) {
       inputRuns.push(...collectTerminalPromptInputCellRuns(
         terminal,
         input,
@@ -794,13 +799,18 @@ export function useTerminalHighlightController({
         }
       }
     }
-    syncTerminalPromptInputDecorations(
-      terminal,
-      inputRuns,
-      inputColors.foreground,
-      metrics.firstVisibleRow,
-      metrics.lastVisibleRow,
-    );
+    if (terminalCommandInputHighlightRef.current) {
+      syncTerminalPromptInputDecorations(
+        terminal,
+        inputRuns,
+        inputColors.foreground,
+        metrics.firstVisibleRow,
+        metrics.lastVisibleRow,
+      );
+    } else if (terminalPromptInputDecorationsRef.current.size > 0) {
+      // 关闭开关时连同可视区外暂留的段一起回收，避免滚回去时残留旧颜色。
+      disposeTerminalPromptInputDecorations();
+    }
     updateTerminalPromptInputRows(inputRows);
 
     if (!isTerminalGutterVisible() && inputRows.size > 0) {

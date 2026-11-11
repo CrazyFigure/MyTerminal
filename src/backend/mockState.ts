@@ -39,6 +39,7 @@ export const mockSettings: AppSettings = {
   terminalRightClickBehavior: "paste",
   terminalLineWrapMode: "wrap",
   terminalMatchSelection: true,
+  terminalCommandInputHighlight: true,
   terminalGutterShowLineNumber: true,
   terminalGutterShowTimestamp: true,
   compactSidebar: false,

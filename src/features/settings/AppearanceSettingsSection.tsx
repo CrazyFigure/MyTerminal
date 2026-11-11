@@ -687,6 +687,32 @@ export function AppearanceSettingsSection({
               </strong>
             </div>
           </div>
+          {/* 命令输入区分：命令文字着色 + 行号栏/左侧侧标，默认开启。 */}
+          <div className="agent-toggle-field settings-toggle-row settings-inline-toggle settings-centered-toggle">
+            <Tooltip content={t("terminalCommandInputHighlightHint")} side="top">
+              <span id="terminal-command-input-highlight-label">
+                {t("fieldTerminalCommandInputHighlight")}
+              </span>
+            </Tooltip>
+            <div className="settings-inline-toggle-control">
+              <input
+                aria-label={t("fieldTerminalCommandInputHighlight")}
+                checked={draftSettings.terminalCommandInputHighlight ?? true}
+                type="checkbox"
+                onChange={(event) =>
+                  onUpdate((current) => ({
+                    ...current,
+                    terminalCommandInputHighlight: event.target.checked,
+                  }))
+                }
+              />
+              <strong>
+                {(draftSettings.terminalCommandInputHighlight ?? true)
+                  ? t("enabled")
+                  : t("disabled")}
+              </strong>
+            </div>
+          </div>
         </div>
       </section>
 

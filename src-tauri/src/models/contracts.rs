@@ -232,6 +232,8 @@ pub struct StoredAppSettings {
     pub terminal_line_wrap_mode: String,
     #[serde(default = "default_terminal_match_selection")]
     pub terminal_match_selection: bool,
+    #[serde(default = "default_terminal_command_input_highlight")]
+    pub terminal_command_input_highlight: bool,
     #[serde(default = "default_terminal_gutter_show_line_number")]
     pub terminal_gutter_show_line_number: bool,
     #[serde(default = "default_terminal_gutter_show_timestamp")]
