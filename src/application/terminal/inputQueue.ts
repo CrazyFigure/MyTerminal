@@ -22,6 +22,10 @@ const terminalInputFlushTimerDelays = new Map<string, number>();
 const terminalInputLineBuffers = new Map<string, string>();
 
 
+// 当前行若经过 Tab 补全、方向键、历史检索等由远端 readline 改写的编辑，前端记录的文字已与真实命令不一致。
+const terminalInputUnpredictableLines = new Set<string>();
+
+
 // 大段粘贴保留极短合并窗口，避免一次粘贴拆成大量 IPC；普通按键和编辑键不走这个延迟。
 export const terminalBulkInputFlushDelayMs = 8;
 
@@ -46,6 +50,7 @@ export const clearQueuedTerminalInput = (sessionId: string) => {
   terminalInputImmediateFlushSessions.delete(sessionId);
   terminalInputBuffers.delete(sessionId);
   terminalInputLineBuffers.delete(sessionId);
+  terminalInputUnpredictableLines.delete(sessionId);
 };
 
 
@@ -173,10 +178,18 @@ const terminalCsiSequencePattern = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 const terminalShortEscapeSequencePattern = /\x1b./g;
 
 
+// 光标移动、Home/End、上下翻历史、Insert/Delete 等编辑键：剥离前先替换成占位控制字符，供逐字解析时标记“当前行不可预测”。
+const terminalLineEditingKeyPattern = /\x1b(?:\[(?:1;\d+)?[ABCDHF]|O[ABCDHF]|\[[1-8](?:;\d+)?~)/g;
+
+
+const terminalLineEditingPlaceholder = '\x00';
+
+
 
 const normalizeTerminalInputForCommandTracking = (data: string) =>
   data
     .replace(terminalBracketedPasteBoundaryPattern, '')
+    .replace(terminalLineEditingKeyPattern, terminalLineEditingPlaceholder)
     .replace(terminalStringEscapeSequencePattern, '')
     .replace(terminalCsiSequencePattern, '')
     .replace(terminalShortEscapeSequencePattern, '');
@@ -237,15 +250,19 @@ export const normalizeLocalCommandPanelTerminalInput = (rawCommand: string) => {
 
 
 
+// predictableLines 只包含未经 readline 改写的完整行；目录预测只能使用它，避免 `cd /ol<Tab>` 被当成 `cd /ol`。
 export const extractCompletedTerminalInputLines = (sessionId: string, data: string) => {
   let currentLine = terminalInputLineBuffers.get(sessionId) ?? '';
+  let currentLineUnpredictable = terminalInputUnpredictableLines.has(sessionId);
   const completedLines: string[] = [];
+  const predictableLines: string[] = [];
   let continuationLineBreaks = 0;
 
   for (const character of normalizeTerminalInputForCommandTracking(data)) {
     if (character === '\x03' || character === '\x15') {
       // Ctrl+C / Ctrl+U 会放弃当前命令行，前端预测也必须同步清空，避免下一次回车误判旧 cd。
       currentLine = '';
+      currentLineUnpredictable = false;
       continue;
     }
     if (character === '\x7f' || character === '\b') {
@@ -262,13 +279,26 @@ export const extractCompletedTerminalInputLines = (sessionId: string, data: stri
       const completedLine = currentLine.trim();
       if (completedLine) {
         completedLines.push(completedLine);
+        if (!currentLineUnpredictable) {
+          predictableLines.push(completedLine);
+        }
       }
       currentLine = '';
+      currentLineUnpredictable = false;
       continue;
     }
-    if (character === '\t' || character >= ' ') {
+    if (character === '\t') {
+      // Tab 补全的结果只出现在远端回显里，前端拿不到补全后的完整路径。
       currentLine += character;
+      currentLineUnpredictable = true;
+      continue;
     }
+    if (character < ' ') {
+      // 编辑键占位符及 Ctrl+A/E/W/R 等 readline 控制键都会让前端记录的文字偏离真实命令行。
+      currentLineUnpredictable = true;
+      continue;
+    }
+    currentLine += character;
   }
 
   if (currentLine) {
@@ -276,6 +306,11 @@ export const extractCompletedTerminalInputLines = (sessionId: string, data: stri
   } else {
     terminalInputLineBuffers.delete(sessionId);
   }
+  if (currentLineUnpredictable) {
+    terminalInputUnpredictableLines.add(sessionId);
+  } else {
+    terminalInputUnpredictableLines.delete(sessionId);
+  }
 
-  return { completedLines, continuationLineBreaks };
+  return { completedLines, predictableLines, continuationLineBreaks };
 };

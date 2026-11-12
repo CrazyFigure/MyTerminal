@@ -152,7 +152,8 @@ export const createTerminalInputActions = (
       );
       completedInputLines = trackedInput.completedLines;
       continuationLineBreaks = trackedInput.continuationLineBreaks;
-      for (const completedLine of completedInputLines) {
+      // 经过 Tab 补全或光标编辑的行不参与预测；su 等丢失钩子的子 Shell 由后端解析提示符路径兜底。
+      for (const completedLine of trackedInput.predictableLines) {
         const guessedPath = guessNextRemotePath(pathCursor, completedLine);
         if (guessedPath) {
           pathCursor = guessedPath;

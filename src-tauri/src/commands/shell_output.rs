@@ -98,56 +98,79 @@ fn trailing_shell_sync_marker_prefix_len(value: &str) -> usize {
 /// 判断去除 ANSI 后的行首是否是常见 Unix Shell 提示符。
 /// 这里只用于“光标刚被动态程序纵向移动过”的保守兜底，不把普通命令输出里的任意 `$`/`#` 当成提示符。
 fn is_unix_shell_prompt_prefix(value: &str) -> bool {
+    let Some((_, after_colon)) = split_unix_shell_prompt(value) else {
+        return false;
+    };
+    find_prompt_symbol_index(after_colon).is_some()
+}
+
+/// 把 `user@host:...` 形式的提示符拆成主机名与冒号之后的部分；不符合该形态时返回 None。
+fn split_unix_shell_prompt(value: &str) -> Option<(&str, &str)> {
     let mut candidate = value.trim_start();
     // Python venv、Conda 等环境名可以叠加在真正的 user@host 前面；只跳过短且闭合的前缀。
     while let Some(rest) = candidate.strip_prefix('(') {
-        let Some(end) = rest.find(')') else {
-            return false;
-        };
+        let end = rest.find(')')?;
         if end > 64 {
-            return false;
+            return None;
         }
         candidate = rest[end + 1..].trim_start();
     }
 
-    let Some(at_index) = candidate.find('@') else {
-        return false;
-    };
+    let at_index = candidate.find('@')?;
     let user = &candidate[..at_index];
     if user.is_empty()
         || !user
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || "._+-".contains(character))
     {
-        return false;
+        return None;
     }
 
     let after_at = &candidate[at_index + 1..];
-    let Some(colon_index) = after_at.find(':') else {
-        return false;
-    };
+    let colon_index = after_at.find(':')?;
     let host = &after_at[..colon_index];
     if host.is_empty()
         || !host
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
     {
-        return false;
+        return None;
     }
 
-    let after_colon = &after_at[colon_index + 1..];
-    after_colon.char_indices().any(|(index, character)| {
-        matches!(character, '#' | '$' | '%')
+    Some((host, &after_at[colon_index + 1..]))
+}
+
+/// 返回冒号之后第一个“后跟空白或行尾”的提示符结束符（`#`/`$`/`%`）的字节位置。
+fn find_prompt_symbol_index(after_colon: &str) -> Option<usize> {
+    after_colon.char_indices().find_map(|(index, character)| {
+        let is_prompt_end = matches!(character, '#' | '$' | '%')
             && after_colon[index + character.len_utf8()..]
                 .chars()
                 .next()
-                .map_or(true, char::is_whitespace)
+                .map_or(true, char::is_whitespace);
+        is_prompt_end.then_some(index)
     })
 }
 
-/// 返回当前输出最后一条可见行中 Unix 提示符首字符的原始字节位置。
+/// 从“裸提示符”（结束符后只剩空白，用户尚未输入）中解析主机名与绝对路径。
+/// `~` 等相对写法依赖嵌套 Shell 用户的家目录，SFTP 账号无法等价解析，因此一律放弃。
+fn parse_bare_unix_prompt_cwd(visible_line: &str) -> Option<(String, String)> {
+    let (host, after_colon) = split_unix_shell_prompt(visible_line)?;
+    let symbol_index = find_prompt_symbol_index(after_colon)?;
+    // 结束符后还有内容说明是“提示符 + 已输入命令”或普通输出，不能当作新的 cwd。
+    if !after_colon[symbol_index + 1..].trim().is_empty() {
+        return None;
+    }
+    let path = after_colon[..symbol_index].trim();
+    if !path.starts_with('/') {
+        return None;
+    }
+    Some((host.to_string(), path.to_string()))
+}
+
+/// 返回当前输出最后一条可见行中 Unix 提示符首字符的原始字节位置，以及剥离 ANSI 后的提示符可见文本。
 /// ANSI 颜色码和光标控制不计入可见文本，但其状态仍留在提示符前方，调用方可先应用控制序列再修正落点。
-fn find_unintegrated_unix_prompt_start(value: &str) -> Option<usize> {
+fn find_unintegrated_unix_prompt(value: &str) -> Option<(usize, String)> {
     let mut escape_state = TerminalVisibleLineEscapeState::Ground;
     let mut visible = String::new();
     let mut first_visible_index = None;
@@ -203,7 +226,7 @@ fn find_unintegrated_unix_prompt_start(value: &str) -> Option<usize> {
     }
 
     if is_unix_shell_prompt_prefix(&visible) {
-        first_visible_index
+        first_visible_index.map(|start| (start, visible))
     } else {
         None
     }
@@ -271,6 +294,11 @@ pub(super) struct ShellOutputFilter {
     capture_truncated: bool,
     /// 远端是否处于 alternate screen（vim/top 等全屏 TUI）；此时严禁注入命令。
     pub(super) alternate_screen_active: bool,
+    /// 刚收到集成 Shell 的提示符标记、正等待其后的提示符文本；用来学习登录主机在提示符里的主机名。
+    awaiting_integrated_prompt: bool,
+    /// 集成 Shell 提示符里的主机名；`su -` 等嵌套 Shell 丢失钩子后，只信任同主机名的裸提示符路径，
+    /// 避免嵌套 ssh 到其他机器时把别处的目录同步给当前连接的文件管理。
+    integrated_prompt_host: Option<String>,
 }
 
 impl Default for ShellOutputFilter {
@@ -291,6 +319,8 @@ impl Default for ShellOutputFilter {
             capture_buffer: String::new(),
             capture_truncated: false,
             alternate_screen_active: false,
+            awaiting_integrated_prompt: false,
+            integrated_prompt_host: None,
         }
     }
 }
@@ -326,6 +356,7 @@ impl ShellOutputFilter {
                             }
                             // 提示符出现说明上一条命令已彻底结束，shell 正等待输入。
                             output.prompt_arrived = true;
+                            self.awaiting_integrated_prompt = true;
                             self.prepare_prompt_line(&mut output.visible);
                             self.restore_cursor_at_prompt_boundary(&mut output.visible);
                         }
@@ -335,6 +366,8 @@ impl ShellOutputFilter {
                         ShellSyncMarkerKind::CommandBegin => {
                             // 无论谁发起，命令开始就意味着 shell 已离开提示符。
                             output.command_started = true;
+                            // 之后出现的提示符可能来自 su/ssh 等子 Shell，不能再当作集成 Shell 的主机名样本。
+                            self.awaiting_integrated_prompt = false;
                             // Begin 是命令回显的可靠右边界；即使远端没有回显换行，也必须在这里结束抑制。
                             self.suppress_agent_command_echo = false;
                             // 只有 agent 注入前武装过才开始捕获；用户手敲的命令不产生后端拷贝。
@@ -396,8 +429,9 @@ impl ShellOutputFilter {
             return;
         }
 
-        let fallback_prompt_start = find_unintegrated_unix_prompt_start(&filtered);
-        if let Some(prompt_start) = fallback_prompt_start {
+        let fallback_prompt = find_unintegrated_unix_prompt(&filtered);
+        if let Some((prompt_start, prompt_text)) = fallback_prompt {
+            self.track_unintegrated_prompt_cwd(output, &prompt_text);
             let (before_prompt, prompt) = filtered.split_at(prompt_start);
             self.push_tracked_visible(output, before_prompt);
             if self.visible_line_position_uncertain {
@@ -410,6 +444,31 @@ impl ShellOutputFilter {
         }
 
         self.push_tracked_visible(output, &filtered);
+    }
+
+    /// 处理一行看起来像 `user@host:path#` 的提示符：
+    /// 紧跟集成标记的提示符只用来学习主机名；其余同主机名的裸提示符视为 su 等嵌套 Shell，回传其中的绝对路径。
+    fn track_unintegrated_prompt_cwd(
+        &mut self,
+        output: &mut ShellConsumeOutput,
+        prompt_text: &str,
+    ) {
+        if self.awaiting_integrated_prompt {
+            self.awaiting_integrated_prompt = false;
+            if let Some((host, _)) = split_unix_shell_prompt(prompt_text) {
+                self.integrated_prompt_host = Some(host.to_string());
+            }
+            return;
+        }
+
+        let Some(expected_host) = self.integrated_prompt_host.as_deref() else {
+            return;
+        };
+        if let Some((host, cwd)) = parse_bare_unix_prompt_cwd(prompt_text) {
+            if host == expected_host {
+                output.cwd_updates.push(cwd);
+            }
+        }
     }
 
     /// 追加一段已完成业务过滤的可见输出，并让光标、行状态和 Agent 捕获始终消费同一份字节流。
@@ -1072,6 +1131,68 @@ mod shell_output_filter_tests {
         let (visible, cwd_updates) = filter.consume_visible("root@Ology:/tmp# ordinary output");
 
         assert_eq!(visible, "root@Ology:/tmp# ordinary output");
+        assert!(cwd_updates.is_empty());
+    }
+
+    /// 模拟集成 Shell 出一次带标记的提示符，让过滤器学到登录主机名。
+    fn filter_with_integrated_prompt(host: &str) -> ShellOutputFilter {
+        let mut filter = ShellOutputFilter::default();
+        let (_, cwd_updates) = filter.consume_visible(&format!(
+            "{}\x1b[01;32mology@{host}\x1b[00m:\x1b[01;34m~\x1b[00m$ ",
+            prompt_marker("/home/ology")
+        ));
+        assert_eq!(cwd_updates, vec!["/home/ology".to_string()]);
+        filter
+    }
+
+    #[test]
+    fn su_login_shell_prompt_reports_absolute_cwd_on_same_host() {
+        let mut filter = filter_with_integrated_prompt("Ology");
+        // `su -` 后的 root Shell 没有钩子：命令开始标记来自外层 su，之后只剩普通提示符。
+        filter.consume_visible(&format!("su -\r\n{}", cmd_begin_marker()));
+        let (_, home_updates) = filter.consume_visible("密码： \r\nroot@Ology:~# ");
+        assert!(home_updates.is_empty());
+
+        filter.consume_visible("cd /ol");
+        filter.consume_visible("ogy/");
+        // Debian 默认 root PS1 前面还带一段设置窗口标题的 OSC 0，解析时必须跳过。
+        let (visible, cwd_updates) = filter.consume_visible(
+            "\r\n\x1b]0;root@Ology: /ology\x07\x1b[01;32mroot@Ology\x1b[00m:\x1b[01;34m/ology\x1b[00m# ",
+        );
+
+        assert!(visible.ends_with("/ology\x1b[00m# "));
+        assert_eq!(cwd_updates, vec!["/ology".to_string()]);
+    }
+
+    #[test]
+    fn nested_prompt_from_other_host_or_with_typed_text_is_ignored() {
+        let mut filter = filter_with_integrated_prompt("Ology");
+        filter.consume_visible(&cmd_begin_marker());
+
+        let (_, other_host) = filter.consume_visible("\r\nroot@backup:/data# ");
+        let (_, typed_text) = filter.consume_visible("\r\nroot@Ology:/ology# ls -al");
+        let (_, relative) = filter.consume_visible("\r\nroot@Ology:~/work# ");
+
+        assert!(other_host.is_empty());
+        assert!(typed_text.is_empty());
+        assert!(relative.is_empty());
+    }
+
+    #[test]
+    fn integrated_prompt_does_not_duplicate_marker_cwd() {
+        let mut filter = filter_with_integrated_prompt("Ology");
+        let (_, cwd_updates) =
+            filter.consume_visible(&format!("{}ology@Ology:/srv$ ", prompt_marker("/srv")));
+
+        assert_eq!(cwd_updates, vec!["/srv".to_string()]);
+    }
+
+    #[test]
+    fn bare_prompt_is_ignored_before_any_integrated_prompt_was_seen() {
+        let mut filter = ShellOutputFilter::default();
+
+        let (_, cwd_updates) = filter.consume_visible("root@Ology:/ology# ");
+
         assert!(cwd_updates.is_empty());
     }
 
