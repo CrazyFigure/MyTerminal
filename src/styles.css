@@ -302,6 +302,12 @@ select:disabled {
 }
 
 /* 侧栏按钮按下时比悬停更明显，即使展开受限也能立即确认点击已被接收。 */
+/* 侧栏开关与“新建连接”之间：标题栏 gap 8px + 图标按钮右外边距 2px 共 10px，显得偏松；
+   回收 6px，使两者间距与操作按钮之间的 4px 一致。 */
+.app-titlebar-panels {
+  margin-right: -6px;
+}
+
 .app-titlebar-panels .titlebar-icon-button:active {
   background: rgba(15, 23, 42, 0.16) !important;
 }
