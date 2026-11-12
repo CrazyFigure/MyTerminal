@@ -877,6 +877,12 @@ export default function App() {
         return;
       }
 
+      // 编辑器查找浮窗要自行把 Ctrl+R 处理为聚焦替换框：这里只阻止刷新，不截断事件传播。
+      if (target instanceof Element && target.closest('.editor-find-replace-card')) {
+        event.preventDefault();
+        return;
+      }
+
       event.preventDefault();
       event.stopImmediatePropagation();
     };

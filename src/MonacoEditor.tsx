@@ -63,6 +63,8 @@ export default function MonacoEditor({
   );
   const [isFindWidgetOpen, setIsFindWidgetOpen] = useState(false);
   const [findWidgetMode, setFindWidgetMode] = useState<'find' | 'replace'>('find');
+  // 每次快捷键都递增，浮窗已打开、焦点在编辑区时再次按 Ctrl+F/H/R 也能回到输入框
+  const [findFocusRequestId, setFindFocusRequestId] = useState(0);
   const [contextMenuTarget, setContextMenuTarget] = useState<{
     selectedText: string;
     x: number;
@@ -205,22 +207,26 @@ export default function MonacoEditor({
       onSaveRef.current?.();
     });
 
+    // 打开（或已打开时重新聚焦）自定义查找替换浮窗
+    const openFindWidget = (mode: 'find' | 'replace') => {
+      setFindWidgetMode(mode);
+      setIsFindWidgetOpen(true);
+      setFindFocusRequestId((id) => id + 1);
+    };
+
     // 拦截 Ctrl/Cmd+F 打开自定义查找浮窗
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyF, () => {
-      setFindWidgetMode('find');
-      setIsFindWidgetOpen(true);
+      openFindWidget('find');
     });
 
     // 拦截 Ctrl/Cmd+H 打开自定义查找替换浮窗
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyH, () => {
-      setFindWidgetMode('replace');
-      setIsFindWidgetOpen(true);
+      openFindWidget('replace');
     });
 
     // Ctrl/Cmd+R 在内置编辑器中与 Ctrl/Cmd+H 一致，打开自定义查找替换框而不是刷新 WebView。
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyR, () => {
-      setFindWidgetMode('replace');
-      setIsFindWidgetOpen(true);
+      openFindWidget('replace');
     });
   }, []);
 
@@ -253,6 +259,7 @@ export default function MonacoEditor({
       />
       <EditorFindReplaceWidget
         editor={editorInstance}
+        focusRequestId={findFocusRequestId}
         initialMode={findWidgetMode}
         isOpen={isFindWidgetOpen}
         onClose={() => setIsFindWidgetOpen(false)}

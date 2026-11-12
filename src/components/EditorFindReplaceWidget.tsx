@@ -49,13 +49,21 @@ function GridIcon({ size = 14 }: { size?: number }) {
 
 export type EditorFindReplaceWidgetProps = {
   editor: monaco.editor.IStandaloneCodeEditor | null;
+  // 每次 Ctrl+F/H/R 触发时递增；浮窗已打开时也能据此把焦点拉回输入框
+  focusRequestId?: number;
   initialMode?: 'find' | 'replace';
   isOpen: boolean;
   onClose: () => void;
 };
 
+// 中文输入法组合输入期间的 Enter 只用于上屏，不能当作查找/替换指令
+function isImeComposing(e: React.KeyboardEvent) {
+  return e.nativeEvent.isComposing || e.keyCode === 229;
+}
+
 export function EditorFindReplaceWidget({
   editor,
+  focusRequestId = 0,
   initialMode = 'find',
   isOpen,
   onClose,
@@ -247,7 +255,7 @@ export function EditorFindReplaceWidget({
       }
     }
 
-    // 延迟聚焦确保 DOM 元素已挂载渲染
+    // 延迟聚焦确保 DOM 元素已挂载渲染；focusRequestId 变化代表浮窗已打开时再次按下快捷键
     const timer = setTimeout(() => {
       if (initialMode === 'replace' && replaceInputRef.current) {
         replaceInputRef.current.focus();
@@ -259,7 +267,41 @@ export function EditorFindReplaceWidget({
     }, 30);
 
     return () => clearTimeout(timer);
-  }, [isOpen, editor, initialMode]);
+  }, [isOpen, editor, initialMode, focusRequestId]);
+
+  // 用户在编辑区输入后只重算匹配与高亮，绝不移动光标或选区，否则光标会被拽回搜索结果处，下一次输入还会覆盖选中的匹配文本
+  const syncMatchesAfterEdit = useCallback(() => {
+    if (!editor) {
+      return;
+    }
+    const foundMatches = calculateMatches(searchQuery, matchCase, wholeWord, isRegex);
+    setMatches(foundMatches);
+    if (foundMatches.length === 0) {
+      setCurrentMatchIndex(-1);
+      updateDecorations([], -1);
+      return;
+    }
+
+    // 光标正落在某个匹配项内时将其视为当前项，否则沿用原下标（越界时收敛到末尾）
+    const position = editor.getPosition();
+    let activeIndex = position
+      ? foundMatches.findIndex((item) => item.range.containsPosition(position))
+      : -1;
+    if (activeIndex < 0) {
+      activeIndex = Math.min(Math.max(currentMatchIndex, 0), foundMatches.length - 1);
+    }
+    setCurrentMatchIndex(activeIndex);
+    updateDecorations(foundMatches, activeIndex);
+  }, [
+    calculateMatches,
+    currentMatchIndex,
+    editor,
+    isRegex,
+    matchCase,
+    searchQuery,
+    updateDecorations,
+    wholeWord,
+  ]);
 
   // 监听编辑器内容变更，实时更新匹配高亮
   useEffect(() => {
@@ -267,10 +309,35 @@ export function EditorFindReplaceWidget({
       return;
     }
     const disposable = editor.onDidChangeModelContent(() => {
-      refreshSearch(searchQuery, matchCase, wholeWord, isRegex, currentMatchIndex);
+      syncMatchesAfterEdit();
     });
     return () => disposable.dispose();
-  }, [editor, isOpen, searchQuery, matchCase, wholeWord, isRegex, currentMatchIndex, refreshSearch]);
+  }, [editor, isOpen, syncMatchesAfterEdit]);
+
+  // 计算上一个/下一个的目标下标：选区仍停在当前匹配项上时按顺序步进，用户在编辑区移动过光标后从光标处查找
+  const resolveStepIndex = (direction: 1 | -1) => {
+    const currentMatch = matches[currentMatchIndex];
+    const selection = editor?.getSelection();
+    if (!selection || (currentMatch && selection.equalsRange(currentMatch.range))) {
+      return (currentMatchIndex + direction + matches.length) % matches.length;
+    }
+
+    if (direction === 1) {
+      const anchor = selection.getEndPosition();
+      const nextIndex = matches.findIndex((item) =>
+        anchor.isBeforeOrEqual(item.range.getStartPosition()),
+      );
+      return nextIndex >= 0 ? nextIndex : 0;
+    }
+
+    const anchor = selection.getStartPosition();
+    for (let index = matches.length - 1; index >= 0; index -= 1) {
+      if (matches[index].range.getEndPosition().isBeforeOrEqual(anchor)) {
+        return index;
+      }
+    }
+    return matches.length - 1;
+  };
 
   // 关闭浮窗时清除所有高亮标记
   const handleClose = () => {
@@ -283,8 +350,7 @@ export function EditorFindReplaceWidget({
     if (matches.length === 0) {
       return;
     }
-    const prevIndex = (currentMatchIndex - 1 + matches.length) % matches.length;
-    focusMatchAtIndex(prevIndex, matches);
+    focusMatchAtIndex(resolveStepIndex(-1), matches);
   };
 
   // 跳转到下一个匹配项
@@ -292,8 +358,7 @@ export function EditorFindReplaceWidget({
     if (matches.length === 0) {
       return;
     }
-    const nextIndex = (currentMatchIndex + 1) % matches.length;
-    focusMatchAtIndex(nextIndex, matches);
+    focusMatchAtIndex(resolveStepIndex(1), matches);
   };
 
   // 单个替换当前聚焦项
@@ -381,10 +446,32 @@ export function EditorFindReplaceWidget({
     }
   };
 
+  // 浮窗内再次按 Ctrl+F 聚焦搜索框，Ctrl+H / Ctrl+R 聚焦替换框，与编辑区内的快捷键保持一致
+  const handleCardKeyDown = (e: React.KeyboardEvent) => {
+    handleKeyDownPreventEscape(e);
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) {
+      return;
+    }
+    const key = e.key.toLowerCase();
+    let target: HTMLInputElement | null = null;
+    if (key === 'f' || e.code === 'KeyF') {
+      target = searchInputRef.current;
+    } else if (key === 'h' || key === 'r' || e.code === 'KeyH' || e.code === 'KeyR') {
+      target = replaceInputRef.current;
+    }
+    if (!target) {
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    target.focus();
+    target.select();
+  };
+
   // 搜索框按键监听：Enter 下一个、Shift+Enter 上一个
   const handleSearchInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     handleKeyDownPreventEscape(e);
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !isImeComposing(e)) {
       e.preventDefault();
       if (e.shiftKey) {
         handleFindPrevious();
@@ -397,7 +484,7 @@ export function EditorFindReplaceWidget({
   // 替换框按键监听：Enter 替换当前项
   const handleReplaceInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     handleKeyDownPreventEscape(e);
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !isImeComposing(e)) {
       e.preventDefault();
       handleReplaceOne();
     }
@@ -418,7 +505,7 @@ export function EditorFindReplaceWidget({
   return (
     <div
       className="editor-find-replace-card"
-      onKeyDown={handleKeyDownPreventEscape}
+      onKeyDown={handleCardKeyDown}
       role="search"
     >
       {/* 搜索行 */}
