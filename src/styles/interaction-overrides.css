@@ -252,7 +252,7 @@
   padding: 12px;
   border: 1px solid var(--app-card-border, rgba(148, 163, 184, 0.28));
   border-radius: 10px;
-  background: var(--app-panel-bg);
+  background: transparent;
   box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
   animation: fadeInDown 0.18s ease-out;
 }
@@ -365,7 +365,7 @@
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
-  background: var(--app-panel-bg);
+  background: transparent;
   border: 1px solid var(--app-control-accent, #4f46e5);
   border-radius: 8px;
   box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.12);

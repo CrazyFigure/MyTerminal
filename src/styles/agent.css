@@ -1088,7 +1088,7 @@
   padding: 3px 10px;
   border: 1px solid var(--app-card-border);
   border-radius: 8px;
-  background: var(--app-item-bg, rgba(127, 127, 127, 0.06));
+  background: transparent;
   font-size: 0.84rem;
   cursor: default;
   transition: border-color 0.15s ease, background 0.15s ease;
@@ -1098,7 +1098,7 @@
 .agent-chat-binding:focus-visible {
   outline: none;
   border-color: color-mix(in srgb, var(--app-accent, #4f46e5) 45%, var(--app-card-border));
-  background: color-mix(in srgb, var(--app-accent, #4f46e5) 6%, var(--app-item-bg, transparent));
+  background: color-mix(in srgb, var(--app-accent, #4f46e5) 6%, transparent);
 }
 
 .agent-chat-binding > svg:first-child {
@@ -1756,7 +1756,7 @@
   border: 1px solid var(--app-card-border);
   border-radius: 8px;
   padding: 10px 12px;
-  background: var(--app-item-bg);
+  background: transparent;
 }
 
 .agent-connection-tree {
@@ -1791,9 +1791,9 @@
   gap: 10px;
   align-items: center;
   padding: 8px 10px;
-  border: 1px solid var(--app-card-border);
+  border: 1px solid var(--app-row-border);
   border-radius: 8px;
-  background: var(--app-input-bg);
+  background: transparent;
 }
 
 .agent-tree-connection strong {

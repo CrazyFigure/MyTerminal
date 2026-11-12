@@ -129,6 +129,9 @@ select:disabled {
   /* 浮层内分区卡片（如设置页分组）：只比浮层底色略深一档，靠细边框界定层级 */
   --app-section-bg: #f8fafc;
   --app-section-border: rgba(148, 163, 184, 0.2);
+  /* 按钮、标签、导航项不再有灰色填充，轮廓全靠边框，统一走这两个变量；列表行比按钮再淡一档。 */
+  --app-control-border: rgba(148, 163, 184, 0.3);
+  --app-row-border: rgba(148, 163, 184, 0.22);
   position: relative;
   display: flex;
   flex-direction: column;
@@ -186,6 +189,9 @@ select:disabled {
   /* 深色分区不再用实色石板灰，改为极低透明度的提亮叠层，避免大面积灰蓝色块显得沉闷 */
   --app-section-bg: rgba(148, 163, 184, 0.045);
   --app-section-border: rgba(148, 163, 184, 0.14);
+  /* 深色下无填充的按钮和行容易“隐身”，边框加深一档保证轮廓清晰。 */
+  --app-control-border: rgba(148, 163, 184, 0.42);
+  --app-row-border: rgba(148, 163, 184, 0.3);
 }
 
 /* 深色弹窗内部的层级统一采用“底色 + 轻微提亮”：按钮/导航/列表项只比浮层亮一点点，
@@ -490,8 +496,8 @@ select:disabled {
 
 /* 重要逻辑：运行状态区域刷新按钮：加上圆角矩形细边框与默认背景，使其在平时有明显的按钮外观 */
 .runtime-header .icon-button {
-  background: var(--app-panel-bg) !important;
-  border: 1px solid rgba(148, 163, 184, 0.24) !important;
+  background: transparent !important;
+  border: 1px solid var(--app-control-border) !important;
   border-radius: 7px !important;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
@@ -2012,9 +2018,10 @@ select:disabled {
 .history-row,
 .explorer-row,
 .settings-nav-item {
-  border: 1px solid rgba(148, 163, 184, 0.24);
+  border: 1px solid var(--app-control-border);
 }
 
+/* 按钮、标签、导航项与列表行统一透明底：不叠灰色填充，靠边框界定，hover/激活态再给出底色反馈。 */
 .session-tab,
 .panel-tab,
 .secondary-button,
@@ -2025,7 +2032,7 @@ select:disabled {
 .history-row,
 .explorer-row,
 .tunnel-card {
-  background: var(--app-panel-bg);
+  background: transparent;
 }
 
 .session-tab,
@@ -2485,9 +2492,9 @@ select:disabled {
 
 /* 文件管理工具栏按钮：平时保留圆角矩形细边框与默认背景 */
 .explorer-toolbar .secondary-button {
-  border: 1px solid rgba(148, 163, 184, 0.24);
+  border: 1px solid var(--app-control-border);
   border-radius: 7px;
-  background: var(--app-panel-bg);
+  background: transparent;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
@@ -2665,15 +2672,11 @@ select:disabled {
   gap: 8px;
 }
 
+/* 隧道卡片只靠边框；空状态只是一行提示文字，都不再画灰色底块，避免出现一块块“脏”色块。 */
 .tunnel-card,
 .empty-state {
   border-radius: 14px;
   padding: 8px;
-  background: var(--app-item-bg);
-}
-
-/* 空状态只是一行提示文字，不再画灰色底块，避免侧栏和弹窗里出现一块块“脏”色块。 */
-.empty-state {
   background: transparent;
 }
 
@@ -2859,9 +2862,9 @@ select:disabled {
   width: min(280px, 100%);
   margin: 2px auto 14px;
   padding: 10px 14px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  border: 1px solid var(--app-row-border);
   border-radius: 8px;
-  background: var(--app-input-bg);
+  background: transparent;
 }
 
 .sync-transfer-grid {
@@ -2969,7 +2972,7 @@ select:disabled {
   /* 收紧行左侧内边距，减少抓手左侧冗余留白 */
   padding: 8px 6px 8px 2px;
   border-radius: 10px;
-  background: var(--app-panel-bg);
+  background: transparent;
 }
 
 .connection-table-row > span {
@@ -3303,8 +3306,8 @@ body.theme-dark .local-terminal-v2-subcard,
   gap: 8px;
   padding: 5px 10px;
   border-radius: 6px;
-  border: 1px solid rgba(148, 163, 184, 0.15);
-  background: var(--app-panel-bg);
+  border: 1px solid var(--app-row-border);
+  background: transparent;
   transition: all 0.15s ease;
 }
 
@@ -3479,8 +3482,8 @@ body.theme-dark .local-terminal-v2-subcard,
   height: 34px;
   box-sizing: border-box;
   border-radius: 6px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  background: var(--app-panel-bg);
+  border: 1px solid var(--app-row-border);
+  background: transparent;
   user-select: none;
   transition: all 0.15s ease;
 }
@@ -3693,8 +3696,8 @@ body.theme-dark .local-terminal-v2-subcard,
   height: 40px;
   box-sizing: border-box;
   border-radius: 8px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  background: var(--app-panel-bg);
+  border: 1px solid var(--app-row-border);
+  background: transparent;
   transition: all 0.15s ease;
 }
 
@@ -4272,9 +4275,9 @@ body.theme-dark img[src*="kimi.svg"],
   flex-direction: column;
   gap: 8px;
   padding: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  border: 1px solid var(--app-row-border);
   border-radius: 10px;
-  background: var(--app-panel-bg);
+  background: transparent;
 }
 
 .connection-group-editor > span {
@@ -4339,7 +4342,7 @@ body.theme-dark img[src*="kimi.svg"],
   /* 收紧行左侧内边距，减少抓手左侧冗余留白 */
   padding: 8px 6px 8px 2px;
   border-radius: 10px;
-  background: var(--app-panel-bg);
+  background: transparent;
 }
 
 .connection-table-row > span {
@@ -4391,7 +4394,7 @@ body.theme-dark img[src*="kimi.svg"],
   gap: 16px;
   padding: 16px;
   border-radius: 18px;
-  background: var(--app-item-bg);
+  background: transparent;
 }
 
 .settings-helper-text {
@@ -5043,7 +5046,7 @@ body.theme-dark img[src*="kimi.svg"],
   border-radius: 8px;
   line-height: 1.35;
   text-align: center;
-  background: var(--app-item-bg);
+  background: transparent;
   color: var(--app-text);
   transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
@@ -5370,7 +5373,7 @@ body.theme-dark img[src*="kimi.svg"],
 }
 
 .connection-table-row {
-  border: 1px solid rgba(148, 163, 184, 0.14);
+  border: 1px solid var(--app-row-border);
 }
 
 .connection-table-row:hover {
@@ -5664,9 +5667,9 @@ body.theme-dark img[src*="kimi.svg"],
   gap: 8px 14px;
   align-items: center;
   padding: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  border: 1px solid var(--app-row-border);
   border-radius: 8px;
-  background: var(--app-input-bg);
+  background: transparent;
   font-size: 0.86rem;
 }
 
@@ -5766,9 +5769,9 @@ body.theme-dark img[src*="kimi.svg"],
   justify-self: center;
   margin-inline: auto;
   padding: 10px 12px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  border: 1px solid var(--app-row-border);
   border-radius: 8px;
-  background: var(--app-input-bg);
+  background: transparent;
 }
 
 .agent-bridge-power.is-pending {
@@ -5815,8 +5818,8 @@ body.theme-dark img[src*="kimi.svg"],
   gap: 10px;
   padding: 6px 10px;
   border-radius: 8px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  background: var(--app-item-bg);
+  border: 1px solid var(--app-row-border);
+  background: transparent;
   transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
   box-sizing: border-box;
   width: 100%;
