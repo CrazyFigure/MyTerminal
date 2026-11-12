@@ -86,8 +86,8 @@ export function AppTitlebar({
           tone="info"
         />
       ) : null}
-      {/* 两个侧栏开关上移到标题栏：分屏后每个格子都有自己的标签栏，
-          工具栏不复存在，窗口级的显隐开关归到窗口级的标题栏才说得通。
+      {/* 两个侧栏开关分别放在标题栏左右两侧，与各自控制的侧栏位置对应：
+          分屏后每个格子都有自己的标签栏，窗口级的显隐开关仍由标题栏承载。
           用 PanelLeft/PanelRight 而非箭头——图标本身就画出了它控制的那块面板。 */}
       <div className="app-titlebar-panels">
         <Tooltip content={sidebarsUnavailable ? sidebarUnavailableMessage : sidebarLabel} side="bottom">
@@ -99,17 +99,6 @@ export function AppTitlebar({
             type="button"
           >
             <PanelLeft size={16} />
-          </button>
-        </Tooltip>
-        <Tooltip content={sidebarsUnavailable ? sidebarUnavailableMessage : agentSidebarLabel} side="bottom">
-          <button
-            aria-label={agentSidebarLabel}
-            aria-pressed={!agentSidebarCollapsed}
-            className={`titlebar-icon-button ${agentSidebarCollapsed ? '' : 'is-active'}`}
-            onClick={() => handleToggleSidebar(onToggleAgentSidebar)}
-            type="button"
-          >
-            <PanelRight size={16} />
           </button>
         </Tooltip>
       </div>
@@ -160,6 +149,19 @@ export function AppTitlebar({
             <Settings size={16} />
           </button>
         </Tooltip>
+        <div className="app-titlebar-panels">
+          <Tooltip content={sidebarsUnavailable ? sidebarUnavailableMessage : agentSidebarLabel} side="bottom">
+            <button
+              aria-label={agentSidebarLabel}
+              aria-pressed={!agentSidebarCollapsed}
+              className={`titlebar-icon-button ${agentSidebarCollapsed ? '' : 'is-active'}`}
+              onClick={() => handleToggleSidebar(onToggleAgentSidebar)}
+              type="button"
+            >
+              <PanelRight size={16} />
+            </button>
+          </Tooltip>
+        </div>
         <TitlebarWindowControls t={t} />
       </div>
     </header>
