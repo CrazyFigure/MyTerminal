@@ -23,6 +23,12 @@ export const defaultDarkTerminalBackground = "#1e1e2e";
 
 export const defaultDarkTerminalForeground = "#e0e0e0";
 
+// 上面两个默认背景只是落盘的“跟随主题”标记值（老配置里都存着它们），不再直接用于显示；
+// 实际显示色与侧栏卡片底色（--app-card-bg 叠在画布上的结果）保持一致，避免中间终端区与左右两栏色差。
+export const themedLightTerminalBackground = "#ffffff";
+
+export const themedDarkTerminalBackground = "#0f172a";
+
 export type TerminalRgbColor = {
   red: number;
   green: number;
@@ -79,21 +85,19 @@ export const parseTerminalRgbColor = (
 // 根据主题自动选择终端背景/前景色：如果用户仍为默认值则跟随主题切换，自定义过的保持不变。
 export const resolveTerminalColors = (settings: AppSettings) => {
   const isDarkTheme = settings.themeMode === "dark";
-  const isDefaultLightBg =
-    settings.terminalBackground === defaultLightTerminalBackground;
   const isDefaultLightFg =
     settings.terminalForeground === defaultLightTerminalForeground;
-  const isDefaultDarkBg =
-    settings.terminalBackground === defaultDarkTerminalBackground;
   const isDefaultDarkFg =
     settings.terminalForeground === defaultDarkTerminalForeground;
-  const background = isDarkTheme
-    ? isDefaultLightBg
-      ? defaultDarkTerminalBackground
-      : settings.terminalBackground
-    : isDefaultDarkBg
-      ? defaultLightTerminalBackground
-      : settings.terminalBackground;
+  // 默认背景（任一主题的标记值）一律跟随应用主题，显示为与侧栏一致的卡片底色。
+  const isDefaultBg =
+    settings.terminalBackground === defaultLightTerminalBackground ||
+    settings.terminalBackground === defaultDarkTerminalBackground;
+  const background = isDefaultBg
+    ? isDarkTheme
+      ? themedDarkTerminalBackground
+      : themedLightTerminalBackground
+    : settings.terminalBackground;
   const foreground = isDarkTheme
     ? isDefaultLightFg
       ? defaultDarkTerminalForeground

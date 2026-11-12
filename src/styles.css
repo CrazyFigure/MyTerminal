@@ -406,7 +406,8 @@ select:disabled {
   gap: 5px;
   padding: 6px;
   border-radius: 8px;
-  background: var(--app-item-bg);
+  /* 侧栏面板与外层卡片同底：不再叠一层灰色，保证左栏、终端区、右栏三块底色一致。 */
+  background: transparent;
   overflow: hidden;
 }
 
@@ -1240,7 +1241,8 @@ select:disabled {
   min-height: 26px;
   padding: 0 2px;
   border-bottom: 1px solid var(--app-card-border);
-  background: var(--app-panel-bg);
+  /* 标签栏与终端同底，只靠底部分隔线区分，避免顶部单独一条灰带。 */
+  background: transparent;
 }
 
 /* 有背景图时标签栏与终端区域完全同底（都透明），否则叠出的浅色层在图片暗处会特别突兀；
@@ -2670,6 +2672,11 @@ select:disabled {
   background: var(--app-item-bg);
 }
 
+/* 空状态只是一行提示文字，不再画灰色底块，避免侧栏和弹窗里出现一块块“脏”色块。 */
+.empty-state {
+  background: transparent;
+}
+
 .editor-shell {
   overflow: hidden;
   border-radius: 18px;
@@ -2833,7 +2840,8 @@ select:disabled {
   padding: 12px;
   border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 8px;
-  background: var(--app-item-bg);
+  /* 弹窗内分组只靠细边框界定，不再叠灰底。 */
+  background: transparent;
 }
 
 .connection-jump-host-card-header {
@@ -2888,7 +2896,7 @@ select:disabled {
 .connection-table-shell {
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 12px;
-  background: var(--app-item-bg);
+  background: transparent;
   padding: 10px;
   min-height: 0;
 }
@@ -3096,7 +3104,8 @@ select:disabled {
   gap: 6px;
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 12px;
-  background: var(--app-item-bg);
+  /* 弹窗内分区只保留边框，与弹窗同底。 */
+  background: transparent;
   padding: 8px 12px;
   min-height: 0;
 }
@@ -4182,7 +4191,8 @@ body.theme-dark img[src*="kimi.svg"],
 .connection-table-shell {
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 12px;
-  background: var(--app-item-bg);
+  /* 连接管理的分组栏与列表区只保留边框，与弹窗同底。 */
+  background: transparent;
   padding: 10px;
   min-height: 0;
 }
@@ -5345,7 +5355,8 @@ body.theme-dark img[src*="kimi.svg"],
 .modal-settings .sync-transfer-card {
   border: 1px solid var(--app-section-border);
   border-radius: 8px;
-  background: var(--app-section-bg);
+  /* 设置分组与弹窗同底，只靠边框分组，去掉大面积灰色包围。 */
+  background: transparent;
 }
 
 .connection-group-row,
