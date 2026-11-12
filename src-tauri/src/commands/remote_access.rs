@@ -225,13 +225,36 @@ fn write_remote_file_with_sftp(
 fn resolve_remote_dir(sftp: &Sftp, requested_path: &str) -> Result<String, AppError> {
     let trimmed = requested_path.trim();
     if trimmed.is_empty() || trimmed == "~" || trimmed == "." {
-        return sftp
-            .realpath(Path::new("."))
-            .map(|path| path.to_string_lossy().replace('\\', "/"))
-            .map_err(ssh_error);
+        return sftp_home_dir(sftp);
     }
 
-    Ok(normalize_remote_path(trimmed))
+    // `~/xxx` 由前端 cd 预测原样传来；SFTP 协议本身不展开波浪号，需拼到登录用户家目录下。
+    let normalized = normalize_remote_path(trimmed);
+    if let Some(relative) = home_relative_suffix(&normalized) {
+        let home = sftp_home_dir(sftp)?;
+        // `~/` 本身就是家目录，不能拼出 `/home/user/.` 这类带点的路径。
+        return Ok(if relative.is_empty() {
+            home
+        } else {
+            join_remote_path(&home, relative)
+        });
+    }
+
+    Ok(normalized)
+}
+
+/// SFTP 会话启动时位于登录用户家目录，`realpath(".")` 即为该目录的绝对路径。
+fn sftp_home_dir(sftp: &Sftp) -> Result<String, AppError> {
+    sftp.realpath(Path::new("."))
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .map_err(ssh_error)
+}
+
+/// 返回 `~/xxx` 中家目录之后的部分；`~user/xxx` 指向其他用户家目录，无法从 SFTP 推导，不做处理。
+fn home_relative_suffix(normalized_path: &str) -> Option<&str> {
+    normalized_path
+        .strip_prefix("~/")
+        .map(|rest| rest.trim_start_matches('/'))
 }
 
 pub(super) fn stat_is_dir(stat: &ssh2::FileStat) -> bool {
@@ -1389,6 +1412,19 @@ mod remote_access_command_tests {
         assert_eq!(normalize_remote_path("  \\var\\log\\  "), "/var/log/");
         assert_eq!(normalize_remote_path("   "), ".");
         assert_eq!(normalize_remote_path("/"), "/");
+    }
+
+    #[test]
+    fn extracts_home_relative_suffix_only_for_current_user_tilde() {
+        assert_eq!(home_relative_suffix("~/docker"), Some("docker"));
+        assert_eq!(home_relative_suffix("~//docker/app/"), Some("docker/app/"));
+        assert_eq!(home_relative_suffix("~/"), Some(""));
+        assert_eq!(home_relative_suffix("~ology/docker"), None);
+        assert_eq!(home_relative_suffix("/ology/~/docker"), None);
+        assert_eq!(
+            join_remote_path("/home/ology", "docker"),
+            "/home/ology/docker"
+        );
     }
 
     #[test]
