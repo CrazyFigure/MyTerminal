@@ -305,6 +305,8 @@ export interface TerminalSession {
   title: string;
   status: SessionStatus;
   cwd?: string;
+  /** 本地终端程序通过窗口标题序列报告的会话主题（如 Claude Code 的对话摘要），仅用于标签提示。 */
+  terminalTopic?: string;
 }
 
 export interface TerminalOutputChunk {

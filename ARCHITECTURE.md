@@ -33,7 +33,7 @@ src/
 │  ├─ network/             # 端口范围钳制
 │  ├─ sessions/            # 会话可用性判定（远端 / 本地 / 命令面板输入门槛）
 │  ├─ settings/            # 设置与本地终端默认值
-│  ├─ terminal/            # 远端路径推导与命令文本导航
+│  ├─ terminal/            # 远端路径推导、命令文本导航与窗口标题（OSC 0/2）解析
 │  └─ tunnels/             # 隧道草稿与字段校验
 ├─ infrastructure/         # 文件编码、平台接口等技术实现
 ├─ shared/                 # 无业务含义的基础工具

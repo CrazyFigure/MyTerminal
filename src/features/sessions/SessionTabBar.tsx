@@ -436,9 +436,13 @@ export function SessionTabBar({
               : (matchedConnection?.name ?? session.title);
             const statusText = translateStatus(uiLanguage, session.status);
             // 正常已连接状态直接展示连接名称，非已连接状态补充状态释义
-            const tabTooltipContent = session.status === 'connected'
+            const tabTooltipTitle = session.status === 'connected'
               ? fullSessionName
               : `${fullSessionName} (${statusText})`;
+            // 本地终端里的 Agent 报告了会话主题时追加为第二行（Tooltip 样式按 pre-line 换行）。
+            const tabTooltipContent = session.terminalTopic
+              ? `${tabTooltipTitle}\n${session.terminalTopic}`
+              : tabTooltipTitle;
             return (
               <div
                 key={session.id}

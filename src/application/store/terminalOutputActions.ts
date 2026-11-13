@@ -2,12 +2,19 @@
 
 import { backend } from "../../backend";
 import { isUsableRemoteSession } from "../../domain/sessions/model";
+import {
+  normalizeTerminalSessionTopic,
+  scanTerminalTitle,
+} from "../../domain/terminal/terminalTitle";
 import type { SessionStatus, TerminalOutputChunk } from "../../types";
 import type { StoreGet, StoreSet, StoreState } from "./contracts";
 import { remoteFilesRequestCoordinator } from "./remoteFileActions";
 import { cancelAutoReconnect, emitTerminalOutput } from "./sessionRuntime";
 
 export type TerminalOutputActions = Pick<StoreState, "pollTerminalOutputs">;
+
+// 标题序列可能被截断在两个分片之间；按会话保存未闭合的尾部，下次拉取时续接。
+const pendingTitleBySession = new Map<string, string>();
 
 // 输出工厂先广播高频内容，再将 cwd/status 低频元数据归并回 Store，避免终端帧触发整页渲染。
 export const createTerminalOutputActions = (
@@ -50,6 +57,9 @@ export const createTerminalOutputActions = (
     // 远端 Shell 通过后端元数据回传 cwd/status：cwd 同步文件管理，status 只更新标签图标。
     const cwdBySession = new Map<string, string>();
     const statusBySession = new Map<string, SessionStatus>();
+    // 本地终端里 Agent（如 Claude Code）通过 OSC 0/2 设置的窗口标题；值为 undefined 表示清空会话主题。
+    const topicBySession = new Map<string, string | undefined>();
+    const sessionById = new Map(sessions.map((session) => [session.id, session]));
     chunks.forEach((chunk) => {
       const cwd = chunk.cwd?.trim();
       if (cwd) {
@@ -58,7 +68,36 @@ export const createTerminalOutputActions = (
       if (chunk.status) {
         statusBySession.set(chunk.sessionId, chunk.status);
       }
+      const session = sessionById.get(chunk.sessionId);
+      // 远端 Shell 的标题多为 PS1 自带的 user@host:cwd，只对本地终端解析标题。
+      if (session?.kind === "local" && chunk.content) {
+        const scan = scanTerminalTitle(
+          chunk.content,
+          pendingTitleBySession.get(chunk.sessionId),
+        );
+        if (scan.pending) {
+          pendingTitleBySession.set(chunk.sessionId, scan.pending);
+        } else {
+          pendingTitleBySession.delete(chunk.sessionId);
+        }
+        if (scan.title !== undefined) {
+          topicBySession.set(
+            chunk.sessionId,
+            normalizeTerminalSessionTopic(
+              scan.title,
+              session.title,
+              session.localCommand ?? "",
+            ),
+          );
+        }
+      }
     });
+    // 已关闭会话不再产生输出，顺手回收其未闭合的标题缓冲。
+    for (const sessionId of pendingTitleBySession.keys()) {
+      if (!sessionById.has(sessionId)) {
+        pendingTitleBySession.delete(sessionId);
+      }
+    }
 
     outputFailures.forEach((sessionId) => {
       if (sessionId) {
@@ -66,7 +105,7 @@ export const createTerminalOutputActions = (
       }
     });
 
-    if (!cwdBySession.size && !statusBySession.size) {
+    if (!cwdBySession.size && !statusBySession.size && !topicBySession.size) {
       return;
     }
 
@@ -84,6 +123,17 @@ export const createTerminalOutputActions = (
 
         if (cwd && session.cwd !== cwd) {
           nextSession = { ...nextSession, cwd };
+          sessionsChanged = true;
+        }
+        // Agent 忙碌时标题前缀的旋转字符每帧都在变，规范化后内容不变就不触发渲染。
+        if (
+          topicBySession.has(session.id) &&
+          session.terminalTopic !== topicBySession.get(session.id)
+        ) {
+          nextSession = {
+            ...nextSession,
+            terminalTopic: topicBySession.get(session.id),
+          };
           sessionsChanged = true;
         }
         if (status && session.status !== status) {
