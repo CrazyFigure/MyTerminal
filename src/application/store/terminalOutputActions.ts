@@ -57,7 +57,7 @@ export const createTerminalOutputActions = (
     // 远端 Shell 通过后端元数据回传 cwd/status：cwd 同步文件管理，status 只更新标签图标。
     const cwdBySession = new Map<string, string>();
     const statusBySession = new Map<string, SessionStatus>();
-    // 本地终端里 Agent（如 Claude Code）通过 OSC 0/2 设置的窗口标题；值为 undefined 表示清空会话主题。
+    // 本地终端里 Agent（Claude Code、Codex、OpenCode 及自定义程序）通过 OSC 0/2 报告的会话主题；值为 undefined 表示清空。
     const topicBySession = new Map<string, string | undefined>();
     const sessionById = new Map(sessions.map((session) => [session.id, session]));
     chunks.forEach((chunk) => {
@@ -80,16 +80,19 @@ export const createTerminalOutputActions = (
         } else {
           pendingTitleBySession.delete(chunk.sessionId);
         }
-        if (scan.title !== undefined) {
-          topicBySession.set(
-            chunk.sessionId,
-            normalizeTerminalSessionTopic(
-              scan.title,
-              session.title,
-              session.localCommand ?? "",
-            ),
+        // 按出现顺序逐条套用：临时状态标题只保留现状，不覆盖同批次里更早出现的主题。
+        scan.titles.forEach((title) => {
+          const update = normalizeTerminalSessionTopic(
+            title,
+            session.title,
+            session.localCommand ?? "",
           );
-        }
+          if (update.type === "set") {
+            topicBySession.set(chunk.sessionId, update.topic);
+          } else if (update.type === "clear") {
+            topicBySession.set(chunk.sessionId, undefined);
+          }
+        });
       }
     });
     // 已关闭会话不再产生输出，顺手回收其未闭合的标题缓冲。
