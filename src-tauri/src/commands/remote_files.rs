@@ -21,9 +21,9 @@ use super::{
         copy_remote_paths_with_cache, create_remote_entry_with_cache,
         delete_remote_path_with_cache, delete_remote_paths_with_cache,
         download_remote_file_with_cache, download_remote_paths_with_cache,
-        list_remote_entries_cached, read_remote_file_bytes, rename_remote_path_with_cache,
-        upload_local_paths_with_cache, upload_remote_file_with_cache, write_remote_file_bytes,
-        SftpTransferProgressSnapshot,
+        find_remote_upload_conflicts_with_cache, list_remote_entries_cached,
+        read_remote_file_bytes, rename_remote_path_with_cache, upload_local_paths_with_cache,
+        upload_remote_file_with_cache, write_remote_file_bytes, SftpTransferProgressSnapshot,
     },
     FileTransferSummary,
 };
@@ -230,6 +230,19 @@ pub fn upload_remote_file(
     Ok(true)
 }
 
+// 上传前检查目标目录中的同名项目，返回已存在的名称，前端据此询问用户是否覆盖。
+#[tauri::command(async)]
+pub fn find_remote_upload_conflicts(
+    state: State<'_, AppState>,
+    connection_id: String,
+    remote_dir: String,
+    names: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let connection = ensure_connection_exists(&state, &connection_id)?;
+    find_remote_upload_conflicts_with_cache(&state, &connection, &remote_dir, &names)
+        .map_err(Into::into)
+}
+
 #[tauri::command(async)]
 pub fn upload_local_paths(
     app: AppHandle,
@@ -238,15 +251,22 @@ pub fn upload_local_paths(
     remote_dir: String,
     local_paths: Vec<String>,
     transfer_id: String,
+    overwrite: Option<bool>,
 ) -> Result<FileTransferSummary, String> {
     let connection = ensure_connection_exists(&state, &connection_id)?;
     let cancellation = register_sftp_transfer(&state, &transfer_id)?;
     let mut emitter =
         SftpTransferProgressEmitter::new(app, transfer_id.clone(), "upload", cancellation);
-    let result =
-        upload_local_paths_with_cache(&state, &connection, &remote_dir, &local_paths, |snapshot| {
-            emitter.report(snapshot)
-        });
+    // 只有用户确认覆盖后才替换已有远端文件；缺省视为不覆盖。
+    let overwrite = overwrite.unwrap_or(false);
+    let result = upload_local_paths_with_cache(
+        &state,
+        &connection,
+        &remote_dir,
+        &local_paths,
+        overwrite,
+        |snapshot| emitter.report(snapshot),
+    );
     unregister_sftp_transfer(&state, &transfer_id);
     Ok(result?)
 }

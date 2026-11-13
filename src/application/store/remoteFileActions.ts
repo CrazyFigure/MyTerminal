@@ -9,6 +9,7 @@ type RemoteFileActionKeys =
   | 'refreshFiles'
   | 'uploadLocalFile'
   | 'uploadLocalFiles'
+  | 'findUploadConflicts'
   | 'uploadLocalPaths'
   | 'downloadRemoteFile'
   | 'downloadRemotePaths'
@@ -198,7 +199,19 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
     }
   },
 
-  uploadLocalPaths: async (localPaths, transferId) => {
+  findUploadConflicts: async (names) => {
+    const { currentRemotePath } = get();
+    const activeConnectionId = resolveBoundConnectionId(get());
+    const checkNames = Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
+    if (!activeConnectionId || !checkNames.length) {
+      return [];
+    }
+
+    // 远程检查同名项目，保证弹窗依据的是服务器实时状态而非可能过期的列表缓存。
+    return backend.findRemoteUploadConflicts(activeConnectionId, currentRemotePath, checkNames);
+  },
+
+  uploadLocalPaths: async (localPaths, transferId, overwrite = false) => {
     const { currentRemotePath } = get();
     const activeConnectionId = resolveBoundConnectionId(get());
     const uploadPaths = Array.from(new Set(localPaths.map((path) => path.trim()).filter(Boolean)));
@@ -214,6 +227,7 @@ export const createRemoteFileActions = (set: StoreSet, get: StoreGet): RemoteFil
         currentRemotePath,
         uploadPaths,
         transferId ?? crypto.randomUUID(),
+        overwrite,
       );
       await get().refreshFiles(currentRemotePath);
       set({

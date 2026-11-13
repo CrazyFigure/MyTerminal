@@ -111,7 +111,9 @@ export type StoreState = {
   refreshFiles: (path?: string) => Promise<void>;
   uploadLocalFile: (file: File) => Promise<void>;
   uploadLocalFiles: (files: File[]) => Promise<void>;
-  uploadLocalPaths: (localPaths: string[], transferId?: string) => Promise<void>;
+  // 返回当前远端目录中与待上传顶层名称重名的项目，用于上传前询问是否覆盖。
+  findUploadConflicts: (names: string[]) => Promise<string[]>;
+  uploadLocalPaths: (localPaths: string[], transferId?: string, overwrite?: boolean) => Promise<void>;
   downloadRemoteFile: (path: string) => Promise<void>;
   downloadRemotePaths: (paths: string[], localDir?: string, transferId?: string) => Promise<void>;
   deleteRemotePath: (path: string) => Promise<void>;

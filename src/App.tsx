@@ -23,6 +23,7 @@ import {
 
 import { translate, type TranslationKey } from './i18n';
 import { backend } from './backend';
+import { localPathName, uploadTopLevelName } from './infrastructure/fileTransfer';
 import { writeClipboardText } from './clipboard';
 import { useAppStore } from './store';
 // useShallow 让组件按“选中字段的浅比较”订阅 store，避免订阅整个 store 导致终端 cwd/status
@@ -255,6 +256,7 @@ export default function App() {
     reorderFavoriteCommandsToEnd,
     uploadLocalFiles,
     uploadLocalPaths,
+    findUploadConflicts,
   } = useAppStore(
     useShallow((state) => ({
       activeConnectionId: state.activeConnectionId,
@@ -317,6 +319,7 @@ export default function App() {
       reorderFavoriteCommandsToEnd: state.reorderFavoriteCommandsToEnd,
       uploadLocalFiles: state.uploadLocalFiles,
       uploadLocalPaths: state.uploadLocalPaths,
+      findUploadConflicts: state.findUploadConflicts,
     })),
   );
 
@@ -1373,6 +1376,32 @@ export default function App() {
     setSelectedFilePath(filePath);
     setSelectedFilePaths([filePath]);
   }, [files, selectedFilePath, selectedFilePathSet, selectedFilePaths]);
+  // 上传前检查远端同名项目并询问是否覆盖；返回 null 表示用户取消或检查失败，否则返回是否需要覆盖。
+  const confirmUploadOverwrite = useCallback(async (names: string[]): Promise<boolean | null> => {
+    let conflicts: string[];
+    try {
+      conflicts = await findUploadConflicts(names);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : String(error));
+      return null;
+    }
+    if (!conflicts.length) {
+      return false;
+    }
+
+    // 冲突项过多时只列出前若干个，避免确认框超出屏幕。
+    const maxListed = 10;
+    const listedNames = conflicts.slice(0, maxListed).join('\n')
+      + (conflicts.length > maxListed ? '\n…' : '');
+    const confirmText = conflicts.length === 1
+      ? t('uploadOverwriteConfirm', { name: conflicts[0] })
+      : t('uploadOverwriteMultipleConfirm', { count: conflicts.length, names: listedNames });
+    if (!window.confirm(confirmText)) {
+      setStatusMessage(t('uploadCancelled'));
+      return null;
+    }
+    return true;
+  }, [findUploadConflicts, setStatusMessage, t]);
   const uploadFilesWithProgress = useCallback((uploadFiles: File[]) => {
     const filesToUpload = uploadFiles.filter((file) => file.name);
     if (!filesToUpload.length) {
@@ -1382,12 +1411,18 @@ export default function App() {
     const title = filesToUpload.length === 1
       ? `${t('upload')} ${filesToUpload[0].name}`
       : `${t('upload')} ${filesToUpload.length}`;
-    void runTransferProgress(title, async (setPercent) => {
-      setPercent(24);
-      await uploadLocalFiles(filesToUpload);
-      setPercent(92);
-    }, t('transferUploaded'));
-  }, [runTransferProgress, t, uploadLocalFiles]);
+    void (async () => {
+      // 浏览器上传会直接截断写入，必须先确认是否覆盖同名文件。
+      if (await confirmUploadOverwrite(filesToUpload.map(uploadTopLevelName)) === null) {
+        return;
+      }
+      await runTransferProgress(title, async (setPercent) => {
+        setPercent(24);
+        await uploadLocalFiles(filesToUpload);
+        setPercent(92);
+      }, t('transferUploaded'));
+    })();
+  }, [confirmUploadOverwrite, runTransferProgress, t, uploadLocalFiles]);
   const uploadFolderWithProgress = useCallback((folderFiles: File[]) => {
     const uploadFiles = folderFiles.filter((file) => file.name);
     if (!uploadFiles.length) {
@@ -1397,12 +1432,17 @@ export default function App() {
     // 浏览器目录选择会把根目录名放在 webkitRelativePath 第一段；没有该字段时用数量兜底，避免进度标题为空。
     const firstRelativePath = (uploadFiles[0] as File & { webkitRelativePath?: string }).webkitRelativePath ?? '';
     const folderName = firstRelativePath.split('/').filter(Boolean)[0] ?? `${uploadFiles.length} ${t('fileLabel')}`;
-    void runTransferProgress(`${t('uploadFolder')} ${folderName}`, async (setPercent) => {
-      setPercent(18);
-      await uploadLocalFiles(uploadFiles);
-      setPercent(92);
-    }, t('transferUploaded'));
-  }, [runTransferProgress, t, uploadLocalFiles]);
+    void (async () => {
+      if (await confirmUploadOverwrite(uploadFiles.map(uploadTopLevelName)) === null) {
+        return;
+      }
+      await runTransferProgress(`${t('uploadFolder')} ${folderName}`, async (setPercent) => {
+        setPercent(18);
+        await uploadLocalFiles(uploadFiles);
+        setPercent(92);
+      }, t('transferUploaded'));
+    })();
+  }, [confirmUploadOverwrite, runTransferProgress, t, uploadLocalFiles]);
   const uploadLocalPathsWithProgress = useCallback((localPaths: string[]) => {
     const uploadPaths = Array.from(new Set(localPaths.map((path) => path.trim()).filter(Boolean)));
     if (!uploadPaths.length) {
@@ -1410,15 +1450,22 @@ export default function App() {
     }
 
     const title = uploadPaths.length === 1
-      ? `${t('upload')} ${uploadPaths[0].split(/[\\/]/).pop() ?? uploadPaths[0]}`
+      ? `${t('upload')} ${localPathName(uploadPaths[0])}`
       : `${t('upload')} ${uploadPaths.length}`;
-    void runTrackedTransferProgress(
-      title,
-      async (transferId) => uploadLocalPaths(uploadPaths, transferId),
-      (transferId) => backend.cancelSftpTransfer(transferId),
-      t('transferUploaded'),
-    );
-  }, [runTrackedTransferProgress, t, uploadLocalPaths]);
+    void (async () => {
+      // 远端已有同名文件时先询问；确认后才允许后端替换，否则后端会拒绝覆盖。
+      const overwrite = await confirmUploadOverwrite(uploadPaths.map(localPathName));
+      if (overwrite === null) {
+        return;
+      }
+      await runTrackedTransferProgress(
+        title,
+        async (transferId) => uploadLocalPaths(uploadPaths, transferId, overwrite),
+        (transferId) => backend.cancelSftpTransfer(transferId),
+        t('transferUploaded'),
+      );
+    })();
+  }, [confirmUploadOverwrite, runTrackedTransferProgress, t, uploadLocalPaths]);
   // 桌面文件选择器直接返回本机路径，统一走 Rust 流式上传，避免 File/base64 进入 WebView 内存。
   const selectUploadFiles = useCallback(() => {
     void openFileDialog({

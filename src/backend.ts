@@ -209,8 +209,11 @@ export const backend = {
     call<RemoteFileEntry[]>('list_remote_files', { connectionId, path }, mockFiles),
   uploadRemoteFile: (connectionId: string, remoteDir: string, fileName: string, contentBase64: string) =>
     call<boolean>('upload_remote_file', { connectionId, remoteDir, fileName, contentBase64 }, true),
-  uploadLocalPaths: (connectionId: string, remoteDir: string, localPaths: string[], transferId: string) =>
-    call<FileTransferSummary>('upload_local_paths', { connectionId, remoteDir, localPaths, transferId }, {
+  // 上传前检查目标目录里已存在的同名项目，返回冲突的名称列表。
+  findRemoteUploadConflicts: (connectionId: string, remoteDir: string, names: string[]) =>
+    call<string[]>('find_remote_upload_conflicts', { connectionId, remoteDir, names }, []),
+  uploadLocalPaths: (connectionId: string, remoteDir: string, localPaths: string[], transferId: string, overwrite = false) =>
+    call<FileTransferSummary>('upload_local_paths', { connectionId, remoteDir, localPaths, transferId, overwrite }, {
       files: localPaths.length,
       directories: 0,
       bytes: 0,

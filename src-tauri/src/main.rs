@@ -294,6 +294,7 @@ fn main() {
             commands::remote_files::list_remote_files,
             commands::remote_files::upload_remote_file,
             commands::remote_files::upload_local_paths,
+            commands::remote_files::find_remote_upload_conflicts,
             commands::remote_files::cancel_sftp_transfer,
             commands::remote_files::download_remote_file,
             commands::remote_files::download_remote_paths,

@@ -702,11 +702,55 @@ pub(super) fn create_remote_entry_with_cache(
     })
 }
 
+/// 规范化上传前要检查的顶层名称并去重，返回（原始名称, 规范化相对路径）。
+fn upload_conflict_candidates(names: &[String]) -> Result<Vec<(String, String)>, AppError> {
+    let mut seen = HashSet::new();
+    let mut candidates = Vec::new();
+    for name in names {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let normalized = normalize_remote_relative_path(trimmed)?;
+        if seen.insert(normalized.clone()) {
+            candidates.push((trimmed.to_string(), normalized));
+        }
+    }
+    Ok(candidates)
+}
+
+/// 检查目标目录下哪些上传名称已存在，供前端在传输前弹窗询问是否覆盖。
+pub(super) fn find_remote_upload_conflicts_with_cache(
+    state: &AppState,
+    connection: &ConnectionProfile,
+    remote_dir: &str,
+    names: &[String],
+) -> Result<Vec<String>, AppError> {
+    let candidates = upload_conflict_candidates(names)?;
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    with_auxiliary_session_once(state, connection, |auxiliary| {
+        let sftp = auxiliary_sftp(auxiliary)?;
+        let directory = resolve_remote_dir(sftp, remote_dir)?;
+        // 用 lstat 判断存在性：悬空符号链接同样占用名称，也需要提示。
+        Ok(candidates
+            .iter()
+            .filter(|(_, normalized)| {
+                sftp.lstat(Path::new(&join_remote_path(&directory, normalized)))
+                    .is_ok()
+            })
+            .map(|(original, _)| original.clone())
+            .collect())
+    })
+}
+
 pub(super) fn upload_local_paths_with_cache<F>(
     state: &AppState,
     connection: &ConnectionProfile,
     remote_dir: &str,
     local_paths: &[String],
+    overwrite: bool,
     mut on_progress: F,
 ) -> Result<FileTransferSummary, AppError>
 where
@@ -722,6 +766,20 @@ where
             .filter(|path| !path.is_empty())
             .map(PathBuf::from)
             .collect::<Vec<_>>();
+
+        // 未经用户确认覆盖时，任一顶层目标已存在就整体拒绝，避免文件夹上传进行到一半才失败。
+        if !overwrite {
+            for source in &sources {
+                let Some(source_name) = source.file_name().and_then(|value| value.to_str()) else {
+                    continue;
+                };
+                let remote_path =
+                    join_remote_path(&directory, &normalize_remote_relative_path(source_name)?);
+                if sftp.lstat(Path::new(&remote_path)).is_ok() {
+                    return Err(remote_path_exists_error(&remote_path));
+                }
+            }
+        }
         let mut total_bytes = 0_u64;
 
         // 上传前只读取本机元数据统计总字节；符号链接和特殊文件与正式传输保持同样的忽略规则。
@@ -749,6 +807,7 @@ where
                 &source,
                 &remote_path,
                 total_bytes,
+                overwrite,
                 &mut summary,
                 &mut on_progress,
             )?;
@@ -1086,11 +1145,78 @@ where
     Ok(copied)
 }
 
+fn remote_path_exists_error(remote_path: &str) -> AppError {
+    AppError::Validation(format!("remote path already exists: {remote_path}"))
+}
+
+/// 覆盖上传时旧文件的临时备份名；与目标同目录，保证重命名不跨文件系统。
+fn upload_backup_path(remote_path: &str, token: &str) -> String {
+    format!("{remote_path}.myterminal-{token}.bak")
+}
+
+/// 把已写完的临时文件放到目标位置。
+/// OpenSSH 等 SFTP v3 服务端的 rename 在目标已存在时直接失败（libssh2 不支持 posix-rename 扩展），
+/// 因此覆盖时先把旧文件挪成备份，替换成功后再删除备份，替换失败则还原旧文件。
+fn commit_uploaded_temporary_file(
+    sftp: &Sftp,
+    temporary_path: &str,
+    remote_path: &str,
+    overwrite: bool,
+) -> Result<(), AppError> {
+    let existing = match sftp.lstat(Path::new(remote_path)) {
+        Ok(stat) => stat,
+        // 目标不存在：直接重命名即可。
+        Err(_) => {
+            return sftp
+                .rename(Path::new(temporary_path), Path::new(remote_path), None)
+                .map_err(ssh_error);
+        }
+    };
+    if !overwrite {
+        return Err(remote_path_exists_error(remote_path));
+    }
+    // 同名目录不能被文件替换，否则会把整个目录挪走。
+    if stat_is_dir(&existing) {
+        return Err(AppError::Validation(format!(
+            "remote path is a directory and cannot be overwritten by a file: {remote_path}"
+        )));
+    }
+
+    // 沿用旧文件的权限位，避免覆盖脚本后丢失可执行权限；失败不影响上传本身。
+    if !stat_is_symlink(&existing) {
+        if let Some(perm) = existing.perm {
+            let _ = sftp.setstat(
+                Path::new(temporary_path),
+                ssh2::FileStat {
+                    size: None,
+                    uid: None,
+                    gid: None,
+                    perm: Some(perm & 0o7777),
+                    atime: None,
+                    mtime: None,
+                },
+            );
+        }
+    }
+
+    let backup_path = upload_backup_path(remote_path, &Uuid::new_v4().to_string());
+    sftp.rename(Path::new(remote_path), Path::new(&backup_path), None)
+        .map_err(ssh_error)?;
+    if let Err(error) = sftp.rename(Path::new(temporary_path), Path::new(remote_path), None) {
+        // 替换失败时把旧文件还原回原名，保证用户数据不丢失。
+        let _ = sftp.rename(Path::new(&backup_path), Path::new(remote_path), None);
+        return Err(ssh_error(error));
+    }
+    let _ = sftp.unlink(Path::new(&backup_path));
+    Ok(())
+}
+
 fn upload_local_file_to_remote<F>(
     sftp: &Sftp,
     local_path: &Path,
     remote_path: &str,
     total_bytes: u64,
+    overwrite: bool,
     summary: &mut FileTransferSummary,
     on_progress: &mut F,
 ) -> Result<(), AppError>
@@ -1100,9 +1226,13 @@ where
     if let Some(parent) = remote_parent_path(remote_path) {
         ensure_remote_directory(sftp, &parent)?;
     }
+    // 未确认覆盖时在传输字节前就拒绝，避免大文件传完才发现目标已存在。
+    if !overwrite && sftp.lstat(Path::new(remote_path)).is_ok() {
+        return Err(remote_path_exists_error(remote_path));
+    }
 
     let mut local_file = fs::File::open(local_path)?;
-    // 先写同目录临时文件，完成后再覆盖式重命名；取消或失败不会把已有远端文件截断成半成品。
+    // 先写同目录临时文件，完成后再替换到目标位置；取消或失败不会把已有远端文件截断成半成品。
     let temporary_path = format!("{remote_path}.myterminal-{}.part", Uuid::new_v4());
     let transfer_result: Result<(), AppError> = (|| {
         let mut remote_file = sftp.create(Path::new(&temporary_path)).map_err(ssh_error)?;
@@ -1115,8 +1245,7 @@ where
         )?;
         remote_file.flush()?;
         drop(remote_file);
-        sftp.rename(Path::new(&temporary_path), Path::new(remote_path), None)
-            .map_err(ssh_error)
+        commit_uploaded_temporary_file(sftp, &temporary_path, remote_path, overwrite)
     })();
     if transfer_result.is_err() {
         let _ = sftp.unlink(Path::new(&temporary_path));
@@ -1131,6 +1260,7 @@ fn upload_local_directory_to_remote<F>(
     local_dir: &Path,
     remote_dir: &str,
     total_bytes: u64,
+    overwrite: bool,
     summary: &mut FileTransferSummary,
     on_progress: &mut F,
 ) -> Result<(), AppError>
@@ -1161,6 +1291,7 @@ where
                 &local_child,
                 &remote_child,
                 total_bytes,
+                overwrite,
                 summary,
                 on_progress,
             )?;
@@ -1170,6 +1301,7 @@ where
                 &local_child,
                 &remote_child,
                 total_bytes,
+                overwrite,
                 summary,
                 on_progress,
             )?;
@@ -1185,6 +1317,7 @@ fn upload_local_path_to_remote<F>(
     local_path: &Path,
     remote_path: &str,
     total_bytes: u64,
+    overwrite: bool,
     summary: &mut FileTransferSummary,
     on_progress: &mut F,
 ) -> Result<(), AppError>
@@ -1198,6 +1331,7 @@ where
             local_path,
             remote_path,
             total_bytes,
+            overwrite,
             summary,
             on_progress,
         )
@@ -1207,6 +1341,7 @@ where
             local_path,
             remote_path,
             total_bytes,
+            overwrite,
             summary,
             on_progress,
         )
@@ -1447,6 +1582,35 @@ mod remote_access_command_tests {
         assert_eq!(
             sanitize_local_file_name(" normal.txt ", "download"),
             "normal.txt"
+        );
+    }
+
+    #[test]
+    fn dedupes_upload_conflict_candidates_and_keeps_extensionless_names() {
+        let names = vec![
+            "Dockerfile".to_string(),
+            " Dockerfile ".to_string(),
+            "".to_string(),
+            "app.tar.gz".to_string(),
+            "src".to_string(),
+        ];
+        let candidates = upload_conflict_candidates(&names).unwrap();
+        assert_eq!(
+            candidates,
+            vec![
+                ("Dockerfile".to_string(), "Dockerfile".to_string()),
+                ("app.tar.gz".to_string(), "app.tar.gz".to_string()),
+                ("src".to_string(), "src".to_string()),
+            ]
+        );
+        assert!(upload_conflict_candidates(&["../etc".to_string()]).is_err());
+    }
+
+    #[test]
+    fn builds_overwrite_backup_path_next_to_target() {
+        assert_eq!(
+            upload_backup_path("/srv/app/Dockerfile", "token"),
+            "/srv/app/Dockerfile.myterminal-token.bak"
         );
     }
 
