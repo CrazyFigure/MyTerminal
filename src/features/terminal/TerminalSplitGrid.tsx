@@ -3,7 +3,7 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type
 import { resolveTerminalColors } from '../../terminal/support/theme';
 import { retainTerminalSessions } from '../../terminal/terminalOutputHub';
 import { useTerminalBackgroundImageStyle } from '../../terminal/useTerminalBackgroundImageStyle';
-import type { AppSettings, ConnectionProfile, TerminalSession } from '../../types';
+import type { AppSettings, ConnectionProfile, LocalTerminalCommand, TerminalSession } from '../../types';
 import type { TranslationKey } from '../../i18n';
 import { SplitDividerHandle } from './SplitDividerHandle';
 import { SplitDropIndicator } from './SplitDropIndicator';
@@ -35,6 +35,8 @@ type Props = {
   dropHint: string;
   dropTarget: SplitDropTarget | null;
   layout: SplitLayout;
+  // 预设命令列表，透传给各格标签栏用于展示本地终端自定义图标。
+  localTerminalCommands: LocalTerminalCommand[];
   onCloseSession: (sessionId: string) => void | Promise<unknown>;
   onOpenContextMenu: (sessionId: string, x: number, y: number) => void;
   onReorderPaneSessions: (paneId: string, sessionIds: string[]) => void;
@@ -58,6 +60,7 @@ export function TerminalSplitGrid({
   dropHint,
   dropTarget,
   layout,
+  localTerminalCommands,
   onCloseSession,
   onOpenContextMenu,
   onReorderPaneSessions,
@@ -171,6 +174,7 @@ export function TerminalSplitGrid({
               activeSessionId={pane.activeSessionId}
               connections={connections}
               layout={layout}
+              localTerminalCommands={localTerminalCommands}
               onCloseSession={onCloseSession}
               onOpenContextMenu={onOpenContextMenu}
               onReorderSessions={(sessionIds) => onReorderPaneSessions(pane.id, sessionIds)}

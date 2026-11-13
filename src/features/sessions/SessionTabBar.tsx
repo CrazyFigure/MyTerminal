@@ -10,7 +10,7 @@ import {
 import { TerminalSquare, X } from 'lucide-react';
 
 import { Tooltip } from '../../components/Tooltip';
-import { formatLocalTerminalTabLabel, getLocalTerminalIcon } from '../../app/localTerminal';
+import { formatLocalTerminalTabLabel, resolveLocalTerminalSessionIcon } from '../../app/localTerminal';
 import { clamp } from '../../app/layout';
 import {
   isPointInsideElement,
@@ -26,7 +26,7 @@ import {
   type SplitDropTarget,
   type SplitLayout,
 } from '../terminal/splitLayout';
-import type { AppSettings, ConnectionProfile, TerminalSession } from '../../types';
+import type { AppSettings, ConnectionProfile, LocalTerminalCommand, TerminalSession } from '../../types';
 import { sessionStatusClassName } from './presentation';
 
 type SessionTabDragState = {
@@ -84,6 +84,8 @@ type Props = {
   closeLabel: string;
   connections: ConnectionProfile[];
   layoutKey: string;
+  /** 预设命令列表：本地终端标签据此展示用户在预设命令里配置的自定义图标。 */
+  localTerminalCommands: LocalTerminalCommand[];
   localTerminalTitle: string;
   onCloseSession: (sessionId: string) => void | Promise<unknown>;
   onOpenContextMenu: (sessionId: string, x: number, y: number) => void;
@@ -107,6 +109,7 @@ export function SessionTabBar({
   closeLabel,
   connections,
   layoutKey,
+  localTerminalCommands,
   localTerminalTitle,
   onCloseSession,
   onOpenContextMenu,
@@ -423,12 +426,13 @@ export function SessionTabBar({
           ref={listRef}
         >
           {sessions.map((session) => {
-            const sessionLabel = session.kind === 'local'
-              ? formatLocalTerminalTabLabel(session, localTerminalTitle)
-              : connections.find((item) => item.id === session.connectionId)?.name ?? session.title;
+            // 本地终端图标先于标题解析：命中自定义/专属图标时标题可省略命令前缀。
             const localTerminalIcon = session.kind === 'local'
-              ? getLocalTerminalIcon(session.title, session.localCommand ?? '')
+              ? resolveLocalTerminalSessionIcon(session, localTerminalCommands)
               : undefined;
+            const sessionLabel = session.kind === 'local'
+              ? formatLocalTerminalTabLabel(session, localTerminalTitle, localTerminalIcon ?? null)
+              : connections.find((item) => item.id === session.connectionId)?.name ?? session.title;
             // 完整会话/连接名称：远程连接取配置名称（超长时完整展示），本地终端取完整标题
             const matchedConnection = connections.find((item) => item.id === session.connectionId);
             const fullSessionName = session.kind === 'local'

@@ -238,6 +238,7 @@ export default function App() {
     sendCommand,
     sendTerminalData,
     sessions,
+    localTerminalCommands,
     setCommandBuffer,
     setStatusMessage,
     settings,
@@ -301,6 +302,8 @@ export default function App() {
       sendCommand: state.sendCommand,
       sendTerminalData: state.sendTerminalData,
       sessions: state.sessions,
+      // 预设命令用于本地终端标签展示自定义图标。
+      localTerminalCommands: state.localTerminals.commands,
       setCommandBuffer: state.setCommandBuffer,
       setStatusMessage: state.setStatusMessage,
       settings: state.settings,
@@ -2049,6 +2052,7 @@ export default function App() {
             dropHint={splitDropHint}
             dropTarget={splitDropTarget}
             layout={splitLayout}
+            localTerminalCommands={localTerminalCommands}
             onCloseSession={closeSession}
             onOpenContextMenu={(sessionId, x, y) => {
               setSessionContextMenu({ sessionId, x, y });

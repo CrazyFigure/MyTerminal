@@ -1,6 +1,6 @@
 /* 本模块由 App 入口按功能域拆出，保留原组件行为与状态订阅方式。 */
 import { convertFileSrc } from '@tauri-apps/api/core';
-import type { LocalTerminalProfile, TerminalSession } from '../types';
+import type { LocalTerminalCommand, LocalTerminalProfile, TerminalSession } from '../types';
 
 // 本地终端首次打开时默认指向当前工作区，用户仍可在弹窗内切换任意目录。
 export const defaultLocalTerminalCwd = 'C:\\Software\\WorkSpace\\MyTerminal';
@@ -312,8 +312,32 @@ export const getLocalTerminalDirectoryName = (cwd?: string, fallbackLabel = '本
 
 
 
+// 本地终端 tab 图标：优先采用启动命令对应预设命令里的自定义图标，未命中预设时回退到内置名称/命令匹配。
+// 返回值已转换为 img 可直接使用的地址，本地图片路径会经 convertFileSrc 处理。
+export const resolveLocalTerminalSessionIcon = (
+  session: Pick<TerminalSession, 'title' | 'localCommand'>,
+  commands: readonly LocalTerminalCommand[] = [],
+): string | undefined => {
+  const command = session.localCommand?.trim() ?? '';
+  // 预设命令按实际启动命令匹配，与启动下拉框 value 的生成规则保持一致。
+  const preset = command
+    ? commands.find((item) => item.id !== 'shell' && item.command.trim() === command)
+    : undefined;
+  const rawIcon = preset
+    ? getLocalTerminalIcon(preset.name, preset.command, preset.icon)
+    : getLocalTerminalIcon(session.title, session.localCommand ?? '');
+  return resolveIconDisplayUrl(rawIcon);
+};
+
+
+
 // 本地终端 tab 用短标题展示，若匹配专属工具图标或无启动命令，则隐藏命令前缀以节省空间；否则加上命令前缀。
-export const formatLocalTerminalTabLabel = (session: TerminalSession, fallbackLabel = '本地终端') => {
+// resolvedIcon 由调用方传入已解析的图标（含预设命令自定义图标），未传入时按内置规则判断。
+export const formatLocalTerminalTabLabel = (
+  session: TerminalSession,
+  fallbackLabel = '本地终端',
+  resolvedIcon?: string | null,
+) => {
   const directoryName = getLocalTerminalDirectoryName(session.cwd, fallbackLabel);
   const fullCwd = session.cwd?.trim();
   const command = fullCwd && session.title.endsWith(` · ${fullCwd}`)
@@ -322,7 +346,10 @@ export const formatLocalTerminalTabLabel = (session: TerminalSession, fallbackLa
   if (!command) {
     return directoryName;
   }
-  if (hasExclusiveLocalTerminalIcon(session.title, session.localCommand ?? '')) {
+  const hasExclusiveIcon = resolvedIcon !== undefined
+    ? Boolean(resolvedIcon && resolvedIcon !== '/icons/local.svg')
+    : hasExclusiveLocalTerminalIcon(session.title, session.localCommand ?? '');
+  if (hasExclusiveIcon) {
     return directoryName;
   }
   return `${command} · ${directoryName}`;
