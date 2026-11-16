@@ -1444,6 +1444,9 @@ mod shell_output_filter_tests {
             "./claude-code --continue",
             r#"& "C:\Tools\claude.cmd" --model sonnet"#,
             r#"& 'C:\Program Files\Claude\claude-code.ps1' --continue"#,
+            // Claude Code 同族发行版与 Claude 共用同步帧兜底。
+            "clidex",
+            r#"& "C:\Tools\clidex.cmd" --continue"#,
         ] {
             assert!(
                 should_force_claude_synchronized_output(command),

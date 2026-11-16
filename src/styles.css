@@ -1662,7 +1662,25 @@ select:disabled {
   animation: terminal-bar-cursor-blink 1s step-end infinite;
 }
 
+/* 光标换位时在两套相同关键帧之间切换，动画名变化即从“亮”重新开始，避免强制同步布局。 */
+.terminal-contrast-cursor.is-managed-tui-cursor.is-blink-phase-alt,
+.terminal-contrast-cursor.is-bar-cursor.is-blink-phase-alt {
+  animation-name: terminal-bar-cursor-blink-alt;
+}
+
 @keyframes terminal-bar-cursor-blink {
+  0%,
+  55% {
+    opacity: 1;
+  }
+
+  56%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes terminal-bar-cursor-blink-alt {
   0%,
   55% {
     opacity: 1;

@@ -206,6 +206,17 @@ export const createTerminalOutputActions = (
         activeSessionBecameUnavailable &&
         (state.filesLoading || state.historyLoading);
 
+      // AI TUI 忙碌时几乎每个输出分片都带 OSC 标题，规范化后主题通常不变；
+      // 此时返回原 state 让 Zustand 跳过通知，避免每帧都让全部订阅者重算选择器。
+      if (
+        !sessionsChanged &&
+        !activeCwdToDisplay &&
+        !shouldClearActiveRemoteData &&
+        !shouldStopLoading
+      ) {
+        return state;
+      }
+
       return {
         ...(sessionsChanged ? { sessions: nextSessions } : {}),
         ...(activeCwdToDisplay

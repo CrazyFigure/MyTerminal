@@ -71,10 +71,13 @@ export const terminalMinimumContrastRatio = 7;
 // Claude Code 用浅蓝/浅紫表达菜单选中态，使用 AA 级别兜底增强可读性，同时避免高亮色被压成黑色。
 export const terminalClaudeMinimumContrastRatio = 4.5;
 
+// Claude Code 及其派生/包装发行版（如 clidex）共用同一套 TUI 渲染：自绘带边线的输入框、按标准光标协议定位输入位置。
+// 未登记的同族程序会被当成普通 Shell，提示符扫描与光标自愈每帧都在和 TUI 抢光标，输入明显卡顿。
+export const terminalClaudeFamilyCommandNames = ["claude", "claude-code", "clidex"] as const;
+
 // 这些命令会以 TUI 方式反复重绘同一屏，必须固定在当前可视列宽内渲染。
 export const terminalAiAgentCommandNames = new Set([
-  "claude",
-  "claude-code",
+  ...terminalClaudeFamilyCommandNames,
   "codex",
   "opencode",
   "qwen",
@@ -85,10 +88,7 @@ export const terminalAiAgentCommandNames = new Set([
 ]);
 
 // xterm 默认把 Ctrl+V 编码成控制字符；只为 Windows Claude 放行 WebView 原生粘贴，避免改变 Shell/Vim 的 Ctrl+V 语义。
-export const terminalNativeCtrlVPasteCommandNames = new Set([
-  "claude",
-  "claude-code",
-]);
+export const terminalNativeCtrlVPasteCommandNames = new Set<string>(terminalClaudeFamilyCommandNames);
 
 // 仅隐藏已确认会自行绘制光标、且终端真实光标会停在状态栏的 TUI；OpenCode 等依赖标准光标协议的程序保持原样。
 // Claude Code v2.1+ 已不再绘制反色假光标，而是每帧把真实光标移回输入位置并发送 ?25h，因此不能再隐藏。
@@ -101,7 +101,7 @@ export const terminalHideLocalCursorCommandNames = new Set([
 ]);
 
 // 这些 TUI 依赖标准光标协议定位输入位置；宿主隐藏 xterm 原生方块，改绘与 Codex 一致的细竖线并匀速闪烁。
-export const terminalBarCursorCommandNames = new Set(["claude", "claude-code"]);
+export const terminalBarCursorCommandNames = new Set<string>(terminalClaudeFamilyCommandNames);
 
 // Codex 重绘帧会反复恢复原生光标；协议层持续隐藏它，并按真实 buffer 坐标绘制经过输入区校验的替代光标。
 export const terminalManagedCursorCommandNames = new Set(["codex"]);
@@ -109,15 +109,12 @@ export const terminalManagedCursorCommandNames = new Set(["codex"]);
 // 浅色模式下 Codex 会用 ANSI black 或反色块表示输入区，映射成柔和底色避免黑块过重。
 export const terminalSoftDarkBlockCommandNames = new Set(["codex"]);
 
-export const terminalLowerContrastCommandNames = new Set([
-  "claude",
-  "claude-code",
-]);
+export const terminalLowerContrastCommandNames = new Set<string>(terminalClaudeFamilyCommandNames);
 
 export const terminalSoftDarkBlockLightBackground = "#e0e7ff";
 
 // Claude 自绘输入框时 xterm 真实 cursor 可能停在状态栏；中文输入法候选框需要锚到可见输入行。
-export const terminalImeAnchorCommandNames = new Set(["claude", "claude-code"]);
+export const terminalImeAnchorCommandNames = new Set<string>(terminalClaudeFamilyCommandNames);
 
 // 输入框探测默认只看视口底部；Claude 可能把输入框绘制在上半屏，另由输入框边线与专用会话约束全屏搜索。
 export const terminalPromptGlyphs = ["›", "❯"] as const;

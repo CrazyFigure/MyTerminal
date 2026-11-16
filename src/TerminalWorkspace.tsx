@@ -11,6 +11,11 @@ import {
   writeClipboardText,
 } from './clipboard';
 import { translate } from './i18n';
+import {
+  markTerminalInputKey,
+  markTerminalOutputArrived,
+  markTerminalOutputParsed,
+} from './shared/diagnostics/inputLatencyProbe';
 import { ViewportClampedMenu } from './shared/ui/ViewportClampedMenu';
 import { useAppStore } from './store';
 import { initialTerminalReplaySize, type TerminalReplayEntry } from './terminalCache';
@@ -19,6 +24,7 @@ import type { AppSettings, TerminalOutputChunk, TerminalSession } from './types'
 import { useTerminalGutterController } from './terminal/useTerminalGutterController';
 import { useTerminalHighlightController } from './terminal/useTerminalHighlightController';
 import { useTerminalLayoutController } from './terminal/useTerminalLayoutController';
+import { useTerminalPromptClickController } from './terminal/useTerminalPromptClickController';
 import { useTerminalVerticalScrollbarController } from './terminal/useTerminalVerticalScrollbarController';
 import { attachTerminalScrollController } from './terminal/attachTerminalScrollController';
 import {
@@ -77,6 +83,14 @@ import {
 } from './terminal/support';
 
 import '@xterm/xterm/css/xterm.css';
+
+// 输入法锚点使用的 CSS 变量；只挂在 IME 辅助元素上，样式表里的 !important 规则据此锁定坐标。
+const terminalImeAnchorProperties = [
+  '--terminal-ime-anchor-left',
+  '--terminal-ime-anchor-top',
+  '--terminal-ime-anchor-width',
+  '--terminal-ime-anchor-height',
+] as const;
 
 type Props = {
   // 标签切走时保留独立 xterm 解析器，仅隐藏渲染面；后台动态输出因此不需要靠原始 ANSI 重放恢复状态。
@@ -620,13 +634,24 @@ export function TerminalWorkspace({
       return;
     }
     terminalElement.classList.remove('is-claude-ime-prompt-anchored');
-    for (const property of [
-      '--terminal-ime-anchor-left',
-      '--terminal-ime-anchor-top',
-      '--terminal-ime-anchor-width',
-      '--terminal-ime-anchor-height',
-    ]) {
-      terminalElement.style.removeProperty(property);
+    for (const element of resolveTerminalImeAnchorElements(terminalElement)) {
+      for (const property of terminalImeAnchorProperties) {
+        element.style.removeProperty(property);
+      }
+    }
+  };
+
+  // 锚点变量只写到 textarea 与组词视图本身：写在 .xterm 根上时，变量每变一次（每次按键列号都会变）
+  // 都会让整棵 xterm DOM 渲染行重算继承样式，长对话铺满彩色 span 后输入和移动光标会明显发顿。
+  const resolveTerminalImeAnchorElements = (terminalElement: HTMLElement) => [
+    terminalElement.querySelector<HTMLElement>('.xterm-helper-textarea'),
+    terminalElement.querySelector<HTMLElement>('.composition-view'),
+  ].filter((element): element is HTMLElement => Boolean(element));
+
+  // 值未变化时跳过写入，避免无意义的样式失效。
+  const setTerminalImeAnchorProperty = (element: HTMLElement, property: string, value: string) => {
+    if (element.style.getPropertyValue(property) !== value) {
+      element.style.setProperty(property, value);
     }
   };
 
@@ -673,13 +698,24 @@ export function TerminalWorkspace({
     const compositionWidth = terminalImeComposingRef.current
       ? compositionView.getBoundingClientRect().width
       : 0;
-    terminal.element.style.setProperty('--terminal-ime-anchor-left', left);
-    terminal.element.style.setProperty('--terminal-ime-anchor-top', top);
-    terminal.element.style.setProperty('--terminal-ime-anchor-width', `${Math.max(anchor.cellWidth, compositionWidth || 1)}px`);
-    terminal.element.style.setProperty('--terminal-ime-anchor-height', height);
-    terminal.element.classList.add('is-claude-ime-prompt-anchored');
-    compositionView.style.fontFamily = terminal.options.fontFamily ?? terminalFontFamily;
-    compositionView.style.fontSize = `${terminal.options.fontSize ?? settings.shellFontSize}px`;
+    const width = `${Math.max(anchor.cellWidth, compositionWidth || 1)}px`;
+    for (const element of [textarea, compositionView]) {
+      setTerminalImeAnchorProperty(element, '--terminal-ime-anchor-left', left);
+      setTerminalImeAnchorProperty(element, '--terminal-ime-anchor-top', top);
+      setTerminalImeAnchorProperty(element, '--terminal-ime-anchor-width', width);
+      setTerminalImeAnchorProperty(element, '--terminal-ime-anchor-height', height);
+    }
+    if (!terminal.element.classList.contains('is-claude-ime-prompt-anchored')) {
+      terminal.element.classList.add('is-claude-ime-prompt-anchored');
+    }
+    const compositionFontFamily = terminal.options.fontFamily ?? terminalFontFamily;
+    const compositionFontSize = `${terminal.options.fontSize ?? settings.shellFontSize}px`;
+    if (compositionView.style.fontFamily !== compositionFontFamily) {
+      compositionView.style.fontFamily = compositionFontFamily;
+    }
+    if (compositionView.style.fontSize !== compositionFontSize) {
+      compositionView.style.fontSize = compositionFontSize;
+    }
   };
 
   const scheduleTerminalImeCompositionAnchorSync = () => {
@@ -800,10 +836,9 @@ export function TerminalWorkspace({
     const positionKey = `${absoluteCursorRow}:${cursorColumn}`;
     if ((useBarCursor || useManagedCursor) && positionKey !== terminalBarCursorPositionKeyRef.current) {
       terminalBarCursorPositionKeyRef.current = positionKey;
-      cursor.style.animation = 'none';
-      // 读取布局强制浏览器提交 animation: none，随后清除内联值即可从第一帧重新播放。
-      void cursor.offsetWidth;
-      cursor.style.animation = '';
+      // 在两套相同的关键帧之间轮换：动画名变化即从第一帧重播，无需读取 offsetWidth 强制同步布局
+      // （DOM 渲染器下每次移动光标都整页回流，是连续按方向键时发顿的来源之一）。
+      cursor.classList.toggle('is-blink-phase-alt');
     }
   };
 
@@ -932,6 +967,38 @@ export function TerminalWorkspace({
       scheduleTerminalContrastCursorSync();
     }, terminalManagedCursorOutputIdleMs);
   };
+
+  // 点击定位生成的方向键与键盘输入走同一写入通道；重放期或会话不可输入时拒绝发送。
+  const sendTerminalPromptNavigationInput = (data: string) => {
+    if (
+      !canAcceptTerminalInput(sessionRef.current)
+      || terminalActiveReplayRef.current
+      || terminalImeComposingRef.current
+    ) {
+      return false;
+    }
+    lastLocalTerminalInputAtRef.current = performance.now();
+    updateTerminalManagedCursorForInput('edit');
+    onTerminalDataRef.current(data);
+    scheduleTerminalContrastCursorSync();
+    return true;
+  };
+
+  // Claude 类 TUI 的输入框点击定位：单击输入区即把光标移到点击处，交互与普通编辑框一致。
+  const {
+    cancelPendingPromptClick,
+    disposeTerminalPromptClickController,
+    handleTerminalPromptClickMouseDown,
+    handleTerminalPromptClickMouseUp,
+    notifyTerminalPromptClickOutput,
+  } = useTerminalPromptClickController({
+    terminalRef,
+    isPromptClickEnabled: () => useBarCursorForSessionRef.current
+      || anchorImeToPromptForSessionRef.current
+      || terminalClaudeInputFrameDetectedRef.current,
+    resolveTerminalPromptAnchor,
+    sendTerminalInput: sendTerminalPromptNavigationInput,
+  });
 
   // 右键菜单动作完成后延后一帧恢复焦点，确保 React 已经卸载菜单按钮。
   const restoreTerminalFocusAfterContextMenuAction = () => {
@@ -1358,6 +1425,39 @@ export function TerminalWorkspace({
     }
   };
 
+  // 键盘粘贴（Shift+Insert）与 WebView 原生 Ctrl+V 粘贴保持同一套分流：剪贴板无文本时粘贴文件/截图路径；
+  // 普通 Shell 主缓冲区原样写入（与原生粘贴捕获一致），AI Agent 与全屏程序走 xterm paste 以保留 bracketed paste。
+  const pasteClipboardFromKeyboardShortcut = async () => {
+    const targetSessionId = sessionRef.current?.id;
+    const canPasteToTarget = () => Boolean(targetSessionId)
+      && sessionRef.current?.id === targetSessionId
+      && !terminalActiveReplayRef.current
+      && !terminalReplayInputBlockedRef.current
+      && canAcceptTerminalInput(sessionRef.current);
+    if (!targetSessionId || !canPasteToTarget()) {
+      return;
+    }
+    const text = await readClipboardText().catch(() => '');
+    const terminal = terminalRef.current;
+    // 剪贴板读取是异步的；期间切换会话或开始重放时丢弃，避免粘贴落到错误标签。
+    if (!terminal || !canPasteToTarget()) {
+      return;
+    }
+    if (!text) {
+      await pasteClipboardAttachmentToTerminal(targetSessionId);
+      return;
+    }
+    updateTerminalManagedCursorForInput('edit');
+    if (terminal.buffer.active.type === 'normal' && !isTerminalAiAgentSession(sessionRef.current)) {
+      writeRawPastedTextToTerminal(text, targetSessionId);
+      return;
+    }
+    clearTerminalSelectionSnapshot();
+    markLocalTerminalInputForCursorFollow();
+    terminalLocalInputEditingRef.current = terminal.buffer.active.type === 'normal';
+    terminal.paste(text);
+  };
+
   const handleTerminalContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -1666,6 +1766,24 @@ export function TerminalWorkspace({
         }
         return false;
       }
+      // Shift+Insert 是 Windows 终端通用的粘贴键（Windows Terminal、conhost 均支持）；xterm 对它不产生任何输入，
+      // 交给 WebView 默认行为时并不稳定，这里显式接管，效果与 Ctrl+V 粘贴一致。
+      const isShiftInsertPaste =
+        (event.key === 'Insert' || event.code === 'Insert')
+        && event.shiftKey
+        && !event.ctrlKey
+        && !event.altKey
+        && !event.metaKey
+        && !event.isComposing;
+      if (isShiftInsertPaste) {
+        // keydown/keyup 全部消费，避免 WebView 默认粘贴再叠加一次。
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.type === 'keydown') {
+          void pasteClipboardFromKeyboardShortcut();
+        }
+        return false;
+      }
       // xterm 对 Shift+Enter / Ctrl+Enter 都只发 CR，AI Agent 会直接提交。改为发送 Alt+Enter（ESC CR）：
       // 实测 Claude Code 与 Codex 都把它当作输入框内换行；普通 Shell 不受影响，仍按原样发送回车。
       const isAgentNewlineShortcut =
@@ -1785,6 +1903,9 @@ export function TerminalWorkspace({
     terminal.element?.addEventListener('focusout', handleTerminalFocusVisibilityChange);
     // 已聚焦时点击不会再触发 focusin；点击输入区同样视为“想看到光标”，画面稳定即恢复。
     terminal.element?.addEventListener('pointerdown', releaseTerminalManagedCursorWhenQuiet);
+    // 捕获阶段只读取坐标、不拦截事件，xterm 的选区与聚焦逻辑照常运行。
+    terminal.element?.addEventListener('mousedown', handleTerminalPromptClickMouseDown, true);
+    terminal.element?.addEventListener('mouseup', handleTerminalPromptClickMouseUp, true);
     const handleTerminalCompositionStart = () => {
       if (terminalActiveReplayRef.current || terminalReplayInputBlockedRef.current) {
         return;
@@ -1887,6 +2008,12 @@ export function TerminalWorkspace({
         const submittedInput = !isBracketedPaste && (data.includes('\r') || data.includes('\n'));
         if (data === '\x03' || submittedInput) {
           clearTerminalImePromptAnchor();
+        }
+        // 用户亲手按键优先：未完成的点击定位立即作废，避免补发的方向键与键盘输入交错。
+        cancelPendingPromptClick();
+        if (sessionRef.current?.id) {
+          // 诊断探针（默认关闭）：按键起点。
+          markTerminalInputKey(sessionRef.current.id);
         }
         clearTerminalSelectionSnapshot();
         onTerminalDataRef.current(data);
@@ -2014,6 +2141,8 @@ export function TerminalWorkspace({
       terminal.element?.removeEventListener('focusin', handleTerminalFocusVisibilityChange);
       terminal.element?.removeEventListener('focusout', handleTerminalFocusVisibilityChange);
       terminal.element?.removeEventListener('pointerdown', releaseTerminalManagedCursorWhenQuiet);
+      terminal.element?.removeEventListener('mousedown', handleTerminalPromptClickMouseDown, true);
+      terminal.element?.removeEventListener('mouseup', handleTerminalPromptClickMouseUp, true);
       observer.disconnect();
       window.removeEventListener('resize', scheduleTerminalSizeSync);
       window.removeEventListener('mouseup', stopTerminalSelectionDragSync, true);
@@ -2036,6 +2165,7 @@ export function TerminalWorkspace({
       }
       disposeTerminalLayoutController();
       disposeTerminalHighlightController();
+      disposeTerminalPromptClickController();
       if (terminalImeCompositionFrameRef.current !== null) {
         window.cancelAnimationFrame(terminalImeCompositionFrameRef.current);
         terminalImeCompositionFrameRef.current = null;
@@ -2086,6 +2216,8 @@ export function TerminalWorkspace({
   // 只订阅本实例当前承载的会话；分片的缓存、协议回包和尺寸元数据都已由 Hub 统一处理，
   // 这里只负责把属于自己的输出写进 xterm。会话切换时重新订阅。
   useEffect(() => {
+    // 换会话后旧输入框的点击定位失去意义，迟到的方向键不能发给新会话。
+    cancelPendingPromptClick();
     const subscribedSessionId = session?.id;
     if (!subscribedSessionId) {
       return undefined;
@@ -2115,13 +2247,18 @@ export function TerminalWorkspace({
         }
         return;
       }
+      // 诊断探针（默认关闭）：回显到达前端。
+      markTerminalOutputArrived(chunk.sessionId, chunk.content.length);
       // 终端输出直接写入 xterm，避免每 80ms 把大字符串塞进 React 状态导致输入、滚动和选区明显卡顿。
       terminalRef.current?.write(chunk.content, () => {
+        markTerminalOutputParsed(chunk.sessionId);
         // 只有 SSH 横向长行会因新内容扩列；wrap 模式的 Claude 流式帧不能每块都插入无意义的布局测量。
         if (terminalLineWrapModeRef.current === 'horizontal') {
           scheduleTerminalSizeSync();
         }
         updateTerminalManagedCursorForOutput();
+        // 点击定位等待 TUI 重绘静默后再读光标位置，每块输出都顺延结算时机。
+        notifyTerminalPromptClickOutput();
         syncLocalCursorVisibility();
         scheduleTerminalCursorRecovery();
         scheduleTerminalCursorFollow();

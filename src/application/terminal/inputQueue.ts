@@ -1,5 +1,6 @@
 /* 本模块从 Store 中按业务边界提取；领域规则不得依赖 Zustand，应用服务只暴露稳定操作。 */
 import { backend } from '../../backend';
+import { markTerminalInputWritten } from '../../shared/diagnostics/inputLatencyProbe';
 
 // 终端输入跨 Tauri IPC 写入：交互按键只合并同一浏览器事件轮次，避免固定延迟造成远端 echo 成批出现。
 const terminalInputBuffers = new Map<string, string>();
@@ -79,6 +80,8 @@ export const flushQueuedTerminalInput = (sessionId: string) => {
 
       terminalInputBuffers.set(sessionId, '');
       await backend.writeTerminalInput(sessionId, payload);
+      // 诊断探针（默认关闭）：记录按键经 IPC 交给后端 PTY 的耗时。
+      markTerminalInputWritten(sessionId);
     }
   })().finally(() => {
     terminalInputFlushPromises.delete(sessionId);

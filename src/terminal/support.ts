@@ -3,5 +3,6 @@
 export * from './support/core';
 export * from './support/highlights';
 export * from './support/presentation';
+export * from './support/promptClick';
 export * from './support/selection';
 export * from './support/theme';

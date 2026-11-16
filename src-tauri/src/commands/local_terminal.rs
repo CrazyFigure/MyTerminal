@@ -204,10 +204,12 @@ fn extract_local_command_executable_name(command: &str) -> Option<String> {
 }
 
 /// Claude 只有在直接作为本地启动命令时才启用同步帧兜底，避免污染普通 Shell、Codex 等其它会话。
+/// clidex 等 Claude Code 同族发行版共用同一渲染内核，同样需要同步帧消除重绘中间帧；
+/// 与前端 `terminalClaudeFamilyCommandNames` 保持一致。
 pub(super) fn should_force_claude_synchronized_output(command: &str) -> bool {
     matches!(
         extract_local_command_executable_name(command).as_deref(),
-        Some("claude" | "claude-code")
+        Some("claude" | "claude-code" | "clidex")
     )
 }
 
