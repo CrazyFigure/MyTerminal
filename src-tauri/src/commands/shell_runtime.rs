@@ -8,12 +8,21 @@ pub(super) fn queue_output(
     session_id: &str,
     content: impl Into<String>,
 ) {
-    if let Ok(mut output) = queue.lock() {
-        // 内容分片走有界入队：自动合并相邻内容并在超限时淘汰最旧内容。
-        output.push_content(session_id, content.into());
-    }
+    let should_notify = match queue.lock() {
+        Ok(mut output) => {
+            // 内容分片走有界入队：自动合并相邻内容并在超限时淘汰最旧内容。
+            output.push_content(session_id, content.into());
+            // 前端尚未取走上一次通知的数据时不再重复通知，本块会随那次拉取一并取走。
+            output.claim_notification()
+        }
+        // 锁中毒时照常通知，让前端走拉取失败的错误路径，不吞掉信号。
+        Err(_) => true,
+    };
     // 数据入队后立即通知前端拉取当前会话，替代全局定时轮询，实现低延迟回显。
-    let _ = app_handle.emit("terminal-output-ready", session_id);
+    // 低频的状态/尺寸/cwd 元数据仍每次通知，只合并高频内容分片。
+    if should_notify {
+        let _ = app_handle.emit("terminal-output-ready", session_id);
+    }
 }
 
 pub(super) fn queue_session_status(

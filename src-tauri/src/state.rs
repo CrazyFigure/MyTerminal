@@ -5,7 +5,7 @@ use std::{
         mpsc::Sender,
         Arc, Condvar, Mutex,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -87,6 +87,8 @@ pub struct AgentPtyState {
 const OUTPUT_QUEUE_MAX_BYTES: usize = 1024 * 1024;
 /// 队列清空后若容量超过该阈值则收缩，避免一次突发输出让大容量 VecDeque 永久驻留。
 const OUTPUT_QUEUE_SHRINK_THRESHOLD: usize = 64;
+/// 已通知但前端迟迟未取走时，超过该时长允许补发一次通知，兜底监听器重建空窗等极端情况下的事件丢失。
+const OUTPUT_NOTIFY_RESEND_AFTER: Duration = Duration::from_millis(50);
 
 /// 有界终端输出队列：内容按字节封顶并合并相邻纯内容分片，cwd/status/PTY 尺寸等控制元数据优先保留。
 /// 达到上限时丢弃最旧内容分片并插入一次 truncated 标记，避免用户误以为终端完整保留了历史。
@@ -97,11 +99,31 @@ pub struct TerminalOutputQueue {
     content_bytes: usize,
     /// 已因超限丢弃过内容但尚未向前端发出截断提示时为 true，下次入队时补一条 truncated 标记。
     pending_truncation_notice: bool,
+    /// 最近一次通知前端拉取的时刻；前端 take 之前保持 Some，期间新入队的数据会被同一次拉取带走，无需重复通知。
+    notified_at: Option<Instant>,
 }
 
 impl TerminalOutputQueue {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 入队后调用，返回是否需要向前端发送 terminal-output-ready。
+    /// TUI 一帧重绘常被 ConPTY 拆成多次 read，逐块通知会让每块都经过一次 WebView 主线程派发事件，
+    /// 与按键的 IPC 抢同一条主线程；合并为“未取走前只通知一次”后，按键回显不再在事件洪峰里排队。
+    pub fn claim_notification(&mut self) -> bool {
+        self.claim_notification_at(Instant::now())
+    }
+
+    fn claim_notification_at(&mut self, now: Instant) -> bool {
+        match self.notified_at {
+            // 上一次通知还未被前端消费且未超时：本次数据会随那次拉取一起取走。
+            Some(notified_at) if now.saturating_duration_since(notified_at) < OUTPUT_NOTIFY_RESEND_AFTER => false,
+            _ => {
+                self.notified_at = Some(now);
+                true
+            }
+        }
     }
 
     /// 入队一条纯内容分片：优先与队尾相邻内容分片合并，减少大量小 String 对象；随后按字节上限淘汰。
@@ -175,6 +197,8 @@ impl TerminalOutputQueue {
     pub fn take(&mut self, session_id: &str) -> Vec<TerminalOutputChunk> {
         let mut drained: Vec<TerminalOutputChunk> = self.chunks.drain(..).collect();
         self.content_bytes = 0;
+        // 前端已取走全部内容，之后入队的数据需要重新通知。
+        self.notified_at = None;
         if self.pending_truncation_notice {
             self.pending_truncation_notice = false;
             drained.insert(
@@ -407,7 +431,33 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use super::{TerminalOutputQueue, OUTPUT_QUEUE_MAX_BYTES};
+    use super::{TerminalOutputQueue, OUTPUT_NOTIFY_RESEND_AFTER, OUTPUT_QUEUE_MAX_BYTES};
+    use std::time::{Duration, Instant};
+
+    // 前端取走之前连续入队只通知一次；取走后的下一次入队必须重新通知，否则新输出会卡在队列里。
+    #[test]
+    fn coalesces_notifications_until_frontend_takes_output() {
+        let mut queue = TerminalOutputQueue::new();
+        let start = Instant::now();
+        queue.push_content("s1", "a".into());
+        assert!(queue.claim_notification_at(start));
+        queue.push_content("s1", "b".into());
+        assert!(!queue.claim_notification_at(start + Duration::from_millis(1)));
+
+        assert_eq!(queue.take("s1")[0].content, "ab");
+        queue.push_content("s1", "c".into());
+        assert!(queue.claim_notification_at(start + Duration::from_millis(2)));
+    }
+
+    // 通知迟迟未被消费（例如事件在监听器重建空窗中丢失）时，超时后允许补发，避免输出永久滞留。
+    #[test]
+    fn resends_notification_when_previous_one_is_stale() {
+        let mut queue = TerminalOutputQueue::new();
+        let start = Instant::now();
+        assert!(queue.claim_notification_at(start));
+        assert!(!queue.claim_notification_at(start + OUTPUT_NOTIFY_RESEND_AFTER - Duration::from_millis(1)));
+        assert!(queue.claim_notification_at(start + OUTPUT_NOTIFY_RESEND_AFTER));
+    }
 
     // 相邻纯内容分片必须合并为一个 chunk，避免大量小 String 对象。
     #[test]
