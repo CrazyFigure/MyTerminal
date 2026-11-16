@@ -169,6 +169,10 @@ fn main() {
             if let Some(window) = app.get_webview_window("main") {
                 // 安装版与开发版可同时运行后，任务栏和窗口切换器必须明确标出开发实例，避免审批时认错窗口。
                 let _ = window.set_title("MyTerminal Dev");
+                // 浏览器加速键（F12/Ctrl+Shift+I）已统一关闭，开发版需要排查性能时用环境变量直接打开开发者工具。
+                if std::env::var_os("MYTERMINAL_DEVTOOLS").is_some_and(|value| value == "1") {
+                    window.open_devtools();
+                }
             }
             #[cfg(windows)]
             if let Some(window) = app.get_webview_window("main") {
