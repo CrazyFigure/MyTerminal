@@ -272,7 +272,8 @@ export type TerminalPromptInputColors = {
 };
 
 // 续行判定需要知道可视区上方的命令上下文；向上回看有限行数，超出部分按普通输出处理。
-export const terminalPromptInputLookbackRows = 48;
+// 设为 500 以支持粘贴超长命令（>48 行）时仍能找到最初的 prompt，保证续行识别不中断。
+export const terminalPromptInputLookbackRows = 500;
 
 // 输入着色 decoration 数量上限，防止极端长命令或超大窗口下 decoration 无界增长。
 export const terminalPromptInputMaxDecorations = 600;

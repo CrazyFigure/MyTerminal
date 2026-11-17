@@ -259,8 +259,24 @@ export const scanTerminalPromptLines = (
     } else if (continuation) {
       const markerLength = matchTerminalContinuationPrompt(continuation.dialect, logicalLine.text);
       if (markerLength === undefined) {
-        // 命令已经结束，后续内容是程序输出。
-        continuation = undefined;
+        // heredoc 正文期间 bash 不显示 `> ` 续行提示符，直接显示原始文本；
+        // 此时 continuation 仍处于 pendingDelimiters 状态，不应把这行当成输出来中断续行链。
+        if (continuation.pendingDelimiters.length > 0) {
+          if (isVisible) {
+            inputs.push({
+              row,
+              endRowExclusive: logicalLine.endRowExclusive,
+              startRow: row,
+              startColumn: 0,
+              hasCommand: true,
+            });
+          }
+          const nextState = advanceTerminalCommandContinuation(continuation, logicalLine.text);
+          continuation = isTerminalCommandContinuationOpen(nextState) ? nextState : undefined;
+        } else {
+          // 命令已经结束，后续内容是程序输出。
+          continuation = undefined;
+        }
       } else {
         if (isVisible) {
           const position = resolveTerminalLogicalOffsetPosition(
