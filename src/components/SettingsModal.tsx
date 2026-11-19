@@ -17,7 +17,7 @@ import {
   terminalCjkFontOptions,
   terminalLatinFontOptions,
 } from '../terminalFonts';
-import { UpdateModal, type UpdateDownloadProgress } from '../UpdateModal';
+import { UpdateModal, type UpdateDownloadProgress, type UpdateInstallPhase } from '../UpdateModal';
 import type {
   AgentBridgeStatus,
   AgentModel,
@@ -119,7 +119,7 @@ export function SettingsModal({
   const [settingsActionRunning, setSettingsActionRunning] = useState('');
   const [draftSettings, setDraftSettings] = useState<AppSettings>(settings);
   const [updateChecking, setUpdateChecking] = useState(false);
-  const [updateInstalling, setUpdateInstalling] = useState(false);
+  const [updatePhase, setUpdatePhase] = useState<UpdateInstallPhase | null>(null);
   const [updateCheckResult, setUpdateCheckResult] = useState<UpdateCheckResult | null>(null);
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
   const [updateDownloadProgress, setUpdateDownloadProgress] = useState<UpdateDownloadProgress | null>(null);
@@ -678,30 +678,21 @@ export function SettingsModal({
     }
   };
   const handleInstallUpdate = async () => {
-    if (!updateCheckResult) {
+    if (!updateCheckResult || updatePhase) {
       return;
     }
 
-    setUpdateInstalling(true);
+    setUpdatePhase('downloading');
     setSettingsFeedback(null);
     setUpdateModalError(null);
     setUpdateDownloadProgress(null);
     try {
-      // 安装动作只在用户点击后触发；后端会下载 Release 安装包并启动安装程序。
-      const installerPath = await installUpdate(updateCheckResult);
-      // 下载完成且安装器已启动，关闭更新弹窗，并在它所属的设置弹窗内显示一秒成功提示。
-      setUpdateModalOpen(false);
-      showSettingsFeedback('success', t('statusUpdateInstallStartedWithPath', { path: installerPath }));
+      // 与主页共用下载、验签、覆盖安装和退出流程。
+      await installUpdate(updateCheckResult, () => setUpdatePhase('installing'));
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      // 用户主动取消（如下载弹窗点取消），不展示错误提示
-      if (reason === t('downloadCancelled')) {
-        setUpdateInstalling(false);
-        return;
-      }
       setUpdateModalError(t('statusUpdateInstallFailed', { reason }));
-    } finally {
-      setUpdateInstalling(false);
+      setUpdatePhase(null);
       setUpdateDownloadProgress(null);
     }
   };
@@ -1084,7 +1075,7 @@ export function SettingsModal({
                 appVersion={appVersion}
                 checking={updateChecking}
                 formatReleaseTime={formatReleaseTime}
-                installing={updateInstalling}
+                installing={updatePhase !== null}
                 onCheck={handleCheckForUpdates}
                 onOpenRepository={() => openExternalLink('https://github.com/CrazyFigure/MyTerminal')}
                 onOpenCnbRepository={() => openExternalLink(updateRepositories.cnb)}
@@ -1107,7 +1098,7 @@ export function SettingsModal({
         onSelectChannel={(channel) => void runSettingsAction('save-update-channel', () => setUpdateChannel(channel), t('statusSettingsSaved'))}
         releaseUrl={updateReleasePage(settings.updateChannel)}
         checkError={updateCheckError}
-        downloading={updateInstalling}
+        phase={updatePhase}
         error={updateModalError}
         onClose={() => {
           setUpdateModalOpen(false);

@@ -161,6 +161,12 @@ src-tauri/target/release/bundle/
 
 具体取决于 Tauri 的 bundler 配置。
 
+#### Windows 一键更新签名
+
+首次发布支持一键更新的安装版前，用 `npm exec -- tauri signer generate -w <仓库外的私钥路径>` 生成并备份项目专用密钥对。在 GitHub Actions 设置 `MYTERMINAL_UPDATE_PUBLIC_KEY` 仓库变量（`.pub` 文件内容）、`TAURI_SIGNING_PRIVATE_KEY` Secret（私钥文件内容），有密码时设置 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` Secret。后续发布使用同一密钥对，公钥随程序编译，安装包与 `.sig` 附件一起同步至 CNB。
+
+旧客户端先覆盖安装支持一键更新的正式版。此后可从标题栏或设置页点击「一键更新」，应用下载、验签并更新当前安装目录，完成后自动重新打开。更新前请保存远程文件编辑器的修改并等待文件传输完成。未配置签名时可从 Release 页面手动下载安装包。
+
 ### 7. 当前实现说明
 
 - 当前已支持 SSH 密码认证与私钥认证

@@ -1,25 +1,30 @@
 //! 应用更新、远程背景资源与系统外链适配器。
 
+use std::{process::Command, time::Duration};
+#[cfg(windows)]
 use std::{
-    env, fs,
+    fs,
     io::{ErrorKind, Write},
-    path::{Path, PathBuf},
-    process::Command,
-    time::{Duration, Instant},
+    path::Path,
+    time::Instant,
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use serde::Deserialize;
+use tauri::State;
+#[cfg(windows)]
+use tauri::{AppHandle, Emitter};
 
 use crate::{
     error::AppError,
-    models::{UpdateChannel, UpdateCheckResult},
+    models::UpdateCheckResult,
     state::AppState,
 };
 
 // 发布历史独立处理版本筛选和分页，最新版本的安装资产仍由当前模块选择。
 mod channel;
+#[cfg(windows)]
+pub mod installer;
 mod release_history;
 
 #[derive(Debug, Deserialize)]
@@ -55,11 +60,15 @@ const UPDATE_HTTP_READ_TIMEOUT: Duration = Duration::from_secs(40);
 // 元数据请求单次最多等待 12 秒，及时进入直连重试或 CNB 回退；安装包保持原下载时限。
 const UPDATE_METADATA_TIMEOUT: Duration = Duration::from_secs(12);
 // 极大调高下载超时上限至 600 秒（10分钟），确保在慢速网络下也能完整下载安装包
+#[cfg(windows)]
 const UPDATE_INSTALLER_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+#[cfg(windows)]
 const UPDATE_DOWNLOAD_PROGRESS_EVENT: &str = "myterminal-update-download-progress";
+#[cfg(windows)]
 const UPDATE_DOWNLOAD_PROGRESS_THROTTLE: Duration = Duration::from_millis(100);
 
-#[derive(Debug, Clone, Serialize)]
+#[cfg(windows)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateDownloadProgressEvent {
     downloaded_bytes: u64,
@@ -143,31 +152,6 @@ fn select_update_installer_asset(assets: &[GitHubReleaseAsset]) -> Option<GitHub
         .map(|(_, asset)| asset.clone())
 }
 
-fn sanitize_asset_file_name(asset_name: &str) -> String {
-    let sanitized: String = asset_name
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if sanitized.trim_matches('_').is_empty() {
-        "MyTerminal-update.exe".into()
-    } else {
-        sanitized
-    }
-}
-
-fn is_valid_update_download_url(url: &str) -> bool {
-    let normalized = url.trim().to_ascii_lowercase();
-    (normalized.starts_with("https://") || normalized.starts_with("http://"))
-        && (normalized.ends_with(".exe") || normalized.ends_with(".msi"))
-        && !normalized.chars().any(|character| character.is_control())
-}
-
 pub(super) fn build_update_http_client(
     total_timeout: Duration,
 ) -> Result<reqwest::Client, AppError> {
@@ -194,32 +178,12 @@ pub(super) fn build_direct_http_client(
         .map_err(AppError::from)
 }
 
-fn installer_path_matches_expected_size(
-    path: &Path,
-    expected_size: Option<u64>,
-) -> Result<bool, AppError> {
-    // Release 元数据有文件大小时必须严格匹配，避免复用之前中断留下的半截安装包。
-    let metadata = match fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(AppError::from(error)),
-    };
-    if !metadata.is_file() {
-        return Ok(false);
-    }
-
-    // 少数 Release 可能缺少 size 字段；此时只复用非空文件，仍避免 0 字节缓存导致安装失败。
-    Ok(expected_size
-        .map(|size| metadata.len() == size)
-        .unwrap_or(metadata.len() > 0))
-}
-
+#[cfg(windows)]
 async fn download_update_installer(
     app_handle: &AppHandle,
     client: &reqwest::Client,
     download_url: &str,
     installer_path: &Path,
-    expected_size: Option<u64>,
 ) -> Result<(), AppError> {
     // 临时文件完整落盘后才替换正式安装包，避免下载中断时污染下次可复用的缓存。
     let temp_installer_path = installer_path.with_extension(format!(
@@ -243,6 +207,8 @@ async fn download_update_installer(
         .map_err(AppError::from)?
         .error_for_status()
         .map_err(AppError::from)?;
+    // 安装包地址由后端确定；进度按服务器报告的长度显示，完整性由签名保证。
+    let expected_size = response.content_length().filter(|size| *size > 0);
     let mut temp_file = fs::File::create(&temp_installer_path).map_err(AppError::from)?;
     let mut downloaded_size = 0_u64;
     let mut last_progress_emit = Instant::now();
@@ -311,36 +277,6 @@ async fn download_update_installer(
     }
     fs::rename(&temp_installer_path, installer_path).map_err(AppError::from)?;
     Ok(())
-}
-
-fn spawn_update_installer(path: &Path) -> std::io::Result<()> {
-    // Windows MSI 需要交给 msiexec 启动；EXE 安装包则直接执行，避免检测到更新后按钮无响应。
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-
-    let mut child = if extension == "msi" {
-        Command::new("msiexec.exe").arg("/i").arg(path).spawn()?
-    } else if extension == "exe" {
-        Command::new(path).spawn()?
-    } else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "不支持的安装包格式",
-        ));
-    };
-
-    // 验证进程是否成功启动（等待 100ms 检查是否立即退出）
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    match child.try_wait()? {
-        Some(status) if !status.success() => Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("安装器启动失败，退出码：{}", status.code().unwrap_or(-1)),
-        )),
-        _ => Ok(()),
-    }
 }
 
 // 远程背景图最大下载体积，避免误填超大文件或非图片资源撑爆内存与 data URL。
@@ -499,7 +435,13 @@ pub async fn check_for_updates(state: State<'_, AppState>) -> Result<UpdateCheck
 
     let latest_version = release.tag_name.trim_start_matches(['v', 'V']).to_string();
     let update_available = is_newer_version(&release.tag_name, &current_version);
-    let installer_asset = select_update_installer_asset(&release.assets);
+    #[cfg(windows)]
+    let signed_installer = installer::signed_release_asset(&release);
+    #[cfg(not(windows))]
+    let signed_installer: Option<GitHubReleaseAsset> = None;
+    let can_update_in_place = update_available && signed_installer.is_some();
+    let installer_asset =
+        signed_installer.or_else(|| select_update_installer_asset(&release.assets));
     // 没有更新时不额外请求历史；历史失败只标记说明不完整，不影响最新版本安装。
     let (releases, release_history_complete) = if update_available {
         release_history::load_release_history(&current_version, &release, channel).await
@@ -518,6 +460,7 @@ pub async fn check_for_updates(state: State<'_, AppState>) -> Result<UpdateCheck
         },
         published_at: release.published_at,
         update_available,
+        can_update_in_place,
         installer_asset_name: installer_asset.as_ref().map(|asset| asset.name.clone()),
         installer_download_url: installer_asset
             .as_ref()
@@ -529,63 +472,24 @@ pub async fn check_for_updates(state: State<'_, AppState>) -> Result<UpdateCheck
     })
 }
 
-#[tauri::command]
-pub async fn download_and_install_update(
-    app_handle: AppHandle,
-    state: State<'_, AppState>,
-    download_url: String,
-    asset_name: String,
-    installer_size: Option<u64>,
-    channel: Option<UpdateChannel>,
-) -> Result<String, String> {
-    // 下载动作重新读取当前渠道，手动切换后不继续沿用旧检测结果中的地址。
-    let channel = channel.unwrap_or(state.storage.load_settings(&state.crypto)?.update_channel);
-    let download_url = channel.download_url(download_url.trim());
-    let normalized_url = download_url.as_str();
-    if !is_valid_update_download_url(normalized_url) {
-        return Err(AppError::Validation("invalid update installer URL".into()).into());
-    }
-
-    let safe_file_name = sanitize_asset_file_name(&asset_name);
-    let update_dir = env::temp_dir().join("MyTerminal-updates");
-    fs::create_dir_all(&update_dir).map_err(|error| AppError::from(error).to_string())?;
-    let installer_path: PathBuf = update_dir.join(safe_file_name);
-
-    // 本地已有完整安装包时直接启动，避免用户重复点击时再次等待下载。
-    if installer_path_matches_expected_size(&installer_path, installer_size)? {
-        spawn_update_installer(&installer_path)
-            .map_err(|error| AppError::from(error).to_string())?;
-        return Ok(installer_path.to_string_lossy().to_string());
-    }
-
-    // 安装包使用当前渠道的 Release 下载地址；完整落盘后启动安装程序，由安装器处理确认。
+#[cfg(windows)]
+async fn download_installer_with_fallback(
+    app_handle: &AppHandle,
+    url: &str,
+    installer_path: &Path,
+) -> Result<(), String> {
     // 首次走系统代理，若被代理节点风控返回 403，回退直连重试一次（与检测更新的策略保持一致）。
     let client = build_update_http_client(UPDATE_INSTALLER_DOWNLOAD_TIMEOUT)?;
-    if let Err(error) = download_update_installer(
-        &app_handle,
-        &client,
-        normalized_url,
-        &installer_path,
-        installer_size,
-    )
-    .await
+    if let Err(error) = download_update_installer(app_handle, &client, url, installer_path).await
     {
-        if error.to_string().contains("403") {
+        if matches!(&error, AppError::Http(http) if http.status() == Some(reqwest::StatusCode::FORBIDDEN)) {
             let direct_client = build_direct_http_client(UPDATE_INSTALLER_DOWNLOAD_TIMEOUT)?;
-            download_update_installer(
-                &app_handle,
-                &direct_client,
-                normalized_url,
-                &installer_path,
-                installer_size,
-            )
-            .await?;
+            download_update_installer(app_handle, &direct_client, url, installer_path).await?;
         } else {
             return Err(error.to_string());
         }
     }
-    spawn_update_installer(&installer_path).map_err(|error| AppError::from(error).to_string())?;
-    Ok(installer_path.to_string_lossy().to_string())
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]

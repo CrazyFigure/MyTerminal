@@ -49,6 +49,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 公钥随正式客户端编译，私钥只注入后面的签名步骤。
+          MYTERMINAL_UPDATE_PUBLIC_KEY: ${{ vars.MYTERMINAL_UPDATE_PUBLIC_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: MyTerminal ${{ github.ref_name }}
@@ -57,6 +59,31 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           # 使用 action.yml 支持的资产命名参数，让 Release 附件名称稳定可识别。
           assetNamePattern: MyTerminal_[version]_[platform]_[arch][setup][ext]
+
+      - name: Sign published Windows update package
+        if: ${{ !contains(github.ref_name, '-') }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MYTERMINAL_UPDATE_PUBLIC_KEY: ${{ vars.MYTERMINAL_UPDATE_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([bool]$env:MYTERMINAL_UPDATE_PUBLIC_KEY -xor [bool]$env:TAURI_SIGNING_PRIVATE_KEY) {
+            throw '请同时配置更新公钥变量和签名私钥 Secret'
+          }
+          if (-not $env:MYTERMINAL_UPDATE_PUBLIC_KEY) { exit 0 }
+          $version = node -p "require('./package.json').version"
+          $asset = "MyTerminal_${version}_windows_x64-setup.exe"
+          $directory = Join-Path $env:RUNNER_TEMP 'signed-update'
+          # 对 Release 上实际供客户端下载的同名文件签名，避免构建路径与附件名不同。
+          gh release download $env:GITHUB_REF_NAME --pattern $asset --dir $directory
+          if ($LASTEXITCODE -ne 0) { throw '无法读取已发布的 Windows 安装包' }
+          $path = Join-Path $directory $asset
+          node scripts/sign-update-asset.mjs $path
+          if ($LASTEXITCODE -ne 0) { throw 'Windows 安装包签名失败' }
+          gh release upload $env:GITHUB_REF_NAME "$path.sig" --clobber
+          if ($LASTEXITCODE -ne 0) { throw '无法上传 Windows 更新签名' }
 
   sync-cnb:
     name: Sync release assets to CNB

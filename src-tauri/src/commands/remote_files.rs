@@ -186,6 +186,10 @@ fn register_sftp_transfer(
         .sftp_transfer_cancellations
         .lock()
         .map_err(|_| AppError::Validation("SFTP transfer registry is unavailable".into()))?;
+    // 正常退出或应用内更新已经开始时，不再接收会在进程退出时被截断的传输。
+    if state.is_shutting_down.load(Ordering::SeqCst) {
+        return Err(AppError::Validation("MyTerminal is shutting down".into()));
+    }
     if transfers.contains_key(normalized_id) {
         return Err(AppError::Validation(format!(
             "SFTP transfer already exists: {normalized_id}"

@@ -13,6 +13,12 @@ const GITHUB_DOWNLOAD: &str = "https://github.com/CrazyFigure/MyTerminal/release
 const CNB_DOWNLOAD: &str = "https://cnb.cool/crazy-figure/MyTerminal/-/releases/download/";
 
 impl UpdateChannel {
+    /// 自动更新只用固定仓库、正式 tag 和由程序计算出的附件名构造下载地址。
+    #[cfg(windows)]
+    pub(super) fn installer_url(self, tag: &str, filename: &str) -> String {
+        self.download_url(&format!("{GITHUB_DOWNLOAD}{tag}/{filename}"))
+    }
+
     /// CNB 的公开网页路由通过 Accept JSON 返回发布列表，无需向客户端分发令牌。
     pub(super) fn releases_url(self, page: usize, page_size: usize) -> String {
         match self {

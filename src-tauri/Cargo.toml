@@ -50,6 +50,8 @@ zip = { version = "8.4", default-features = false, features = ["deflate-flate2-z
 
 # Windows 原生层关闭 WebView2 的浏览器专用加速键，防止刷新、打印、缩放和开发者工具等行为绕过前端组件。
 [target.'cfg(windows)'.dependencies]
+# Windows 更新包使用 Tauri 的 Minisign 签名格式，流式验证，不将安装包整份读入内存。
+minisign-verify = "0.3"
 webview2-com = "0.38"
 # RDP 启动前直接写入当前登录会话的 Windows 凭据，避免通过命令行参数暴露密码。
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }

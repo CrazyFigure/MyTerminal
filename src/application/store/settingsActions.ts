@@ -1,5 +1,6 @@
 import { backend } from '../../backend';
 import { activateFontPack } from '../../app/fontPack';
+import { translateUpdateInstallError } from '../../app/updates';
 import { normalizeLoadedConnection } from '../../domain/connections/model';
 import type { AppSettings, FontPackStatus } from '../../types';
 import type { StoreGet, StoreSet, StoreState } from './contracts';
@@ -47,6 +48,14 @@ export const createSettingsActions = (set: StoreSet, get: StoreGet): SettingsAct
   let settingsSaveQueue: Promise<unknown> = Promise.resolve();
   // 手动选择递增版本，后台检测的旧结果不能覆盖用户更新的渠道选择。
   let channelSelectionRevision = 0;
+  // 首页和设置页共用一次更新任务，避免第二个入口重置正在显示的进度。
+  let updateInFlight = false;
+  const ensureSavedEditor = () => {
+    const current = get();
+    if (current.editorDocument?.dirty) {
+      throw new Error(statusText(current.settings, 'statusUpdateUnsavedEditor'));
+    }
+  };
   const saveSettings = (resolve: () => AppSettings, skipUnchanged = false): Promise<AppSettings> => {
     const pending = settingsSaveQueue.catch(() => undefined).then(async () => {
       // 启动读取完成前，内存里还是默认设置；此时任何整份保存都会用默认值覆盖用户的设置文件，必须拒绝。
@@ -172,34 +181,38 @@ export const createSettingsActions = (set: StoreSet, get: StoreGet): SettingsAct
       }, true);
     },
 
-    installUpdate: async (result) => {
-      if (!result.installerDownloadUrl || !result.installerAssetName) {
-        const message = statusText(get().settings, 'statusUpdateInstallerMissing');
-        set({ statusMessage: message });
-        throw new Error(message);
-      }
-
+    installUpdate: async (result, onInstalling) => {
+      if (!result.canUpdateInPlace) throw new Error(statusText(get().settings, 'statusUpdateInstallerMissing'));
+      if (updateInFlight) throw new Error(statusText(get().settings, 'statusUpdateAlreadyRunning'));
+      updateInFlight = true;
       try {
+        ensureSavedEditor();
         set((state) => ({
           loading: true,
           statusMessage: statusText(state.settings, 'statusUpdateDownloading'),
         }));
-        // 后端返回下载后的安装包路径，设置页用它给用户一个可追踪的成功提示。
-        const installerPath = await backend.installUpdate(result, get().settings.updateChannel);
+        const id = await backend.prepareUpdate(result);
+        // 下载完成后再确认编辑状态与在途设置写入，随后才允许安装器结束当前会话。
+        await settingsSaveQueue.catch(() => undefined);
+        ensureSavedEditor();
+        onInstalling();
         set((state) => ({
-          loading: false,
           statusMessage: statusText(state.settings, 'statusUpdateInstallStarted'),
         }));
-        return installerPath;
+        await backend.applyUpdate(id);
+        set({ loading: false });
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
+        const message = translateUpdateInstallError(reason, get().settings.uiLanguage);
         set((state) => ({
           loading: false,
           statusMessage: statusText(state.settings, 'statusUpdateInstallFailed', {
-            reason,
+            reason: message,
           }),
         }));
-        throw error instanceof Error ? error : new Error(reason);
+        throw new Error(message);
+      } finally {
+        updateInFlight = false;
       }
     },
 

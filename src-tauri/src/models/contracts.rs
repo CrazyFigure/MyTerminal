@@ -68,6 +68,8 @@ pub struct UpdateCheckResult {
     pub release_url: String,
     pub published_at: Option<String>,
     pub update_available: bool,
+    /// 当前为可覆盖的 Windows 安装版，且检测到了匹配的签名附件。
+    pub can_update_in_place: bool,
     pub installer_asset_name: Option<String>,
     pub installer_download_url: Option<String>,
     pub installer_size: Option<u64>,

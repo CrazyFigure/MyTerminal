@@ -12,10 +12,12 @@ export type UpdateDownloadProgress = {
   percent?: number;
 };
 
+export type UpdateInstallPhase = 'downloading' | 'installing';
+
 type UpdateModalProps = {
   open: boolean;
   result: UpdateCheckResult | null;
-  downloading: boolean;
+  phase: UpdateInstallPhase | null;
   progress: UpdateDownloadProgress | null;
   error?: string | null;
   // 手动检测失败时的提示文案；非空时以“更新”结果弹窗形式展示错误，不再要求 result 存在。
@@ -47,7 +49,7 @@ const formatBytes = (value: number) => {
 export function UpdateModal({
   open,
   result,
-  downloading,
+  phase,
   progress,
   error,
   checkError,
@@ -60,6 +62,8 @@ export function UpdateModal({
   onErrorDismiss,
   onOpenRelease,
 }: UpdateModalProps) {
+  // 下载、验签和安装期间保留当前弹窗与进度，失败时重新允许关闭和重试。
+  const busy = phase !== null;
   // 发布说明交由共享历史视图处理，检测结果和下载阶段使用同一份版本数据。
   // 是否展示“更新详情”弹窗：仅当确实检测到可用新版本时才走完整详情布局。
   const showUpdateDetail = !checkError && Boolean(result?.updateAvailable);
@@ -155,7 +159,7 @@ export function UpdateModal({
             </p>
           </div>
           <Tooltip content={t('updateCancel')}>
-            <button aria-label={t('updateCancel')} className="icon-button" disabled={downloading} onClick={onClose} type="button">
+            <button aria-label={t('updateCancel')} className="icon-button" disabled={busy} onClick={onClose} type="button">
               <X size={18} />
             </button>
           </Tooltip>
@@ -180,47 +184,44 @@ export function UpdateModal({
 
         <div className="update-modal-footer">
           {/* 下载进度属于持续状态，继续固定在底部；瞬时错误由当前更新弹窗内的悬浮提示承载。 */}
-          {(downloading || progress) && (
+          {(busy || progress) && (
             <div className="update-modal-footer-info">
-              {downloading || progress ? (
-                <div className="update-modal-progress">
+                <div className="update-modal-progress" role="status">
                   <div className="update-modal-progress-header">
-                    <span>{t('updateDownloadProgress')}</span>
-                    <span>{progressText}</span>
+                    <span>{t(phase === 'installing' ? 'updateInstalling' : 'updateDownloadProgress')}</span>
+                    <span>{phase === 'installing' ? '' : progressText}</span>
                   </div>
                   <div className="update-modal-progress-bar">
                     <div
                       className="update-modal-progress-fill"
-                      style={{ width: `${progressPercent}%` }}
+                      style={{ width: `${phase === 'installing' ? 100 : progressPercent}%` }}
                     />
                   </div>
-                  <div className="update-modal-progress-percent">{progressPercent}%</div>
+                  {phase !== 'installing' ? <div className="update-modal-progress-percent">{progressPercent}%</div> : null}
                 </div>
-              ) : null}
             </div>
           )}
 
           <div className="modal-actions">
-            <button className="secondary-button" disabled={downloading} onClick={onClose} type="button">
+            <button className="secondary-button" disabled={busy} onClick={onClose} type="button">
               {t('updateCancel')}
             </button>
             <button
-              className="secondary-button"
-              disabled={downloading}
+              className={result.canUpdateInPlace ? 'secondary-button' : 'primary-button'}
+              disabled={busy}
               onClick={() => onOpenRelease(result.releaseUrl)}
               type="button"
             >
               <ExternalLink size={16} /> {t('openRelease')}
             </button>
-            <button
-              className="primary-button"
-              disabled={downloading || !result.installerDownloadUrl || !result.installerAssetName}
-              onClick={onDownload}
-              type="button"
-            >
-              <Download size={16} />
-              {downloading ? t('updateDownloading') : t('updateDownloadAndInstall')}
-            </button>
+            {result.canUpdateInPlace ? (
+              <Tooltip content={t('updateRestartHint')}>
+                <button className="primary-button" disabled={busy} onClick={onDownload} type="button">
+                  <Download size={16} />
+                  {t(phase === 'installing' ? 'updateInstallingButton' : phase === 'downloading' ? 'updateDownloading' : 'updateDownloadAndInstall')}
+                </button>
+              </Tooltip>
+            ) : null}
           </div>
         </div>
       </div>

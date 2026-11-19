@@ -29,7 +29,7 @@ import { useAppStore } from './store';
 // useShallow 让组件按“选中字段的浅比较”订阅 store，避免订阅整个 store 导致终端 cwd/status
 // 等高频更新触发无关组件（尤其是未打开的弹窗）重渲染。
 import { useShallow } from 'zustand/react/shallow';
-import { UpdateModal, type UpdateDownloadProgress } from './UpdateModal';
+import { UpdateModal, type UpdateDownloadProgress, type UpdateInstallPhase } from './UpdateModal';
 import type { AgentBridgeRequest, AgentProvider, DownloadProgress, RemoteFileEntry, RuntimeResourceSource, TerminalSession, TunnelRecord } from './types';
 import { useDraggableModals } from './useDraggableModals';
 import { ConnectionFormModal } from './components/ConnectionFormModal';
@@ -180,7 +180,7 @@ export default function App() {
   const [explorerViewport, setExplorerViewport] = useState({ height: 0, scrollTop: 0 });
   // 首页工具栏“更新”按钮触发的弹窗状态，与设置页内的更新弹窗独立，避免互相抢占打开状态。
   const [appUpdateModalOpen, setAppUpdateModalOpen] = useState(false);
-  const [appUpdateInstalling, setAppUpdateInstalling] = useState(false);
+  const [appUpdatePhase, setAppUpdatePhase] = useState<UpdateInstallPhase | null>(null);
   const [appUpdateProgress, setAppUpdateProgress] = useState<UpdateDownloadProgress | null>(null);
   const [appUpdateError, setAppUpdateError] = useState<string | null>(null);
   // 标题栏”更新”按钮主动检测时的进行态，用于图标旋转反馈并避免重复点击。
@@ -387,28 +387,22 @@ export default function App() {
     });
   }, []);
   const handleAppInstallUpdate = useCallback(async () => {
-    if (!updateCheckResult) {
+    if (!updateCheckResult || appUpdatePhase) {
       return;
     }
-    setAppUpdateInstalling(true);
+    setAppUpdatePhase('downloading');
     setAppUpdateError(null);
     setAppUpdateProgress(null);
     try {
-      await installUpdate(updateCheckResult);
-      // 安装程序已由后端启动，关闭首页弹窗即可，避免遮挡安装器窗口。
-      setAppUpdateModalOpen(false);
+      // 安装成功时由 Windows 安装器重新打开应用，旧弹窗保持安装状态直到退出。
+      await installUpdate(updateCheckResult, () => setAppUpdatePhase('installing'));
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      if (reason === t('downloadCancelled')) {
-        setAppUpdateInstalling(false);
-        return;
-      }
       setAppUpdateError(t('statusUpdateInstallFailed', { reason }));
-    } finally {
-      setAppUpdateInstalling(false);
+      setAppUpdatePhase(null);
       setAppUpdateProgress(null);
     }
-  }, [installUpdate, t, updateCheckResult]);
+  }, [appUpdatePhase, installUpdate, t, updateCheckResult]);
 
   // 推荐动作由应用自身下载并即时注册；安装器不参与网络请求，失败时主界面仍可继续使用系统字体。
   const handleFontPackDownload = useCallback(async () => {
@@ -2219,7 +2213,7 @@ export default function App() {
         onSelectChannel={(channel) => { void useAppStore.getState().setUpdateChannel(channel).catch((error) => setAppUpdateCheckError(String(error))); }}
         releaseUrl={updateReleasePage(settings.updateChannel)}
         checkError={appUpdateCheckError}
-        downloading={appUpdateInstalling}
+        phase={appUpdatePhase}
         error={appUpdateError}
         onClose={() => {
           setAppUpdateModalOpen(false);

@@ -5,6 +5,21 @@
   Push $0
   Push $1
 
+  ; 一键更新由旧版完成 SSH、隧道与 Broker 清理。等旧进程真正退出再处理锁定的配套文件。
+  ClearErrors
+  ${GetOptions} $CMDLINE "/MYTERMINAL_PID=" $0
+  ${IfNot} ${Errors}
+    System::Call 'kernel32::OpenProcess(i 0x00100000, i 0, i r0) p .r1'
+    ${If} $1 != 0
+      System::Call 'kernel32::WaitForSingleObject(p r1, i 60000) i .r0'
+      System::Call 'kernel32::CloseHandle(p r1)'
+      ${If} $0 != 0
+        MessageBox MB_ICONSTOP|MB_OK "等待旧版 MyTerminal 退出超时。请关闭旧版后重新更新。"
+        Abort
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+
   ; 只终止可执行路径与当前安装目录完全一致的 CLI，避免误伤开发目录或其它 MyTerminal 安装实例。
   ; 随包附带的 x64\OpenConsole.exe（新版 ConPTY 宿主）若因主程序异常退出而残留，同样会锁住文件，按同一规则清理；
   ; 只匹配本安装目录下的路径，绝不影响 Windows Terminal 等其它程序自带的 OpenConsole。

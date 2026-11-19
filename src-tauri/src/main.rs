@@ -151,7 +151,10 @@ fn main() {
         None
     };
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(windows)]
+    let builder = builder.manage(commands::updates::installer::UpdateInstallerState::default());
+    builder
         // single-instance 必须第一个注册：第二个进程启动时其回调触发并聚焦已有窗口，随后新进程自行退出。
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             focus_existing_main_window(app);
@@ -161,6 +164,11 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .manage(app_state)
         .setup(move |app| {
+            #[cfg(windows)]
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || commands::updates::installer::cleanup_applied_installers(&handle));
+            }
             // 配置中的主窗口在 setup 前已同步创建 WebView2 环境，浏览器参数已生效，此时还原不影响渲染模式。
             if let Some(original) = webview_args_env_to_restore {
                 restore_webview_browser_args_env(original);
@@ -327,7 +335,10 @@ fn main() {
             commands::get_command_suggestions,
             commands::updates::check_for_updates,
             commands::updates::fetch_remote_background_image,
-            commands::updates::download_and_install_update,
+            #[cfg(windows)]
+            commands::updates::installer::prepare_windows_update,
+            #[cfg(windows)]
+            commands::updates::installer::apply_windows_update,
             commands::updates::open_external_url,
             commands::config_sync::export_local_config,
             commands::config_sync::import_local_config,

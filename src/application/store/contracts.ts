@@ -134,7 +134,7 @@ export type StoreState = {
   importLocalConfig: (file: File) => Promise<void>;
   checkForUpdates: () => Promise<UpdateCheckResult>;
   setUpdateChannel: (channel: UpdateChannel) => Promise<void>;
-  installUpdate: (result: UpdateCheckResult) => Promise<string>;
+  installUpdate: (result: UpdateCheckResult, onInstalling: () => void) => Promise<void>;
   refreshFontPack: () => Promise<FontPackStatus>;
   downloadFontPack: () => Promise<FontPackStatus>;
   importFontPack: (sourcePath: string) => Promise<FontPackStatus>;

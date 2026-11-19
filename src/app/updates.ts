@@ -1,5 +1,5 @@
 /* 本模块由 App 入口按功能域拆出，保留原组件行为与状态订阅方式。 */
-import { translate } from '../i18n';
+import { translate, type TranslationKey } from '../i18n';
 import type { UiLanguage } from '../types';
 
 // 后端更新检查错误以 "update_error:{code}:{params}" 结构返回（避免内嵌语言造成中英混杂），
@@ -49,4 +49,18 @@ export const translateUpdateCheckError = (reason: string, language: UiLanguage):
     default:
       return translate(language, 'statusUpdateCheckFailed', { reason });
   }
+};
+
+// 安装阶段的后端错误按语言展示，网络原因继续复用 Release 请求的翻译规则。
+const installErrors: ReadonlyMap<string, TranslationKey> = new Map([
+  ['update_install:transfers_active', 'statusUpdateTransfersActive'],
+  ['update_install:invalid_signature', 'statusUpdateSignatureInvalid'],
+  ['update_install:already_running', 'statusUpdateAlreadyRunning'],
+  ['update_install:unavailable', 'statusUpdateInstallerMissing'],
+]);
+
+export const translateUpdateInstallError = (reason: string, language: UiLanguage): string => {
+  const key = installErrors.get(reason);
+  if (key) return translate(language, key);
+  return reason.startsWith('update_error:') ? translateUpdateCheckError(reason, language) : reason;
 };

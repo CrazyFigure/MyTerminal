@@ -34,7 +34,6 @@ import type {
   TunnelRecord,
   TunnelUpdateRequest,
   UpdateCheckResult,
-  UpdateChannel,
 } from './types';
 
 import {
@@ -385,19 +384,10 @@ export const backend = {
   },
   // 更新检测优先当前保存的渠道，失败后尝试另一来源；Web 预览返回当前版本。
   checkForUpdates: () => call<UpdateCheckResult>('check_for_updates', undefined, mockUpdateCheckResult),
-  // 更新安装只接收后端检测出的 Release 安装包，桌面端下载到临时目录后启动安装器。
-  installUpdate: (result: UpdateCheckResult, channel: UpdateChannel) =>
-    call<string>(
-      'download_and_install_update',
-      // 安装包大小来自 Release 元数据，后端用它判断本地缓存是否完整，避免复用半截文件。
-      {
-        downloadUrl: result.installerDownloadUrl,
-        assetName: result.installerAssetName,
-        installerSize: result.installerSize ?? null,
-        channel,
-      },
-      'C:/Software/WorkSpace/MyTerminal/.myterminal-data/updates/MyTerminal-update.exe',
-    ),
+  // 两步 IPC 共用检测结果的实际渠道；安装只接收后端验签通过的包 ID。
+  prepareUpdate: (result: UpdateCheckResult) =>
+    call<string>('prepare_windows_update', { version: result.latestVersion, channel: result.channel }, ''),
+  applyUpdate: (id: string) => call<void>('apply_windows_update', { id }, undefined),
   // 外链打开在桌面端交给后端调用系统浏览器；Web 预览下保持成功返回，方便本地界面调试。
   openExternalUrl: (url: string) => call<boolean>('open_external_url', { url }, true),
   // 远程背景图经后端 reqwest 下载并转为 data URL，绕开 WebView 自动附带的 Referer，避免图床防盗链返回 403。Web 预览无后端时回退为原始地址。

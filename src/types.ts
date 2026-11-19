@@ -532,6 +532,8 @@ export interface UpdateCheckResult {
   releaseUrl: string;
   publishedAt?: string;
   updateAvailable: boolean;
+  // 签名附件齐全且当前为匹配的 Windows 安装版时开启应用内安装。
+  canUpdateInPlace: boolean;
   installerAssetName?: string;
   installerDownloadUrl?: string;
   installerSize?: number;
