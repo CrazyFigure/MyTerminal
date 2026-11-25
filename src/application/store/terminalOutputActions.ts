@@ -10,6 +10,7 @@ import type { SessionStatus, TerminalOutputChunk } from "../../types";
 import type { StoreGet, StoreSet, StoreState } from "./contracts";
 import { remoteFilesRequestCoordinator } from "./remoteFileActions";
 import { cancelAutoReconnect, emitTerminalOutput } from "./sessionRuntime";
+import { handleLocalTerminalOutputChunk } from "../terminal/localTerminalNotifier";
 
 export type TerminalOutputActions = Pick<StoreState, "pollTerminalOutputs">;
 
@@ -69,8 +70,9 @@ export const createTerminalOutputActions = (
         statusBySession.set(chunk.sessionId, chunk.status);
       }
       const session = sessionById.get(chunk.sessionId);
-      // 远端 Shell 的标题多为 PS1 自带的 user@host:cwd，只对本地终端解析标题。
+      // 远端 Shell 的标题多为 PS1 自带的 user@host:cwd，只对本地终端解析标题与完成提醒。
       if (session?.kind === "local" && chunk.content) {
+        handleLocalTerminalOutputChunk(session, chunk.content);
         const scan = scanTerminalTitle(
           chunk.content,
           pendingTitleBySession.get(chunk.sessionId),

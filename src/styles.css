@@ -2214,6 +2214,25 @@ select:disabled {
   box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.16);
 }
 
+/* 后台本地终端完成任务或等待用户输入时的轻量未读提醒点，切回标签后立即消失。 */
+.session-tab-alert-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  margin-left: 2px;
+}
+
+.session-tab-alert-dot.is-completed {
+  background: var(--app-accent, #4f46e5);
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.2);
+}
+
+.session-tab-alert-dot.is-needs_input {
+  background: #d97706;
+  box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.22);
+}
+
 .toolbar-icon-only {
   justify-content: center;
   width: 32px;

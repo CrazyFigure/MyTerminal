@@ -1029,6 +1029,9 @@ pub mod updates;
 // Agent Bridge 与内置对话命令由独立适配层注册。
 pub mod agent;
 
+// 本地终端系统通知与点击跳转命令。
+pub mod notifications;
+
 // 连接配置、RDP 与连接持久化命令由独立适配层注册。
 pub mod connections;
 use connections::validate_connection_profile;

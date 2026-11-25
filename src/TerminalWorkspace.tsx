@@ -31,6 +31,11 @@ import {
   replayTerminalEntries,
   subscribeTerminalOutput,
 } from './terminal/terminalOutputHub';
+import {
+  notifyLocalTerminalViewportUpdated,
+  recordLocalTerminalResize,
+  registerLocalTerminalViewportReader,
+} from './application/terminal/localTerminalNotifier';
 
 import {
   buildTerminalTheme,
@@ -1556,6 +1561,9 @@ export function TerminalWorkspace({
     // 远端 PTY 列宽与 xterm 渲染列宽保持一致（横向模式下同步扩列），确保 readline/zle 翻历史命令时
     // 按正确宽度重绘；代价是横向扩列时 top/docker 等程序也会看到被撑宽的终端尺寸。
     if (currentSession && (!previousSize || previousSize.cols !== nextSize.cols || previousSize.rows !== nextSize.rows)) {
+      if (currentSession.kind === 'local') {
+        recordLocalTerminalResize(currentSession.id);
+      }
       void backend.resizeTerminal(currentSession.id, nextLayoutSize.remoteCols, nextLayoutSize.rows);
     }
     scheduleTerminalCursorFollow();
@@ -2252,6 +2260,9 @@ export function TerminalWorkspace({
       // 终端输出直接写入 xterm，避免每 80ms 把大字符串塞进 React 状态导致输入、滚动和选区明显卡顿。
       terminalRef.current?.write(chunk.content, () => {
         markTerminalOutputParsed(chunk.sessionId);
+        if (sessionRef.current?.kind === 'local') {
+          notifyLocalTerminalViewportUpdated(chunk.sessionId);
+        }
         // 只有 SSH 横向长行会因新内容扩列；wrap 模式的 Claude 流式帧不能每块都插入无意义的布局测量。
         if (terminalLineWrapModeRef.current === 'horizontal') {
           scheduleTerminalSizeSync();
@@ -2278,6 +2289,50 @@ export function TerminalWorkspace({
       () => sessionVisibleRef.current,
     );
   }, [session?.id]);
+
+  // 为本地终端注册当前活跃视口读取器，供完成/待确认提醒在输出落定后读取屏幕内容；
+  // 并在点击系统通知激活对应标签时主动聚焦 xterm 输入框（即使该标签原本已处于可见状态）。
+  useEffect(() => {
+    const targetSessionId = session?.id;
+    const isLocal = session?.kind === 'local';
+    const unregisterReader =
+      targetSessionId && isLocal
+        ? registerLocalTerminalViewportReader(targetSessionId, () => {
+            const terminal = terminalRef.current;
+            if (!terminal) {
+              return [];
+            }
+            const buffer = terminal.buffer.active;
+            const startRow = buffer.baseY;
+            const endRow = Math.min(buffer.length - 1, buffer.baseY + terminal.rows - 1);
+            const lines: string[] = [];
+            for (let row = startRow; row <= endRow; row += 1) {
+              const line = buffer.getLine(row);
+              if (line) {
+                lines.push(line.translateToString(true));
+              }
+            }
+            return lines;
+          })
+        : undefined;
+
+    const handleFocusRequest = (event: Event) => {
+      const requestedId = (event as CustomEvent<string>).detail;
+      if (!targetSessionId || requestedId !== targetSessionId) {
+        return;
+      }
+      pendingFocusSessionIdRef.current = targetSessionId;
+      window.requestAnimationFrame(() => {
+        focusPendingTerminalInput();
+      });
+    };
+
+    window.addEventListener('myterminal-focus-session', handleFocusRequest);
+    return () => {
+      unregisterReader?.();
+      window.removeEventListener('myterminal-focus-session', handleFocusRequest);
+    };
+  }, [session?.id, session?.kind]);
 
   // 会话列表变化时回收本实例的按会话渲染状态。全局的输出缓存、行号时间线和协议状态机
   // 由分屏容器统一回收：分屏后本组件有多个实例，全局回收只能执行一次。

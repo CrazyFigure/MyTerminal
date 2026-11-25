@@ -26,6 +26,8 @@ type SessionActionKeys =
   | 'requestSuggestions'
   | 'sendCommand'
   | 'sendTerminalData'
+  | 'sendTerminalProtocolReply'
+  | 'clearLocalTerminalAlert'
   | 'passthroughTab'
   | 'runQuickCommand'
   | 'pollTerminalOutputs';

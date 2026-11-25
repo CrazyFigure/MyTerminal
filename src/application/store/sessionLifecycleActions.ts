@@ -16,6 +16,7 @@ import {
 } from "../../features/terminal/splitLayout";
 import type { LocalTerminalProfile, TerminalSession } from "../../types";
 import { clearQueuedTerminalInput } from "../terminal/inputQueue";
+import { removeLocalTerminalNotificationTracker } from "../terminal/localTerminalNotifier";
 import type { StoreGet, StoreSet, StoreState } from "./contracts";
 import {
   autoReconnectBySession,
@@ -29,6 +30,7 @@ import { statusText } from "./status";
 type LifecycleActionKeys =
   | "setActiveConnectionId"
   | "selectSession"
+  | "clearLocalTerminalAlert"
   | "openSession"
   | "adoptSession"
   | "saveLocalTerminals"
@@ -109,7 +111,10 @@ export const createSessionLifecycleActions = (
         ...panelFieldsForFocusedSession(state, matchedSession),
       };
     }),
-  selectSession: (activeSessionId) =>
+  selectSession: (activeSessionId) => {
+    if (activeSessionId) {
+      void backend.clearLocalTerminalNotification(activeSessionId).catch(() => undefined);
+    }
     set((state) => {
       const matchedSession = activeSessionId
         ? state.sessions.find((item) => item.id === activeSessionId)
@@ -118,10 +123,21 @@ export const createSessionLifecycleActions = (
       const layout = activeSessionId
         ? focusSessionInLayout(state, activeSessionId)
         : undefined;
+      const shouldClearAlert = Boolean(
+        activeSessionId && state.localTerminalAlerts[activeSessionId],
+      );
+      const nextLocalTerminalAlerts = shouldClearAlert
+        ? Object.fromEntries(
+            Object.entries(state.localTerminalAlerts).filter(
+              ([id]) => id !== activeSessionId,
+            ),
+          )
+        : state.localTerminalAlerts;
 
       return {
         activeSessionId,
         ...layout,
+        ...(shouldClearAlert ? { localTerminalAlerts: nextLocalTerminalAlerts } : {}),
         activeConnectionId:
           matchedSession?.kind === "local"
             ? undefined
@@ -129,7 +145,23 @@ export const createSessionLifecycleActions = (
         // 侧栏与下栏跟随焦点：点到哪一格，面板就换到那台机器。
         ...panelFieldsForFocusedSession(state, matchedSession),
       };
-    }),
+    });
+  },
+
+  clearLocalTerminalAlert: (sessionId) => {
+    if (!sessionId) {
+      return;
+    }
+    void backend.clearLocalTerminalNotification(sessionId).catch(() => undefined);
+    set((state) => {
+      if (!state.localTerminalAlerts[sessionId]) {
+        return state;
+      }
+      const next = { ...state.localTerminalAlerts };
+      delete next[sessionId];
+      return { localTerminalAlerts: next };
+    });
+  },
 
   openSession: async (connectionId) => {
     const connection = get().connections.find(
@@ -442,6 +474,9 @@ export const createSessionLifecycleActions = (
         state.sessions.findIndex((item) => item.id === sessionId),
       );
       clearQueuedTerminalInput(sessionId);
+      // 重连本地终端会更换会话 ID，同步销毁旧会话的通知追踪与系统通知避免串台或残留红点。
+      removeLocalTerminalNotificationTracker(sessionId);
+      void backend.clearLocalTerminalNotification(sessionId).catch(() => undefined);
       set({
         loading: true,
         statusMessage: statusText(
@@ -464,8 +499,10 @@ export const createSessionLifecycleActions = (
           const insertIndex = Math.min(previousIndex, filteredSessions.length);
           const nextCommandBuffers = { ...current.commandBuffers };
           const nextSuggestions = { ...current.suggestions };
+          const nextLocalTerminalAlerts = { ...current.localTerminalAlerts };
           delete nextCommandBuffers[sessionId];
           delete nextSuggestions[sessionId];
+          delete nextLocalTerminalAlerts[sessionId];
 
           return {
             loading: false,
@@ -479,6 +516,7 @@ export const createSessionLifecycleActions = (
             activeConnectionId: undefined,
             commandBuffers: nextCommandBuffers,
             suggestions: nextSuggestions,
+            localTerminalAlerts: nextLocalTerminalAlerts,
             files: [],
             currentRemotePath: "",
             // 本地终端无远端面板，熄灭加载态。
@@ -748,6 +786,7 @@ export const createSessionLifecycleActions = (
     // 用户主动关闭标签：取消自动重连，避免关闭瞬间迟到的 error 事件又拉起重连。
     cancelAutoReconnect(sessionId);
     clearQueuedTerminalInput(sessionId);
+    removeLocalTerminalNotificationTracker(sessionId);
     try {
       await backend.closeSession(sessionId);
     } catch {
@@ -770,8 +809,10 @@ export const createSessionLifecycleActions = (
           : nextActiveSession?.connectionId;
       const nextCommandBuffers = { ...state.commandBuffers };
       const nextSuggestions = { ...state.suggestions };
+      const nextAlerts = { ...state.localTerminalAlerts };
       delete nextCommandBuffers[sessionId];
       delete nextSuggestions[sessionId];
+      delete nextAlerts[sessionId];
       // 关闭标签同时收拾分屏：该会话所在的格子按统一规则回收（四格全满时留空位）。
       const nextSplitLayout = removeSessionFromSplitLayout(state.splitLayout, sessionId);
 
@@ -782,6 +823,7 @@ export const createSessionLifecycleActions = (
         historyLoading: false,
         commandBuffers: nextCommandBuffers,
         suggestions: nextSuggestions,
+        localTerminalAlerts: nextAlerts,
         splitLayout: nextSplitLayout,
         // 焦点转到了别的标签，面板跟着换过去；同一台机器则保留已加载的文件树。
         ...panelFieldsForFocusedSession(state, nextActiveSession),
@@ -790,18 +832,26 @@ export const createSessionLifecycleActions = (
     });
   },
 
-  applySplitDrop: (target, sessionId) =>
+  applySplitDrop: (target, sessionId) => {
+    void backend.clearLocalTerminalNotification(sessionId).catch(() => undefined);
     set((state) => {
       const droppedSession = state.sessions.find((item) => item.id === sessionId);
+      const nextAlerts = state.localTerminalAlerts[sessionId]
+        ? Object.fromEntries(
+            Object.entries(state.localTerminalAlerts).filter(([id]) => id !== sessionId),
+          )
+        : state.localTerminalAlerts;
       return {
         splitLayout: applySplitDropToLayout(state.splitLayout, target, sessionId),
         // 拖入分屏即视为聚焦该格，和点击标签的行为保持一致：焦点、连接、面板一起跟过去。
         activeSessionId: sessionId,
         activeConnectionId:
           droppedSession?.kind === "local" ? undefined : droppedSession?.connectionId,
+        ...(nextAlerts !== state.localTerminalAlerts ? { localTerminalAlerts: nextAlerts } : {}),
         ...panelFieldsForFocusedSession(state, droppedSession),
       };
-    }),
+    });
+  },
 
   closeSplitPane: (paneId) =>
     set((state) => ({

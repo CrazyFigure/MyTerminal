@@ -2,7 +2,9 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type
 
 import { resolveTerminalColors } from '../../terminal/support/theme';
 import { retainTerminalSessions } from '../../terminal/terminalOutputHub';
+import { retainLocalTerminalNotificationTrackers } from '../../application/terminal/localTerminalNotifier';
 import { useTerminalBackgroundImageStyle } from '../../terminal/useTerminalBackgroundImageStyle';
+import type { LocalTerminalNotificationKind } from '../../domain/terminal/localTerminalNotifications';
 import type { AppSettings, ConnectionProfile, LocalTerminalCommand, TerminalSession } from '../../types';
 import type { TranslationKey } from '../../i18n';
 import { SplitDividerHandle } from './SplitDividerHandle';
@@ -35,6 +37,7 @@ type Props = {
   dropHint: string;
   dropTarget: SplitDropTarget | null;
   layout: SplitLayout;
+  localTerminalAlerts?: Record<string, LocalTerminalNotificationKind>;
   // 预设命令列表，透传给各格标签栏用于展示本地终端自定义图标。
   localTerminalCommands: LocalTerminalCommand[];
   onCloseSession: (sessionId: string) => void | Promise<unknown>;
@@ -60,6 +63,7 @@ export function TerminalSplitGrid({
   dropHint,
   dropTarget,
   layout,
+  localTerminalAlerts,
   localTerminalCommands,
   onCloseSession,
   onOpenContextMenu,
@@ -116,7 +120,9 @@ export function TerminalSplitGrid({
   // 全局输出缓存/行号时间线的回收放在容器里执行一次；若下沉到每个终端实例，
   // 分屏后同一份回收会按实例数重复触发。
   useEffect(() => {
-    retainTerminalSessions(new Set(liveSessionIds));
+    const live = new Set(liveSessionIds);
+    retainTerminalSessions(live);
+    retainLocalTerminalNotificationTrackers(live);
   }, [liveSessionIds]);
 
   // 背景图统一画在整个网格上：不论几个分屏，所有格子的标签栏与终端共用同一张图。
@@ -174,6 +180,7 @@ export function TerminalSplitGrid({
               activeSessionId={pane.activeSessionId}
               connections={connections}
               layout={layout}
+              localTerminalAlerts={localTerminalAlerts}
               localTerminalCommands={localTerminalCommands}
               onCloseSession={onCloseSession}
               onOpenContextMenu={onOpenContextMenu}

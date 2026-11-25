@@ -18,6 +18,7 @@ import {
   terminalBulkInputFlushDelayMs,
   terminalInteractiveInputFlushDelayMs,
 } from "../terminal/inputQueue";
+import { recordLocalTerminalUserInput } from "../terminal/localTerminalNotifier";
 import type { StoreGet, StoreSet, StoreState } from "./contracts";
 import { statusText } from "./status";
 
@@ -27,6 +28,7 @@ type TerminalInputActionKeys =
   | "requestSuggestions"
   | "sendCommand"
   | "sendTerminalData"
+  | "sendTerminalProtocolReply"
   | "passthroughTab"
   | "runQuickCommand";
 
@@ -105,6 +107,8 @@ export const createTerminalInputActions = (
     if (isUsableRemoteSession(session)) {
       // 底栏与终端本体共用同一 PTY，命令跟踪状态也必须消费完全相同的 payload，避免后续 Enter 读取到旧行。
       extractCompletedTerminalInputLines(sessionId, terminalPayload);
+    } else {
+      recordLocalTerminalUserInput(session, terminalPayload);
     }
     await backend.writeTerminalInput(sessionId, terminalPayload);
 
@@ -136,6 +140,7 @@ export const createTerminalInputActions = (
     const terminalData = isUsableRemoteSession(session)
       ? normalizeRemoteTerminalContinuationEnter(sessionId, data)
       : data;
+    recordLocalTerminalUserInput(session, terminalData);
 
     let nextRemotePath: string | undefined;
     let completedInputLines: string[] = [];
@@ -195,7 +200,18 @@ export const createTerminalInputActions = (
     }
   },
 
+  // 协议能力回包（如 XTVERSION）必须绕过用户按键记录，避免机器自动应答被当成用户在敲键盘。
+  sendTerminalProtocolReply: async (sessionId, data) => {
+    const session = get().sessions.find((item) => item.id === sessionId);
+    if (!isUsableTerminalSession(session) || !data) {
+      return;
+    }
+    queueTerminalInput(sessionId, data, 0);
+  },
+
   passthroughTab: async (sessionId) => {
+    const session = get().sessions.find((item) => item.id === sessionId);
+    recordLocalTerminalUserInput(session, "\t");
     queueTerminalInput(sessionId, "\t");
     await flushQueuedTerminalInput(sessionId);
     void get().pollTerminalOutputs();

@@ -250,7 +250,10 @@ export default function App() {
     selectSession,
     sendCommand,
     sendTerminalData,
+    sendTerminalProtocolReply,
+    clearLocalTerminalAlert,
     sessions,
+    localTerminalAlerts,
     localTerminalCommands,
     setCommandBuffer,
     setStatusMessage,
@@ -314,7 +317,10 @@ export default function App() {
       selectSession: state.selectSession,
       sendCommand: state.sendCommand,
       sendTerminalData: state.sendTerminalData,
+      sendTerminalProtocolReply: state.sendTerminalProtocolReply,
+      clearLocalTerminalAlert: state.clearLocalTerminalAlert,
       sessions: state.sessions,
+      localTerminalAlerts: state.localTerminalAlerts,
       // 预设命令用于本地终端标签展示自定义图标。
       localTerminalCommands: state.localTerminals.commands,
       setCommandBuffer: state.setCommandBuffer,
@@ -536,13 +542,67 @@ export default function App() {
     [activeSessionId, sessions],
   );
   // 终端能力协商（XTVERSION）由 terminalOutputHub 全局判定并按原会话 ID 回包：分屏后终端区会挂载多个
-  // 实例，若由实例各自回包，同一条查询会被重复响应写进同一条 PTY。这里只注入写入通道。
+  // 实例，若由实例各自回包，同一条查询会被重复响应写进同一条 PTY。这里只注入专用协议写入通道，不计入用户输入。
   useEffect(() => {
     setTerminalProtocolReplySender((sessionId, data) => {
-      void sendTerminalData(sessionId, data);
+      void sendTerminalProtocolReply(sessionId, data);
     });
     return () => setTerminalProtocolReplySender(undefined);
-  }, [sendTerminalData]);
+  }, [sendTerminalProtocolReply]);
+
+  // 点击本地终端系统通知后，切回对应会话标签并立即把焦点交还给该标签的 xterm 输入区。
+  useEffect(() => {
+    const activateTargetSession = (sessionId?: string) => {
+      if (!sessionId) {
+        return;
+      }
+      const exists = useAppStore.getState().sessions.some((item) => item.id === sessionId);
+      if (!exists) {
+        return;
+      }
+      selectSession(sessionId);
+      window.dispatchEvent(
+        new CustomEvent('myterminal-focus-session', { detail: sessionId }),
+      );
+    };
+
+    const handleWebActivation = (event: Event) => {
+      activateTargetSession((event as CustomEvent<string>).detail);
+    };
+    window.addEventListener('myterminal-activate-session', handleWebActivation);
+
+    let unlistenFn: (() => void) | undefined;
+    let isMounted = true;
+    void backend
+      .listenLocalTerminalNotificationActivated((payload) => {
+        activateTargetSession(payload?.sessionId);
+      })
+      .then((unlisten) => {
+        if (isMounted) {
+          unlistenFn = unlisten;
+        } else {
+          unlisten();
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      isMounted = false;
+      window.removeEventListener('myterminal-activate-session', handleWebActivation);
+      unlistenFn?.();
+    };
+  }, [selectSession]);
+
+  // 窗口回到前台时，清理当前已激活标签遗留的未读提醒标记与系统操作中心条目。
+  useEffect(() => {
+    const handleWindowFocus = () => {
+      if (activeSessionId) {
+        clearLocalTerminalAlert(activeSessionId);
+      }
+    };
+    window.addEventListener('focus', handleWindowFocus);
+    return () => window.removeEventListener('focus', handleWindowFocus);
+  }, [activeSessionId, clearLocalTerminalAlert]);
   // 远端文件、运行状态和历史都必须绑定到已经打开的终端会话，避免仅选中连接时提前拉取远端数据。
   const hasActiveRemoteSession = isUsableRemoteSession(focusedSession);
   const activeRemoteConnectionId = hasActiveRemoteSession ? focusedSession?.connectionId : undefined;
@@ -2282,6 +2342,7 @@ export default function App() {
             dropHint={splitDropHint}
             dropTarget={splitDropTarget}
             layout={splitLayout}
+            localTerminalAlerts={localTerminalAlerts}
             localTerminalCommands={localTerminalCommands}
             onCloseSession={closeSession}
             onOpenContextMenu={(sessionId, x, y) => {

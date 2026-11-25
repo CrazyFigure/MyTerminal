@@ -841,6 +841,57 @@ export function AppearanceSettingsSection({
               </strong>
             </div>
           </div>
+          <div className="agent-toggle-field settings-toggle-row settings-inline-toggle settings-centered-toggle">
+            <Tooltip content={t("localTerminalNotificationHint")} side="top">
+              <span id="local-terminal-notification-enabled-label">
+                {t("fieldLocalTerminalNotification")}
+              </span>
+            </Tooltip>
+            <div className="settings-inline-toggle-control">
+              <input
+                aria-label={t("fieldLocalTerminalNotification")}
+                checked={draftSettings.localTerminalNotificationEnabled ?? true}
+                type="checkbox"
+                onChange={(event) =>
+                  onUpdate((current) => ({
+                    ...current,
+                    localTerminalNotificationEnabled: event.target.checked,
+                  }))
+                }
+              />
+              <strong>
+                {(draftSettings.localTerminalNotificationEnabled ?? true)
+                  ? t("enabled")
+                  : t("disabled")}
+              </strong>
+            </div>
+          </div>
+          <div className="agent-toggle-field settings-toggle-row settings-inline-toggle settings-centered-toggle">
+            <Tooltip content={t("localTerminalNotificationBackgroundOnlyHint")} side="top">
+              <span id="local-terminal-notification-background-only-label">
+                {t("fieldLocalTerminalNotificationBackgroundOnly")}
+              </span>
+            </Tooltip>
+            <div className="settings-inline-toggle-control">
+              <input
+                aria-label={t("fieldLocalTerminalNotificationBackgroundOnly")}
+                checked={draftSettings.localTerminalNotificationOnlyWhenBackground ?? true}
+                disabled={!(draftSettings.localTerminalNotificationEnabled ?? true)}
+                type="checkbox"
+                onChange={(event) =>
+                  onUpdate((current) => ({
+                    ...current,
+                    localTerminalNotificationOnlyWhenBackground: event.target.checked,
+                  }))
+                }
+              />
+              <strong>
+                {(draftSettings.localTerminalNotificationOnlyWhenBackground ?? true)
+                  ? t("enabled")
+                  : t("disabled")}
+              </strong>
+            </div>
+          </div>
         </div>
       </section>
 

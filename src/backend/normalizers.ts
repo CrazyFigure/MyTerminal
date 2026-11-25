@@ -260,6 +260,10 @@ export const normalizeSettings = (settings: AppSettings): AppSettings => ({
   // 旧配置没有行号栏字段时默认显示，避免升级后左侧信息突然消失。
   terminalGutterShowLineNumber: settings.terminalGutterShowLineNumber !== false,
   terminalGutterShowTimestamp: settings.terminalGutterShowTimestamp !== false,
+  // 旧配置没有本地终端通知开关时默认开启，并默认仅在后台/非当前标签时提醒。
+  localTerminalNotificationEnabled: settings.localTerminalNotificationEnabled !== false,
+  localTerminalNotificationOnlyWhenBackground:
+    settings.localTerminalNotificationOnlyWhenBackground !== false,
   // 分组和连接排序来自用户拖拽结果，规范化时只去重清洗，不再按字母重新排序。
   connectionGroups: Array.from(
     new Set(

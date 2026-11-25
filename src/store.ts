@@ -11,6 +11,7 @@ import { createSettingsActions } from './application/store/settingsActions';
 import { createConnectionActions } from './application/store/connectionActions';
 import { createFavoriteActions } from './application/store/favoriteActions';
 import { createSessionActions } from './application/store/sessionActions';
+import { configureLocalTerminalNotifier } from './application/terminal/localTerminalNotifier';
 import {
   emptyConnectionDraft,
   normalizeLoadedConnection,
@@ -41,6 +42,7 @@ export const useAppStore = create<StoreState>((set, get) => ({
   favoriteModalState: null,
   commandBuffers: {},
   suggestions: {},
+  localTerminalAlerts: {},
   files: [],
   currentRemotePath: '',
   filesLoading: false,
@@ -210,3 +212,28 @@ export const useAppStore = create<StoreState>((set, get) => ({
   ...createTunnelActions(set, get),
   ...createFavoriteActions(set, get),
 }));
+
+// 把 Store 上下文与标签提醒写入能力注入本地终端通知协调器，避免 application/terminal 直接耦合 Zustand 实例。
+configureLocalTerminalNotifier({
+  getContext: () => {
+    const state = useAppStore.getState();
+    return {
+      activeSessionId: state.activeSessionId,
+      sessions: state.sessions,
+      settings: state.settings,
+    };
+  },
+  onAlert: (sessionId, kind) => {
+    useAppStore.setState((state) => {
+      if (state.localTerminalAlerts[sessionId] === kind) {
+        return state;
+      }
+      return {
+        localTerminalAlerts: {
+          ...state.localTerminalAlerts,
+          [sessionId]: kind,
+        },
+      };
+    });
+  },
+});

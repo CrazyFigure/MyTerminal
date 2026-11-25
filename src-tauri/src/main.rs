@@ -282,6 +282,8 @@ fn main() {
             commands::agent::reject_agent_bridge_request,
             commands::agent::clear_agent_bridge_requests,
             commands::agent::show_agent_bridge_notification,
+            commands::notifications::show_local_terminal_notification,
+            commands::notifications::clear_local_terminal_notification,
             commands::agent::reset_agent_bridge_token,
             commands::agent::set_agent_bridge_enabled,
             commands::agent::list_agent_providers,

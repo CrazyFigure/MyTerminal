@@ -330,6 +330,9 @@ impl StorageService {
             terminal_gutter_show_timestamp: stored.terminal_gutter_show_timestamp,
             compact_sidebar: stored.compact_sidebar,
             show_command_ghost: stored.show_command_ghost,
+            local_terminal_notification_enabled: stored.local_terminal_notification_enabled,
+            local_terminal_notification_only_when_background: stored
+                .local_terminal_notification_only_when_background,
             connection_groups: stored.connection_groups,
             connection_order: stored.connection_order,
             quick_commands: stored.quick_commands,
@@ -397,6 +400,9 @@ impl StorageService {
             terminal_gutter_show_timestamp: settings.terminal_gutter_show_timestamp,
             compact_sidebar: settings.compact_sidebar,
             show_command_ghost: settings.show_command_ghost,
+            local_terminal_notification_enabled: settings.local_terminal_notification_enabled,
+            local_terminal_notification_only_when_background: settings
+                .local_terminal_notification_only_when_background,
             connection_groups: settings.connection_groups.clone(),
             connection_order: settings.connection_order.clone(),
             quick_commands: settings.quick_commands.clone(),

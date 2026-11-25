@@ -1,5 +1,6 @@
 import type { SplitDropTarget, SplitLayout } from '../../features/terminal/splitLayout';
 import type { InsertPlacement } from '../../app/connectionGroups';
+import type { LocalTerminalNotificationKind } from '../../domain/terminal/localTerminalNotifications';
 import type {
   AppSettings,
   ConnectionDraft,
@@ -42,6 +43,8 @@ export type StoreState = {
   } | null;
   commandBuffers: Record<string, string>;
   suggestions: Record<string, string[]>;
+  /** 后台本地终端触发提醒后保留未读标签标记，切回或聚焦该标签后清除。 */
+  localTerminalAlerts: Record<string, LocalTerminalNotificationKind>;
   files: RemoteFileEntry[];
   currentRemotePath: string;
   filesLoading: boolean;
@@ -104,6 +107,8 @@ export type StoreState = {
   requestSuggestions: (sessionId: string, connectionId: string | undefined, prefix: string) => Promise<void>;
   sendCommand: (sessionId: string) => Promise<void>;
   sendTerminalData: (sessionId: string, data: string) => Promise<void>;
+  sendTerminalProtocolReply: (sessionId: string, data: string) => Promise<void>;
+  clearLocalTerminalAlert: (sessionId: string) => void;
   passthroughTab: (sessionId: string) => Promise<void>;
   runQuickCommand: (command: string) => Promise<void>;
   pollTerminalOutputs: (sessionId?: string) => Promise<void>;

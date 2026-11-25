@@ -248,6 +248,10 @@ pub struct StoredAppSettings {
     pub compact_sidebar: bool,
     #[serde(default = "default_show_command_ghost")]
     pub show_command_ghost: bool,
+    #[serde(default = "default_local_terminal_notification_enabled")]
+    pub local_terminal_notification_enabled: bool,
+    #[serde(default = "default_local_terminal_notification_only_when_background")]
+    pub local_terminal_notification_only_when_background: bool,
     #[serde(default = "default_connection_groups")]
     pub connection_groups: Vec<String>,
     #[serde(default = "default_connection_order")]

@@ -133,6 +133,28 @@ export const backend = {
     approveLabel: string;
     rejectLabel: string;
   }) => call<boolean>('show_agent_bridge_notification', { request }, true),
+  // 本地终端任务完成或等待用户输入时发送系统提醒，点击通知后会聚焦窗口并回传对应会话 ID。
+  showLocalTerminalNotification: (request: {
+    sessionId: string;
+    kind: 'completed' | 'needs_input';
+    title: string;
+    body: string;
+    onlyWhenBackground: boolean;
+    sessionIsActive: boolean;
+  }) => call<boolean>('show_local_terminal_notification', { request }, false),
+  clearLocalTerminalNotification: (sessionId: string) =>
+    call<boolean>('clear_local_terminal_notification', { sessionId }, true),
+  listenLocalTerminalNotificationActivated: (
+    handler: (payload: { sessionId: string; kind: string }) => void,
+  ): Promise<UnlistenFn> => {
+    if (!isTauriRuntime()) {
+      return Promise.resolve(() => undefined);
+    }
+    return listen<{ sessionId: string; kind: string }>(
+      'local-terminal-notification-activated',
+      (event) => handler(event.payload),
+    );
+  },
   resetAgentBridgeToken: () => call<AgentBridgeStatus>('reset_agent_bridge_token', undefined, mockAgentBridgeStatus),
   setAgentBridgeEnabled: (enabled: boolean) => call<AgentBridgeStatus>('set_agent_bridge_enabled', { enabled }, mockAgentBridgeStatus),
   testConnection: (connection: ConnectionProfile) => {

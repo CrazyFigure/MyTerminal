@@ -284,6 +284,10 @@ export interface AppSettings {
   terminalGutterShowTimestamp: boolean;
   compactSidebar: boolean;
   showCommandGhost: boolean;
+  /** 本地终端任务完成或等待用户输入时是否发送系统提醒。 */
+  localTerminalNotificationEnabled?: boolean;
+  /** 为 true 时仅在窗口后台或非当前激活标签时发送系统提醒。 */
+  localTerminalNotificationOnlyWhenBackground?: boolean;
   /** 连接管理中显式维护的分组路径；即使分组下暂无连接，也需要持久保留。 */
   connectionGroups: string[];
   /** 连接列表的人工排序；旧配置没有该字段时按连接文件原顺序兜底。 */

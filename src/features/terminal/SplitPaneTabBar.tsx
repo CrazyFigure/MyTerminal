@@ -1,6 +1,7 @@
 import { type RefObject } from 'react';
 
 import { SessionTabBar } from '../sessions';
+import type { LocalTerminalNotificationKind } from '../../domain/terminal/localTerminalNotifications';
 import type { AppSettings, ConnectionProfile, LocalTerminalCommand, TerminalSession } from '../../types';
 import type { TranslationKey } from '../../i18n';
 import type { SplitDropTarget, SplitLayout } from './splitLayout';
@@ -9,6 +10,7 @@ type Props = {
   activeSessionId: string | undefined;
   connections: ConnectionProfile[];
   layout: SplitLayout;
+  localTerminalAlerts?: Record<string, LocalTerminalNotificationKind>;
   localTerminalCommands: LocalTerminalCommand[];
   onCloseSession: (sessionId: string) => void | Promise<unknown>;
   onOpenContextMenu: (sessionId: string, x: number, y: number) => void;
@@ -29,6 +31,7 @@ export function SplitPaneTabBar({
   activeSessionId,
   connections,
   layout,
+  localTerminalAlerts,
   localTerminalCommands,
   onCloseSession,
   onOpenContextMenu,
@@ -49,6 +52,7 @@ export function SplitPaneTabBar({
         closeLabel={t('close')}
         connections={connections}
         layoutKey={paneId}
+        localTerminalAlerts={localTerminalAlerts}
         localTerminalCommands={localTerminalCommands}
         localTerminalTitle={t('localTerminalTitle')}
         onCloseSession={onCloseSession}

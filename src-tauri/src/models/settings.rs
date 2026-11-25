@@ -120,6 +120,16 @@ pub(super) fn default_show_command_ghost() -> bool {
     true
 }
 
+// 本地终端任务完成或等待用户输入时默认开启系统提醒。
+pub(super) fn default_local_terminal_notification_enabled() -> bool {
+    true
+}
+
+// 默认仅在窗口未聚焦或任务不在当前标签时弹出系统提醒，减少前台交互时的打扰。
+pub(super) fn default_local_terminal_notification_only_when_background() -> bool {
+    true
+}
+
 pub(super) fn default_agent_bridge_timeout_sec() -> u16 {
     60
 }
@@ -570,6 +580,12 @@ pub struct AppSettings {
     pub compact_sidebar: bool,
     #[serde(default = "default_show_command_ghost")]
     pub show_command_ghost: bool,
+    /// 本地终端任务完成或等待用户输入时是否发送系统通知。
+    #[serde(default = "default_local_terminal_notification_enabled")]
+    pub local_terminal_notification_enabled: bool,
+    /// 为 true 时仅在窗口后台/最小化或目标标签未激活时提醒，避免前台交互被打断。
+    #[serde(default = "default_local_terminal_notification_only_when_background")]
+    pub local_terminal_notification_only_when_background: bool,
     /// 连接分组需要独立持久化，保证空分组也能在连接管理中保留。
     #[serde(default = "default_connection_groups")]
     pub connection_groups: Vec<String>,
@@ -624,6 +640,9 @@ impl Default for AppSettings {
             terminal_gutter_show_timestamp: default_terminal_gutter_show_timestamp(),
             compact_sidebar: false,
             show_command_ghost: true,
+            local_terminal_notification_enabled: default_local_terminal_notification_enabled(),
+            local_terminal_notification_only_when_background:
+                default_local_terminal_notification_only_when_background(),
             connection_groups: default_connection_groups(),
             connection_order: default_connection_order(),
             quick_commands: default_quick_commands(),

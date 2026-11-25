@@ -26,6 +26,7 @@ import {
   type SplitDropTarget,
   type SplitLayout,
 } from '../terminal/splitLayout';
+import type { LocalTerminalNotificationKind } from '../../domain/terminal/localTerminalNotifications';
 import type { AppSettings, ConnectionProfile, LocalTerminalCommand, TerminalSession } from '../../types';
 import { sessionStatusClassName } from './presentation';
 
@@ -84,6 +85,7 @@ type Props = {
   closeLabel: string;
   connections: ConnectionProfile[];
   layoutKey: string;
+  localTerminalAlerts?: Record<string, LocalTerminalNotificationKind>;
   /** 预设命令列表：本地终端标签据此展示用户在预设命令里配置的自定义图标。 */
   localTerminalCommands: LocalTerminalCommand[];
   localTerminalTitle: string;
@@ -109,6 +111,7 @@ export function SessionTabBar({
   closeLabel,
   connections,
   layoutKey,
+  localTerminalAlerts,
   localTerminalCommands,
   localTerminalTitle,
   onCloseSession,
@@ -447,6 +450,9 @@ export function SessionTabBar({
             const tabTooltipContent = session.terminalTopic
               ? `${tabTooltipTitle}\n${session.terminalTopic}`
               : tabTooltipTitle;
+            const sessionAlert = session.id !== activeSessionId
+              ? localTerminalAlerts?.[session.id]
+              : undefined;
             return (
               <div
                 key={session.id}
@@ -499,6 +505,12 @@ export function SessionTabBar({
                       />
                     )}
                     <span>{sessionLabel}</span>
+                    {sessionAlert ? (
+                      <span
+                        aria-hidden="true"
+                        className={`session-tab-alert-dot is-${sessionAlert}`}
+                      />
+                    ) : null}
                   </button>
                 </Tooltip>
                 <Tooltip

@@ -42,6 +42,8 @@ export const defaultSettings: AppSettings = {
   terminalGutterShowTimestamp: true,
   compactSidebar: false,
   showCommandGhost: true,
+  localTerminalNotificationEnabled: true,
+  localTerminalNotificationOnlyWhenBackground: true,
   connectionGroups: [],
   connectionOrder: [],
   quickCommands: ['pwd', 'ls -la', 'docker ps'],
