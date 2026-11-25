@@ -80,8 +80,9 @@ pub(super) fn default_terminal_background_image_fit() -> String {
     "cover".into()
 }
 
+// 新安装和缺少右键偏好的配置都使用菜单。
 pub(super) fn default_terminal_right_click_behavior() -> String {
-    "paste".into()
+    "menu".into()
 }
 
 // 旧设置文件没有长行展示模式时保持原有自动换行行为。

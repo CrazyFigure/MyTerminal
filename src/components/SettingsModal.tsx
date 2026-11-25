@@ -77,6 +77,7 @@ export function SettingsModal({
   onAgentProvidersSaved: (providers: AgentProvider[]) => void;
 }) {
   const {
+    bootstrapped,
     checkForUpdates,
     setUpdateChannel,
     connections,
@@ -96,6 +97,7 @@ export function SettingsModal({
     updateSettings,
   } = useAppStore(
     useShallow((state) => ({
+      bootstrapped: state.bootstrapped,
       checkForUpdates: state.checkForUpdates,
       setUpdateChannel: state.setUpdateChannel,
       connections: state.connections,
@@ -783,6 +785,7 @@ export function SettingsModal({
 
   useEffect(() => {
     if (open) {
+      // 启动期间打开设置时，加载完成后也要同步已保存的偏好，避免草稿停留在初始默认值。
       setDraftSettings(useAppStore.getState().settings);
       setSettingsFeedback(null);
       setSettingsActionRunning('');
@@ -793,7 +796,7 @@ export function SettingsModal({
       setUpdateCheckResult(useAppStore.getState().updateCheckResult);
       void refreshAgentBridgeStatus();
     }
-  }, [open]);
+  }, [open, bootstrapped]);
 
   useEffect(() => {
     if (open) {

@@ -230,6 +230,9 @@ pub struct StoredAppSettings {
     pub terminal_background_image_fit: String,
     #[serde(default = "default_terminal_right_click_behavior")]
     pub terminal_right_click_behavior: String,
+    /// 一次性切换标记，仅写入本机设置文件。
+    #[serde(default)]
+    pub terminal_right_click_menu_migrated: bool,
     #[serde(default = "default_terminal_line_wrap_mode")]
     pub terminal_line_wrap_mode: String,
     #[serde(default = "default_terminal_match_selection")]

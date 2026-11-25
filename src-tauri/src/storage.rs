@@ -5,6 +5,7 @@ use std::{
 };
 
 use serde::{de::DeserializeOwned, Serialize};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -277,6 +278,33 @@ impl StorageService {
         Ok(())
     }
 
+    /// 启动时一次性把旧配置的右键行为切换为菜单，保留其他原始设置。
+    pub fn migrate_terminal_right_click_behavior(&self) -> Result<(), AppError> {
+        let path = self.settings_path();
+        let Some(mut stored) = self.read_json_or_default::<Option<Map<String, Value>>>(&path)?
+        else {
+            return Ok(());
+        };
+        if stored.get("terminal_right_click_menu_migrated") == Some(&Value::Bool(true)) {
+            return Ok(());
+        }
+
+        stored.insert("terminal_right_click_behavior".into(), "menu".into());
+        stored.insert("terminal_right_click_menu_migrated".into(), true.into());
+        // 偏好与标记一起替换，失败时保留旧文件供下次启动重试。
+        let temporary = self
+            .data_dir
+            .join(format!("settings-{}.tmp", uuid::Uuid::new_v4()));
+        let result = self.write_json(&temporary, &stored).and_then(|()| {
+            fs::rename(&temporary, &path)?;
+            Ok(())
+        });
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
+    }
+
     pub fn load_settings(&self, crypto: &CryptoService) -> Result<AppSettings, AppError> {
         let stored =
             self.read_json_or_default::<Option<StoredAppSettings>>(&self.settings_path())?;
@@ -391,6 +419,7 @@ impl StorageService {
             terminal_background_image_opacity: settings.terminal_background_image_opacity,
             terminal_background_image_fit: settings.terminal_background_image_fit.clone(),
             terminal_right_click_behavior: settings.terminal_right_click_behavior.clone(),
+            terminal_right_click_menu_migrated: true,
             terminal_line_wrap_mode: settings.terminal_line_wrap_mode.clone(),
             terminal_match_selection: settings.terminal_match_selection,
             terminal_command_input_highlight: settings.terminal_command_input_highlight,
@@ -792,6 +821,65 @@ fn normalize_local_terminal_settings(settings: LocalTerminalSettings) -> LocalTe
         }
     }
     normalized
+}
+
+#[cfg(test)]
+mod app_settings_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn new_settings_default_to_menu_without_creating_a_settings_file() {
+        let directory =
+            std::env::temp_dir().join(format!("myterminal-settings-{}", uuid::Uuid::new_v4()));
+        let storage = StorageService::new(directory.clone()).unwrap();
+        let crypto = CryptoService::new(storage.key_path()).unwrap();
+
+        storage.migrate_terminal_right_click_behavior().unwrap();
+        let settings = storage.load_settings(&crypto).unwrap();
+        assert_eq!(settings.terminal_right_click_behavior, "menu");
+        assert!(!storage.settings_file_path().exists());
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn legacy_right_click_behavior_migrates_only_once() {
+        let directory =
+            std::env::temp_dir().join(format!("myterminal-settings-{}", uuid::Uuid::new_v4()));
+        let storage = StorageService::new(directory.clone()).unwrap();
+        let crypto = CryptoService::new(storage.key_path()).unwrap();
+        let path = storage.settings_file_path();
+        // 使用尚未包含迁移标记的旧文件，验证迁移保留先前版本的原始字段。
+        let mut legacy = json!({
+            "theme_mode": "dark",
+            "terminal_right_click_behavior": "paste",
+            "webdav_remote_settings_path": "/custom"
+        });
+        storage.write_json(&path, &legacy).unwrap();
+
+        storage.migrate_terminal_right_click_behavior().unwrap();
+        legacy["terminal_right_click_behavior"] = json!("menu");
+        legacy["terminal_right_click_menu_migrated"] = json!(true);
+        assert_eq!(storage.read_json_or_default::<Value>(&path).unwrap(), legacy);
+        let mut settings = storage.load_settings(&crypto).unwrap();
+        assert_eq!(settings.terminal_right_click_behavior, "menu");
+
+        // 用户手动切回粘贴后，重新打开同一数据目录也要保留该选择。
+        settings.terminal_right_click_behavior = "paste".into();
+        storage.save_settings(&settings, &crypto).unwrap();
+        let restarted = StorageService::new(directory.clone()).unwrap();
+        restarted.migrate_terminal_right_click_behavior().unwrap();
+        assert_eq!(
+            restarted
+                .load_settings(&crypto)
+                .unwrap()
+                .terminal_right_click_behavior,
+            "paste"
+        );
+
+        fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 #[cfg(test)]

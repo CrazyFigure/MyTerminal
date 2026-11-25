@@ -195,6 +195,8 @@ fn main() {
             // 不能依赖 WebView 完成前端 bootstrap；窗口隐藏、页面加载失败时 MCP 仍应可用。
             {
                 let state = app.state::<AppState>();
+                // 在允许前端读取设置前完成一次性迁移；此时单实例插件已接管重复启动。
+                state.storage.migrate_terminal_right_click_behavior()?;
                 agent_bridge::set_app_handle(&state.agent_bridge, app.handle().clone())?;
                 let settings = state.storage.load_settings(&state.crypto)?;
                 agent_bridge::ensure_server(

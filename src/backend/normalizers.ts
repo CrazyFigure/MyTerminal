@@ -14,6 +14,7 @@ import {
   resolveLocalTerminalStartupCommand,
 } from '../domain/settings/localTerminal';
 import { normalizeTerminalCommandInputColor } from '../domain/settings/commandInputColor';
+import { defaultSettings } from '../domain/settings/defaults';
 
 export const isTauriRuntime = () =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -245,7 +246,9 @@ export const normalizeSettings = (settings: AppSettings): AppSettings => ({
     ? settings.terminalBackgroundImageFit
     : "cover",
   terminalRightClickBehavior:
-    settings.terminalRightClickBehavior === "menu" ? "menu" : "paste",
+    settings.terminalRightClickBehavior === 'paste'
+      ? 'paste'
+      : defaultSettings.terminalRightClickBehavior,
   // 旧配置没有长行展示字段时保持原来的自动换行，避免升级后突然改变终端布局。
   terminalLineWrapMode: terminalLineWrapModes.has(settings.terminalLineWrapMode)
     ? settings.terminalLineWrapMode

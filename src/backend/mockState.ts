@@ -16,6 +16,7 @@ import type {
   TunnelRecord,
   UpdateCheckResult,
 } from "../types";
+import { defaultSettings } from '../domain/settings/defaults';
 import { normalizeProxyConfig, nowIso } from "./normalizers";
 
 export const mockSettings: AppSettings = {
@@ -36,7 +37,7 @@ export const mockSettings: AppSettings = {
   backgroundImage: "",
   terminalBackgroundImageOpacity: 0.18,
   terminalBackgroundImageFit: "cover",
-  terminalRightClickBehavior: "paste",
+  terminalRightClickBehavior: defaultSettings.terminalRightClickBehavior,
   terminalLineWrapMode: "wrap",
   terminalMatchSelection: true,
   terminalCommandInputHighlight: true,

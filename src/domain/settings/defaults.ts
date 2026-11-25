@@ -31,7 +31,8 @@ export const defaultSettings: AppSettings = {
   backgroundImage: '',
   terminalBackgroundImageOpacity: 0.18,
   terminalBackgroundImageFit: 'cover',
-  terminalRightClickBehavior: 'paste',
+  // 终端右键默认打开菜单，直接粘贴仍可在设置中选择。
+  terminalRightClickBehavior: 'menu',
   terminalLineWrapMode: 'wrap',
   terminalMatchSelection: true,
   terminalCommandInputHighlight: true,
