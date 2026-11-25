@@ -6,6 +6,7 @@ import {
   useState,
   type CSSProperties,
   type DragEvent,
+  type RefObject,
 } from 'react';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import {
@@ -76,6 +77,10 @@ interface AgentChatPanelProps {
   codeFontFamily: string;
   /** 粘贴超过该字数时折叠为文本块附件，0 表示关闭。 */
   pasteBlockThreshold: number;
+  /** Tauri 原生拖放接管外部文件后，由宿主路由当前对话面板的悬停态与落点路径。 */
+  panelRef?: RefObject<HTMLDivElement | null>;
+  nativeDropActive?: boolean;
+  onRegisterNativeDropHandler?: (handler: ((paths: string[]) => void) | undefined) => void;
   t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
 }
 
@@ -102,6 +107,9 @@ export function AgentChatPanel({
   lineHeight,
   codeFontFamily,
   pasteBlockThreshold,
+  panelRef,
+  nativeDropActive,
+  onRegisterNativeDropHandler,
   t,
 }: AgentChatPanelProps) {
   const [providerId, setProviderId] = useState('');
@@ -590,6 +598,15 @@ export function AgentChatPanel({
     [addAttachments],
   );
 
+  // Tauri 原生拖放开启后，外部文件经宿主按落点坐标路由到这里。
+  useEffect(() => {
+    if (!onRegisterNativeDropHandler) {
+      return undefined;
+    }
+    onRegisterNativeDropHandler(addAttachmentPaths);
+    return () => onRegisterNativeDropHandler(undefined);
+  }, [addAttachmentPaths, onRegisterNativeDropHandler]);
+
   // 浏览器侧文件（截图粘贴、拖入）拿不到本地路径，直接在前端读取。
   const addAttachmentFiles = useCallback(
     (files: File[]) =>
@@ -794,9 +811,12 @@ export function AgentChatPanel({
     return <div className="empty-state">{t('agentChatNoProvider')}</div>;
   }
 
+  const effectiveDropActive = dropActive || Boolean(nativeDropActive);
+
   return (
     <div
-      className={`agent-chat-panel ${dropActive ? 'is-drop-active' : ''}`}
+      ref={panelRef}
+      className={`agent-chat-panel ${effectiveDropActive ? 'is-drop-active' : ''}`}
       // 字体经 CSS 变量下发：正文与输入框跟随 AI 对话字体设置，代码块与工具输出单独使用终端等宽字体栈。
       style={
         {
@@ -970,7 +990,7 @@ export function AgentChatPanel({
       />
 
       {/* 拖入文件时覆盖整个对话面板的投放提示，按当前模型能力说明可接受的文件类型。 */}
-      {dropActive ? (
+      {effectiveDropActive ? (
         <div className="agent-chat-drop-overlay">
           <Paperclip size={22} />
           <strong>{t('agentAttachDropTitle')}</strong>

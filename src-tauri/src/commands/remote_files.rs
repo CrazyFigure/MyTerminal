@@ -94,7 +94,7 @@ impl SftpSpeedEstimator {
 }
 
 // 命令层进度发射器每个复制分片都检查取消，但只按时间/字节阈值通知 WebView，避免高频 setState 抢占终端渲染。
-struct SftpTransferProgressEmitter {
+pub(super) struct SftpTransferProgressEmitter {
     app: AppHandle,
     transfer_id: String,
     direction: String,
@@ -106,7 +106,7 @@ struct SftpTransferProgressEmitter {
 }
 
 impl SftpTransferProgressEmitter {
-    fn new(
+    pub(super) fn new(
         app: AppHandle,
         transfer_id: String,
         direction: &str,
@@ -124,7 +124,7 @@ impl SftpTransferProgressEmitter {
         }
     }
 
-    fn report(&mut self, snapshot: SftpTransferProgressSnapshot) -> Result<(), AppError> {
+    pub(super) fn report(&mut self, snapshot: SftpTransferProgressSnapshot) -> Result<(), AppError> {
         if self.cancellation.load(Ordering::Acquire) {
             return Err(AppError::Validation("SFTP transfer cancelled".into()));
         }
@@ -174,7 +174,7 @@ impl SftpTransferProgressEmitter {
 }
 
 // 注册任务时拒绝重复 ID，完成后由命令入口统一移除，保证取消表不会随历史任务增长。
-fn register_sftp_transfer(
+pub(super) fn register_sftp_transfer(
     state: &AppState,
     transfer_id: &str,
 ) -> Result<Arc<AtomicBool>, AppError> {
@@ -200,7 +200,7 @@ fn register_sftp_transfer(
     Ok(cancellation)
 }
 
-fn unregister_sftp_transfer(state: &AppState, transfer_id: &str) {
+pub(super) fn unregister_sftp_transfer(state: &AppState, transfer_id: &str) {
     if let Ok(mut transfers) = state.sftp_transfer_cancellations.lock() {
         transfers.remove(transfer_id.trim());
     }

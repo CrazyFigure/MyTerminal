@@ -362,6 +362,27 @@ export interface SftpTransferProgress {
   bytesPerSecond?: number;
 }
 
+export interface RemoteDragEntryInput {
+  path: string;
+  name: string;
+  isDir: boolean;
+  isSymlink?: boolean;
+  size: number;
+  modifiedAt?: string;
+}
+
+export interface RemoteDragOutcome {
+  dropped: boolean;
+  startedAsync: boolean;
+}
+
+export interface SftpDragDownloadStateEvent {
+  transferId: string;
+  title: string;
+  status: 'started' | 'completed' | 'cancelled' | 'error';
+  message?: string;
+}
+
 export interface RuntimePercentMetric {
   percent: number | null;
 }

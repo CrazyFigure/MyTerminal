@@ -1020,6 +1020,8 @@ use remote_access::{
 
 // 远端文件与编辑器命令作为独立应用服务导出；外部 Tauri 命令路径保持 commands::* 不变。
 pub mod remote_files;
+// 远端文件/目录向桌面与资源管理器拖出下载的原生拖放适配器。
+pub mod remote_drag;
 
 // 更新与外部资源访问由独立模块注册，Tauri 命令名称保持不变。
 pub mod updates;

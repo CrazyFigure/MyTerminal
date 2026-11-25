@@ -2,6 +2,7 @@
 export {
   explorerColumnLimits,
   explorerDefaultColumnWidths,
+  explorerModifiedAtColumnIndex,
   explorerOverscanRows,
   explorerRowHeight,
   fileLabelAppearance,
@@ -11,7 +12,11 @@ export {
   formatSpeed,
   formatTimestamp,
   isEditableFile,
+  nextExplorerModifiedSort,
   parentPath,
+  parseModifiedTimestamp,
+  sortExplorerFiles,
+  type ExplorerModifiedSort,
 } from './presentation';
 export { FileExplorerPanel, type FileContextMenuTarget } from './FileExplorerPanel';
 export { FileContextMenu, type RemoteFileClipboard } from './FileContextMenu';

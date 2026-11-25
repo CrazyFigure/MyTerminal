@@ -19,12 +19,15 @@ import type {
   LocalTerminalProfile,
   LocalTerminalSettings,
   LocalTerminalShellConfig,
+  RemoteDragEntryInput,
+  RemoteDragOutcome,
   RemoteFileEntry,
   RuntimeConnectionList,
   RuntimeOverviewEvent,
   RuntimeOverviewSnapshot,
   RuntimeResourceUsage,
   RuntimeResourceUsageRequest,
+  SftpDragDownloadStateEvent,
   SftpTransferProgress,
   StoredAgentConversation,
   SystemFontFamily,
@@ -227,6 +230,23 @@ export const backend = {
     }
     return listen<SftpTransferProgress>('sftp-transfer-progress', (event) => handler(event.payload));
   },
+  // 拖出远端文件到系统桌面/资源管理器时，Windows OLE 拖放通过事件回传真实的开始/结束态。
+  listenSftpDragDownloadState: (handler: (event: SftpDragDownloadStateEvent) => void): Promise<UnlistenFn> => {
+    if (!isTauriRuntime()) {
+      return Promise.resolve(() => undefined);
+    }
+    return listen<SftpDragDownloadStateEvent>('sftp-drag-download-state', (event) => handler(event.payload));
+  },
+  startRemoteFileDrag: (
+    connectionId: string,
+    entries: RemoteDragEntryInput[],
+    transferId: string,
+    title: string,
+  ) =>
+    call<RemoteDragOutcome>('start_remote_file_drag', { connectionId, entries, transferId, title }, {
+      dropped: false,
+      startedAsync: false,
+    }),
   downloadRemoteFile: (connectionId: string, path: string) =>
     call<string>('download_remote_file', { connectionId, path }, `C:/Software/WorkSpace/MyTerminal/.myterminal-data/downloads/${path.split('/').pop() ?? 'download.bin'}`),
   downloadRemotePaths: (connectionId: string, paths: string[], localDir: string | undefined, transferId: string) =>

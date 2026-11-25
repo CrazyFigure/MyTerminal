@@ -54,7 +54,20 @@ zip = { version = "8.4", default-features = false, features = ["deflate-flate2-z
 minisign-verify = "0.3"
 webview2-com = "0.38"
 # RDP 启动前直接写入当前登录会话的 Windows 凭据，避免通过命令行参数暴露密码。
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
+# 文件拖出下载复用 Win32 OLE DoDragDrop 与虚拟文件描述符接口。
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security_Credentials",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_SystemServices",
+    "Win32_UI_Shell",
+] }
 windows-core = "0.61"
 # 终端粘贴资源管理器复制的文件时读取 CF_HDROP 路径列表；已由 arboard 间接引入。
 clipboard-win = "5.4"

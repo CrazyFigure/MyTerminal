@@ -2571,6 +2571,7 @@ select:disabled {
 }
 
 .explorer-shell {
+  position: relative;
   display: flex;
   flex: 1;
   overflow: hidden;
@@ -2591,10 +2592,49 @@ select:disabled {
   background: rgba(224, 231, 255, 0.34);
 }
 
+.explorer-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px;
+  border: 2px dashed rgba(79, 70, 229, 0.72);
+  border-radius: inherit;
+  background: rgba(238, 242, 255, 0.86);
+  color: #312e81;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-align: center;
+  pointer-events: none;
+}
+
+.explorer-drop-overlay span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell.theme-dark .explorer-drop-overlay {
+  border-color: rgba(129, 140, 248, 0.78);
+  background: rgba(30, 27, 75, 0.82);
+  color: #e0e7ff;
+}
+
 .secondary-button.is-drop-target {
   border-color: rgba(79, 70, 229, 0.72);
   background: rgba(224, 231, 255, 0.72);
   color: #312e81;
+}
+
+.secondary-button.is-drop-target.is-drop-hot {
+  border-color: rgba(79, 70, 229, 0.92);
+  background: rgba(199, 210, 254, 0.92);
+  transform: scale(1.04);
 }
 
 .app-shell.theme-dark .explorer-panel.is-local-drop-active .explorer-shell,
@@ -2602,6 +2642,11 @@ select:disabled {
   border-color: rgba(129, 140, 248, 0.78);
   background: rgba(67, 56, 202, 0.3);
   color: #e0e7ff;
+}
+
+.app-shell.theme-dark .secondary-button.is-drop-target.is-drop-hot {
+  border-color: rgba(165, 180, 252, 0.95);
+  background: rgba(79, 70, 229, 0.52);
 }
 
 .explorer-list {

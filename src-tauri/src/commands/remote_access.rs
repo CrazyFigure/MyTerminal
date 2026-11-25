@@ -65,7 +65,7 @@ pub(super) fn normalize_remote_path(path: &str) -> String {
     }
 }
 
-fn remote_file_name(path: &str) -> Option<String> {
+pub(super) fn remote_file_name(path: &str) -> Option<String> {
     normalize_remote_path(path)
         .trim_end_matches('/')
         .rsplit('/')
@@ -74,7 +74,7 @@ fn remote_file_name(path: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn sanitize_local_file_name(name: &str, fallback: &str) -> String {
+pub(super) fn sanitize_local_file_name(name: &str, fallback: &str) -> String {
     let sanitized = name
         .chars()
         .map(|character| {

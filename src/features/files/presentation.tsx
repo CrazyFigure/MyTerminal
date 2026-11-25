@@ -8,6 +8,66 @@ import type { RemoteFileEntry } from '../../types';
 // 文件管理列宽保持紧凑默认值，同时给名称列更多可扩展空间，方便长文件名场景手动拉宽。
 export const explorerDefaultColumnWidths = [220, 70, 62, 160, 92, 118];
 
+// 修改时间列下标与三态排序定义，列头按钮和排序逻辑共用同一处契约。
+export const explorerModifiedAtColumnIndex = 3;
+export type ExplorerModifiedSort = 'default' | 'asc' | 'desc';
+
+// 切换修改时间列排序：第 1 次从早到晚，第 2 次从晚到早，第 3 次恢复默认排序。
+export const nextExplorerModifiedSort = (current: ExplorerModifiedSort): ExplorerModifiedSort => {
+  if (current === 'default') {
+    return 'asc';
+  }
+  if (current === 'asc') {
+    return 'desc';
+  }
+  return 'default';
+};
+
+// 解析远端条目修改时间戳；缺失或非法时间返回 null，确保排序时稳定沉底。
+export const parseModifiedTimestamp = (value?: string): number | null => {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const timestamp = Date.parse(trimmed);
+  return Number.isFinite(timestamp) ? timestamp : null;
+};
+
+// 按修改时间排序远端文件列表；default 保持原始列表顺序，相同或缺失时间维持相对稳定。
+export const sortExplorerFiles = (
+  files: RemoteFileEntry[],
+  sort: ExplorerModifiedSort,
+): RemoteFileEntry[] => {
+  if (sort === 'default' || files.length <= 1) {
+    return files;
+  }
+
+  return files
+    .map((file, index) => ({
+      file,
+      index,
+      timestamp: parseModifiedTimestamp(file.modifiedAt),
+    }))
+    .sort((left, right) => {
+      if (left.timestamp === null && right.timestamp === null) {
+        return left.index - right.index;
+      }
+      if (left.timestamp === null) {
+        return 1;
+      }
+      if (right.timestamp === null) {
+        return -1;
+      }
+      if (left.timestamp !== right.timestamp) {
+        return sort === 'asc'
+          ? left.timestamp - right.timestamp
+          : right.timestamp - left.timestamp;
+      }
+      return left.index - right.index;
+    })
+    .map(({ file }) => file);
+};
+
 
 // 文件管理列表使用固定行高做虚拟滚动，目录文件很多时也只渲染视口附近的行。
 export const explorerRowHeight = 27;

@@ -1,19 +1,12 @@
-import type {
-  CSSProperties,
-  Dispatch,
-  DragEvent as ReactDragEvent,
-  KeyboardEvent as ReactKeyboardEvent,
-  MouseEvent as ReactMouseEvent,
-  PointerEvent as ReactPointerEvent,
-  RefObject,
-  SetStateAction,
-} from 'react';
-import { ArrowUp, CornerDownLeft, Download, FolderUp, RefreshCw, Upload } from 'lucide-react';
+import { useRef, type CSSProperties, type Dispatch, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type RefObject, type SetStateAction } from 'react';
+import { ArrowDown, ArrowUp, ArrowUpDown, CornerDownLeft, Download, FolderUp, RefreshCw, Upload } from 'lucide-react';
 
 import type { TranslationKey } from '../../i18n';
 import type { RemoteFileEntry } from '../../types';
 import { Tooltip } from '../../components/Tooltip';
+import { extractDroppedBrowserFiles } from '../../infrastructure/fileTransfer';
 import {
+  explorerModifiedAtColumnIndex,
   explorerRowHeight,
   fileLabelAppearance,
   formatBytes,
@@ -21,6 +14,7 @@ import {
   formatOwnerGroup,
   formatTimestamp,
   parentPath,
+  type ExplorerModifiedSort,
 } from './presentation';
 
 export type FileContextMenuTarget = (
@@ -33,9 +27,11 @@ export type FileContextMenuTarget = (
 
 type FileExplorerPanelProps = {
   beginColumnResize: (event: ReactPointerEvent<HTMLButtonElement>, index: number) => void;
+  beginRemoteRowDrag: (file: RemoteFileEntry, event: ReactPointerEvent<HTMLButtonElement>) => void;
   currentRemotePath: string;
+  downloadButtonRef: RefObject<HTMLButtonElement | null>;
+  downloadDropActive: boolean;
   downloadPaths: (paths: string[]) => void;
-  dropRemoteSelectionToDownload: (event: ReactDragEvent<HTMLButtonElement>) => void;
   explorerGridMinWidth: number;
   explorerGridStyle: CSSProperties;
   explorerListRef: RefObject<HTMLDivElement | null>;
@@ -46,7 +42,9 @@ type FileExplorerPanelProps = {
   handleScroll: () => void;
   hasActiveRemoteSession: boolean;
   localFileDropActive: boolean;
+  modifiedSort: ExplorerModifiedSort;
   nativeUploadPathSelection: boolean;
+  onToggleModifiedSort: () => void;
   openEntry: (file: RemoteFileEntry) => void;
   pathInput: string;
   refreshFiles: (path?: string) => Promise<void>;
@@ -57,23 +55,28 @@ type FileExplorerPanelProps = {
   selectedFilePathSet: Set<string>;
   selectedFilePaths: string[];
   setFileContextMenu: Dispatch<SetStateAction<FileContextMenuTarget | null>>;
+  setLocalFileDropActive: Dispatch<SetStateAction<boolean>>;
   setPathInput: Dispatch<SetStateAction<string>>;
-  setRemoteDownloadDragPaths: Dispatch<SetStateAction<string[]>>;
   setSelectedFilePath: Dispatch<SetStateAction<string>>;
   setSelectedFilePaths: Dispatch<SetStateAction<string[]>>;
-  startRemoteDownloadDrag: (file: RemoteFileEntry, event: ReactDragEvent<HTMLElement>) => void;
   t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
   uploadFiles: (files: File[]) => void;
   uploadFolder: (files: File[]) => void;
   virtualEntries: Array<{ file: RemoteFileEntry; index: number }>;
 };
 
+const isExternalFileDrag = (event: ReactDragEvent<HTMLElement>) => (
+  Array.from(event.dataTransfer?.types ?? []).includes('Files')
+);
+
 // 文件管理面板是受控视图：选择、传输与远端刷新仍由上层用例负责，组件只组织交互和虚拟列表。
 export function FileExplorerPanel({
   beginColumnResize,
+  beginRemoteRowDrag,
   currentRemotePath,
+  downloadButtonRef,
+  downloadDropActive,
   downloadPaths,
-  dropRemoteSelectionToDownload,
   explorerGridMinWidth,
   explorerGridStyle,
   explorerListRef,
@@ -84,7 +87,9 @@ export function FileExplorerPanel({
   handleScroll,
   hasActiveRemoteSession,
   localFileDropActive,
+  modifiedSort,
   nativeUploadPathSelection,
+  onToggleModifiedSort,
   openEntry,
   pathInput,
   refreshFiles,
@@ -95,18 +100,74 @@ export function FileExplorerPanel({
   selectedFilePathSet,
   selectedFilePaths,
   setFileContextMenu,
+  setLocalFileDropActive,
   setPathInput,
-  setRemoteDownloadDragPaths,
   setSelectedFilePath,
   setSelectedFilePaths,
-  startRemoteDownloadDrag,
   t,
   uploadFiles,
   uploadFolder,
   virtualEntries,
 }: FileExplorerPanelProps) {
+  const browserDragDepthRef = useRef(0);
+  const modifiedSortTooltip = modifiedSort === 'asc'
+    ? t('explorerSortModifiedAscTooltip')
+    : modifiedSort === 'desc'
+      ? t('explorerSortModifiedDescTooltip')
+      : t('explorerSortModifiedDefaultTooltip');
+  const modifiedAriaSort = modifiedSort === 'asc'
+    ? 'ascending'
+    : modifiedSort === 'desc'
+      ? 'descending'
+      : 'none';
+
+  // Web 预览模式没有 Tauri 原生窗口拖放事件，保留 HTML5 文件/目录拖入上传兜底。
+  const browserDropHandlers = !nativeUploadPathSelection ? {
+    onDragEnter: (event: ReactDragEvent<HTMLElement>) => {
+      if (!hasActiveRemoteSession || !isExternalFileDrag(event)) {
+        return;
+      }
+      event.preventDefault();
+      browserDragDepthRef.current += 1;
+      setLocalFileDropActive(true);
+    },
+    onDragOver: (event: ReactDragEvent<HTMLElement>) => {
+      if (!hasActiveRemoteSession || !isExternalFileDrag(event)) {
+        return;
+      }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+    },
+    onDragLeave: (event: ReactDragEvent<HTMLElement>) => {
+      if (!hasActiveRemoteSession || !isExternalFileDrag(event)) {
+        return;
+      }
+      browserDragDepthRef.current = Math.max(0, browserDragDepthRef.current - 1);
+      if (!browserDragDepthRef.current) {
+        setLocalFileDropActive(false);
+      }
+    },
+    onDrop: (event: ReactDragEvent<HTMLElement>) => {
+      if (!hasActiveRemoteSession || !isExternalFileDrag(event)) {
+        return;
+      }
+      event.preventDefault();
+      browserDragDepthRef.current = 0;
+      setLocalFileDropActive(false);
+      void extractDroppedBrowserFiles(event.dataTransfer).then((droppedFiles) => {
+        if (droppedFiles.length) {
+          uploadFiles(droppedFiles);
+        }
+      });
+    },
+  } : {};
+
   return (
-    <section ref={explorerPanelRef} className={`sidebar-panel explorer-panel ${localFileDropActive ? 'is-local-drop-active' : ''}`}>
+    <section
+      ref={explorerPanelRef}
+      className={`sidebar-panel explorer-panel ${localFileDropActive ? 'is-local-drop-active' : ''}`}
+      {...browserDropHandlers}
+    >
       <div className="explorer-toolbar">
         <div className="explorer-toolbar-actions">
           <Tooltip content={t('upload')} side="bottom">
@@ -155,16 +216,10 @@ export function FileExplorerPanel({
           </Tooltip>
           <Tooltip content={remoteDownloadDragPaths.length ? t('dropToDownload') : t('download')} side="bottom">
             <button
-              className={`secondary-button slim ${remoteDownloadDragPaths.length ? 'is-drop-target' : ''}`}
+              ref={downloadButtonRef}
+              className={`secondary-button slim explorer-download-button ${remoteDownloadDragPaths.length ? 'is-drop-target' : ''} ${downloadDropActive ? 'is-drop-hot' : ''}`}
               disabled={!hasActiveRemoteSession}
               onClick={() => downloadPaths(selectedFilePaths)}
-              onDragOver={(event) => {
-                if (hasActiveRemoteSession) {
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = 'copy';
-                }
-              }}
-              onDrop={dropRemoteSelectionToDownload}
               type="button"
             >
               <Download size={14} />
@@ -233,7 +288,29 @@ export function FileExplorerPanel({
           <div className="explorer-list-header" style={explorerGridStyle}>
             {[t('fieldName'), t('fieldSize'), t('fieldType'), t('fieldModifiedAt'), t('fieldPermission'), t('fieldOwnerGroup')].map((label, index, labels) => (
               <span key={`${label}-${index}`} className="explorer-column-header">
-                <span>{label}</span>
+                {index === explorerModifiedAtColumnIndex ? (
+                  <Tooltip content={modifiedSortTooltip} side="top">
+                    <button
+                      aria-label={modifiedSortTooltip}
+                      aria-sort={modifiedAriaSort}
+                      className={`explorer-column-sort-button ${modifiedSort !== 'default' ? 'is-active' : ''}`}
+                      data-sort={modifiedSort}
+                      onClick={onToggleModifiedSort}
+                      type="button"
+                    >
+                      <span>{label}</span>
+                      {modifiedSort === 'asc' ? (
+                        <ArrowUp aria-hidden="true" className="explorer-column-sort-icon" size={12} />
+                      ) : modifiedSort === 'desc' ? (
+                        <ArrowDown aria-hidden="true" className="explorer-column-sort-icon" size={12} />
+                      ) : (
+                        <ArrowUpDown aria-hidden="true" className="explorer-column-sort-icon is-idle" size={12} />
+                      )}
+                    </button>
+                  </Tooltip>
+                ) : (
+                  <span>{label}</span>
+                )}
                 {index < labels.length - 1 ? (
                   <Tooltip content={`${label} 调整列宽`} side="top">
                     <button aria-label={`${label} 调整列宽`} className="explorer-column-resizer" onPointerDown={(event) => beginColumnResize(event, index)} type="button" />
@@ -272,10 +349,8 @@ export function FileExplorerPanel({
                     <button
                       className="explorer-row-main"
                       disabled={!hasActiveRemoteSession}
-                      draggable={hasActiveRemoteSession}
                       onClick={(event) => selectFile(file, event)}
-                      onDragEnd={() => setRemoteDownloadDragPaths([])}
-                      onDragStart={(event) => startRemoteDownloadDrag(file, event)}
+                      onPointerDown={(event) => beginRemoteRowDrag(file, event)}
                       style={explorerGridStyle}
                       type="button"
                     >
@@ -306,6 +381,12 @@ export function FileExplorerPanel({
             <div className="panel-loading-overlay is-inline"><RefreshCw className="is-spinning" size={18} /><span>{t('panelRefreshing')}</span></div>
           ) : <div className="empty-state">{t('remoteFilesEmpty')}</div>}
         </div>
+        {localFileDropActive ? (
+          <div className="explorer-drop-overlay">
+            <Upload size={18} />
+            <span>{t('explorerDropUploadTitle', { path: currentRemotePath || '~' })}</span>
+          </div>
+        ) : null}
       </div>
     </section>
   );

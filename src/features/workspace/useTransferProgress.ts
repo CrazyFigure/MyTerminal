@@ -169,6 +169,83 @@ export function useTransferProgress(
     });
   }, [cancellingMessage]);
 
+  // 外部原生拖放（如系统桌面/资源管理器）异步接管传输时，由后端事件注册并结束对应卡片。
+  const startExternal = useCallback((
+    id: string,
+    title: string,
+    cancelTask: () => Promise<boolean>,
+  ) => {
+    cancelTasksRef.current.set(id, cancelTask);
+    cancellationRequestedRef.current.delete(id);
+    lastProgressReportAtRef.current.set(id, Date.now());
+    setItems((current) => {
+      const nextItem: TransferProgressItem = {
+        id,
+        title,
+        percent: 0,
+        status: 'running',
+        indeterminate: true,
+        cancellable: true,
+      };
+      const existing = current.some((item) => item.id === id);
+      if (existing) {
+        return current.map((item) => (item.id === id ? nextItem : item));
+      }
+      return [nextItem, ...current.slice(0, 3)];
+    });
+  }, []);
+
+  const finishExternal = useCallback((
+    id: string,
+    status: 'completed' | 'cancelled' | 'error',
+    message?: string,
+  ) => {
+    const wasCancelled = cancellationRequestedRef.current.delete(id) || status === 'cancelled';
+    cancelTasksRef.current.delete(id);
+    lastProgressReportAtRef.current.delete(id);
+    setItems((current) => current.map((item) => {
+      if (item.id !== id) {
+        return item;
+      }
+      if (wasCancelled) {
+        return {
+          ...item,
+          status: 'cancelled',
+          message: cancelledMessage,
+          indeterminate: false,
+          cancellable: false,
+          speed: undefined,
+        };
+      }
+      if (status === 'error') {
+        return {
+          ...item,
+          status: 'error',
+          message: message || item.message,
+          indeterminate: false,
+          cancellable: false,
+          speed: undefined,
+        };
+      }
+      return {
+        ...item,
+        percent: 100,
+        status: 'success',
+        message: message || successMessage,
+        indeterminate: false,
+        cancellable: false,
+        speed: undefined,
+      };
+    }));
+    if (!wasCancelled && status === 'completed') {
+      const timer = window.setTimeout(() => {
+        dismissTimersRef.current.delete(timer);
+        dismiss(id);
+      }, 3000);
+      dismissTimersRef.current.add(timer);
+    }
+  }, [cancelledMessage, dismiss, successMessage]);
+
   // 当有正在传输中的任务时，定期检测是否停滞；超过 1.5 秒未收到新进度则将实时速度降为 0 B/s，避免网络挂起时速度数字冻结。
   useEffect(() => {
     const hasRunningItemWithSpeed = items.some((item) => item.status === 'running' && item.speed && item.speed !== '0 B/s');
@@ -205,6 +282,6 @@ export function useTransferProgress(
     lastProgressReportAtRef.current.clear();
   }, []);
 
-  return { cancel, dismiss, items, report, run, runTracked };
+  return { cancel, dismiss, finishExternal, items, report, run, runTracked, startExternal };
 }
 

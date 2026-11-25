@@ -310,6 +310,7 @@ fn main() {
             commands::remote_files::cancel_sftp_transfer,
             commands::remote_files::download_remote_file,
             commands::remote_files::download_remote_paths,
+            commands::remote_drag::start_remote_file_drag,
             commands::remote_files::create_remote_entry,
             commands::remote_files::delete_remote_path,
             commands::remote_files::delete_remote_paths,

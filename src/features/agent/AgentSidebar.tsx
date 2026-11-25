@@ -12,10 +12,13 @@ const AgentChatPanel = lazy(() => import('../../AgentChatPanel').then((module) =
 type Props = {
   approvalRequests: AgentBridgeRequest[];
   bodyRef: RefObject<HTMLDivElement | null>;
+  chatNativeDropActive?: boolean;
+  chatPanelRef?: RefObject<HTMLDivElement | null>;
   collapsed: boolean;
   mounted: boolean;
   onApproveRequest: (request: AgentBridgeRequest) => void;
   onClearRequests: () => void;
+  onRegisterChatDropHandler?: (handler: ((paths: string[]) => void) | undefined) => void;
   onRejectRequest: (request: AgentBridgeRequest) => void;
   onTabChange: (tab: 'chat' | 'requests') => void;
   providers: AgentProvider[];
@@ -30,10 +33,13 @@ type Props = {
 export function AgentSidebar({
   approvalRequests,
   bodyRef,
+  chatNativeDropActive,
+  chatPanelRef,
   collapsed,
   mounted,
   onApproveRequest,
   onClearRequests,
+  onRegisterChatDropHandler,
   onRejectRequest,
   onTabChange,
   providers,
@@ -78,8 +84,11 @@ export function AgentSidebar({
               )}
               fontSize={settings.agentChatFontSize || settings.shellFontSize}
               lineHeight={settings.agentChatLineHeight ?? 1.6}
+              nativeDropActive={chatNativeDropActive}
               onApproveRequest={onApproveRequest}
+              onRegisterNativeDropHandler={onRegisterChatDropHandler}
               onRejectRequest={onRejectRequest}
+              panelRef={chatPanelRef}
               pasteBlockThreshold={settings.agentChatPasteBlockThreshold ?? 500}
               providers={providers}
               t={t}

@@ -755,6 +755,83 @@
   white-space: nowrap;
 }
 
+/* 可排序列头按钮：紧凑贴合表头尺寸，提供清晰的 Hover/Active 与当前排序状态反馈。 */
+.explorer-column-sort-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px 5px;
+  margin: -2px -5px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 0.14s ease, color 0.14s ease, transform 0.1s ease;
+}
+
+.explorer-column-sort-button > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.explorer-column-sort-icon {
+  flex: 0 0 auto;
+  opacity: 0.9;
+}
+
+.explorer-column-sort-icon.is-idle {
+  opacity: 0.48;
+}
+
+.explorer-column-sort-button:hover {
+  background: rgba(148, 163, 184, 0.16);
+  color: var(--app-text);
+}
+
+.explorer-column-sort-button:hover .explorer-column-sort-icon.is-idle {
+  opacity: 0.85;
+}
+
+.explorer-column-sort-button:active {
+  background: rgba(148, 163, 184, 0.26);
+  transform: translateY(0.5px);
+}
+
+.explorer-column-sort-button.is-active {
+  color: var(--app-accent, #4f46e5);
+}
+
+.explorer-column-sort-button.is-active:hover {
+  background: rgba(79, 70, 229, 0.1);
+}
+
+.explorer-column-sort-button.is-active:active {
+  background: rgba(79, 70, 229, 0.18);
+}
+
+.app-shell.theme-dark .explorer-column-sort-button.is-active {
+  color: #a5b4fc;
+}
+
+.app-shell.theme-dark .explorer-column-sort-button.is-active:hover {
+  background: rgba(129, 140, 248, 0.16);
+}
+
+.app-shell.theme-dark .explorer-column-sort-button.is-active:active {
+  background: rgba(129, 140, 248, 0.24);
+}
+
+.explorer-column-sort-button:focus-visible {
+  outline: 1px solid var(--app-active-border);
+  outline-offset: 1px;
+}
+
 .explorer-column-resizer {
   position: absolute;
   top: -3px;

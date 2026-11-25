@@ -6,7 +6,6 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -16,6 +15,7 @@ import {
   Activity,
   ChevronLeft,
   ChevronRight,
+  Download,
   HardDrive,
   MemoryStick,
   RefreshCw,
@@ -73,6 +73,9 @@ import {
   formatBytes,
   formatSpeed,
   isEditableFile,
+  nextExplorerModifiedSort,
+  sortExplorerFiles,
+  type ExplorerModifiedSort,
   type FileContextMenuTarget,
   type FilePromptTarget,
   type RemoteFileClipboard,
@@ -159,8 +162,12 @@ export default function App() {
   const [sessionContextMenu, setSessionContextMenu] = useState<SessionContextMenuTarget | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState('');
   const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
+  const [explorerModifiedSort, setExplorerModifiedSort] = useState<ExplorerModifiedSort>('default');
   const [localFileDropActive, setLocalFileDropActive] = useState(false);
+  const [agentChatDropActive, setAgentChatDropActive] = useState(false);
   const [remoteDownloadDragPaths, setRemoteDownloadDragPaths] = useState<string[]>([]);
+  const [downloadDropActive, setDownloadDropActive] = useState(false);
+  const [remoteDragPreview, setRemoteDragPreview] = useState<{ label: string; x: number; y: number } | null>(null);
   // 底部功能栏默认收起：日常操作集中在终端，命令/隧道/历史面板按需展开，把纵向空间让给终端。
   const [bottomDockCollapsed, setBottomDockCollapsed] = useState(true);
   const [agentBridgeRequests, setAgentBridgeRequests] = useState<AgentBridgeRequest[]>([]);
@@ -172,6 +179,12 @@ export default function App() {
   const bottomPanelActionsRef = useRef<HTMLDivElement | null>(null);
   const explorerScrollRafRef = useRef<number | null>(null);
   const explorerPanelRef = useRef<HTMLElement | null>(null);
+  const explorerDownloadButtonRef = useRef<HTMLButtonElement | null>(null);
+  const agentChatPanelRef = useRef<HTMLDivElement | null>(null);
+  const agentChatDropHandlerRef = useRef<((paths: string[]) => void) | undefined>(undefined);
+  const suppressNextExplorerClickRef = useRef(false);
+  const nativeRemoteDragInFlightRef = useRef(false);
+  const remoteRowDragCleanupRef = useRef<(() => void) | null>(null);
   const agentKnownRequestIdsRef = useRef<Set<string>>(new Set());
   // 右侧 AI 执行栏新请求追加在底部，记录滚动容器用于新请求到达后自动露出最新卡片。
   const agentSidebarBodyRef = useRef<HTMLDivElement | null>(null);
@@ -331,13 +344,16 @@ export default function App() {
   const {
     cancel: cancelTransferProgress,
     dismiss: dismissTransferProgress,
+    finishExternal: finishExternalTransferProgress,
     items: transferProgressItems,
     report: reportTransferProgress,
     run: runTransferProgress,
     runTracked: runTrackedTransferProgress,
+    startExternal: startExternalTransferProgress,
   } = useTransferProgress(t('transferCompleted'), t('transferCancelling'), t('transferCancelled'));
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    let unlistenProgress: (() => void) | undefined;
+    let unlistenDragState: (() => void) | undefined;
     let mounted = true;
     // Tauri 全局事件流按任务 ID 路由到对应卡片；监听失败只降级反馈，不得影响后端传输。
     void backend.listenSftpTransferProgress((progress) => {
@@ -363,18 +379,44 @@ export default function App() {
       );
     }).then((dispose) => {
       if (mounted) {
-        unlisten = dispose;
+        unlistenProgress = dispose;
       } else {
         dispose();
       }
     }).catch(() => {
       // Web 预览或窗口销毁期间无法订阅事件时，保留任务完成/失败反馈，不阻断实际传输。
     });
+    void backend.listenSftpDragDownloadState((event) => {
+      if (!mounted) {
+        return;
+      }
+      if (event.status === 'started') {
+        startExternalTransferProgress(
+          event.transferId,
+          event.title,
+          () => backend.cancelSftpTransfer(event.transferId),
+        );
+        return;
+      }
+      finishExternalTransferProgress(event.transferId, event.status, event.message);
+      if (event.status === 'error' && event.message) {
+        setStatusMessage(t('statusFileOperationFailed', { reason: event.message }));
+      } else if (event.status === 'cancelled') {
+        setStatusMessage(t('transferCancelled'));
+      }
+    }).then((dispose) => {
+      if (mounted) {
+        unlistenDragState = dispose;
+      } else {
+        dispose();
+      }
+    }).catch(() => undefined);
     return () => {
       mounted = false;
-      unlisten?.();
+      unlistenProgress?.();
+      unlistenDragState?.();
     };
-  }, [reportTransferProgress, t]);
+  }, [finishExternalTransferProgress, reportTransferProgress, setStatusMessage, startExternalTransferProgress, t]);
 
   // 首页工具栏“更新”按钮和设置页共用后端安装接口，但下载进度与弹窗状态各自独立。
   const openAppExternalLink = useCallback((url: string) => {
@@ -1248,8 +1290,15 @@ export default function App() {
     [explorerGridMinWidth, explorerGridTemplate],
   );
   const selectedFilePathSet = useMemo(() => new Set(selectedFilePaths), [selectedFilePaths]);
+  const sortedFiles = useMemo(
+    () => sortExplorerFiles(files, explorerModifiedSort),
+    [explorerModifiedSort, files],
+  );
+  const toggleExplorerModifiedSort = useCallback(() => {
+    setExplorerModifiedSort((current) => nextExplorerModifiedSort(current));
+  }, []);
   const explorerVirtualRange = useMemo(() => {
-    const total = files.length;
+    const total = sortedFiles.length;
     if (!total) {
       return { start: 0, end: 0, entries: [] as Array<{ file: RemoteFileEntry; index: number }> };
     }
@@ -1261,9 +1310,9 @@ export default function App() {
     return {
       start,
       end,
-      entries: files.slice(start, end).map((file, offset) => ({ file, index: start + offset })),
+      entries: sortedFiles.slice(start, end).map((file, offset) => ({ file, index: start + offset })),
     };
-  }, [explorerViewport.height, explorerViewport.scrollTop, files]);
+  }, [explorerViewport.height, explorerViewport.scrollTop, sortedFiles]);
   const updateExplorerViewport = useCallback(() => {
     const list = explorerListRef.current;
     if (!list) {
@@ -1348,6 +1397,10 @@ export default function App() {
   }, [currentRemotePath, hasActiveRemoteSession]);
 
   const selectExplorerFile = useCallback((file: RemoteFileEntry, event?: ReactMouseEvent<HTMLElement>) => {
+    if (suppressNextExplorerClickRef.current) {
+      suppressNextExplorerClickRef.current = false;
+      return;
+    }
     const filePath = file.path;
     if (event?.ctrlKey || event?.metaKey) {
       const nextPaths = selectedFilePathSet.has(filePath)
@@ -1359,20 +1412,20 @@ export default function App() {
     }
 
     if (event?.shiftKey && selectedFilePath) {
-      const anchorIndex = files.findIndex((item) => item.path === selectedFilePath);
-      const targetIndex = files.findIndex((item) => item.path === filePath);
+      const anchorIndex = sortedFiles.findIndex((item) => item.path === selectedFilePath);
+      const targetIndex = sortedFiles.findIndex((item) => item.path === filePath);
       if (anchorIndex >= 0 && targetIndex >= 0) {
         const [startIndex, endIndex] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
-        // Shift 范围选择遵循当前列表顺序，方便批量删除连续文件，同时保留最后点击项作为键盘锚点。
+        // Shift 范围选择遵循当前排序后的列表顺序，方便批量处理连续文件，同时保留最后点击项作为键盘锚点。
         setSelectedFilePath(filePath);
-        setSelectedFilePaths(files.slice(startIndex, endIndex + 1).map((item) => item.path));
+        setSelectedFilePaths(sortedFiles.slice(startIndex, endIndex + 1).map((item) => item.path));
         return;
       }
     }
 
     setSelectedFilePath(filePath);
     setSelectedFilePaths([filePath]);
-  }, [files, selectedFilePath, selectedFilePathSet, selectedFilePaths]);
+  }, [selectedFilePath, selectedFilePathSet, selectedFilePaths, sortedFiles]);
   // 上传前检查远端同名项目并询问是否覆盖；返回 null 表示用户取消或检查失败，否则返回是否需要覆盖。
   const confirmUploadOverwrite = useCallback(async (names: string[]): Promise<boolean | null> => {
     let conflicts: string[];
@@ -1526,76 +1579,249 @@ export default function App() {
   const downloadFileWithProgress = useCallback((path: string) => {
     downloadPathsWithProgress([path]);
   }, [downloadPathsWithProgress]);
-  const isDragPositionInsideExplorer = useCallback((position: { x: number; y: number }) => {
-    const rect = explorerPanelRef.current?.getBoundingClientRect();
-    if (!rect) {
+  const isLogicalPointInsideElement = useCallback((element: HTMLElement | null, logicalX: number, logicalY: number) => {
+    if (!element) {
       return false;
     }
-
-    const isInside = (clientX: number, clientY: number) =>
-      clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
-    // 不同平台/缩放下 Tauri 拖放坐标可能表现为物理像素或 CSS 像素；两种坐标都接受，避免拖入文件区后松开无反应。
-    const scale = window.devicePixelRatio || 1;
-    return isInside(position.x, position.y) || isInside(position.x / scale, position.y / scale);
+    const rect = element.getBoundingClientRect();
+    if (logicalX < rect.left || logicalX > rect.right || logicalY < rect.top || logicalY > rect.bottom) {
+      return false;
+    }
+    // 弹窗遮罩盖住底层侧栏时，elementFromPoint 会命中弹窗而非侧栏，阻止穿窗误投。
+    const hit = document.elementFromPoint(logicalX, logicalY);
+    return !hit || element.contains(hit);
   }, []);
-  const startRemoteDownloadDrag = useCallback((file: RemoteFileEntry, event: ReactDragEvent<HTMLElement>) => {
-    const dragPaths = selectedFilePathSet.has(file.path) ? selectedFilePaths : [file.path];
-    if (!selectedFilePathSet.has(file.path)) {
-      setSelectedFilePath(file.path);
-      setSelectedFilePaths([file.path]);
+
+  const startNativeRemoteDragOut = useCallback(async (dragEntries: RemoteFileEntry[]) => {
+    if (!activeRemoteConnectionId || !dragEntries.length || nativeRemoteDragInFlightRef.current) {
+      return;
+    }
+    nativeRemoteDragInFlightRef.current = true;
+    const transferId = crypto.randomUUID();
+    const title = dragEntries.length === 1
+      ? `${t('download')} ${dragEntries[0].name}`
+      : `${t('download')} ${dragEntries.length}`;
+    try {
+      await backend.startRemoteFileDrag(
+        activeRemoteConnectionId,
+        dragEntries.map((entry) => ({
+          path: entry.path,
+          name: entry.name,
+          isDir: entry.isDir,
+          isSymlink: entry.isSymlink,
+          size: entry.size,
+          modifiedAt: entry.modifiedAt,
+        })),
+        transferId,
+        title,
+      );
+    } catch (error) {
+      setStatusMessage(t('statusFileOperationFailed', {
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+    } finally {
+      nativeRemoteDragInFlightRef.current = false;
+    }
+  }, [activeRemoteConnectionId, setStatusMessage, t]);
+
+  // 远端文件指针拖拽：窗口内可投放到下载按钮，指针离开窗口边缘立即切换为 Windows 原生 OLE 拖出下载。
+  const beginRemoteRowDrag = useCallback((file: RemoteFileEntry, event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0 || !hasActiveRemoteSession) {
+      return;
     }
 
-    setRemoteDownloadDragPaths(dragPaths);
-    event.dataTransfer.effectAllowed = 'copy';
-    event.dataTransfer.setData('text/plain', dragPaths.join('\n'));
-  }, [selectedFilePathSet, selectedFilePaths]);
-  const dropRemoteSelectionToDownload = useCallback((event: ReactDragEvent<HTMLElement>) => {
-    event.preventDefault();
-    const textPaths = event.dataTransfer
-      .getData('text/plain')
-      .split(/\r?\n/)
-      .map((path) => path.trim())
-      .filter(Boolean);
-    const paths = remoteDownloadDragPaths.length ? remoteDownloadDragPaths : textPaths;
-    setRemoteDownloadDragPaths([]);
-    downloadPathsWithProgress(paths);
-  }, [downloadPathsWithProgress, remoteDownloadDragPaths]);
+    remoteRowDragCleanupRef.current?.();
+    const dragEntries = selectedFilePathSet.has(file.path)
+      ? sortedFiles.filter((item) => selectedFilePathSet.has(item.path))
+      : [file];
+    const dragPaths = dragEntries.map((item) => item.path);
+    const previewLabel = dragEntries.length === 1
+      ? t('explorerDragDownloadBadge', { name: dragEntries[0].name })
+      : t('explorerDragDownloadMultipleBadge', { count: dragEntries.length });
+
+    let active = false;
+    let handedOffToOs = false;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const thresholdPx = 5;
+
+    const isOverDownloadButton = (clientX: number, clientY: number) => {
+      const button = explorerDownloadButtonRef.current;
+      if (!button) {
+        return false;
+      }
+      const rect = button.getBoundingClientRect();
+      return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+    };
+
+    const cleanup = () => {
+      window.removeEventListener('pointermove', onPointerMove, true);
+      window.removeEventListener('pointerup', onPointerUp, true);
+      window.removeEventListener('pointercancel', onPointerCancel, true);
+      window.removeEventListener('blur', onWindowBlur);
+      if (remoteRowDragCleanupRef.current === cleanup) {
+        remoteRowDragCleanupRef.current = null;
+      }
+      setRemoteDownloadDragPaths([]);
+      setDownloadDropActive(false);
+      setRemoteDragPreview(null);
+    };
+
+    const releaseSuppressClickSoon = () => {
+      window.setTimeout(() => {
+        suppressNextExplorerClickRef.current = false;
+      }, 0);
+    };
+
+    const finishInternalDrop = (clientX: number, clientY: number) => {
+      const shouldDownload = active && !handedOffToOs && isOverDownloadButton(clientX, clientY);
+      cleanup();
+      releaseSuppressClickSoon();
+      if (shouldDownload) {
+        downloadPathsWithProgress(dragPaths);
+      }
+    };
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      // Tauri WebView 在窗口外松手收不到 mouseup/pointerup，必须在捕获阶段复核左键状态。
+      if ((moveEvent.buttons & 1) === 0) {
+        finishInternalDrop(moveEvent.clientX, moveEvent.clientY);
+        return;
+      }
+
+      if (!active) {
+        if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < thresholdPx) {
+          return;
+        }
+        active = true;
+        suppressNextExplorerClickRef.current = true;
+        if (!selectedFilePathSet.has(file.path)) {
+          setSelectedFilePath(file.path);
+          setSelectedFilePaths([file.path]);
+        }
+        setRemoteDownloadDragPaths(dragPaths);
+      }
+
+      const overDownload = isOverDownloadButton(moveEvent.clientX, moveEvent.clientY);
+      const nearWindowEdge = (
+        moveEvent.clientX <= 1
+        || moveEvent.clientY <= 1
+        || moveEvent.clientX >= window.innerWidth - 1
+        || moveEvent.clientY >= window.innerHeight - 1
+      );
+      if (isTauriRuntime() && !overDownload && nearWindowEdge) {
+        handedOffToOs = true;
+        cleanup();
+        releaseSuppressClickSoon();
+        void startNativeRemoteDragOut(dragEntries);
+        return;
+      }
+
+      setDownloadDropActive(overDownload);
+      setRemoteDragPreview({
+        label: previewLabel,
+        x: moveEvent.clientX,
+        y: moveEvent.clientY,
+      });
+    };
+
+    const onPointerUp = (upEvent: PointerEvent) => {
+      finishInternalDrop(upEvent.clientX, upEvent.clientY);
+    };
+
+    const onPointerCancel = () => {
+      cleanup();
+      releaseSuppressClickSoon();
+    };
+
+    const onWindowBlur = () => {
+      cleanup();
+      releaseSuppressClickSoon();
+    };
+
+    remoteRowDragCleanupRef.current = cleanup;
+    window.addEventListener('pointermove', onPointerMove, true);
+    window.addEventListener('pointerup', onPointerUp, true);
+    window.addEventListener('pointercancel', onPointerCancel, true);
+    window.addEventListener('blur', onWindowBlur);
+  }, [
+    downloadPathsWithProgress,
+    hasActiveRemoteSession,
+    selectedFilePathSet,
+    sortedFiles,
+    startNativeRemoteDragOut,
+    t,
+  ]);
+
+  useEffect(() => () => {
+    remoteRowDragCleanupRef.current?.();
+  }, []);
 
   useEffect(() => {
     if (!hasActiveRemoteSession) {
       setLocalFileDropActive(false);
-      return;
     }
+  }, [hasActiveRemoteSession]);
 
+  useEffect(() => {
+    if (agentSidebarCollapsed || agentSidebarTab !== 'chat') {
+      setAgentChatDropActive(false);
+    }
+  }, [agentSidebarCollapsed, agentSidebarTab]);
+
+  // 统一路由 Tauri 原生文件拖放事件到文件树（上传）和 AI 对话（附加文件）。
+  useEffect(() => {
     let unlisten: (() => void) | undefined;
     let isMounted = true;
     let dropInsideExplorer = false;
-    const updateDropActive = (active: boolean) => {
-      if (dropInsideExplorer === active) {
-        return;
+    let dropInsideChat = false;
+    const updateDropState = (nextExplorer: boolean, nextChat: boolean) => {
+      if (dropInsideExplorer !== nextExplorer) {
+        dropInsideExplorer = nextExplorer;
+        setLocalFileDropActive(nextExplorer);
       }
-      dropInsideExplorer = active;
-      setLocalFileDropActive(active);
+      if (dropInsideChat !== nextChat) {
+        dropInsideChat = nextChat;
+        setAgentChatDropActive(nextChat);
+      }
+    };
+    const resolveDropTargets = (position: { x: number; y: number }) => {
+      const scale = window.devicePixelRatio || 1;
+      const logicalX = position.x / scale;
+      const logicalY = position.y / scale;
+      const explorer = Boolean(
+        hasActiveRemoteSession
+        && !sidebarCollapsed
+        && isLogicalPointInsideElement(explorerPanelRef.current, logicalX, logicalY),
+      );
+      const chat = Boolean(
+        !explorer
+        && !agentSidebarCollapsed
+        && agentSidebarTab === 'chat'
+        && isLogicalPointInsideElement(agentChatPanelRef.current, logicalX, logicalY),
+      );
+      return { explorer, chat };
     };
     void import('@tauri-apps/api/window').then(({ getCurrentWindow }) =>
       getCurrentWindow().onDragDropEvent((event) => {
-        if (event.payload.type === 'enter') {
-          updateDropActive(isDragPositionInsideExplorer(event.payload.position));
-          return;
-        }
-        if (event.payload.type === 'over') {
-          updateDropActive(isDragPositionInsideExplorer(event.payload.position));
+        if (event.payload.type === 'enter' || event.payload.type === 'over') {
+          const targets = resolveDropTargets(event.payload.position);
+          updateDropState(targets.explorer, targets.chat);
           return;
         }
         if (event.payload.type === 'drop') {
-          const shouldUpload = dropInsideExplorer || isDragPositionInsideExplorer(event.payload.position);
-          updateDropActive(false);
+          const targets = resolveDropTargets(event.payload.position);
+          const shouldUpload = dropInsideExplorer || targets.explorer;
+          const shouldAttach = !shouldUpload && (dropInsideChat || targets.chat);
+          updateDropState(false, false);
           if (shouldUpload && event.payload.paths.length) {
             uploadLocalPathsWithProgress(event.payload.paths);
+          } else if (shouldAttach && event.payload.paths.length) {
+            agentChatDropHandlerRef.current?.(event.payload.paths);
           }
           return;
         }
-        updateDropActive(false);
+        updateDropState(false, false);
       }),
     ).then((nextUnlisten) => {
       if (isMounted) {
@@ -1604,14 +1830,21 @@ export default function App() {
         nextUnlisten();
       }
     }).catch(() => {
-      // Web 预览环境没有 Tauri Webview 拖放 API，保留普通文件选择上传能力即可。
+      // Web 预览环境没有 Tauri Webview 拖放 API，由各面板的 HTML5 drag/drop 兜底。
     });
 
     return () => {
       isMounted = false;
       unlisten?.();
     };
-  }, [hasActiveRemoteSession, isDragPositionInsideExplorer, uploadLocalPathsWithProgress]);
+  }, [
+    agentSidebarCollapsed,
+    agentSidebarTab,
+    hasActiveRemoteSession,
+    isLogicalPointInsideElement,
+    sidebarCollapsed,
+    uploadLocalPathsWithProgress,
+  ]);
 
   const openRemoteFileWithProgress = useCallback((path: string) => {
     const fileName = path.split('/').filter(Boolean).at(-1) ?? path;
@@ -1696,14 +1929,14 @@ export default function App() {
     downloadFileWithProgress(file.path);
   }, [downloadFileWithProgress, openRemoteFileWithProgress, refreshFiles]);
   const handleExplorerKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (!hasActiveRemoteSession || !files.length) {
+    if (!hasActiveRemoteSession || !sortedFiles.length) {
       return;
     }
 
-    const selectedIndex = files.findIndex((file) => file.path === selectedFilePath);
+    const selectedIndex = sortedFiles.findIndex((file) => file.path === selectedFilePath);
     const moveSelection = (nextIndex: number) => {
       event.preventDefault();
-      const nextPath = files[clamp(nextIndex, 0, files.length - 1)].path;
+      const nextPath = sortedFiles[clamp(nextIndex, 0, sortedFiles.length - 1)].path;
       setSelectedFilePath(nextPath);
       setSelectedFilePaths([nextPath]);
     };
@@ -1719,7 +1952,7 @@ export default function App() {
       return;
     }
     if (event.key === 'ArrowUp') {
-      moveSelection(selectedIndex < 0 ? files.length - 1 : selectedIndex - 1);
+      moveSelection(selectedIndex < 0 ? sortedFiles.length - 1 : selectedIndex - 1);
       return;
     }
     if (event.key === 'Home') {
@@ -1727,14 +1960,14 @@ export default function App() {
       return;
     }
     if (event.key === 'End') {
-      moveSelection(files.length - 1);
+      moveSelection(sortedFiles.length - 1);
       return;
     }
     if (event.key === 'Enter' && selectedIndex >= 0) {
       event.preventDefault();
-      openRemoteFileEntry(files[selectedIndex]);
+      openRemoteFileEntry(sortedFiles[selectedIndex]);
     }
-  }, [deleteSelectedRemotePaths, files, hasActiveRemoteSession, openRemoteFileEntry, selectedFilePath, selectedFilePaths]);
+  }, [deleteSelectedRemotePaths, hasActiveRemoteSession, openRemoteFileEntry, selectedFilePath, selectedFilePaths, sortedFiles]);
 
   useEffect(() => {
     // 目录刷新或断开连接后清理悬空选择，避免键盘上下键落到上一个目录的旧文件。
@@ -1929,20 +2162,24 @@ export default function App() {
 
         <FileExplorerPanel
           beginColumnResize={beginExplorerColumnResize}
+          beginRemoteRowDrag={beginRemoteRowDrag}
           currentRemotePath={currentRemotePath}
+          downloadButtonRef={explorerDownloadButtonRef}
+          downloadDropActive={downloadDropActive}
           downloadPaths={downloadPathsWithProgress}
-          dropRemoteSelectionToDownload={dropRemoteSelectionToDownload}
           explorerGridMinWidth={explorerGridMinWidth}
           explorerGridStyle={explorerGridStyle}
           explorerListRef={explorerListRef}
           explorerPanelRef={explorerPanelRef}
-          files={files}
+          files={sortedFiles}
           filesLoading={filesLoading}
           handleKeyDown={handleExplorerKeyDown}
           handleScroll={handleExplorerScroll}
           hasActiveRemoteSession={hasActiveRemoteSession}
           localFileDropActive={localFileDropActive}
+          modifiedSort={explorerModifiedSort}
           nativeUploadPathSelection={isTauriRuntime()}
+          onToggleModifiedSort={toggleExplorerModifiedSort}
           openEntry={openRemoteFileEntry}
           pathInput={pathInput}
           refreshFiles={refreshFiles}
@@ -1953,11 +2190,10 @@ export default function App() {
           selectedFilePathSet={selectedFilePathSet}
           selectedFilePaths={selectedFilePaths}
           setFileContextMenu={setFileContextMenu}
+          setLocalFileDropActive={setLocalFileDropActive}
           setPathInput={setPathInput}
-          setRemoteDownloadDragPaths={setRemoteDownloadDragPaths}
           setSelectedFilePath={setSelectedFilePath}
           setSelectedFilePaths={setSelectedFilePaths}
-          startRemoteDownloadDrag={startRemoteDownloadDrag}
           t={t}
           uploadFiles={uploadFilesWithProgress}
           uploadFolder={uploadFolderWithProgress}
@@ -2172,10 +2408,15 @@ export default function App() {
         <AgentSidebar
           approvalRequests={agentChatApprovalRequests}
           bodyRef={agentSidebarBodyRef}
+          chatNativeDropActive={agentChatDropActive}
+          chatPanelRef={agentChatPanelRef}
           collapsed={agentSidebarCollapsed}
           mounted={agentSidebarMounted}
           onApproveRequest={approveAgentBridgeRequest}
           onClearRequests={clearAgentBridgeRequests}
+          onRegisterChatDropHandler={(handler) => {
+            agentChatDropHandlerRef.current = handler;
+          }}
           onRejectRequest={rejectAgentBridgeRequest}
           onTabChange={handleAgentSidebarTabChange}
           providers={agentProviders}
@@ -2240,6 +2481,15 @@ export default function App() {
         dismiss={dismissTransferProgress}
         items={transferProgressItems}
       />
+      {remoteDragPreview ? (
+        <div
+          className="drag-preview"
+          style={{ left: remoteDragPreview.x + 12, top: remoteDragPreview.y + 12 }}
+        >
+          <Download size={14} />
+          <span>{remoteDragPreview.label}</span>
+        </div>
+      ) : null}
     </div>
   </TooltipProvider>
   );

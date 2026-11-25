@@ -31,7 +31,7 @@
         "resizable": true,
         "center": true,
         "decorations": false,
-        "dragDropEnabled": false
+        "dragDropEnabled": true
       }
     ]
   },
