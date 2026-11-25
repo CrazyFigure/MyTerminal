@@ -17,11 +17,6 @@
         "scope": ["**"]
       }
     },
-    "trayIcon": {
-      "iconPath": "icons/icon.ico",
-      "tooltip": "MyTerminal",
-      "showMenuOnLeftClick": false
-    },
     "windows": [
       {
         "label": "main",

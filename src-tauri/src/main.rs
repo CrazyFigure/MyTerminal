@@ -16,10 +16,10 @@ use webview2_com::ProcessFailedEventHandler;
 #[cfg(windows)]
 use windows_core::Interface;
 
-// 单实例插件在第二个进程启动时聚焦已有主窗口，避免重复实例；隐藏到托盘后也能被重新拉起。
+// 单实例插件在第二个进程启动时聚焦已有主窗口，避免重复实例。
 fn focus_existing_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        // 可能此前被最小化或隐藏到托盘，需要先还原、显示再抢占前台焦点。
+        // 先还原并显示已有窗口，再切到前台。
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -131,7 +131,7 @@ fn repaint_webview(window: &tauri::WebviewWindow) {
     let _ = window.with_webview(|webview| unsafe {
         let controller = webview.controller();
         let mut visible = windows_core::BOOL::default();
-        // 已隐藏（最小化、托盘）的 WebView 不动，恢复显示后由焦点事件补刷。
+        // 当前不可见的 WebView 在窗口重新获得焦点后补刷。
         if controller.IsVisible(&mut visible).is_err() || !visible.as_bool() {
             return;
         }
