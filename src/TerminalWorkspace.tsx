@@ -44,11 +44,13 @@ import {
   findTerminalInverseCursorColumn,
   isTerminalAiAgentSession,
   isTerminalNonPromptRowText,
+  isWindowsConptySession,
   isWindowsTerminalHost,
   measureTerminalBufferLineContentColumns,
   measureTerminalPromptGlyphEndColumn,
   parseTerminalOscRgbColor,
   parseTerminalRgbColor,
+  resizeTerminalWithConptySync,
   resolveTerminalCellVisualBackgroundRgb,
   resolveTerminalColorContrastRatio,
   resolveTerminalColors,
@@ -79,6 +81,7 @@ import {
   terminalPromptHighlightLightColors,
   terminalPromptSearchRows,
   terminalPromptUpperBorderSearchDistanceRows,
+  windowsConptyTerminalOptions,
   type TerminalGutterMarkerEntry,
   type TerminalPromptAnchor,
   type TerminalPromptRowCache,
@@ -187,6 +190,8 @@ export function TerminalWorkspace({
   const terminalPromptRowCacheRef = useRef<TerminalPromptRowCache | null>(null);
   const lastLocalTerminalInputAtRef = useRef(0);
   const terminalLocalInputEditingRef = useRef(false);
+  // 记录尚未解析完的 xterm 异步写入数量，供 ConPTY 缩放同步区分“空闲立即回正”与“流式屏障回正”。
+  const pendingTerminalWritesRef = useRef(0);
   const remoteTerminalSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const pendingFocusSessionIdRef = useRef<string | null>(session?.id ?? null);
   const terminalLineWrapMode = settings.terminalLineWrapMode ?? 'wrap';
@@ -1067,6 +1072,7 @@ export function TerminalWorkspace({
     containerRef,
     terminalHostRef,
     fitAddonRef,
+    hasPendingTerminalWrites: () => pendingTerminalWritesRef.current > 0,
     hasRecentLocalTerminalInputForCursorFollow,
     scheduleTerminalSizeSync: () => scheduleTerminalSizeSyncRef.current(),
     sessionRef,
@@ -1105,6 +1111,20 @@ export function TerminalWorkspace({
     }
     if (terminal.options.minimumContrastRatio !== terminalMinimumContrastRatioRef.current) {
       terminal.options.minimumContrastRatio = terminalMinimumContrastRatioRef.current;
+    }
+    // Windows 本地终端经由 ConPTY 托管，必须开启 windowsPty 让行数增大时向底部补空行而非拉回 scrollback；
+    // SSH 会话保持空对象，沿用远端 Unix PTY 语义。
+    const useWindowsConpty = isWindowsConptySession(sessionRef.current);
+    const currentWindowsPty = terminal.options.windowsPty;
+    if (useWindowsConpty) {
+      if (
+        currentWindowsPty?.backend !== windowsConptyTerminalOptions.backend
+        || currentWindowsPty?.buildNumber !== windowsConptyTerminalOptions.buildNumber
+      ) {
+        terminal.options.windowsPty = windowsConptyTerminalOptions;
+      }
+    } else if (currentWindowsPty?.backend !== undefined || currentWindowsPty?.buildNumber !== undefined) {
+      terminal.options.windowsPty = {};
     }
   };
 
@@ -1197,6 +1217,7 @@ export function TerminalWorkspace({
       resetTerminalGutterMarkers();
       clearTerminalPromptHighlights();
       terminalGutterReplayNextLogicalNumberRef.current = 1;
+      pendingTerminalWritesRef.current = 0;
       terminal.reset();
       // reset 会恢复 xterm 内部的主题光标色和显示状态；Codex 托管模式必须在重放缓存前立刻重新隐藏，避免 reset 与首个输出块之间漏出原生块光标。
       if (useManagedCursorForSessionRef.current) {
@@ -1246,7 +1267,15 @@ export function TerminalWorkspace({
 
           const firstEntry = entries[nextEntryIndex];
           if (terminal.cols !== firstEntry.cols || terminal.rows !== firstEntry.rows) {
-            terminal.resize(firstEntry.cols, firstEntry.rows);
+            resizeTerminalWithConptySync(
+              terminal,
+              firstEntry.cols,
+              firstEntry.rows,
+              {
+                isWindowsConpty: isWindowsConptySession(sessionRef.current),
+                hasPendingWrites: false,
+              },
+            );
           }
           let groupEnd = nextEntryIndex + 1;
           while (
@@ -1611,6 +1640,8 @@ export function TerminalWorkspace({
       rows: initialTerminalReplaySize.rows,
       scrollback: terminalScrollbackRows,
       theme: terminalTheme,
+      // Windows 本地终端初始化即启用 ConPTY 兼容模式，确保首次输出与后续增高都与 OpenConsole 对齐。
+      windowsPty: isWindowsConptySession(sessionRef.current) ? windowsConptyTerminalOptions : {},
     });
 
     const fitAddon = new FitAddon();
@@ -2096,7 +2127,14 @@ export function TerminalWorkspace({
     // 横向滚动条出现时外层尺寸不变，但实际承载层会变矮；观察承载层才能同步正确行数。
     const observer = new ResizeObserver(scheduleTerminalSizeSync);
     observer.observe(terminalHostRef.current);
+    // 窗口最小化期间被拦截的尺寸同步在恢复可见时补跑一次，避免错过最小化期间发生的显示器/工作区变化。
+    const handleDocumentVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        scheduleTerminalSizeSync();
+      }
+    };
     window.addEventListener('resize', scheduleTerminalSizeSync);
+    document.addEventListener('visibilitychange', handleDocumentVisibilityChange);
     window.addEventListener('mouseup', stopTerminalSelectionDragSync, true);
     // window 的 mouseup 只能清掉自绘覆盖层的循环，清不掉 xterm 内部挂在 document 上的拖拽监听：两者可能不同步，
     // 因此必须用指针事件自带的按键位掩码独立复核左键是否仍按着，一旦抬起就强制收敛，避免松手后选区继续跟着光标走。
@@ -2153,6 +2191,7 @@ export function TerminalWorkspace({
       terminal.element?.removeEventListener('mouseup', handleTerminalPromptClickMouseUp, true);
       observer.disconnect();
       window.removeEventListener('resize', scheduleTerminalSizeSync);
+      document.removeEventListener('visibilitychange', handleDocumentVisibilityChange);
       window.removeEventListener('mouseup', stopTerminalSelectionDragSync, true);
       window.removeEventListener('mousemove', verifyTerminalSelectionDragPointerState, true);
       window.removeEventListener('pointermove', verifyTerminalSelectionDragPointerState, true);
@@ -2257,8 +2296,14 @@ export function TerminalWorkspace({
       }
       // 诊断探针（默认关闭）：回显到达前端。
       markTerminalOutputArrived(chunk.sessionId, chunk.content.length);
+      const terminal = terminalRef.current;
+      if (!terminal) {
+        return;
+      }
       // 终端输出直接写入 xterm，避免每 80ms 把大字符串塞进 React 状态导致输入、滚动和选区明显卡顿。
-      terminalRef.current?.write(chunk.content, () => {
+      pendingTerminalWritesRef.current += 1;
+      terminal.write(chunk.content, () => {
+        pendingTerminalWritesRef.current = Math.max(0, pendingTerminalWritesRef.current - 1);
         markTerminalOutputParsed(chunk.sessionId);
         if (sessionRef.current?.kind === 'local') {
           notifyLocalTerminalViewportUpdated(chunk.sessionId);

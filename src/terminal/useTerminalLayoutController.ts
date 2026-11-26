@@ -4,7 +4,9 @@ import type { FitAddon } from '@xterm/addon-fit';
 
 import type { AppSettings, TerminalSession } from '../types';
 import {
+  isWindowsConptySession,
   measureTerminalBufferLineContentColumns,
+  resizeTerminalWithConptySync,
   roundHorizontalColumns,
   terminalCursorFollowMarginColumns,
   terminalHorizontalLinePaddingColumns,
@@ -19,6 +21,7 @@ type TerminalLayoutControllerOptions = {
   containerRef: RefObject<HTMLDivElement | null>;
   terminalHostRef: RefObject<HTMLDivElement | null>;
   fitAddonRef: RefObject<FitAddon | null>;
+  hasPendingTerminalWrites: () => boolean;
   hasRecentLocalTerminalInputForCursorFollow: () => boolean;
   scheduleTerminalSizeSync: () => void;
   sessionRef: RefObject<TerminalSession | undefined>;
@@ -35,6 +38,7 @@ export function useTerminalLayoutController({
   containerRef,
   terminalHostRef,
   fitAddonRef,
+  hasPendingTerminalWrites,
   hasRecentLocalTerminalInputForCursorFollow,
   scheduleTerminalSizeSync,
   sessionRef,
@@ -236,8 +240,20 @@ export function useTerminalLayoutController({
   // 横向模式不使用 fitAddon.fit 直接改列数，而是按可视行数 + 动态目标列数手动 resize。
   const resolveTerminalLayoutSize = (): TerminalLayoutSize | undefined => {
     const terminal = terminalRef.current;
+    const host = terminalHostRef.current;
+    // 窗口最小化或容器短暂折叠为 0px 时，FitAddon 会把 0 尺寸钳制返回 2x1；
+    // 绝不能把 xterm 与 ConPTY 压成 2x1，否则恢复后 ConPTY 光标停在首行导致输入覆写旧日志。
+    if (
+      !terminal
+      || !host
+      || host.clientWidth <= 0
+      || host.clientHeight <= 0
+      || (typeof document !== 'undefined' && document.visibilityState === 'hidden')
+    ) {
+      return undefined;
+    }
     const proposed = fitAddonRef.current?.proposeDimensions();
-    if (!terminal || !proposed) {
+    if (!proposed) {
       return undefined;
     }
 
@@ -264,7 +280,15 @@ export function useTerminalLayoutController({
     applyTerminalElementWidth(nextLayoutSize.renderCols, nextLayoutSize.visibleCols);
     const previousColumns = terminal.cols;
     if (terminal.cols !== nextLayoutSize.renderCols || terminal.rows !== nextLayoutSize.rows) {
-      terminal.resize(nextLayoutSize.renderCols, nextLayoutSize.rows);
+      resizeTerminalWithConptySync(
+        terminal,
+        nextLayoutSize.renderCols,
+        nextLayoutSize.rows,
+        {
+          isWindowsConpty: isWindowsConptySession(sessionRef.current),
+          hasPendingWrites: hasPendingTerminalWrites(),
+        },
+      );
     }
     applyTerminalElementWidth(nextLayoutSize.renderCols, nextLayoutSize.visibleCols);
     if (
